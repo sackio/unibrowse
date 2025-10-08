@@ -63,10 +63,13 @@ class BackgroundController {
           console.log('[Background] Tab navigated to:', changeInfo.url);
           this.state.tabUrl = changeInfo.url;
         }
-        // Update title tracking when it changes
+        // Update title tracking when it changes (but ignore our own MCP prefix)
         if (changeInfo.title && this.state.connected) {
-          this.state.originalTabTitle = changeInfo.title;
-          this.updateTabTitle();
+          // Only update if the title doesn't already have our MCP prefix
+          if (!changeInfo.title.startsWith('🟢 [MCP]')) {
+            this.state.originalTabTitle = changeInfo.title;
+            this.updateTabTitle();
+          }
         }
         // Re-inject indicator when page finishes loading
         if (changeInfo.status === 'complete' && this.state.connected) {
@@ -290,6 +293,11 @@ class BackgroundController {
     if (!this.state.tabId || !this.state.originalTabTitle) return;
 
     try {
+      // Don't add prefix if it's already there
+      if (this.state.originalTabTitle.startsWith('🟢 [MCP]')) {
+        return;
+      }
+
       const newTitle = `🟢 [MCP] ${this.state.originalTabTitle}`;
       await this.cdp.evaluate(`document.title = ${JSON.stringify(newTitle)}`, true);
       console.log('[Background] Tab title updated with MCP indicator');
