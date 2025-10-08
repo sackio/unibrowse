@@ -19,7 +19,8 @@ class CDPHelper {
       console.log('[CDP] Debugger attached to tab:', tabId);
 
       // Enable essential CDP domains
-      await this.enableDomains(['Page', 'Runtime', 'DOM', 'Accessibility', 'Console', 'Input']);
+      // Note: Input domain doesn't have .enable method
+      await this.enableDomains(['Page', 'Runtime', 'DOM', 'Accessibility', 'Console']);
 
       return true;
     } catch (error) {
@@ -253,13 +254,9 @@ class CDPHelper {
    * Get partial accessibility tree (filtered)
    */
   async getPartialAccessibilityTree(depth = 5) {
-    // Get root node first
-    const root = await this.sendCommand('Accessibility.getPartialAXTree', {
-      depth,
-      fetchRelatives: false
-    });
-
-    return root;
+    // Use getFullAXTree instead - getPartialAXTree requires a nodeId
+    const tree = await this.sendCommand('Accessibility.getFullAXTree');
+    return tree;
   }
 
   /**

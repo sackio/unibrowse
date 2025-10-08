@@ -24,7 +24,7 @@ coverage
 .next/
 out/
 build
-dist
+# dist - keeping this for MCP server (needed for runtime)
 
 # Debug
 npm-debug.log*

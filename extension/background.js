@@ -115,6 +115,8 @@ class BackgroundController {
     this.handlers['browser_snapshot'] = this.handleSnapshot.bind(this);
     this.handlers['browser_screenshot'] = this.handleScreenshot.bind(this);
     this.handlers['browser_get_console_logs'] = this.handleGetConsoleLogs.bind(this);
+    this.handlers['getUrl'] = this.handleGetUrl.bind(this);
+    this.handlers['getTitle'] = this.handleGetTitle.bind(this);
 
     // DOM exploration handlers
     this.handlers['browser_query_dom'] = this.handleQueryDOM.bind(this);
@@ -230,14 +232,20 @@ class BackgroundController {
     try {
       const result = await handler(payload);
       this.ws.send({
-        id,
-        result
+        type: 'messageResponse',
+        payload: {
+          requestId: id,
+          result
+        }
       });
     } catch (error) {
       console.error('[Background] Handler error:', error);
       this.ws.send({
-        id,
-        error: error.message
+        type: 'messageResponse',
+        payload: {
+          requestId: id,
+          error: error.message
+        }
       });
     }
   }
@@ -310,17 +318,62 @@ class BackgroundController {
   }
 
   async handleClick({ element, ref }) {
-    // TODO: Parse ref to get element position and click
+    // Get element position
+    const elemInfo = await this.cdp.querySelector(ref);
+    if (!elemInfo) {
+      throw new Error(`Element not found: ${ref}`);
+    }
+
+    // Click at element center
+    const x = elemInfo.rect.x + elemInfo.rect.width / 2;
+    const y = elemInfo.rect.y + elemInfo.rect.height / 2;
+    await this.cdp.click(x, y);
+
     return { success: true, element, ref };
   }
 
   async handleType({ element, ref, text, submit }) {
-    // TODO: Focus element and type text
+    // Focus the element first by clicking it
+    const elemInfo = await this.cdp.querySelector(ref);
+    if (!elemInfo) {
+      throw new Error(`Element not found: ${ref}`);
+    }
+
+    const x = elemInfo.rect.x + elemInfo.rect.width / 2;
+    const y = elemInfo.rect.y + elemInfo.rect.height / 2;
+    await this.cdp.click(x, y);
+
+    // Wait a moment for focus
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Type the text
+    await this.cdp.type(text);
+
+    // Submit if requested
+    if (submit) {
+      await this.cdp.pressKey('Enter');
+    }
+
     return { success: true, element, text };
   }
 
   async handleHover({ element, ref }) {
-    // TODO: Hover over element
+    // Get element position
+    const elemInfo = await this.cdp.querySelector(ref);
+    if (!elemInfo) {
+      throw new Error(`Element not found: ${ref}`);
+    }
+
+    // Move mouse to element center
+    const x = elemInfo.rect.x + elemInfo.rect.width / 2;
+    const y = elemInfo.rect.y + elemInfo.rect.height / 2;
+
+    await this.cdp.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x,
+      y
+    });
+
     return { success: true, element, ref };
   }
 
@@ -340,17 +393,26 @@ class BackgroundController {
   }
 
   async handleSnapshot() {
-    const tree = await this.cdp.getAccessibilityTree();
-    return tree;
+    const tree = await this.cdp.getPartialAccessibilityTree(10);
+    // Return YAML-formatted string
+    return JSON.stringify(tree, null, 2);
   }
 
   async handleScreenshot() {
     const data = await this.cdp.captureScreenshot();
-    return { data };
+    return data; // Return base64 string directly
   }
 
   async handleGetConsoleLogs() {
-    return { logs: this.consoleLogs };
+    return this.consoleLogs;
+  }
+
+  async handleGetUrl() {
+    return this.state.tabUrl;
+  }
+
+  async handleGetTitle() {
+    return this.state.tabTitle;
   }
 
   async handleQueryDOM({ selector, limit = 10 }) {
