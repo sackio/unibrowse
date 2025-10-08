@@ -171,6 +171,23 @@ class PopupController {
     // Update buttons
     this.elements.connectBtn.disabled = state.connected;
     this.elements.disconnectBtn.disabled = !state.connected;
+
+    // Check for recording request
+    if (state.recordingRequest) {
+      if (this.recordingState === 'none') {
+        console.log('[Popup] Found recording request in state:', state.recordingRequest);
+        this.showRecording(state.recordingRequest.sessionId, state.recordingRequest.request);
+      } else if (this.recordingState === 'waiting' && state.recordingRequest.state === 'active') {
+        // Switch from waiting to active
+        console.log('[Popup] Switching to active state');
+        this.switchToActive();
+      } else if (this.recordingState === 'active' && state.recordingRequest.actionCount !== undefined) {
+        // Update action count if recording is active
+        this.elements.recordingActions.textContent = state.recordingRequest.actionCount;
+      }
+    } else if (!state.recordingRequest && this.recordingState !== 'none') {
+      this.hideRecording();
+    }
   }
 
   /**
@@ -248,6 +265,18 @@ class PopupController {
   async startRecording() {
     if (this.recordingState !== 'waiting') return;
 
+    console.log('[Popup] User clicked Start button');
+    // Tell background to start recording
+    await chrome.runtime.sendMessage({
+      type: 'START_RECORDING_NOW',
+      sessionId: this.currentSessionId
+    });
+  }
+
+  /**
+   * Switch UI from waiting to active state
+   */
+  switchToActive() {
     this.recordingState = 'active';
     this.recordingStartTime = Date.now();
 
@@ -268,12 +297,6 @@ class PopupController {
       const elapsed = Math.floor((Date.now() - this.recordingStartTime) / 1000);
       this.elements.recordingTime.textContent = elapsed;
     }, 1000);
-
-    // Tell background to start recording
-    await chrome.runtime.sendMessage({
-      type: 'START_RECORDING_NOW',
-      sessionId: this.currentSessionId
-    });
   }
 
   /**

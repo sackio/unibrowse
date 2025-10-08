@@ -608,7 +608,8 @@ class BackgroundController {
             debuggerAttached: this.cdp.isAttached(),
             tabId: this.state.tabId,
             tabUrl: this.state.tabUrl,
-            tabTitle: this.state.tabTitle
+            tabTitle: this.state.tabTitle,
+            recordingRequest: this.currentRecordingRequest || null
           }
         });
         break;
@@ -1209,6 +1210,11 @@ class BackgroundController {
         const messageListener = (message, sender) => {
           if (message.type === 'START_RECORDING_NOW' && message.sessionId === sessionId) {
             console.log('[Background] User clicked Start, injecting content script');
+            // Update state to active
+            if (this.currentRecordingRequest && this.currentRecordingRequest.sessionId === sessionId) {
+              this.currentRecordingRequest.state = 'active';
+              this.currentRecordingRequest.actionCount = 0;
+            }
             // User clicked Start in popup - inject and start content script
             chrome.scripting.executeScript({
               target: { tabId: this.state.tabId },
@@ -1234,16 +1240,16 @@ class BackgroundController {
             });
           } else if (message.type === 'RECORDING_CANCELLED' && message.sessionId === sessionId) {
             // User cancelled - clean up
+            this.currentRecordingRequest = null;
             this.recordingSessions.delete(sessionId);
             chrome.runtime.onMessage.removeListener(messageListener);
             reject(new Error('Recording cancelled by user'));
           } else if (message.type === 'RECORDING_ACTION' && message.sessionId === sessionId) {
             session.actions.push(message.action);
-            // Notify popup about new action
-            chrome.runtime.sendMessage({
-              type: 'recording_action',
-              actionCount: session.actions.length
-            }).catch(() => {});  // Ignore if popup is closed
+            // Update recording request with action count
+            if (this.currentRecordingRequest && this.currentRecordingRequest.sessionId === sessionId) {
+              this.currentRecordingRequest.actionCount = session.actions.length;
+            }
           } else if (message.type === 'RECORDING_COMPLETE' && message.sessionId === sessionId) {
             this.stopRecording(sessionId);
           } else if (message.type === 'RECORDING_RESULT' && message.result.sessionId === sessionId) {
@@ -1252,10 +1258,8 @@ class BackgroundController {
             // Add network activity
             result.network = session.networkActivity;
 
-            // Notify popup that recording stopped
-            chrome.runtime.sendMessage({
-              type: 'recording_stopped'
-            }).catch(() => {});
+            // Clear recording request
+            this.currentRecordingRequest = null;
 
             // Clean up
             this.recordingSessions.delete(sessionId);
@@ -1271,17 +1275,13 @@ class BackgroundController {
         const initialNetworkCount = this.networkLogs.length;
         session.networkStartIndex = initialNetworkCount;
 
-        // Notify popup to show recording request UI (waiting for user to click Start)
-        console.log('[Background] Sending recording_started message to popup');
-        chrome.runtime.sendMessage({
-          type: 'recording_started',
+        // Store current recording request so popup can poll for it
+        this.currentRecordingRequest = {
           sessionId,
-          request
-        }).then(() => {
-          console.log('[Background] recording_started message sent successfully');
-        }).catch((err) => {
-          console.log('[Background] Failed to send recording_started (popup may be closed):', err);
-        });
+          request,
+          state: 'waiting'
+        };
+        console.log('[Background] Recording request stored for popup polling');
 
         // Content script injection happens when user clicks Start button in popup
         // No timeout - recordings can be long-running
