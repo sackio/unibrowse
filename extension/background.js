@@ -1214,7 +1214,27 @@ class BackgroundController {
 
         // Set up message listener for content script and popup
         const messageListener = (message, sender) => {
-          if (message.type === 'RECORDING_ACTION' && message.sessionId === sessionId) {
+          if (message.type === 'START_RECORDING_NOW' && message.sessionId === sessionId) {
+            // User clicked Start in popup - inject and start content script
+            chrome.scripting.executeScript({
+              target: { tabId: this.state.tabId },
+              func: (sessionId, request) => {
+                window.postMessage({
+                  type: 'START_RECORDING',
+                  data: { sessionId, request }
+                }, '*');
+              },
+              args: [sessionId, session.request]
+            }).catch(err => {
+              console.error('Failed to start recording:', err);
+              reject(err);
+            });
+          } else if (message.type === 'RECORDING_CANCELLED' && message.sessionId === sessionId) {
+            // User cancelled - clean up
+            this.recordingSessions.delete(sessionId);
+            chrome.runtime.onMessage.removeListener(messageListener);
+            reject(new Error('Recording cancelled by user'));
+          } else if (message.type === 'RECORDING_ACTION' && message.sessionId === sessionId) {
             session.actions.push(message.action);
             // Notify popup about new action
             chrome.runtime.sendMessage({
@@ -1248,25 +1268,14 @@ class BackgroundController {
         const initialNetworkCount = this.networkLogs.length;
         session.networkStartIndex = initialNetworkCount;
 
-        // Notify popup to show recording UI
+        // Notify popup to show recording request UI (waiting for user to click Start)
         chrome.runtime.sendMessage({
           type: 'recording_started',
           sessionId,
           request
         }).catch(() => {});  // Ignore if popup is closed
 
-        // Send message to content script to start recording via executeScript
-        await chrome.scripting.executeScript({
-          target: { tabId: this.state.tabId },
-          func: (sessionId, request) => {
-            window.postMessage({
-              type: 'START_RECORDING',
-              data: { sessionId, request }
-            }, '*');
-          },
-          args: [sessionId, request]
-        });
-
+        // Content script injection happens when user clicks Start button in popup
         // No timeout - recordings can be long-running
         // User will stop recording manually via hotkey or Done button in popup
 

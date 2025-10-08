@@ -192,6 +192,10 @@
       display: block;
     }
 
+    .recording-section.waiting {
+      background: linear-gradient(135deg, #4a90e2 0%, #357abd 100%);
+    }
+
     .recording-header {
       display: flex;
       align-items: center;
@@ -286,16 +290,34 @@
   <div class="error" id="error"></div>
 
   <div class="recording-section" id="recording-section">
-    <div class="recording-header">
-      <div class="recording-pulse"></div>
-      <div class="recording-title">Recording Demonstration</div>
+    <!-- Waiting state (before user clicks Start) -->
+    <div id="recording-waiting" style="display: none;">
+      <div class="recording-header">
+        <div class="recording-title">🎬 Demonstration Request</div>
+      </div>
+      <div class="recording-request" id="recording-request-waiting"></div>
+      <div style="margin-top: 16px; font-size: 12px; opacity: 0.9;">
+        Click Start when you're ready. All your actions will be recorded.
+      </div>
+      <div style="display: flex; gap: 8px; margin-top: 12px;">
+        <button class="recording-done" id="recording-start-btn" style="flex: 1;">Start Recording</button>
+        <button class="recording-done" id="recording-cancel-btn" style="background: rgba(255,255,255,0.2); flex: 0 0 auto; padding: 10px 16px;">Cancel</button>
+      </div>
     </div>
-    <div class="recording-request" id="recording-request"></div>
-    <div class="recording-stats">
-      <div><span id="recording-actions">0</span> actions recorded · <span id="recording-time">0</span>s</div>
+
+    <!-- Active recording state -->
+    <div id="recording-active" style="display: none;">
+      <div class="recording-header">
+        <div class="recording-pulse"></div>
+        <div class="recording-title">Recording Demonstration</div>
+      </div>
+      <div class="recording-request" id="recording-request-active"></div>
+      <div class="recording-stats">
+        <div><span id="recording-actions">0</span> actions recorded · <span id="recording-time">0</span>s</div>
+      </div>
+      <div class="recording-hotkey">Press Ctrl+Shift+D to stop</div>
+      <button class="recording-done" id="recording-done-btn">Done</button>
     </div>
-    <div class="recording-hotkey">Press Ctrl+Shift+D to stop</div>
-    <button class="recording-done" id="recording-done-btn">Done</button>
   </div>
 
   <script src="popup.js"></script>
