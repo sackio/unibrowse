@@ -1215,6 +1215,9 @@ class BackgroundController {
               this.currentRecordingRequest.state = 'active';
               this.currentRecordingRequest.actionCount = 0;
             }
+            // Show recording badge
+            chrome.action.setBadgeText({ text: '●' });
+            chrome.action.setBadgeBackgroundColor({ color: '#ff4444' });
             // User clicked Start in popup - inject and start content script
             chrome.scripting.executeScript({
               target: { tabId: this.state.tabId },
@@ -1241,6 +1244,7 @@ class BackgroundController {
           } else if (message.type === 'RECORDING_CANCELLED' && message.sessionId === sessionId) {
             // User cancelled - clean up
             this.currentRecordingRequest = null;
+            chrome.action.setBadgeText({ text: '' });
             this.recordingSessions.delete(sessionId);
             chrome.runtime.onMessage.removeListener(messageListener);
             reject(new Error('Recording cancelled by user'));
@@ -1251,15 +1255,26 @@ class BackgroundController {
               this.currentRecordingRequest.actionCount = session.actions.length;
             }
           } else if (message.type === 'RECORDING_COMPLETE' && message.sessionId === sessionId) {
+            console.log('[Background] Received RECORDING_COMPLETE');
+            // Ignore if already stopping
+            if (!this.recordingSessions.has(sessionId)) {
+              console.log('[Background] Session already stopped, ignoring');
+              return;
+            }
             this.stopRecording(sessionId);
           } else if (message.type === 'RECORDING_RESULT' && message.result.sessionId === sessionId) {
+            console.log('[Background] Received RECORDING_RESULT:', message.result);
             const result = message.result;
 
             // Add network activity
             result.network = session.networkActivity;
+            console.log('[Background] Resolving Promise with result');
 
             // Clear recording request
             this.currentRecordingRequest = null;
+
+            // Clear badge
+            chrome.action.setBadgeText({ text: '' });
 
             // Clean up
             this.recordingSessions.delete(sessionId);
@@ -1283,6 +1298,10 @@ class BackgroundController {
         };
         console.log('[Background] Recording request stored for popup polling');
 
+        // Show badge to indicate recording requested
+        chrome.action.setBadgeText({ text: '⏸' });
+        chrome.action.setBadgeBackgroundColor({ color: '#4a90e2' });
+
         // Content script injection happens when user clicks Start button in popup
         // No timeout - recordings can be long-running
         // User will stop recording manually via hotkey or Done button in popup
@@ -1298,17 +1317,24 @@ class BackgroundController {
    * Stop a recording session
    */
   async stopRecording(sessionId) {
+    console.log('[Background] stopRecording called for:', sessionId);
     const session = this.recordingSessions.get(sessionId);
-    if (!session) return;
+    if (!session) {
+      console.log('[Background] No session found for:', sessionId);
+      return;
+    }
 
     // Capture network logs from when recording started
     session.networkActivity = this.networkLogs.slice(session.networkStartIndex);
+    console.log('[Background] Captured', session.networkActivity.length, 'network requests');
 
     // Send stop message to content script via executeScript
     try {
+      console.log('[Background] Sending STOP_RECORDING to content script');
       await chrome.scripting.executeScript({
         target: { tabId: this.state.tabId },
         func: (sessionId) => {
+          console.log('[Content] Received STOP_RECORDING');
           window.postMessage({
             type: 'STOP_RECORDING',
             sessionId
@@ -1316,6 +1342,7 @@ class BackgroundController {
         },
         args: [sessionId]
       });
+      console.log('[Background] STOP_RECORDING message sent');
     } catch (error) {
       console.error('[Background] Error stopping recording:', error);
     }
