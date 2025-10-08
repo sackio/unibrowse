@@ -310,10 +310,15 @@ class BackgroundController {
    * Restore original tab title (remove MCP indicator)
    */
   async restoreTabTitle() {
-    if (!this.state.tabId || !this.state.originalTabTitle) return;
+    if (!this.state.tabId) return;
 
     try {
-      await this.cdp.evaluate(`document.title = ${JSON.stringify(this.state.originalTabTitle)}`, true);
+      // Get current title and strip MCP prefix if present
+      await this.cdp.evaluate(`
+        if (document.title.startsWith('🟢 [MCP] ')) {
+          document.title = document.title.replace('🟢 [MCP] ', '');
+        }
+      `, true);
       console.log('[Background] Tab title restored');
     } catch (error) {
       console.error('[Background] Failed to restore tab title:', error);
