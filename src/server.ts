@@ -18,9 +18,12 @@ type Options = {
   resources: Resource[];
 };
 
+// Shared context for all servers (WebSocket and SSE)
+const globalContext = new Context();
+
+// Create server with WebSocket for browser extension
 export async function createServerWithTools(options: Options): Promise<Server> {
   const { name, version, tools, resources } = options;
-  const context = new Context();
   const server = new Server(
     { name, version },
     {
@@ -34,10 +37,10 @@ export async function createServerWithTools(options: Options): Promise<Server> {
   const wss = await createWebSocketServer();
   wss.on("connection", (websocket) => {
     // Close any existing connections
-    if (context.hasWs()) {
-      context.ws.close();
+    if (globalContext.hasWs()) {
+      globalContext.ws.close();
     }
-    context.ws = websocket;
+    globalContext.ws = websocket;
   });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -60,7 +63,7 @@ export async function createServerWithTools(options: Options): Promise<Server> {
     }
 
     try {
-      const result = await tool.handle(context, request.params.arguments);
+      const result = await tool.handle(globalContext, request.params.arguments);
       return result;
     } catch (error) {
       return {
@@ -78,15 +81,73 @@ export async function createServerWithTools(options: Options): Promise<Server> {
       return { contents: [] };
     }
 
-    const contents = await resource.read(context, request.params.uri);
+    const contents = await resource.read(globalContext, request.params.uri);
     return { contents };
   });
 
   server.close = async () => {
     await server.close();
     await wss.close();
-    await context.close();
+    await globalContext.close();
   };
+
+  return server;
+}
+
+// Create server WITHOUT WebSocket (for SSE connections)
+export async function createServerWithoutWebSocket(options: Options): Promise<Server> {
+  const { name, version, tools, resources } = options;
+  const server = new Server(
+    { name, version },
+    {
+      capabilities: {
+        tools: {},
+        resources: {},
+      },
+    },
+  );
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    return { tools: tools.map((tool) => tool.schema) };
+  });
+
+  server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    return { resources: resources.map((resource) => resource.schema) };
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const tool = tools.find((tool) => tool.schema.name === request.params.name);
+    if (!tool) {
+      return {
+        content: [
+          { type: "text", text: `Tool "${request.params.name}" not found` },
+        ],
+        isError: true,
+      };
+    }
+
+    try {
+      const result = await tool.handle(globalContext, request.params.arguments);
+      return result;
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: String(error) }],
+        isError: true,
+      };
+    }
+  });
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const resource = resources.find(
+      (resource) => resource.schema.uri === request.params.uri,
+    );
+    if (!resource) {
+      return { contents: [] };
+    }
+
+    const contents = await resource.read(globalContext, request.params.uri);
+    return { contents };
+  });
 
   return server;
 }

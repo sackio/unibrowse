@@ -10,7 +10,9 @@ import { createServerWithTools } from "@/server";
 import * as common from "@/tools/common";
 import * as custom from "@/tools/custom";
 import * as exploration from "@/tools/exploration";
+import * as forms from "@/tools/forms";
 import * as snapshot from "@/tools/snapshot";
+import * as tabs from "@/tools/tabs";
 import type { Tool } from "@/tools/tool";
 
 import packageJSON from "../package.json";
@@ -23,11 +25,17 @@ function setupExitWatchdog(server: Server) {
   });
 }
 
-const commonTools: Tool[] = [common.pressKey, common.wait];
+const commonTools: Tool[] = [
+  common.pressKey,
+  common.scroll,
+  common.scrollToElement,
+  common.wait,
+];
 
 const customTools: Tool[] = [
   custom.evaluate,
   custom.getConsoleLogs,
+  custom.getNetworkLogs,
   custom.screenshot,
 ];
 
@@ -45,18 +53,33 @@ const explorationTools: Tool[] = [
   exploration.checkElementState,
 ];
 
+const tabTools: Tool[] = [
+  tabs.listTabs,
+  tabs.switchTab,
+  tabs.createTab,
+  tabs.closeTab,
+];
+
+const formTools: Tool[] = [
+  forms.fillForm,
+  forms.submitForm,
+];
+
 const snapshotTools: Tool[] = [
   common.navigate(false),
   common.goBack(false),
   common.goForward(false),
   snapshot.snapshot,
   snapshot.click,
+  snapshot.drag,
   snapshot.hover,
   snapshot.type,
   snapshot.selectOption,
   ...commonTools,
   ...customTools,
   ...explorationTools,
+  ...tabTools,
+  ...formTools,
 ];
 
 const resources: Resource[] = [];

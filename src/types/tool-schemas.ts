@@ -51,6 +51,85 @@ export const PressKeyTool = z.object({
   }),
 });
 
+export const ScrollTool = z.object({
+  name: z.literal("browser_scroll"),
+  description: z.literal("Scroll the page by a specific amount in pixels"),
+  arguments: z.object({
+    x: z.number().optional().describe("Horizontal scroll amount in pixels (positive = right, negative = left). Default: 0"),
+    y: z.number().describe("Vertical scroll amount in pixels (positive = down, negative = up)"),
+  }),
+});
+
+export const ScrollToElementTool = z.object({
+  name: z.literal("browser_scroll_to_element"),
+  description: z.literal("Scroll to make a specific element visible in the viewport"),
+  arguments: ElementSchema,
+});
+
+export const ListTabsTool = z.object({
+  name: z.literal("browser_list_tabs"),
+  description: z.literal("List all open browser tabs"),
+  arguments: z.object({}),
+});
+
+export const SwitchTabTool = z.object({
+  name: z.literal("browser_switch_tab"),
+  description: z.literal("Switch to a specific browser tab"),
+  arguments: z.object({
+    tabId: z.number().describe("The ID of the tab to switch to"),
+  }),
+});
+
+export const CreateTabTool = z.object({
+  name: z.literal("browser_create_tab"),
+  description: z.literal("Create a new browser tab"),
+  arguments: z.object({
+    url: z.string().optional().describe("URL to open in the new tab (default: about:blank)"),
+  }),
+});
+
+export const CloseTabTool = z.object({
+  name: z.literal("browser_close_tab"),
+  description: z.literal("Close a specific browser tab"),
+  arguments: z.object({
+    tabId: z.number().describe("The ID of the tab to close"),
+  }),
+});
+
+export const FillFormTool = z.object({
+  name: z.literal("browser_fill_form"),
+  description: z.literal("Fill multiple form fields at once"),
+  arguments: z.object({
+    fields: z.array(
+      z.object({
+        element: z
+          .string()
+          .describe("Human-readable field description"),
+        ref: z
+          .string()
+          .describe("Exact field reference from the page snapshot"),
+        value: z
+          .string()
+          .describe("Value to fill in the field"),
+      })
+    ).describe("Array of fields to fill"),
+  }),
+});
+
+export const SubmitFormTool = z.object({
+  name: z.literal("browser_submit_form"),
+  description: z.literal("Submit a form"),
+  arguments: ElementSchema,
+});
+
+export const GetNetworkLogsTool = z.object({
+  name: z.literal("browser_get_network_logs"),
+  description: z.literal("Get network requests and responses captured since page load"),
+  arguments: z.object({
+    filter: z.string().optional().describe("Optional filter to match URLs (e.g., 'api', '.json')"),
+  }),
+});
+
 export const SnapshotTool = z.object({
   name: z.literal("browser_snapshot"),
   description: z.literal(

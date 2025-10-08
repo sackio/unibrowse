@@ -3,6 +3,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import {
   EvaluateTool,
   GetConsoleLogsTool,
+  GetNetworkLogsTool,
   ScreenshotTool,
 } from "@/types/tool-schemas";
 
@@ -68,6 +69,29 @@ export const evaluate: Tool = {
         {
           type: "text",
           text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  },
+};
+
+export const getNetworkLogs: Tool = {
+  schema: {
+    name: GetNetworkLogsTool.shape.name.value,
+    description: GetNetworkLogsTool.shape.description.value,
+    inputSchema: zodToJsonSchema(GetNetworkLogsTool.shape.arguments),
+  },
+  handle: async (context, params) => {
+    const validatedParams = GetNetworkLogsTool.shape.arguments.parse(params);
+    const networkLogs = await context.sendSocketMessage(
+      "browser_get_network_logs",
+      validatedParams,
+    );
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(networkLogs, null, 2),
         },
       ],
     };

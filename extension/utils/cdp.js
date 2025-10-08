@@ -20,7 +20,7 @@ class CDPHelper {
 
       // Enable essential CDP domains
       // Note: Input domain doesn't have .enable method
-      await this.enableDomains(['Page', 'Runtime', 'DOM', 'Accessibility', 'Console']);
+      await this.enableDomains(['Page', 'Runtime', 'DOM', 'Accessibility', 'Console', 'Network']);
 
       return true;
     } catch (error) {
@@ -159,6 +159,56 @@ class CDPHelper {
   }
 
   /**
+   * Drag and drop from start coordinates to end coordinates
+   */
+  async drag(startX, startY, endX, endY) {
+    // Move to start position
+    await this.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: startX,
+      y: startY
+    });
+
+    // Press mouse button at start
+    await this.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: startX,
+      y: startY,
+      button: 'left',
+      clickCount: 1
+    });
+
+    // Small delay to register the press
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // Move mouse to end position in steps for smooth drag
+    const steps = 10;
+    for (let i = 1; i <= steps; i++) {
+      const currentX = startX + (endX - startX) * (i / steps);
+      const currentY = startY + (endY - startY) * (i / steps);
+
+      await this.sendCommand('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: currentX,
+        y: currentY,
+        button: 'left'
+      });
+
+      // Small delay between moves
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+
+    // Release mouse button at end
+    await this.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: endX,
+      y: endY,
+      button: 'left',
+      clickCount: 1
+    });
+  }
+
+  /**
    * Type text
    */
   async type(text) {
@@ -191,6 +241,27 @@ class CDPHelper {
       type: 'keyUp',
       key
     });
+  }
+
+  /**
+   * Scroll by specific amount
+   */
+  async scroll(x = 0, y = 0) {
+    return this.evaluate(`window.scrollBy(${x}, ${y})`, true);
+  }
+
+  /**
+   * Scroll to element
+   */
+  async scrollToElement(selector) {
+    return this.evaluate(`
+      (function() {
+        const el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+        if (!el) return { success: false, error: 'Element not found' };
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return { success: true };
+      })()
+    `, true);
   }
 
   /**

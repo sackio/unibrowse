@@ -11,6 +11,7 @@ class BackgroundController {
     this.cdp = new CDPHelper();
     this.handlers = {};
     this.consoleLogs = [];
+    this.networkLogs = [];
     this.badgeBlinkInterval = null;
     this.state = {
       connected: false,
@@ -103,6 +104,33 @@ class BackgroundController {
             timestamp: Date.now()
           });
         }
+
+        // Network events (for network log collection)
+        if (method === 'Network.requestWillBeSent') {
+          this.networkLogs.push({
+            type: 'request',
+            requestId: params.requestId,
+            url: params.request.url,
+            method: params.request.method,
+            headers: params.request.headers,
+            timestamp: Date.now()
+          });
+        }
+
+        if (method === 'Network.responseReceived') {
+          // Find the matching request and add response info
+          const request = this.networkLogs.find(
+            log => log.requestId === params.requestId && log.type === 'request'
+          );
+          if (request) {
+            request.response = {
+              status: params.response.status,
+              statusText: params.response.statusText,
+              headers: params.response.headers,
+              mimeType: params.response.mimeType
+            };
+          }
+        }
       }
     });
   }
@@ -127,11 +155,24 @@ class BackgroundController {
     this.handlers['browser_drag'] = this.handleDrag.bind(this);
     this.handlers['browser_select_option'] = this.handleSelectOption.bind(this);
     this.handlers['browser_press_key'] = this.handlePressKey.bind(this);
+    this.handlers['browser_scroll'] = this.handleScroll.bind(this);
+    this.handlers['browser_scroll_to_element'] = this.handleScrollToElement.bind(this);
+
+    // Tab management handlers
+    this.handlers['browser_list_tabs'] = this.handleListTabs.bind(this);
+    this.handlers['browser_switch_tab'] = this.handleSwitchTab.bind(this);
+    this.handlers['browser_create_tab'] = this.handleCreateTab.bind(this);
+    this.handlers['browser_close_tab'] = this.handleCloseTab.bind(this);
+
+    // Form handlers
+    this.handlers['browser_fill_form'] = this.handleFillForm.bind(this);
+    this.handlers['browser_submit_form'] = this.handleSubmitForm.bind(this);
 
     // Information handlers
     this.handlers['browser_snapshot'] = this.handleSnapshot.bind(this);
     this.handlers['browser_screenshot'] = this.handleScreenshot.bind(this);
     this.handlers['browser_get_console_logs'] = this.handleGetConsoleLogs.bind(this);
+    this.handlers['browser_get_network_logs'] = this.handleGetNetworkLogs.bind(this);
     this.handlers['browser_evaluate'] = this.handleEvaluate.bind(this);
     this.handlers['getUrl'] = this.handleGetUrl.bind(this);
     this.handlers['getTitle'] = this.handleGetTitle.bind(this);
@@ -174,6 +215,7 @@ class BackgroundController {
       this.state.originalTabTitle = tab.title;
       this.state.tabTitle = tab.title;
       this.consoleLogs = [];
+      this.networkLogs = [];
 
       // Connect WebSocket
       this.ws.connect();
@@ -223,6 +265,7 @@ class BackgroundController {
     this.state.tabTitle = null;
     this.state.originalTabTitle = null;
     this.consoleLogs = [];
+    this.networkLogs = [];
 
     this.updateConnectionState();
     console.log('[Background] Disconnect complete');
@@ -655,8 +698,28 @@ class BackgroundController {
   }
 
   async handleDrag({ startElement, startRef, endElement, endRef }) {
-    // TODO: Drag and drop
-    return { success: true };
+    // Get start element position
+    const startElemInfo = await this.cdp.querySelector(startRef);
+    if (!startElemInfo) {
+      throw new Error(`Start element not found: ${startRef}`);
+    }
+
+    // Get end element position
+    const endElemInfo = await this.cdp.querySelector(endRef);
+    if (!endElemInfo) {
+      throw new Error(`End element not found: ${endRef}`);
+    }
+
+    // Calculate center coordinates for both elements
+    const startX = startElemInfo.rect.x + startElemInfo.rect.width / 2;
+    const startY = startElemInfo.rect.y + startElemInfo.rect.height / 2;
+    const endX = endElemInfo.rect.x + endElemInfo.rect.width / 2;
+    const endY = endElemInfo.rect.y + endElemInfo.rect.height / 2;
+
+    // Perform drag and drop
+    await this.cdp.drag(startX, startY, endX, endY);
+
+    return { success: true, startElement, endElement };
   }
 
   async handleSelectOption({ element, ref, values }) {
@@ -667,6 +730,103 @@ class BackgroundController {
   async handlePressKey({ key }) {
     await this.cdp.pressKey(key);
     return { success: true, key };
+  }
+
+  async handleScroll({ x, y }) {
+    await this.cdp.scroll(x, y);
+    return { success: true, x: x ?? 0, y };
+  }
+
+  async handleScrollToElement({ element, ref }) {
+    const result = await this.cdp.scrollToElement(ref);
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to scroll to element');
+    }
+    return { success: true, element, ref };
+  }
+
+  async handleListTabs() {
+    const tabs = await chrome.tabs.query({});
+    return tabs.map(tab => ({
+      tabId: tab.id,
+      url: tab.url,
+      title: tab.title,
+      active: tab.active
+    }));
+  }
+
+  async handleSwitchTab({ tabId }) {
+    await chrome.tabs.update(tabId, { active: true });
+    const tab = await chrome.tabs.get(tabId);
+    await chrome.windows.update(tab.windowId, { focused: true });
+    return { success: true, tabId };
+  }
+
+  async handleCreateTab({ url }) {
+    const tab = await chrome.tabs.create({ url: url || 'about:blank' });
+    return { success: true, tabId: tab.id, url: tab.url };
+  }
+
+  async handleCloseTab({ tabId }) {
+    await chrome.tabs.remove(tabId);
+    return { success: true, tabId };
+  }
+
+  async handleFillForm({ fields }) {
+    for (const field of fields) {
+      // Get element position
+      const elemInfo = await this.cdp.querySelector(field.ref);
+      if (!elemInfo) {
+        throw new Error(`Field not found: ${field.ref}`);
+      }
+
+      // Click to focus
+      const x = elemInfo.rect.x + elemInfo.rect.width / 2;
+      const y = elemInfo.rect.y + elemInfo.rect.height / 2;
+      await this.cdp.click(x, y);
+
+      // Clear existing content (Ctrl+A, Delete)
+      await this.cdp.pressKey('Control');
+      await this.cdp.pressKey('a');
+      await this.cdp.pressKey('Delete');
+
+      // Type new value
+      await this.cdp.type(field.value);
+    }
+
+    return { success: true, fieldCount: fields.length };
+  }
+
+  async handleSubmitForm({ element, ref }) {
+    // Find the form element
+    const elemInfo = await this.cdp.querySelector(ref);
+    if (!elemInfo) {
+      throw new Error(`Form not found: ${ref}`);
+    }
+
+    // Submit the form by pressing Enter or clicking submit button
+    await this.cdp.evaluate(`
+      (function() {
+        const form = document.querySelector('${ref.replace(/'/g, "\\'")}');
+        if (!form) return { success: false, error: 'Form not found' };
+
+        // If it's a form element, submit it
+        if (form.tagName === 'FORM') {
+          form.submit();
+          return { success: true };
+        }
+
+        // If it's a submit button, click it
+        if (form.type === 'submit' || form.tagName === 'BUTTON') {
+          form.click();
+          return { success: true };
+        }
+
+        return { success: false, error: 'Element is not a form or submit button' };
+      })()
+    `, true);
+
+    return { success: true, element, ref };
   }
 
   async handleSnapshot() {
@@ -682,6 +842,14 @@ class BackgroundController {
 
   async handleGetConsoleLogs() {
     return this.consoleLogs;
+  }
+
+  async handleGetNetworkLogs({ filter }) {
+    if (filter) {
+      // Filter network logs by URL
+      return this.networkLogs.filter(log => log.url.includes(filter));
+    }
+    return this.networkLogs;
   }
 
   async handleEvaluate({ expression }) {

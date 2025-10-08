@@ -5,6 +5,8 @@ import {
   GoForwardTool,
   NavigateTool,
   PressKeyTool,
+  ScrollTool,
+  ScrollToElementTool,
   WaitTool,
 } from "@/types/tool-schemas";
 
@@ -113,6 +115,48 @@ export const pressKey: Tool = {
         {
           type: "text",
           text: `Pressed key ${key}`,
+        },
+      ],
+    };
+  },
+};
+
+export const scroll: Tool = {
+  schema: {
+    name: ScrollTool.shape.name.value,
+    description: ScrollTool.shape.description.value,
+    inputSchema: zodToJsonSchema(ScrollTool.shape.arguments),
+  },
+  handle: async (context, params) => {
+    const validatedParams = ScrollTool.shape.arguments.parse(params);
+    await context.sendSocketMessage("browser_scroll", validatedParams);
+    const x = validatedParams.x ?? 0;
+    const y = validatedParams.y;
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Scrolled by (${x}, ${y}) pixels`,
+        },
+      ],
+    };
+  },
+};
+
+export const scrollToElement: Tool = {
+  schema: {
+    name: ScrollToElementTool.shape.name.value,
+    description: ScrollToElementTool.shape.description.value,
+    inputSchema: zodToJsonSchema(ScrollToElementTool.shape.arguments),
+  },
+  handle: async (context, params) => {
+    const validatedParams = ScrollToElementTool.shape.arguments.parse(params);
+    await context.sendSocketMessage("browser_scroll_to_element", validatedParams);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Scrolled to "${validatedParams.element}"`,
         },
       ],
     };

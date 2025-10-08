@@ -1,0 +1,9 @@
+{
+  "watch": ["src"],
+  "ext": "ts,js",
+  "ignore": ["dist", "node_modules"],
+  "exec": "npm run build && node dist/http-server.js",
+  "env": {
+    "NODE_ENV": "development"
+  }
+}
