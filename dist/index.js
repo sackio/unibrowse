@@ -4,6 +4,7 @@ import {
   CreateTabTool,
   FillFormTool,
   ListTabsTool,
+  RequestDemonstrationTool,
   SubmitFormTool,
   SwitchTabTool,
   appConfig,
@@ -37,7 +38,7 @@ import {
   snapshot,
   type,
   wait
-} from "./chunk-UDEF7NOT.js";
+} from "./chunk-FW3QZG5X.js";
 
 // src/index.ts
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -84,13 +85,95 @@ var submitForm = {
   }
 };
 
+// src/tools/recording.ts
+import { zodToJsonSchema as zodToJsonSchema2 } from "zod-to-json-schema";
+var requestDemonstration = (snapshot2) => ({
+  schema: {
+    name: RequestDemonstrationTool.shape.name.value,
+    description: RequestDemonstrationTool.shape.description.value,
+    inputSchema: zodToJsonSchema2(RequestDemonstrationTool.shape.arguments)
+  },
+  handle: async (context, params) => {
+    const { request, maxDuration = 300 } = RequestDemonstrationTool.shape.arguments.parse(params);
+    const result = await context.sendSocketMessage("browser_request_demonstration", {
+      request,
+      maxDuration
+    });
+    const actions = result.actions || [];
+    const network = result.network || [];
+    let summary = `# Demonstration Recording
+
+`;
+    summary += `**Request**: ${request}
+`;
+    summary += `**Duration**: ${(result.duration / 1e3).toFixed(1)}s
+`;
+    summary += `**Start URL**: ${result.startUrl}
+`;
+    summary += `**End URL**: ${result.endUrl}
+
+`;
+    summary += `## Actions Recorded (${actions.length})
+
+`;
+    for (const action of actions) {
+      summary += `${action.step}. **${action.type}** (${action.timestamp}ms)
+`;
+      if (action.element) {
+        summary += `   - Element: ${action.element.tagName}`;
+        if (action.element.text) summary += ` "${action.element.text}"`;
+        summary += `
+   - Selector: \`${action.element.selector}\`
+`;
+      }
+      if (action.value) {
+        summary += `   - Value: "${action.value}"
+`;
+      }
+      if (action.url) {
+        summary += `   - URL: ${action.url}
+`;
+      }
+      summary += `
+`;
+    }
+    if (network.length > 0) {
+      summary += `
+## Network Activity (${network.length} requests)
+
+`;
+      for (const req of network.slice(0, 10)) {
+        summary += `- **${req.method}** ${req.url}
+`;
+        if (req.response) {
+          summary += `  Status: ${req.response.status}
+`;
+        }
+      }
+      if (network.length > 10) {
+        summary += `
+... and ${network.length - 10} more requests
+`;
+      }
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: summary
+        }
+      ]
+    };
+  }
+});
+
 // src/tools/tabs.ts
-import zodToJsonSchema2 from "zod-to-json-schema";
+import zodToJsonSchema3 from "zod-to-json-schema";
 var listTabs = {
   schema: {
     name: ListTabsTool.shape.name.value,
     description: ListTabsTool.shape.description.value,
-    inputSchema: zodToJsonSchema2(ListTabsTool.shape.arguments)
+    inputSchema: zodToJsonSchema3(ListTabsTool.shape.arguments)
   },
   handle: async (context) => {
     const tabs = await context.sendSocketMessage("browser_list_tabs", {});
@@ -109,7 +192,7 @@ var switchTab = {
   schema: {
     name: SwitchTabTool.shape.name.value,
     description: SwitchTabTool.shape.description.value,
-    inputSchema: zodToJsonSchema2(SwitchTabTool.shape.arguments)
+    inputSchema: zodToJsonSchema3(SwitchTabTool.shape.arguments)
   },
   handle: async (context, params) => {
     const validatedParams = SwitchTabTool.shape.arguments.parse(params);
@@ -128,7 +211,7 @@ var createTab = {
   schema: {
     name: CreateTabTool.shape.name.value,
     description: CreateTabTool.shape.description.value,
-    inputSchema: zodToJsonSchema2(CreateTabTool.shape.arguments)
+    inputSchema: zodToJsonSchema3(CreateTabTool.shape.arguments)
   },
   handle: async (context, params) => {
     const validatedParams = CreateTabTool.shape.arguments.parse(params);
@@ -150,7 +233,7 @@ var closeTab = {
   schema: {
     name: CloseTabTool.shape.name.value,
     description: CloseTabTool.shape.description.value,
-    inputSchema: zodToJsonSchema2(CloseTabTool.shape.arguments)
+    inputSchema: zodToJsonSchema3(CloseTabTool.shape.arguments)
   },
   handle: async (context, params) => {
     const validatedParams = CloseTabTool.shape.arguments.parse(params);
@@ -209,6 +292,9 @@ var formTools = [
   fillForm,
   submitForm
 ];
+var recordingTools = [
+  requestDemonstration(false)
+];
 var snapshotTools = [
   navigate(false),
   goBack(false),
@@ -223,7 +309,8 @@ var snapshotTools = [
   ...customTools,
   ...explorationTools,
   ...tabTools,
-  ...formTools
+  ...formTools,
+  ...recordingTools
 ];
 var resources = [];
 async function createServer() {

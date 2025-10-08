@@ -13,6 +13,7 @@ class BackgroundController {
     this.consoleLogs = [];
     this.networkLogs = [];
     this.badgeBlinkInterval = null;
+    this.recordingSessions = new Map(); // Track active recording sessions
     this.state = {
       connected: false,
       tabId: null,
@@ -189,6 +190,9 @@ class BackgroundController {
     this.handlers['browser_find_by_text'] = this.handleFindByText.bind(this);
     this.handlers['browser_get_form_values'] = this.handleGetFormValues.bind(this);
     this.handlers['browser_check_element_state'] = this.handleCheckElementState.bind(this);
+
+    // Recording/Learning handlers
+    this.handlers['browser_request_demonstration'] = this.handleRequestDemonstration.bind(this);
 
     console.log('[Background] Registered', Object.keys(this.handlers).length, 'handlers');
   }
@@ -1176,6 +1180,102 @@ class BackgroundController {
         };
       })()
     `);
+  }
+
+  /**
+   * Handle request demonstration - Ask user to demonstrate a workflow
+   */
+  async handleRequestDemonstration({ request, maxDuration = 300 }) {
+    const sessionId = `session-${Date.now()}`;
+
+    return new Promise(async (resolve, reject) => {
+      try {
+        // Inject content script into the current tab
+        await chrome.scripting.executeScript({
+          target: { tabId: this.state.tabId },
+          files: ['content-script.js']
+        });
+
+        // Create recording session
+        const session = {
+          sessionId,
+          request,
+          maxDuration,
+          startTime: Date.now(),
+          actions: [],
+          networkActivity: [],
+          resolve,
+          reject
+        };
+
+        this.recordingSessions.set(sessionId, session);
+
+        // Set up message listener for content script
+        const messageListener = (message, sender) => {
+          if (message.type === 'RECORDING_ACTION' && message.sessionId === sessionId) {
+            session.actions.push(message.action);
+          } else if (message.type === 'RECORDING_COMPLETE' && message.sessionId === sessionId) {
+            this.stopRecording(sessionId);
+          } else if (message.type === 'RECORDING_RESULT' && message.result.sessionId === sessionId) {
+            const result = message.result;
+
+            // Add network activity
+            result.network = session.networkActivity;
+
+            // Clean up
+            this.recordingSessions.delete(sessionId);
+            chrome.runtime.onMessage.removeListener(messageListener);
+
+            resolve(result);
+          }
+        };
+
+        chrome.runtime.onMessage.addListener(messageListener);
+
+        // Capture network activity during recording
+        const initialNetworkCount = this.networkLogs.length;
+        session.networkStartIndex = initialNetworkCount;
+
+        // Send message to content script to show notification
+        await chrome.tabs.sendMessage(this.state.tabId, {
+          type: 'START_RECORDING',
+          data: { sessionId, request }
+        });
+
+        // Set timeout
+        setTimeout(() => {
+          if (this.recordingSessions.has(sessionId)) {
+            this.stopRecording(sessionId);
+            reject(new Error('Recording timeout reached'));
+          }
+        }, maxDuration * 1000);
+
+      } catch (error) {
+        this.recordingSessions.delete(sessionId);
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Stop a recording session
+   */
+  async stopRecording(sessionId) {
+    const session = this.recordingSessions.get(sessionId);
+    if (!session) return;
+
+    // Capture network logs from when recording started
+    session.networkActivity = this.networkLogs.slice(session.networkStartIndex);
+
+    // Send stop message to content script
+    try {
+      await chrome.tabs.sendMessage(this.state.tabId, {
+        type: 'STOP_RECORDING',
+        sessionId
+      });
+    } catch (error) {
+      console.error('[Background] Error stopping recording:', error);
+    }
   }
 }
 
