@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Browser MCP</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 400px;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      color: #333;
+    }
+
+    h1 {
+      font-size: 20px;
+      margin-bottom: 15px;
+      color: #1a1a1a;
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      padding: 12px;
+      margin-bottom: 15px;
+      border-radius: 6px;
+      font-weight: 500;
+    }
+
+    .status-indicator {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      margin-right: 10px;
+    }
+
+    .status.disconnected {
+      background-color: #fee;
+      color: #c33;
+    }
+
+    .status.disconnected .status-indicator {
+      background-color: #c33;
+    }
+
+    .status.connecting {
+      background-color: #ffc;
+      color: #993;
+    }
+
+    .status.connecting .status-indicator {
+      background-color: #fc3;
+      animation: pulse 1s ease-in-out infinite;
+    }
+
+    .status.connected {
+      background-color: #efe;
+      color: #3a3;
+    }
+
+    .status.connected .status-indicator {
+      background-color: #3a3;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .buttons {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    button {
+      flex: 1;
+      padding: 10px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    button.primary {
+      background-color: #007bff;
+      color: white;
+    }
+
+    button.primary:hover:not(:disabled) {
+      background-color: #0056b3;
+    }
+
+    button.secondary {
+      background-color: #6c757d;
+      color: white;
+    }
+
+    button.secondary:hover:not(:disabled) {
+      background-color: #545b62;
+    }
+
+    .info {
+      padding: 12px;
+      background-color: #f8f9fa;
+      border-radius: 6px;
+      border-left: 3px solid #007bff;
+    }
+
+    .info-row {
+      display: flex;
+      margin-bottom: 8px;
+    }
+
+    .info-row:last-child {
+      margin-bottom: 0;
+    }
+
+    .info-label {
+      font-weight: 600;
+      min-width: 100px;
+      color: #666;
+    }
+
+    .info-value {
+      color: #333;
+      word-break: break-all;
+    }
+
+    .error {
+      padding: 12px;
+      margin-top: 15px;
+      background-color: #fee;
+      border-left: 3px solid: #c33;
+      border-radius: 6px;
+      color: #c33;
+      display: none;
+    }
+
+    .error.visible {
+      display: block;
+    }
+
+    .tab-info {
+      margin-top: 15px;
+      padding: 12px;
+      background-color: #f0f7ff;
+      border-radius: 6px;
+      border-left: 3px solid #007bff;
+      font-size: 12px;
+      display: none;
+    }
+
+    .tab-info.visible {
+      display: block;
+    }
+
+    .tab-title {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .tab-url {
+      color: #666;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <h1>Browser MCP</h1>
+
+  <div class="status disconnected" id="status">
+    <div class="status-indicator"></div>
+    <span id="status-text">Disconnected</span>
+  </div>
+
+  <div class="buttons">
+    <button class="primary" id="connect-btn">Connect</button>
+    <button class="secondary" id="disconnect-btn" disabled>Disconnect</button>
+  </div>
+
+  <div class="info">
+    <div class="info-row">
+      <span class="info-label">MCP Server:</span>
+      <span class="info-value">localhost:9009</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">WebSocket:</span>
+      <span class="info-value" id="ws-state">Disconnected</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Debugger:</span>
+      <span class="info-value" id="debugger-state">Not attached</span>
+    </div>
+  </div>
+
+  <div class="tab-info" id="tab-info">
+    <div class="tab-title" id="tab-title"></div>
+    <div class="tab-url" id="tab-url"></div>
+  </div>
+
+  <div class="error" id="error"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
