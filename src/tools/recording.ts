@@ -11,11 +11,10 @@ export const requestDemonstration: ToolFactory = (snapshot) => ({
     inputSchema: zodToJsonSchema(RequestDemonstrationTool.shape.arguments),
   },
   handle: async (context, params) => {
-    const { request, maxDuration = 300 } = RequestDemonstrationTool.shape.arguments.parse(params);
+    const { request } = RequestDemonstrationTool.shape.arguments.parse(params);
 
     const result = await context.sendSocketMessage("browser_request_demonstration", {
-      request,
-      maxDuration
+      request
     });
 
     // Format the recorded demonstration for display

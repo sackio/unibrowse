@@ -376,10 +376,9 @@ export const CheckElementStateTool = z.object({
 export const RequestDemonstrationTool = z.object({
   name: z.literal("browser_request_demonstration"),
   description: z.literal(
-    "Ask the user to demonstrate how to perform a task. Shows a notification in the browser with a Start button. Records all DOM interactions and network activity until the user clicks Done."
+    "Ask the user to demonstrate how to perform a task. Shows a notification in the browser with a Start button. Records all DOM interactions and network activity until the user clicks Done or presses Ctrl+Shift+D."
   ),
   arguments: z.object({
     request: z.string().describe("Description of what you want the user to demonstrate (e.g., 'Please add an item to your cart')"),
-    maxDuration: z.number().optional().describe("Maximum recording duration in seconds (default: 300)"),
   }),
 });

@@ -1185,7 +1185,7 @@ class BackgroundController {
   /**
    * Handle request demonstration - Ask user to demonstrate a workflow
    */
-  async handleRequestDemonstration({ request, maxDuration = 300 }) {
+  async handleRequestDemonstration({ request }) {
     const sessionId = `session-${Date.now()}`;
 
     return new Promise(async (resolve, reject) => {
@@ -1196,11 +1196,13 @@ class BackgroundController {
           files: ['content-script.js']
         });
 
+        // Wait a bit for content script to initialize
+        await new Promise(resolve => setTimeout(resolve, 100));
+
         // Create recording session
         const session = {
           sessionId,
           request,
-          maxDuration,
           startTime: Date.now(),
           actions: [],
           networkActivity: [],
@@ -1210,10 +1212,15 @@ class BackgroundController {
 
         this.recordingSessions.set(sessionId, session);
 
-        // Set up message listener for content script
+        // Set up message listener for content script and popup
         const messageListener = (message, sender) => {
           if (message.type === 'RECORDING_ACTION' && message.sessionId === sessionId) {
             session.actions.push(message.action);
+            // Notify popup about new action
+            chrome.runtime.sendMessage({
+              type: 'recording_action',
+              actionCount: session.actions.length
+            }).catch(() => {});  // Ignore if popup is closed
           } else if (message.type === 'RECORDING_COMPLETE' && message.sessionId === sessionId) {
             this.stopRecording(sessionId);
           } else if (message.type === 'RECORDING_RESULT' && message.result.sessionId === sessionId) {
@@ -1221,6 +1228,11 @@ class BackgroundController {
 
             // Add network activity
             result.network = session.networkActivity;
+
+            // Notify popup that recording stopped
+            chrome.runtime.sendMessage({
+              type: 'recording_stopped'
+            }).catch(() => {});
 
             // Clean up
             this.recordingSessions.delete(sessionId);
@@ -1236,19 +1248,27 @@ class BackgroundController {
         const initialNetworkCount = this.networkLogs.length;
         session.networkStartIndex = initialNetworkCount;
 
-        // Send message to content script to show notification
-        await chrome.tabs.sendMessage(this.state.tabId, {
-          type: 'START_RECORDING',
-          data: { sessionId, request }
+        // Notify popup to show recording UI
+        chrome.runtime.sendMessage({
+          type: 'recording_started',
+          sessionId,
+          request
+        }).catch(() => {});  // Ignore if popup is closed
+
+        // Send message to content script to start recording via executeScript
+        await chrome.scripting.executeScript({
+          target: { tabId: this.state.tabId },
+          func: (sessionId, request) => {
+            window.postMessage({
+              type: 'START_RECORDING',
+              data: { sessionId, request }
+            }, '*');
+          },
+          args: [sessionId, request]
         });
 
-        // Set timeout
-        setTimeout(() => {
-          if (this.recordingSessions.has(sessionId)) {
-            this.stopRecording(sessionId);
-            reject(new Error('Recording timeout reached'));
-          }
-        }, maxDuration * 1000);
+        // No timeout - recordings can be long-running
+        // User will stop recording manually via hotkey or Done button in popup
 
       } catch (error) {
         this.recordingSessions.delete(sessionId);
@@ -1267,11 +1287,17 @@ class BackgroundController {
     // Capture network logs from when recording started
     session.networkActivity = this.networkLogs.slice(session.networkStartIndex);
 
-    // Send stop message to content script
+    // Send stop message to content script via executeScript
     try {
-      await chrome.tabs.sendMessage(this.state.tabId, {
-        type: 'STOP_RECORDING',
-        sessionId
+      await chrome.scripting.executeScript({
+        target: { tabId: this.state.tabId },
+        func: (sessionId) => {
+          window.postMessage({
+            type: 'STOP_RECORDING',
+            sessionId
+          }, '*');
+        },
+        args: [sessionId]
       });
     } catch (error) {
       console.error('[Background] Error stopping recording:', error);

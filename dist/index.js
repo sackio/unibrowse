@@ -38,7 +38,7 @@ import {
   snapshot,
   type,
   wait
-} from "./chunk-FW3QZG5X.js";
+} from "./chunk-7GVK4SL5.js";
 
 // src/index.ts
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -94,10 +94,9 @@ var requestDemonstration = (snapshot2) => ({
     inputSchema: zodToJsonSchema2(RequestDemonstrationTool.shape.arguments)
   },
   handle: async (context, params) => {
-    const { request, maxDuration = 300 } = RequestDemonstrationTool.shape.arguments.parse(params);
+    const { request } = RequestDemonstrationTool.shape.arguments.parse(params);
     const result = await context.sendSocketMessage("browser_request_demonstration", {
-      request,
-      maxDuration
+      request
     });
     const actions = result.actions || [];
     const network = result.network || [];

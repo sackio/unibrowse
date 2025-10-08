@@ -14,8 +14,16 @@ class PopupController {
       tabInfo: document.getElementById('tab-info'),
       tabTitle: document.getElementById('tab-title'),
       tabUrl: document.getElementById('tab-url'),
-      error: document.getElementById('error')
+      error: document.getElementById('error'),
+      recordingSection: document.getElementById('recording-section'),
+      recordingRequest: document.getElementById('recording-request'),
+      recordingActions: document.getElementById('recording-actions'),
+      recordingTime: document.getElementById('recording-time'),
+      recordingDoneBtn: document.getElementById('recording-done-btn')
     };
+
+    this.recordingStartTime = null;
+    this.recordingTimerInterval = null;
 
     this.setupEventListeners();
     this.loadState();
@@ -24,6 +32,12 @@ class PopupController {
     chrome.runtime.onMessage.addListener((message) => {
       if (message.type === 'state_change') {
         this.updateUI(message.state);
+      } else if (message.type === 'recording_started') {
+        this.showRecording(message.sessionId, message.request);
+      } else if (message.type === 'recording_action') {
+        this.updateRecordingStats(message.actionCount);
+      } else if (message.type === 'recording_stopped') {
+        this.hideRecording();
       }
     });
 
@@ -41,6 +55,10 @@ class PopupController {
 
     this.elements.disconnectBtn.addEventListener('click', () => {
       this.disconnect();
+    });
+
+    this.elements.recordingDoneBtn.addEventListener('click', () => {
+      this.stopRecording();
     });
   }
 
@@ -189,6 +207,59 @@ class PopupController {
    */
   hideError() {
     this.elements.error.classList.remove('visible');
+  }
+
+  /**
+   * Show recording UI
+   */
+  showRecording(sessionId, request) {
+    this.currentSessionId = sessionId;
+    this.recordingStartTime = Date.now();
+
+    this.elements.recordingRequest.textContent = request;
+    this.elements.recordingActions.textContent = '0';
+    this.elements.recordingTime.textContent = '0';
+    this.elements.recordingSection.classList.add('visible');
+
+    // Start timer
+    if (this.recordingTimerInterval) {
+      clearInterval(this.recordingTimerInterval);
+    }
+    this.recordingTimerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - this.recordingStartTime) / 1000);
+      this.elements.recordingTime.textContent = elapsed;
+    }, 1000);
+  }
+
+  /**
+   * Update recording stats
+   */
+  updateRecordingStats(actionCount) {
+    this.elements.recordingActions.textContent = actionCount;
+  }
+
+  /**
+   * Hide recording UI
+   */
+  hideRecording() {
+    this.elements.recordingSection.classList.remove('visible');
+    if (this.recordingTimerInterval) {
+      clearInterval(this.recordingTimerInterval);
+      this.recordingTimerInterval = null;
+    }
+    this.currentSessionId = null;
+  }
+
+  /**
+   * Stop recording
+   */
+  async stopRecording() {
+    if (this.currentSessionId) {
+      await chrome.runtime.sendMessage({
+        type: 'RECORDING_COMPLETE',
+        sessionId: this.currentSessionId
+      });
+    }
   }
 }
 

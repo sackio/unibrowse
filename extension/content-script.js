@@ -98,11 +98,20 @@ class DemonstrationRecorder {
     this.updateUI();
 
     // Send action to background script
-    window.postMessage({
+    chrome.runtime.sendMessage({
       type: 'RECORDING_ACTION',
       sessionId: this.sessionId,
       action
-    }, '*');
+    });
+  }
+
+  /**
+   * Show notification asking user to start
+   * (No UI in content script - popup handles all UI)
+   */
+  showStartNotification() {
+    // Immediately start recording - popup shows the UI
+    this.start();
   }
 
   /**
@@ -110,7 +119,6 @@ class DemonstrationRecorder {
    */
   start() {
     this.recording = true;
-    this.createUI();
     this.attachListeners();
   }
 
@@ -120,7 +128,6 @@ class DemonstrationRecorder {
   stop() {
     this.recording = false;
     this.detachListeners();
-    this.removeUI();
 
     return {
       sessionId: this.sessionId,
@@ -133,9 +140,108 @@ class DemonstrationRecorder {
   }
 
   /**
-   * Create floating UI
+   * Create start notification UI
    */
-  createUI() {
+  createStartNotificationUI() {
+    // Remove any existing notification
+    this.removeStartNotification();
+
+    this.startNotification = document.createElement('div');
+    this.startNotification.id = 'mcp-start-notification';
+    this.startNotification.innerHTML = `
+      <div style="
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: white;
+        color: #333;
+        padding: 32px 40px;
+        border-radius: 16px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+        z-index: 2147483647;
+        max-width: 450px;
+        user-select: none;
+      ">
+        <div style="font-size: 24px; font-weight: 700; margin-bottom: 16px; color: #667eea;">
+          🎬 Demonstration Request
+        </div>
+        <div style="font-size: 15px; line-height: 1.6; margin-bottom: 24px; color: #555;">
+          <strong>Claude is asking you to demonstrate:</strong>
+          <div style="margin-top: 12px; padding: 12px; background: #f5f5f5; border-radius: 8px; font-style: italic;">
+            "${this.request}"
+          </div>
+        </div>
+        <div style="font-size: 13px; color: #777; margin-bottom: 20px;">
+          Click Start when you're ready. All your actions will be recorded until you click Done.
+        </div>
+        <div style="display: flex; gap: 12px;">
+          <button id="mcp-start-btn" style="
+            flex: 1;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 14px;
+          ">Start Demonstration</button>
+          <button id="mcp-cancel-btn" style="
+            background: #f0f0f0;
+            color: #666;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 14px;
+          ">Cancel</button>
+        </div>
+      </div>
+      <div style="
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.4);
+        z-index: 2147483646;
+      "></div>
+    `;
+
+    document.body.appendChild(this.startNotification);
+
+    // Start button handler
+    document.getElementById('mcp-start-btn').addEventListener('click', () => {
+      this.start();
+    });
+
+    // Cancel button handler
+    document.getElementById('mcp-cancel-btn').addEventListener('click', () => {
+      this.removeStartNotification();
+      chrome.runtime.sendMessage({
+        type: 'RECORDING_CANCELLED',
+        sessionId: this.sessionId
+      });
+    });
+  }
+
+  /**
+   * Remove start notification
+   */
+  removeStartNotification() {
+    if (this.startNotification) {
+      this.startNotification.remove();
+      this.startNotification = null;
+    }
+  }
+
+  /**
+   * Create recording UI (after user clicks Start)
+   */
+  createRecordingUI() {
     this.ui = document.createElement('div');
     this.ui.id = 'mcp-recording-ui';
     this.ui.innerHTML = `
@@ -167,9 +273,14 @@ class DemonstrationRecorder {
         <div style="font-size: 12px; opacity: 0.9; margin-bottom: 12px;">
           ${this.request}
         </div>
-        <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div style="margin-bottom: 8px;">
           <div style="font-size: 12px; opacity: 0.8;">
             <span id="mcp-action-count">0 actions</span> · <span id="mcp-time">0s</span>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+          <div style="font-size: 11px; opacity: 0.7; font-family: monospace;">
+            Ctrl+Shift+D
           </div>
           <button id="mcp-done-btn" style="
             background: white;
@@ -205,10 +316,10 @@ class DemonstrationRecorder {
     // Done button handler
     const doneBtn = document.getElementById('mcp-done-btn');
     doneBtn.addEventListener('click', () => {
-      window.postMessage({
+      chrome.runtime.sendMessage({
         type: 'RECORDING_COMPLETE',
         sessionId: this.sessionId
-      }, '*');
+      });
     });
   }
 
@@ -274,6 +385,13 @@ class DemonstrationRecorder {
     };
 
     const keydownHandler = (e) => {
+      // Check for Ctrl+Shift+D hotkey to stop recording
+      if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+        e.preventDefault();
+        this.stop();
+        return;
+      }
+
       if (e.target.closest('#mcp-recording-ui')) return;
       // Only record special keys
       if (['Enter', 'Tab', 'Escape'].includes(e.key)) {
@@ -499,10 +617,10 @@ window.addEventListener('message', (event) => {
   } else if (type === 'STOP_RECORDING') {
     if (window.__mcpRecorder) {
       const result = window.__mcpRecorder.stop();
-      window.postMessage({
+      chrome.runtime.sendMessage({
         type: 'RECORDING_RESULT',
         result
-      }, '*');
+      });
       window.__mcpRecorder = null;
     }
   }
