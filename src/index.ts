@@ -25,7 +25,11 @@ function setupExitWatchdog(server: Server) {
 
 const commonTools: Tool[] = [common.pressKey, common.wait];
 
-const customTools: Tool[] = [custom.getConsoleLogs, custom.screenshot];
+const customTools: Tool[] = [
+  custom.evaluate,
+  custom.getConsoleLogs,
+  custom.screenshot,
+];
 
 const explorationTools: Tool[] = [
   exploration.queryDOM,

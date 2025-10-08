@@ -129,6 +129,16 @@ export const GetConsoleLogsTool = z.object({
   arguments: z.object({}),
 });
 
+export const EvaluateTool = z.object({
+  name: z.literal("browser_evaluate"),
+  description: z.literal("Evaluate JavaScript expression on page or element"),
+  arguments: z.object({
+    expression: z
+      .string()
+      .describe("JavaScript expression to evaluate in page context"),
+  }),
+});
+
 // DOM Exploration Tools
 
 export const QueryDOMTool = z.object({

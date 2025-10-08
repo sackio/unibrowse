@@ -11,6 +11,7 @@ class BackgroundController {
     this.cdp = new CDPHelper();
     this.handlers = {};
     this.consoleLogs = [];
+    this.badgeBlinkInterval = null;
     this.state = {
       connected: false,
       tabId: null,
@@ -20,6 +21,9 @@ class BackgroundController {
 
     this.setupListeners();
     this.registerHandlers();
+
+    // Initialize badge to disconnected state
+    this.updateBadge(false);
   }
 
   /**
@@ -115,6 +119,7 @@ class BackgroundController {
     this.handlers['browser_snapshot'] = this.handleSnapshot.bind(this);
     this.handlers['browser_screenshot'] = this.handleScreenshot.bind(this);
     this.handlers['browser_get_console_logs'] = this.handleGetConsoleLogs.bind(this);
+    this.handlers['browser_evaluate'] = this.handleEvaluate.bind(this);
     this.handlers['getUrl'] = this.handleGetUrl.bind(this);
     this.handlers['getTitle'] = this.handleGetTitle.bind(this);
 
@@ -208,6 +213,49 @@ class BackgroundController {
     chrome.runtime.sendMessage({ type: 'state_change', state }).catch(() => {
       // Popup might not be open, ignore error
     });
+
+    // Update extension badge
+    this.updateBadge(state.connected);
+  }
+
+  /**
+   * Update extension badge based on connection state
+   */
+  updateBadge(connected) {
+    if (connected) {
+      // Connected: blinking green badge
+      this.startBadgeBlink();
+    } else {
+      // Disconnected: solid red badge
+      this.stopBadgeBlink();
+      chrome.action.setBadgeText({ text: '●' });
+      chrome.action.setBadgeBackgroundColor({ color: '#dc2626' }); // Red
+    }
+  }
+
+  /**
+   * Start blinking green badge animation
+   */
+  startBadgeBlink() {
+    // Stop any existing blink
+    this.stopBadgeBlink();
+
+    let visible = true;
+    this.badgeBlinkInterval = setInterval(() => {
+      chrome.action.setBadgeText({ text: visible ? '●' : '' });
+      chrome.action.setBadgeBackgroundColor({ color: '#10b981' }); // Green
+      visible = !visible;
+    }, 800); // Blink every 800ms
+  }
+
+  /**
+   * Stop badge blinking animation
+   */
+  stopBadgeBlink() {
+    if (this.badgeBlinkInterval) {
+      clearInterval(this.badgeBlinkInterval);
+      this.badgeBlinkInterval = null;
+    }
   }
 
   /**
@@ -405,6 +453,12 @@ class BackgroundController {
 
   async handleGetConsoleLogs() {
     return this.consoleLogs;
+  }
+
+  async handleEvaluate({ expression }) {
+    // Execute JavaScript in page context
+    const result = await this.cdp.evaluate(expression, true);
+    return result;
   }
 
   async handleGetUrl() {

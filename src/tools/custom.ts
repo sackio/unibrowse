@@ -1,6 +1,10 @@
 import { zodToJsonSchema } from "zod-to-json-schema";
 
-import { GetConsoleLogsTool, ScreenshotTool } from "@/types/tool-schemas";
+import {
+  EvaluateTool,
+  GetConsoleLogsTool,
+  ScreenshotTool,
+} from "@/types/tool-schemas";
 
 import { Tool } from "./tool";
 
@@ -41,6 +45,29 @@ export const screenshot: Tool = {
           type: "image",
           data: screenshot,
           mimeType: "image/png",
+        },
+      ],
+    };
+  },
+};
+
+export const evaluate: Tool = {
+  schema: {
+    name: EvaluateTool.shape.name.value,
+    description: EvaluateTool.shape.description.value,
+    inputSchema: zodToJsonSchema(EvaluateTool.shape.arguments),
+  },
+  handle: async (context, params) => {
+    const validatedParams = EvaluateTool.shape.arguments.parse(params);
+    const result = await context.sendSocketMessage(
+      "browser_evaluate",
+      validatedParams,
+    );
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result, null, 2),
         },
       ],
     };

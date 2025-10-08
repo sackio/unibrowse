@@ -355,6 +355,13 @@ var GetConsoleLogsTool = z.object({
   description: z.literal("Get the console logs from the browser"),
   arguments: z.object({})
 });
+var EvaluateTool = z.object({
+  name: z.literal("browser_evaluate"),
+  description: z.literal("Evaluate JavaScript expression on page or element"),
+  arguments: z.object({
+    expression: z.string().describe("JavaScript expression to evaluate in page context")
+  })
+});
 var QueryDOMTool = z.object({
   name: z.literal("browser_query_dom"),
   description: z.literal(
@@ -625,6 +632,28 @@ var screenshot = {
           type: "image",
           data: screenshot2,
           mimeType: "image/png"
+        }
+      ]
+    };
+  }
+};
+var evaluate = {
+  schema: {
+    name: EvaluateTool.shape.name.value,
+    description: EvaluateTool.shape.description.value,
+    inputSchema: zodToJsonSchema2(EvaluateTool.shape.arguments)
+  },
+  handle: async (context, params) => {
+    const validatedParams = EvaluateTool.shape.arguments.parse(params);
+    const result = await context.sendSocketMessage(
+      "browser_evaluate",
+      validatedParams
+    );
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result, null, 2)
         }
       ]
     };
@@ -997,7 +1026,11 @@ function setupExitWatchdog(server) {
   });
 }
 var commonTools = [pressKey, wait2];
-var customTools = [getConsoleLogs, screenshot];
+var customTools = [
+  evaluate,
+  getConsoleLogs,
+  screenshot
+];
 var explorationTools = [
   queryDOM,
   getVisibleText,
