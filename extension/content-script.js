@@ -284,14 +284,174 @@ class DemonstrationRecorder {
       }
     };
 
+    const selectionHandler = () => {
+      const selection = window.getSelection();
+      if (selection && selection.toString().trim().length > 0) {
+        const range = selection.getRangeAt(0);
+        const container = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
+          ? range.commonAncestorContainer.parentElement
+          : range.commonAncestorContainer;
+
+        this.recordAction('selection', {
+          text: selection.toString().trim(),
+          element: this.captureElementContext(container),
+          rangeStart: range.startOffset,
+          rangeEnd: range.endOffset
+        });
+      }
+    };
+
+    // Debounce selection changes to avoid recording every character
+    let selectionTimeout;
+    const debouncedSelectionHandler = () => {
+      clearTimeout(selectionTimeout);
+      selectionTimeout = setTimeout(selectionHandler, 500);
+    };
+
+    const copyHandler = (e) => {
+      const selection = window.getSelection();
+      if (selection && selection.toString().trim().length > 0) {
+        this.recordAction('copy', {
+          text: selection.toString().trim()
+        });
+      }
+    };
+
+    const pasteHandler = (e) => {
+      if (e.target.closest('#mcp-recording-ui')) return;
+      // Note: Can't access clipboard content directly for security reasons
+      this.recordAction('paste', {
+        element: this.captureElementContext(e.target)
+      });
+    };
+
+    const cutHandler = (e) => {
+      const selection = window.getSelection();
+      if (selection && selection.toString().trim().length > 0) {
+        this.recordAction('cut', {
+          text: selection.toString().trim(),
+          element: this.captureElementContext(e.target)
+        });
+      }
+    };
+
+    const doubleClickHandler = (e) => {
+      if (e.target.closest('#mcp-recording-ui')) return;
+      this.recordAction('doubleclick', {
+        element: this.captureElementContext(e.target)
+      });
+    };
+
+    const contextMenuHandler = (e) => {
+      if (e.target.closest('#mcp-recording-ui')) return;
+      this.recordAction('contextmenu', {
+        element: this.captureElementContext(e.target),
+        x: e.clientX,
+        y: e.clientY
+      });
+    };
+
+    const dragStartHandler = (e) => {
+      if (e.target.closest('#mcp-recording-ui')) return;
+      this.recordAction('dragstart', {
+        element: this.captureElementContext(e.target)
+      });
+    };
+
+    const dropHandler = (e) => {
+      if (e.target.closest('#mcp-recording-ui')) return;
+      this.recordAction('drop', {
+        element: this.captureElementContext(e.target),
+        dataTransfer: e.dataTransfer ? {
+          types: Array.from(e.dataTransfer.types),
+          files: e.dataTransfer.files.length
+        } : null
+      });
+    };
+
+    const scrollHandler = () => {
+      // Debounce scroll events
+      clearTimeout(this.scrollTimeout);
+      this.scrollTimeout = setTimeout(() => {
+        this.recordAction('scroll', {
+          scrollX: window.scrollX,
+          scrollY: window.scrollY,
+          scrollHeight: document.documentElement.scrollHeight,
+          scrollWidth: document.documentElement.scrollWidth
+        });
+      }, 500);
+    };
+
+    const focusHandler = (e) => {
+      if (e.target.closest('#mcp-recording-ui')) return;
+      // Only record focus on interactive elements
+      if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'].includes(e.target.tagName)) {
+        this.recordAction('focus', {
+          element: this.captureElementContext(e.target)
+        });
+      }
+    };
+
+    const blurHandler = (e) => {
+      if (e.target.closest('#mcp-recording-ui')) return;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) && e.target.value) {
+        this.recordAction('blur', {
+          element: this.captureElementContext(e.target),
+          finalValue: e.target.value
+        });
+      }
+    };
+
+    // File upload handler
+    const fileChangeHandler = (e) => {
+      if (e.target.type === 'file' && e.target.files.length > 0) {
+        this.recordAction('fileupload', {
+          element: this.captureElementContext(e.target),
+          fileCount: e.target.files.length,
+          files: Array.from(e.target.files).map(f => ({
+            name: f.name,
+            size: f.size,
+            type: f.type
+          }))
+        });
+      }
+    };
+
+    // Wheel/mousewheel for scroll detection
+    const wheelHandler = (e) => {
+      clearTimeout(this.wheelTimeout);
+      this.wheelTimeout = setTimeout(() => {
+        this.recordAction('wheel', {
+          deltaX: e.deltaX,
+          deltaY: e.deltaY,
+          deltaMode: e.deltaMode
+        });
+      }, 500);
+    };
+
     // Store listeners for cleanup
     this.listeners = [
       { event: 'click', handler: clickHandler, options: { capture: true } },
+      { event: 'dblclick', handler: doubleClickHandler, options: { capture: true } },
+      { event: 'contextmenu', handler: contextMenuHandler, options: { capture: true } },
       { event: 'input', handler: inputHandler },
       { event: 'submit', handler: submitHandler },
       { event: 'change', handler: changeHandler },
-      { event: 'keydown', handler: keydownHandler }
+      { event: 'keydown', handler: keydownHandler },
+      { event: 'selectionchange', handler: debouncedSelectionHandler },
+      { event: 'copy', handler: copyHandler },
+      { event: 'paste', handler: pasteHandler },
+      { event: 'cut', handler: cutHandler },
+      { event: 'dragstart', handler: dragStartHandler },
+      { event: 'drop', handler: dropHandler },
+      { event: 'scroll', handler: scrollHandler },
+      { event: 'wheel', handler: wheelHandler },
+      { event: 'focus', handler: focusHandler, options: { capture: true } },
+      { event: 'blur', handler: blurHandler, options: { capture: true } }
     ];
+
+    // Separate listener for file inputs (needs to be on change event)
+    document.addEventListener('change', fileChangeHandler, { capture: true });
 
     // Attach all listeners
     this.listeners.forEach(({ event, handler, options }) => {
