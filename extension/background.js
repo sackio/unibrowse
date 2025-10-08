@@ -16,7 +16,8 @@ class BackgroundController {
       connected: false,
       tabId: null,
       tabUrl: null,
-      tabTitle: null
+      tabTitle: null,
+      originalTabTitle: null
     };
 
     this.setupListeners();
@@ -61,7 +62,11 @@ class BackgroundController {
         if (changeInfo.url) {
           console.log('[Background] Tab navigated to:', changeInfo.url);
           this.state.tabUrl = changeInfo.url;
-          this.state.tabTitle = tab.title;
+        }
+        // Update title tracking when it changes
+        if (changeInfo.title && this.state.connected) {
+          this.state.originalTabTitle = changeInfo.title;
+          this.updateTabTitle();
         }
         // Re-inject indicator when page finishes loading
         if (changeInfo.status === 'complete' && this.state.connected) {
@@ -164,6 +169,7 @@ class BackgroundController {
       // Update state
       this.state.tabId = tab.id;
       this.state.tabUrl = tab.url;
+      this.state.originalTabTitle = tab.title;
       this.state.tabTitle = tab.title;
       this.consoleLogs = [];
 
@@ -172,6 +178,9 @@ class BackgroundController {
 
       this.state.connected = true;
       this.updateConnectionState();
+
+      // Update tab title to show MCP indicator
+      await this.updateTabTitle();
 
       // Inject visual indicator on the page
       await this.injectTabIndicator();
@@ -190,6 +199,9 @@ class BackgroundController {
   async disconnect() {
     console.log('[Background] Disconnecting...');
 
+    // Restore original tab title
+    await this.restoreTabTitle();
+
     // Remove visual indicator from the page
     await this.removeTabIndicator();
 
@@ -200,6 +212,7 @@ class BackgroundController {
     this.state.tabId = null;
     this.state.tabUrl = null;
     this.state.tabTitle = null;
+    this.state.originalTabTitle = null;
     this.consoleLogs = [];
 
     this.updateConnectionState();
@@ -267,6 +280,35 @@ class BackgroundController {
     if (this.badgeBlinkInterval) {
       clearInterval(this.badgeBlinkInterval);
       this.badgeBlinkInterval = null;
+    }
+  }
+
+  /**
+   * Update tab title to show MCP connection indicator
+   */
+  async updateTabTitle() {
+    if (!this.state.tabId || !this.state.originalTabTitle) return;
+
+    try {
+      const newTitle = `🟢 [MCP] ${this.state.originalTabTitle}`;
+      await this.cdp.evaluate(`document.title = ${JSON.stringify(newTitle)}`, true);
+      console.log('[Background] Tab title updated with MCP indicator');
+    } catch (error) {
+      console.error('[Background] Failed to update tab title:', error);
+    }
+  }
+
+  /**
+   * Restore original tab title (remove MCP indicator)
+   */
+  async restoreTabTitle() {
+    if (!this.state.tabId || !this.state.originalTabTitle) return;
+
+    try {
+      await this.cdp.evaluate(`document.title = ${JSON.stringify(this.state.originalTabTitle)}`, true);
+      console.log('[Background] Tab title restored');
+    } catch (error) {
+      console.error('[Background] Failed to restore tab title:', error);
     }
   }
 
