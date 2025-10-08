@@ -773,28 +773,34 @@ class BackgroundController {
   }
 
   async handleFillForm({ fields }) {
-    for (const field of fields) {
-      // Get element position
-      const elemInfo = await this.cdp.querySelector(field.ref);
-      if (!elemInfo) {
-        throw new Error(`Field not found: ${field.ref}`);
-      }
+    // Use JavaScript to fill all fields at once (more reliable than keyboard simulation)
+    const result = await this.cdp.evaluate(`
+      (function() {
+        const results = [];
+        const fields = ${JSON.stringify(fields)};
 
-      // Click to focus
-      const x = elemInfo.rect.x + elemInfo.rect.width / 2;
-      const y = elemInfo.rect.y + elemInfo.rect.height / 2;
-      await this.cdp.click(x, y);
+        for (const field of fields) {
+          const element = document.querySelector(field.ref);
+          if (!element) {
+            results.push({ ref: field.ref, success: false, error: 'Element not found' });
+            continue;
+          }
 
-      // Clear existing content (Ctrl+A, Delete)
-      await this.cdp.pressKey('Control');
-      await this.cdp.pressKey('a');
-      await this.cdp.pressKey('Delete');
+          // Set the value
+          element.value = field.value;
 
-      // Type new value
-      await this.cdp.type(field.value);
-    }
+          // Trigger input events to notify the page
+          element.dispatchEvent(new Event('input', { bubbles: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true }));
 
-    return { success: true, fieldCount: fields.length };
+          results.push({ ref: field.ref, success: true });
+        }
+
+        return { success: true, fieldCount: fields.length, results: results };
+      })()
+    `, true);
+
+    return result;
   }
 
   async handleSubmitForm({ element, ref }) {
