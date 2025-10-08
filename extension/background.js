@@ -57,10 +57,16 @@ class BackgroundController {
 
     // Tab updated (navigation, etc)
     chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-      if (this.state.tabId === tabId && changeInfo.url) {
-        console.log('[Background] Tab navigated to:', changeInfo.url);
-        this.state.tabUrl = changeInfo.url;
-        this.state.tabTitle = tab.title;
+      if (this.state.tabId === tabId) {
+        if (changeInfo.url) {
+          console.log('[Background] Tab navigated to:', changeInfo.url);
+          this.state.tabUrl = changeInfo.url;
+          this.state.tabTitle = tab.title;
+        }
+        // Re-inject indicator when page finishes loading
+        if (changeInfo.status === 'complete' && this.state.connected) {
+          this.injectTabIndicator();
+        }
       }
     });
 
@@ -167,6 +173,9 @@ class BackgroundController {
       this.state.connected = true;
       this.updateConnectionState();
 
+      // Inject visual indicator on the page
+      await this.injectTabIndicator();
+
       return { success: true, tabId: tab.id, url: tab.url };
     } catch (error) {
       console.error('[Background] Connection failed:', error);
@@ -180,6 +189,9 @@ class BackgroundController {
    */
   async disconnect() {
     console.log('[Background] Disconnecting...');
+
+    // Remove visual indicator from the page
+    await this.removeTabIndicator();
 
     this.ws.disconnect();
     await this.cdp.detach();
@@ -255,6 +267,95 @@ class BackgroundController {
     if (this.badgeBlinkInterval) {
       clearInterval(this.badgeBlinkInterval);
       this.badgeBlinkInterval = null;
+    }
+  }
+
+  /**
+   * Inject visual indicator on the connected tab
+   */
+  async injectTabIndicator() {
+    if (!this.state.tabId) return;
+
+    try {
+      await this.cdp.evaluate(`
+        (() => {
+          // Remove any existing indicator
+          const existing = document.getElementById('browser-mcp-indicator');
+          if (existing) existing.remove();
+
+          // Create indicator element
+          const indicator = document.createElement('div');
+          indicator.id = 'browser-mcp-indicator';
+          indicator.innerHTML = \`
+            <div style="
+              position: fixed;
+              bottom: 16px;
+              right: 16px;
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              color: white;
+              padding: 8px 16px;
+              border-radius: 8px;
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+              font-size: 13px;
+              font-weight: 500;
+              box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+              z-index: 2147483647;
+              display: flex;
+              align-items: center;
+              gap: 8px;
+              pointer-events: none;
+              animation: mcpFadeIn 0.3s ease-out;
+            ">
+              <div style="
+                width: 8px;
+                height: 8px;
+                background: #10b981;
+                border-radius: 50%;
+                animation: mcpPulse 2s ease-in-out infinite;
+              "></div>
+              MCP Connected
+            </div>
+          \`;
+
+          // Add animations
+          const style = document.createElement('style');
+          style.textContent = \`
+            @keyframes mcpFadeIn {
+              from { opacity: 0; transform: translateY(10px); }
+              to { opacity: 1; transform: translateY(0); }
+            }
+            @keyframes mcpPulse {
+              0%, 100% { opacity: 1; }
+              50% { opacity: 0.5; }
+            }
+          \`;
+          document.head.appendChild(style);
+
+          document.body.appendChild(indicator);
+        })();
+      `, true);
+      console.log('[Background] Tab indicator injected');
+    } catch (error) {
+      console.error('[Background] Failed to inject indicator:', error);
+    }
+  }
+
+  /**
+   * Remove visual indicator from the connected tab
+   */
+  async removeTabIndicator() {
+    if (!this.state.tabId) return;
+
+    try {
+      await this.cdp.evaluate(`
+        (() => {
+          const indicator = document.getElementById('browser-mcp-indicator');
+          if (indicator) indicator.remove();
+        })();
+      `, true);
+      console.log('[Background] Tab indicator removed');
+    } catch (error) {
+      console.error('[Background] Failed to remove indicator:', error);
     }
   }
 
