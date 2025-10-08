@@ -36,9 +36,11 @@ class PopupController {
 
     // Listen for state updates from background
     chrome.runtime.onMessage.addListener((message) => {
+      console.log('[Popup] Received message:', message);
       if (message.type === 'state_change') {
         this.updateUI(message.state);
       } else if (message.type === 'recording_started') {
+        console.log('[Popup] Recording request received:', message);
         this.showRecording(message.sessionId, message.request);
       } else if (message.type === 'recording_action') {
         this.updateRecordingStats(message.actionCount);
@@ -227,6 +229,7 @@ class PopupController {
    * Show recording request (waiting state)
    */
   showRecording(sessionId, request) {
+    console.log('[Popup] showRecording called:', { sessionId, request });
     this.currentSessionId = sessionId;
     this.currentRequest = request;
     this.recordingState = 'waiting';
@@ -236,6 +239,7 @@ class PopupController {
     this.elements.recordingWaiting.style.display = 'block';
     this.elements.recordingActive.style.display = 'none';
     this.elements.recordingSection.classList.add('visible', 'waiting');
+    console.log('[Popup] Recording UI should now be visible');
   }
 
   /**
