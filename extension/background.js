@@ -76,6 +76,35 @@ class BackgroundController {
         // Re-inject indicator when page finishes loading
         if (changeInfo.status === 'complete' && this.state.connected) {
           this.injectTabIndicator();
+
+          // Re-inject content script if there's an active recording
+          if (this.currentRecordingRequest && this.currentRecordingRequest.state === 'active') {
+            const sessionId = this.currentRecordingRequest.sessionId;
+            const session = this.recordingSessions.get(sessionId);
+            if (session) {
+              console.log('[Background] Re-injecting content script after navigation');
+              chrome.scripting.executeScript({
+                target: { tabId: this.state.tabId },
+                files: ['content-script.js']
+              }).then(() => {
+                // Wait a bit then send start message
+                setTimeout(() => {
+                  chrome.scripting.executeScript({
+                    target: { tabId: this.state.tabId },
+                    func: (sessionId, request) => {
+                      window.postMessage({
+                        type: 'START_RECORDING',
+                        data: { sessionId, request }
+                      }, '*');
+                    },
+                    args: [sessionId, session.request]
+                  });
+                }, 100);
+              }).catch(err => {
+                console.error('[Background] Failed to re-inject content script:', err);
+              });
+            }
+          }
         }
       }
     });
