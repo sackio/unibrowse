@@ -640,23 +640,85 @@ class BackgroundController {
   }
 
   async handleGetVisibleText({ selector, maxLength = 5000 }) {
-    // TODO: Implement visible text extraction
-    return { text: 'TODO: implement visible text' };
+    const script = selector
+      ? `document.querySelector('${selector.replace(/'/g, "\\'")}')?.innerText || ''`
+      : 'document.body.innerText || ""';
+
+    const text = await this.cdp.evaluate(script);
+    return text.substring(0, maxLength);
   }
 
   async handleGetComputedStyles({ selector, properties }) {
-    // TODO: Implement computed styles
-    return { styles: {} };
+    const defaultProperties = ['display', 'visibility', 'position', 'width', 'height', 'top', 'left', 'opacity', 'z-index'];
+    const propsToGet = properties && properties.length > 0 ? properties : defaultProperties;
+
+    return await this.cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+        if (!el) return null;
+        const styles = window.getComputedStyle(el);
+        const result = {};
+        ${JSON.stringify(propsToGet)}.forEach(prop => {
+          result[prop] = styles.getPropertyValue(prop);
+        });
+        return result;
+      })()
+    `);
   }
 
   async handleCheckVisibility({ selector }) {
-    // TODO: Implement visibility check
-    return { visible: true };
+    return await this.cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+        if (!el) return { exists: false };
+
+        const rect = el.getBoundingClientRect();
+        const styles = window.getComputedStyle(el);
+
+        return {
+          exists: true,
+          visible: el.offsetParent !== null,
+          display: styles.display !== 'none',
+          visibility: styles.visibility !== 'hidden',
+          opacity: parseFloat(styles.opacity) > 0,
+          inViewport: rect.top >= 0 && rect.left >= 0 && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth,
+          rect: {
+            top: rect.top,
+            left: rect.left,
+            bottom: rect.bottom,
+            right: rect.right,
+            width: rect.width,
+            height: rect.height
+          }
+        };
+      })()
+    `);
   }
 
   async handleGetAttributes({ selector, attributes }) {
-    // TODO: Implement get attributes
-    return { attributes: {} };
+    const specificAttrs = attributes && attributes.length > 0;
+
+    return await this.cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+        if (!el) return null;
+
+        const result = {};
+        ${specificAttrs ? `
+          // Get specific attributes
+          ${JSON.stringify(attributes)}.forEach(attr => {
+            const value = el.getAttribute(attr);
+            if (value !== null) result[attr] = value;
+          });
+        ` : `
+          // Get all attributes
+          Array.from(el.attributes).forEach(attr => {
+            result[attr.name] = attr.value;
+          });
+        `}
+        return result;
+      })()
+    `);
   }
 
   async handleCountElements({ selector }) {
@@ -664,28 +726,209 @@ class BackgroundController {
   }
 
   async handleGetPageMetadata() {
-    // TODO: Implement metadata extraction
-    return { metadata: {} };
+    return await this.cdp.evaluate(`
+      (() => {
+        const metadata = {
+          title: document.title,
+          description: '',
+          keywords: '',
+          author: '',
+          canonical: '',
+          og: {},
+          twitter: {},
+          schema: []
+        };
+
+        // Extract meta tags
+        document.querySelectorAll('meta').forEach(meta => {
+          const name = meta.getAttribute('name') || meta.getAttribute('property');
+          const content = meta.getAttribute('content');
+
+          if (!name || !content) return;
+
+          // Standard meta tags
+          if (name === 'description') metadata.description = content;
+          if (name === 'keywords') metadata.keywords = content;
+          if (name === 'author') metadata.author = content;
+
+          // Open Graph tags
+          if (name.startsWith('og:')) {
+            metadata.og[name.substring(3)] = content;
+          }
+
+          // Twitter Card tags
+          if (name.startsWith('twitter:')) {
+            metadata.twitter[name.substring(8)] = content;
+          }
+        });
+
+        // Canonical URL
+        const canonical = document.querySelector('link[rel="canonical"]');
+        if (canonical) metadata.canonical = canonical.getAttribute('href');
+
+        // Schema.org structured data
+        document.querySelectorAll('script[type="application/ld+json"]').forEach(script => {
+          try {
+            metadata.schema.push(JSON.parse(script.textContent));
+          } catch (e) {
+            // Skip invalid JSON
+          }
+        });
+
+        return metadata;
+      })()
+    `);
   }
 
-  async handleGetFilteredAriaTree({ roles, maxDepth, interactiveOnly }) {
-    // TODO: Implement filtered ARIA tree
-    return { tree: {} };
+  async handleGetFilteredAriaTree({ roles, maxDepth = 5, interactiveOnly }) {
+    // Get full ARIA tree from CDP
+    const fullTree = await this.cdp.getPartialAccessibilityTree(maxDepth);
+
+    // Filter tree based on parameters
+    const filterNode = (node, depth = 0) => {
+      if (depth > maxDepth) return null;
+
+      // Check role filter
+      if (roles && roles.length > 0 && !roles.includes(node.role?.value)) {
+        // Still process children even if parent doesn't match
+        const children = node.children
+          ?.map(child => filterNode(child, depth + 1))
+          .filter(Boolean);
+        return children && children.length > 0 ? { ...node, children } : null;
+      }
+
+      // Check interactive filter
+      if (interactiveOnly) {
+        const interactiveRoles = ['button', 'link', 'textbox', 'searchbox', 'checkbox', 'radio', 'combobox', 'listbox', 'menuitem', 'tab', 'switch', 'slider'];
+        if (!interactiveRoles.includes(node.role?.value)) {
+          const children = node.children
+            ?.map(child => filterNode(child, depth + 1))
+            .filter(Boolean);
+          return children && children.length > 0 ? { ...node, children } : null;
+        }
+      }
+
+      // Include node and filter its children
+      const filteredChildren = node.children
+        ?.map(child => filterNode(child, depth + 1))
+        .filter(Boolean);
+
+      return {
+        ...node,
+        children: filteredChildren && filteredChildren.length > 0 ? filteredChildren : undefined
+      };
+    };
+
+    return filterNode(fullTree);
   }
 
-  async handleFindByText({ text, selector, exact, limit }) {
-    // TODO: Implement find by text
-    return { results: [] };
+  async handleFindByText({ text, selector, exact, limit = 10 }) {
+    const searchText = text.toLowerCase();
+
+    return await this.cdp.evaluate(`
+      (() => {
+        const results = [];
+        const scope = ${selector ? `document.querySelector('${selector.replace(/'/g, "\\'")}')` : 'document.body'};
+        if (!scope) return results;
+
+        const searchText = '${searchText.replace(/'/g, "\\'")}';
+        const exact = ${Boolean(exact)};
+        const limit = ${limit};
+
+        const walker = document.createTreeWalker(
+          scope,
+          NodeFilter.SHOW_TEXT,
+          null
+        );
+
+        let node;
+        while ((node = walker.nextNode()) && results.length < limit) {
+          const text = node.textContent.trim();
+          if (!text) continue;
+
+          const matches = exact
+            ? text.toLowerCase() === searchText
+            : text.toLowerCase().includes(searchText);
+
+          if (matches) {
+            const element = node.parentElement;
+            results.push({
+              tagName: element.tagName.toLowerCase(),
+              id: element.id || undefined,
+              className: element.className || undefined,
+              text: text.substring(0, 200),
+              selector: element.id
+                ? '#' + element.id
+                : element.className
+                  ? element.tagName.toLowerCase() + '.' + element.className.split(' ')[0]
+                  : element.tagName.toLowerCase()
+            });
+          }
+        }
+
+        return results;
+      })()
+    `);
   }
 
   async handleGetFormValues({ formSelector }) {
-    // TODO: Implement form values
-    return { values: {} };
+    return await this.cdp.evaluate(`
+      (() => {
+        const scope = ${formSelector ? `document.querySelector('${formSelector.replace(/'/g, "\\'")}')` : 'document'};
+        if (!scope) return {};
+
+        const formValues = {};
+
+        // Get all form elements
+        const inputs = scope.querySelectorAll('input, select, textarea');
+
+        inputs.forEach(element => {
+          const name = element.name || element.id;
+          if (!name) return;
+
+          if (element.type === 'checkbox' || element.type === 'radio') {
+            formValues[name] = element.checked;
+          } else if (element.tagName === 'SELECT' && element.multiple) {
+            formValues[name] = Array.from(element.selectedOptions).map(opt => opt.value);
+          } else {
+            formValues[name] = element.value;
+          }
+        });
+
+        return formValues;
+      })()
+    `);
   }
 
   async handleCheckElementState({ selector }) {
-    // TODO: Implement element state
-    return { state: {} };
+    return await this.cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+        if (!el) return null;
+
+        return {
+          tagName: el.tagName.toLowerCase(),
+          disabled: el.disabled || false,
+          readonly: el.readOnly || false,
+          required: el.required || false,
+          checked: el.checked || false,
+          selected: el.selected || false,
+          value: el.value || '',
+          placeholder: el.placeholder || '',
+          type: el.type || '',
+          name: el.name || '',
+          id: el.id || '',
+          className: el.className || '',
+          hidden: el.hidden || false,
+          ariaDisabled: el.getAttribute('aria-disabled') === 'true',
+          ariaChecked: el.getAttribute('aria-checked'),
+          ariaSelected: el.getAttribute('aria-selected'),
+          ariaHidden: el.getAttribute('aria-hidden') === 'true',
+          ariaExpanded: el.getAttribute('aria-expanded'),
+          ariaPressed: el.getAttribute('aria-pressed')
+        };
+      })()
+    `);
   }
 }
 
