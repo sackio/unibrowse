@@ -7,7 +7,7 @@ import {
   SelectOptionTool,
   SnapshotTool,
   TypeTool,
-} from "@repo/types/mcp/tool";
+} from "@/types/tool-schemas";
 
 import type { Context } from "@/context";
 import { captureAriaSnapshot } from "@/utils/aria-snapshot";
@@ -34,14 +34,12 @@ export const click: Tool = {
   handle: async (context: Context, params) => {
     const validatedParams = ClickTool.shape.arguments.parse(params);
     await context.sendSocketMessage("browser_click", validatedParams);
-    const snapshot = await captureAriaSnapshot(context);
     return {
       content: [
         {
           type: "text",
           text: `Clicked "${validatedParams.element}"`,
         },
-        ...snapshot.content,
       ],
     };
   },
@@ -56,14 +54,12 @@ export const drag: Tool = {
   handle: async (context: Context, params) => {
     const validatedParams = DragTool.shape.arguments.parse(params);
     await context.sendSocketMessage("browser_drag", validatedParams);
-    const snapshot = await captureAriaSnapshot(context);
     return {
       content: [
         {
           type: "text",
           text: `Dragged "${validatedParams.startElement}" to "${validatedParams.endElement}"`,
         },
-        ...snapshot.content,
       ],
     };
   },
@@ -78,14 +74,12 @@ export const hover: Tool = {
   handle: async (context: Context, params) => {
     const validatedParams = HoverTool.shape.arguments.parse(params);
     await context.sendSocketMessage("browser_hover", validatedParams);
-    const snapshot = await captureAriaSnapshot(context);
     return {
       content: [
         {
           type: "text",
           text: `Hovered over "${validatedParams.element}"`,
         },
-        ...snapshot.content,
       ],
     };
   },
@@ -100,14 +94,12 @@ export const type: Tool = {
   handle: async (context: Context, params) => {
     const validatedParams = TypeTool.shape.arguments.parse(params);
     await context.sendSocketMessage("browser_type", validatedParams);
-    const snapshot = await captureAriaSnapshot(context);
     return {
       content: [
         {
           type: "text",
           text: `Typed "${validatedParams.text}" into "${validatedParams.element}"`,
         },
-        ...snapshot.content,
       ],
     };
   },
@@ -122,14 +114,12 @@ export const selectOption: Tool = {
   handle: async (context: Context, params) => {
     const validatedParams = SelectOptionTool.shape.arguments.parse(params);
     await context.sendSocketMessage("browser_select_option", validatedParams);
-    const snapshot = await captureAriaSnapshot(context);
     return {
       content: [
         {
           type: "text",
           text: `Selected option in "${validatedParams.element}"`,
         },
-        ...snapshot.content,
       ],
     };
   },
