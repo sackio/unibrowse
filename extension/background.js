@@ -82,9 +82,8 @@ class BackgroundController {
     chrome.debugger.onDetach.addListener((source, reason) => {
       if (source.tabId === this.state.tabId) {
         console.log('[Background] Debugger detached:', reason);
-        if (reason !== 'canceled_by_user') {
-          this.disconnect();
-        }
+        // Always disconnect regardless of reason to ensure cleanup
+        this.disconnect();
       }
     });
 
@@ -201,6 +200,14 @@ class BackgroundController {
    */
   async disconnect() {
     console.log('[Background] Disconnecting...');
+    console.log('[Background] Current state:', {
+      tabId: this.state.tabId,
+      connected: this.state.connected,
+      cdpAttached: this.cdp.isAttached()
+    });
+
+    // Set connected to false FIRST to prevent event listeners from re-adding indicators
+    this.state.connected = false;
 
     // Restore original tab title
     await this.restoreTabTitle();
@@ -211,7 +218,6 @@ class BackgroundController {
     this.ws.disconnect();
     await this.cdp.detach();
 
-    this.state.connected = false;
     this.state.tabId = null;
     this.state.tabUrl = null;
     this.state.tabTitle = null;
@@ -219,6 +225,7 @@ class BackgroundController {
     this.consoleLogs = [];
 
     this.updateConnectionState();
+    console.log('[Background] Disconnect complete');
   }
 
   /**
@@ -310,18 +317,50 @@ class BackgroundController {
    * Restore original tab title (remove MCP indicator)
    */
   async restoreTabTitle() {
-    if (!this.state.tabId) return;
+    if (!this.state.tabId) {
+      console.log('[Background] restoreTabTitle: No tabId, skipping');
+      return;
+    }
+
+    console.log('[Background] restoreTabTitle: Starting cleanup');
+    console.log('[Background] restoreTabTitle: CDP attached?', this.cdp.isAttached());
 
     try {
-      // Get current title and strip MCP prefix if present
-      await this.cdp.evaluate(`
-        if (document.title.startsWith('🟢 [MCP] ')) {
-          document.title = document.title.replace('🟢 [MCP] ', '');
-        }
-      `, true);
+      // Try using CDP if debugger is still attached
+      if (this.cdp.isAttached()) {
+        console.log('[Background] restoreTabTitle: Using CDP path');
+        await this.cdp.evaluate(`
+          if (document.title.startsWith('🟢 [MCP] ')) {
+            document.title = document.title.replace('🟢 [MCP] ', '');
+          }
+        `, true);
+        console.log('[Background] restoreTabTitle: CDP cleanup successful');
+      } else {
+        // Fallback to chrome.scripting if debugger already detached
+        console.log('[Background] restoreTabTitle: Using chrome.scripting fallback');
+        console.log('[Background] restoreTabTitle: Target tabId:', this.state.tabId);
+
+        const result = await chrome.scripting.executeScript({
+          target: { tabId: this.state.tabId },
+          func: () => {
+            console.log('[Page] restoreTabTitle: Executing in page context');
+            console.log('[Page] restoreTabTitle: Current title:', document.title);
+            if (document.title.startsWith('🟢 [MCP] ')) {
+              document.title = document.title.replace('🟢 [MCP] ', '');
+              console.log('[Page] restoreTabTitle: Title updated to:', document.title);
+              return { success: true, newTitle: document.title };
+            }
+            return { success: false, reason: 'Title does not have MCP prefix' };
+          }
+        });
+
+        console.log('[Background] restoreTabTitle: chrome.scripting result:', result);
+        console.log('[Background] restoreTabTitle: Fallback cleanup successful');
+      }
       console.log('[Background] Tab title restored');
     } catch (error) {
       console.error('[Background] Failed to restore tab title:', error);
+      console.error('[Background] Error details:', error.message, error.stack);
     }
   }
 
@@ -399,18 +438,52 @@ class BackgroundController {
    * Remove visual indicator from the connected tab
    */
   async removeTabIndicator() {
-    if (!this.state.tabId) return;
+    if (!this.state.tabId) {
+      console.log('[Background] removeTabIndicator: No tabId, skipping');
+      return;
+    }
+
+    console.log('[Background] removeTabIndicator: Starting cleanup');
+    console.log('[Background] removeTabIndicator: CDP attached?', this.cdp.isAttached());
 
     try {
-      await this.cdp.evaluate(`
-        (() => {
-          const indicator = document.getElementById('browser-mcp-indicator');
-          if (indicator) indicator.remove();
-        })();
-      `, true);
+      // Try using CDP if debugger is still attached
+      if (this.cdp.isAttached()) {
+        console.log('[Background] removeTabIndicator: Using CDP path');
+        await this.cdp.evaluate(`
+          (() => {
+            const indicator = document.getElementById('browser-mcp-indicator');
+            if (indicator) indicator.remove();
+          })();
+        `, true);
+        console.log('[Background] removeTabIndicator: CDP cleanup successful');
+      } else {
+        // Fallback to chrome.scripting if debugger already detached
+        console.log('[Background] removeTabIndicator: Using chrome.scripting fallback');
+        console.log('[Background] removeTabIndicator: Target tabId:', this.state.tabId);
+
+        const result = await chrome.scripting.executeScript({
+          target: { tabId: this.state.tabId },
+          func: () => {
+            console.log('[Page] removeTabIndicator: Executing in page context');
+            const indicator = document.getElementById('browser-mcp-indicator');
+            console.log('[Page] removeTabIndicator: Found indicator?', !!indicator);
+            if (indicator) {
+              indicator.remove();
+              console.log('[Page] removeTabIndicator: Indicator removed');
+              return { success: true };
+            }
+            return { success: false, reason: 'Indicator element not found' };
+          }
+        });
+
+        console.log('[Background] removeTabIndicator: chrome.scripting result:', result);
+        console.log('[Background] removeTabIndicator: Fallback cleanup successful');
+      }
       console.log('[Background] Tab indicator removed');
     } catch (error) {
       console.error('[Background] Failed to remove indicator:', error);
+      console.error('[Background] Error details:', error.message, error.stack);
     }
   }
 
