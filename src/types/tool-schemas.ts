@@ -383,3 +383,123 @@ export const RequestDemonstrationTool = z.object({
     timeout: z.number().optional().describe("Maximum time to wait for the demonstration in seconds (default: no timeout - waits indefinitely). Specify a timeout only if you need to limit the duration."),
   }),
 });
+
+// Background Interaction Log Tools
+
+export const GetInteractionsTool = z.object({
+  name: z.literal("browser_get_interactions"),
+  description: z.literal(
+    "Retrieve user interactions from the background audit log. Interactions are continuously recorded in the background while connected to a tab. Query any time segment with flexible filtering."
+  ),
+  arguments: z.object({
+    startTime: z
+      .number()
+      .optional()
+      .describe("Start time as Unix timestamp in ms, or negative offset from now (e.g., -60000 = last minute)"),
+    endTime: z
+      .number()
+      .optional()
+      .describe("End time as Unix timestamp in ms, or negative offset from now"),
+    limit: z
+      .number()
+      .optional()
+      .describe("Maximum number of interactions to return (default: 50)"),
+    offset: z
+      .number()
+      .optional()
+      .describe("Skip first N interactions for pagination (default: 0)"),
+    types: z
+      .array(z.string())
+      .optional()
+      .describe("Filter by interaction types (e.g., ['click', 'keyboard', 'scroll', 'navigation'])"),
+    urlPattern: z
+      .string()
+      .optional()
+      .describe("Filter by URL regex pattern"),
+    selectorPattern: z
+      .string()
+      .optional()
+      .describe("Filter by CSS selector regex pattern"),
+    sortOrder: z
+      .enum(["asc", "desc"])
+      .optional()
+      .describe("Sort order by timestamp (default: desc - newest first)"),
+  }),
+});
+
+export const PruneInteractionsTool = z.object({
+  name: z.literal("browser_prune_interactions"),
+  description: z.literal(
+    "Remove interactions from the background audit log based on various criteria. Allows selective pruning by time, count, type, or pattern."
+  ),
+  arguments: z.object({
+    before: z
+      .number()
+      .optional()
+      .describe("Remove all interactions before this Unix timestamp in ms"),
+    after: z
+      .number()
+      .optional()
+      .describe("Remove all interactions after this Unix timestamp in ms"),
+    between: z
+      .tuple([z.number(), z.number()])
+      .optional()
+      .describe("Remove interactions within time range [startTime, endTime] in ms"),
+    keepLast: z
+      .number()
+      .optional()
+      .describe("Keep only the last N interactions, remove all older ones"),
+    keepFirst: z
+      .number()
+      .optional()
+      .describe("Keep only the first N interactions, remove all newer ones"),
+    removeOldest: z
+      .number()
+      .optional()
+      .describe("Remove the oldest N interactions"),
+    types: z
+      .array(z.string())
+      .optional()
+      .describe("Remove only these interaction types"),
+    excludeTypes: z
+      .array(z.string())
+      .optional()
+      .describe("Remove all interactions except these types"),
+    urlPattern: z
+      .string()
+      .optional()
+      .describe("Remove interactions matching this URL regex"),
+    selectorPattern: z
+      .string()
+      .optional()
+      .describe("Remove interactions matching this selector regex"),
+  }),
+});
+
+export const SearchInteractionsTool = z.object({
+  name: z.literal("browser_search_interactions"),
+  description: z.literal(
+    "Search the background interaction log using text queries. Searches across selectors, values, URLs, and element text content."
+  ),
+  arguments: z.object({
+    query: z
+      .string()
+      .describe("Text to search for in interactions (searches selectors, values, URLs, element text)"),
+    types: z
+      .array(z.string())
+      .optional()
+      .describe("Filter by interaction types"),
+    startTime: z
+      .number()
+      .optional()
+      .describe("Start time filter (Unix timestamp in ms or negative offset)"),
+    endTime: z
+      .number()
+      .optional()
+      .describe("End time filter (Unix timestamp in ms or negative offset)"),
+    limit: z
+      .number()
+      .optional()
+      .describe("Maximum number of results (default: 50)"),
+  }),
+});

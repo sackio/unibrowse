@@ -11,6 +11,7 @@ import * as common from "@/tools/common";
 import * as custom from "@/tools/custom";
 import * as exploration from "@/tools/exploration";
 import * as forms from "@/tools/forms";
+import * as interactions from "@/tools/interactions";
 import * as recording from "@/tools/recording";
 import * as snapshot from "@/tools/snapshot";
 import * as tabs from "@/tools/tabs";
@@ -70,6 +71,12 @@ const recordingTools: Tool[] = [
   recording.requestDemonstration(false),
 ];
 
+const interactionTools: Tool[] = [
+  interactions.getInteractions,
+  interactions.pruneInteractions,
+  interactions.searchInteractions,
+];
+
 const snapshotTools: Tool[] = [
   common.navigate(false),
   common.goBack(false),
@@ -86,6 +93,7 @@ const snapshotTools: Tool[] = [
   ...tabTools,
   ...formTools,
   ...recordingTools,
+  ...interactionTools,
 ];
 
 const resources: Resource[] = [];

@@ -5,6 +5,267 @@
 
 importScripts('utils/websocket.js', 'utils/cdp.js');
 
+/**
+ * Background Interaction Recorder
+ * Continuously records all user interactions in a circular buffer
+ * Provides flexible querying, pruning, and searching capabilities
+ */
+class BackgroundRecorder {
+  constructor(maxSize = 500) {
+    this.buffer = [];
+    this.maxSize = maxSize;
+    this.enabled = true;
+    this.actionIdCounter = 0;
+  }
+
+  /**
+   * Add an interaction to the buffer
+   */
+  addAction(action) {
+    if (!this.enabled) return;
+
+    // Add timestamp and unique ID
+    action.timestamp = Date.now();
+    action.id = ++this.actionIdCounter;
+
+    // Add to buffer
+    this.buffer.push(action);
+
+    // Maintain circular buffer
+    if (this.buffer.length > this.maxSize) {
+      this.buffer.shift();
+    }
+  }
+
+  /**
+   * Get interactions with flexible filtering
+   */
+  get(filters = {}) {
+    let results = [...this.buffer];
+    const now = Date.now();
+
+    // Apply time filters (support negative offsets from now)
+    if (filters.startTime !== undefined) {
+      const startTime = filters.startTime < 0 ? now + filters.startTime : filters.startTime;
+      results = results.filter(a => a.timestamp >= startTime);
+    }
+    if (filters.endTime !== undefined) {
+      const endTime = filters.endTime < 0 ? now + filters.endTime : filters.endTime;
+      results = results.filter(a => a.timestamp <= endTime);
+    }
+
+    // Apply type filters
+    if (filters.types && filters.types.length > 0) {
+      results = results.filter(a => filters.types.includes(a.type));
+    }
+
+    // Apply URL pattern filter
+    if (filters.urlPattern) {
+      const urlRegex = new RegExp(filters.urlPattern, 'i');
+      results = results.filter(a => a.url && urlRegex.test(a.url));
+    }
+
+    // Apply selector pattern filter
+    if (filters.selectorPattern) {
+      const selectorRegex = new RegExp(filters.selectorPattern, 'i');
+      results = results.filter(a => a.element && a.element.selector && selectorRegex.test(a.element.selector));
+    }
+
+    // Sort by timestamp
+    const sortOrder = filters.sortOrder || 'desc';
+    results.sort((a, b) => {
+      return sortOrder === 'desc' ? b.timestamp - a.timestamp : a.timestamp - b.timestamp;
+    });
+
+    // Apply pagination
+    const offset = filters.offset || 0;
+    const limit = filters.limit || 50;
+    const paginatedResults = results.slice(offset, offset + limit);
+
+    return {
+      interactions: paginatedResults,
+      totalCount: results.length,
+      bufferSize: this.buffer.length,
+    };
+  }
+
+  /**
+   * Prune interactions based on criteria
+   */
+  prune(filters = {}) {
+    const originalLength = this.buffer.length;
+    let toRemove = [];
+
+    // Time-based pruning
+    if (filters.before !== undefined) {
+      toRemove = this.buffer.filter(a => a.timestamp < filters.before);
+    }
+    if (filters.after !== undefined) {
+      toRemove = this.buffer.filter(a => a.timestamp > filters.after);
+    }
+    if (filters.between) {
+      const [start, end] = filters.between;
+      toRemove = this.buffer.filter(a => a.timestamp >= start && a.timestamp <= end);
+    }
+
+    // Count-based pruning
+    if (filters.keepLast !== undefined) {
+      const toKeep = this.buffer.slice(-filters.keepLast);
+      this.buffer = toKeep;
+      return {
+        removedCount: originalLength - this.buffer.length,
+        remainingCount: this.buffer.length,
+      };
+    }
+    if (filters.keepFirst !== undefined) {
+      const toKeep = this.buffer.slice(0, filters.keepFirst);
+      this.buffer = toKeep;
+      return {
+        removedCount: originalLength - this.buffer.length,
+        remainingCount: this.buffer.length,
+      };
+    }
+    if (filters.removeOldest !== undefined) {
+      this.buffer = this.buffer.slice(filters.removeOldest);
+      return {
+        removedCount: originalLength - this.buffer.length,
+        remainingCount: this.buffer.length,
+      };
+    }
+
+    // Type-based pruning
+    if (filters.types && filters.types.length > 0) {
+      toRemove = this.buffer.filter(a => filters.types.includes(a.type));
+    }
+    if (filters.excludeTypes && filters.excludeTypes.length > 0) {
+      toRemove = this.buffer.filter(a => !filters.excludeTypes.includes(a.type));
+    }
+
+    // Pattern-based pruning
+    if (filters.urlPattern) {
+      const urlRegex = new RegExp(filters.urlPattern, 'i');
+      toRemove = this.buffer.filter(a => a.url && urlRegex.test(a.url));
+    }
+    if (filters.selectorPattern) {
+      const selectorRegex = new RegExp(filters.selectorPattern, 'i');
+      toRemove = this.buffer.filter(a => a.element && a.element.selector && selectorRegex.test(a.element.selector));
+    }
+
+    // Remove the filtered actions
+    if (toRemove.length > 0) {
+      const removeIds = new Set(toRemove.map(a => a.id));
+      this.buffer = this.buffer.filter(a => !removeIds.has(a.id));
+    }
+
+    return {
+      removedCount: originalLength - this.buffer.length,
+      remainingCount: this.buffer.length,
+    };
+  }
+
+  /**
+   * Search interactions by text query
+   */
+  search(query, filters = {}) {
+    const queryLower = query.toLowerCase();
+    let results = [];
+
+    // Search across all relevant fields
+    for (const action of this.buffer) {
+      let matched = false;
+      let matchedField = null;
+
+      // Search in URL
+      if (action.url && action.url.toLowerCase().includes(queryLower)) {
+        matched = true;
+        matchedField = 'url';
+      }
+
+      // Search in selector
+      if (!matched && action.element && action.element.selector && action.element.selector.toLowerCase().includes(queryLower)) {
+        matched = true;
+        matchedField = 'selector';
+      }
+
+      // Search in element text
+      if (!matched && action.element && action.element.text && action.element.text.toLowerCase().includes(queryLower)) {
+        matched = true;
+        matchedField = 'element.text';
+      }
+
+      // Search in value
+      if (!matched && action.value && action.value.toLowerCase().includes(queryLower)) {
+        matched = true;
+        matchedField = 'value';
+      }
+
+      // Search in key
+      if (!matched && action.key && action.key.toLowerCase().includes(queryLower)) {
+        matched = true;
+        matchedField = 'key';
+      }
+
+      if (matched) {
+        results.push({ ...action, matchedField });
+      }
+    }
+
+    // Apply additional filters
+    const now = Date.now();
+    if (filters.types && filters.types.length > 0) {
+      results = results.filter(a => filters.types.includes(a.type));
+    }
+    if (filters.startTime !== undefined) {
+      const startTime = filters.startTime < 0 ? now + filters.startTime : filters.startTime;
+      results = results.filter(a => a.timestamp >= startTime);
+    }
+    if (filters.endTime !== undefined) {
+      const endTime = filters.endTime < 0 ? now + filters.endTime : filters.endTime;
+      results = results.filter(a => a.timestamp <= endTime);
+    }
+
+    // Sort by timestamp (newest first)
+    results.sort((a, b) => b.timestamp - a.timestamp);
+
+    // Apply limit
+    const limit = filters.limit || 50;
+    const limitedResults = results.slice(0, limit);
+
+    return {
+      interactions: limitedResults,
+      totalMatches: results.length,
+    };
+  }
+
+  /**
+   * Clear all interactions
+   */
+  clear() {
+    this.buffer = [];
+    this.actionIdCounter = 0;
+  }
+
+  /**
+   * Enable/disable recording
+   */
+  setEnabled(enabled) {
+    this.enabled = enabled;
+  }
+
+  /**
+   * Get current buffer stats
+   */
+  getStats() {
+    return {
+      bufferSize: this.buffer.length,
+      maxSize: this.maxSize,
+      enabled: this.enabled,
+      oldestTimestamp: this.buffer.length > 0 ? this.buffer[0].timestamp : null,
+      newestTimestamp: this.buffer.length > 0 ? this.buffer[this.buffer.length - 1].timestamp : null,
+    };
+  }
+}
+
 class BackgroundController {
   constructor() {
     this.ws = new WebSocketManager('ws://localhost:9009');
@@ -14,6 +275,7 @@ class BackgroundController {
     this.networkLogs = [];
     this.badgeBlinkInterval = null;
     this.recordingSessions = new Map(); // Track active recording sessions
+    this.backgroundRecorder = new BackgroundRecorder(500); // Background interaction log
     this.state = {
       connected: false,
       tabId: null,
@@ -76,6 +338,7 @@ class BackgroundController {
         // Re-inject indicator when page finishes loading
         if (changeInfo.status === 'complete' && this.state.connected) {
           this.injectTabIndicator();
+          this.injectBackgroundCapture(); // Always re-inject background capture on navigation
 
           // Re-inject overlay and content script if there's an active recording
           if (this.currentRecordingRequest) {
@@ -150,6 +413,12 @@ class BackgroundController {
 
     // Messages from popup
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      // Handle background interaction capture
+      if (message.type === 'BACKGROUND_INTERACTION' && this.state.connected) {
+        this.backgroundRecorder.addAction(message.interaction);
+        return false;
+      }
+
       // Only handle popup-specific messages here
       const popupMessages = ['connect', 'disconnect', 'get_state'];
       if (popupMessages.includes(message.type)) {
@@ -260,6 +529,11 @@ class BackgroundController {
     // Recording/Learning handlers
     this.handlers['browser_request_demonstration'] = this.handleRequestDemonstration.bind(this);
 
+    // Background interaction log handlers
+    this.handlers['browser_get_interactions'] = this.handleGetInteractions.bind(this);
+    this.handlers['browser_prune_interactions'] = this.handlePruneInteractions.bind(this);
+    this.handlers['browser_search_interactions'] = this.handleSearchInteractions.bind(this);
+
     console.log('[Background] Registered', Object.keys(this.handlers).length, 'handlers');
   }
 
@@ -299,6 +573,9 @@ class BackgroundController {
       // Inject visual indicator on the page
       await this.injectTabIndicator();
 
+      // Inject background interaction capture script
+      await this.injectBackgroundCapture();
+
       return { success: true, tabId: tab.id, url: tab.url };
     } catch (error) {
       console.error('[Background] Connection failed:', error);
@@ -336,6 +613,7 @@ class BackgroundController {
     this.state.originalTabTitle = null;
     this.consoleLogs = [];
     this.networkLogs = [];
+    this.backgroundRecorder.clear(); // Clear background interaction log
 
     this.updateConnectionState();
     console.log('[Background] Disconnect complete');
@@ -544,6 +822,23 @@ class BackgroundController {
       console.log('[Background] Tab indicator injected');
     } catch (error) {
       console.error('[Background] Failed to inject indicator:', error);
+    }
+  }
+
+  /**
+   * Inject background interaction capture script
+   */
+  async injectBackgroundCapture() {
+    if (!this.state.tabId) return;
+
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: this.state.tabId },
+        files: ['background-interaction-capture.js']
+      });
+      console.log('[Background] Background interaction capture injected');
+    } catch (error) {
+      console.error('[Background] Failed to inject background capture:', error);
     }
   }
 
@@ -1485,6 +1780,38 @@ class BackgroundController {
         session.resolve(result);
       }
     }
+  }
+
+  /**
+   * Handle browser_get_interactions
+   */
+  async handleGetInteractions(data) {
+    console.log('[Background] Getting interactions:', data);
+    const result = this.backgroundRecorder.get(data);
+    return result;
+  }
+
+  /**
+   * Handle browser_prune_interactions
+   */
+  async handlePruneInteractions(data) {
+    console.log('[Background] Pruning interactions:', data);
+    const result = this.backgroundRecorder.prune(data);
+    return result;
+  }
+
+  /**
+   * Handle browser_search_interactions
+   */
+  async handleSearchInteractions(data) {
+    console.log('[Background] Searching interactions:', data);
+    const result = this.backgroundRecorder.search(data.query, {
+      types: data.types,
+      startTime: data.startTime,
+      endTime: data.endTime,
+      limit: data.limit,
+    });
+    return result;
   }
 }
 
