@@ -120,8 +120,14 @@ class BackgroundController {
 
     // Messages from popup
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      this.handlePopupMessage(message, sendResponse);
-      return true; // Keep channel open for async response
+      // Only handle popup-specific messages here
+      const popupMessages = ['connect', 'disconnect', 'get_state'];
+      if (popupMessages.includes(message.type)) {
+        this.handlePopupMessage(message, sendResponse);
+        return true; // Keep channel open for async response
+      }
+      // Let other listeners handle recording messages
+      return false;
     });
 
     // Notification button clicks
@@ -669,25 +675,8 @@ class BackgroundController {
         });
         break;
 
-      case 'START_RECORDING_NOW':
-        console.log('[Background] START_RECORDING_NOW received:', message.sessionId);
-        await this.startRecordingNow(message.sessionId);
-        sendResponse({ success: true });
-        break;
-
-      case 'RECORDING_CANCELLED':
-        console.log('[Background] RECORDING_CANCELLED received:', message.sessionId);
-        this.cancelRecording(message.sessionId);
-        sendResponse({ success: true });
-        break;
-
-      case 'RECORDING_COMPLETE':
-        console.log('[Background] RECORDING_COMPLETE received:', message.sessionId);
-        await this.stopRecording(message.sessionId);
-        sendResponse({ success: true });
-        break;
-
       default:
+        // Let other listeners handle non-popup messages
         sendResponse({ success: false, error: 'Unknown message type' });
     }
   }
