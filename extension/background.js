@@ -669,6 +669,24 @@ class BackgroundController {
         });
         break;
 
+      case 'START_RECORDING_NOW':
+        console.log('[Background] START_RECORDING_NOW received:', message.sessionId);
+        await this.startRecordingNow(message.sessionId);
+        sendResponse({ success: true });
+        break;
+
+      case 'RECORDING_CANCELLED':
+        console.log('[Background] RECORDING_CANCELLED received:', message.sessionId);
+        this.cancelRecording(message.sessionId);
+        sendResponse({ success: true });
+        break;
+
+      case 'RECORDING_COMPLETE':
+        console.log('[Background] RECORDING_COMPLETE received:', message.sessionId);
+        await this.stopRecording(message.sessionId);
+        sendResponse({ success: true });
+        break;
+
       default:
         sendResponse({ success: false, error: 'Unknown message type' });
     }
