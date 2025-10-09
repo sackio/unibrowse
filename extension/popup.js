@@ -14,22 +14,8 @@ class PopupController {
       tabInfo: document.getElementById('tab-info'),
       tabTitle: document.getElementById('tab-title'),
       tabUrl: document.getElementById('tab-url'),
-      error: document.getElementById('error'),
-      recordingSection: document.getElementById('recording-section'),
-      recordingWaiting: document.getElementById('recording-waiting'),
-      recordingActive: document.getElementById('recording-active'),
-      recordingRequestWaiting: document.getElementById('recording-request-waiting'),
-      recordingRequestActive: document.getElementById('recording-request-active'),
-      recordingActions: document.getElementById('recording-actions'),
-      recordingTime: document.getElementById('recording-time'),
-      recordingStartBtn: document.getElementById('recording-start-btn'),
-      recordingCancelBtn: document.getElementById('recording-cancel-btn'),
-      recordingDoneBtn: document.getElementById('recording-done-btn')
+      error: document.getElementById('error')
     };
-
-    this.recordingStartTime = null;
-    this.recordingTimerInterval = null;
-    this.recordingState = 'none';  // 'none', 'waiting', 'active'
 
     this.setupEventListeners();
     this.loadState();
@@ -39,13 +25,6 @@ class PopupController {
       console.log('[Popup] Received message:', message);
       if (message.type === 'state_change') {
         this.updateUI(message.state);
-      } else if (message.type === 'recording_started') {
-        console.log('[Popup] Recording request received:', message);
-        this.showRecording(message.sessionId, message.request);
-      } else if (message.type === 'recording_action') {
-        this.updateRecordingStats(message.actionCount);
-      } else if (message.type === 'recording_stopped') {
-        this.hideRecording();
       }
     });
 
@@ -63,18 +42,6 @@ class PopupController {
 
     this.elements.disconnectBtn.addEventListener('click', () => {
       this.disconnect();
-    });
-
-    this.elements.recordingStartBtn.addEventListener('click', () => {
-      this.startRecording();
-    });
-
-    this.elements.recordingCancelBtn.addEventListener('click', () => {
-      this.cancelRecording();
-    });
-
-    this.elements.recordingDoneBtn.addEventListener('click', () => {
-      this.stopRecording();
     });
   }
 
@@ -171,23 +138,6 @@ class PopupController {
     // Update buttons
     this.elements.connectBtn.disabled = state.connected;
     this.elements.disconnectBtn.disabled = !state.connected;
-
-    // Check for recording request
-    if (state.recordingRequest) {
-      if (this.recordingState === 'none') {
-        console.log('[Popup] Found recording request in state:', state.recordingRequest);
-        this.showRecording(state.recordingRequest.sessionId, state.recordingRequest.request);
-      } else if (this.recordingState === 'waiting' && state.recordingRequest.state === 'active') {
-        // Switch from waiting to active
-        console.log('[Popup] Switching to active state');
-        this.switchToActive();
-      } else if (this.recordingState === 'active' && state.recordingRequest.actionCount !== undefined) {
-        // Update action count if recording is active
-        this.elements.recordingActions.textContent = state.recordingRequest.actionCount;
-      }
-    } else if (!state.recordingRequest && this.recordingState !== 'none') {
-      this.hideRecording();
-    }
   }
 
   /**
@@ -240,111 +190,6 @@ class PopupController {
    */
   hideError() {
     this.elements.error.classList.remove('visible');
-  }
-
-  /**
-   * Show recording request (waiting state)
-   */
-  showRecording(sessionId, request) {
-    console.log('[Popup] showRecording called:', { sessionId, request });
-    this.currentSessionId = sessionId;
-    this.currentRequest = request;
-    this.recordingState = 'waiting';
-
-    // Show waiting state
-    this.elements.recordingRequestWaiting.textContent = request;
-    this.elements.recordingWaiting.style.display = 'block';
-    this.elements.recordingActive.style.display = 'none';
-    this.elements.recordingSection.classList.add('visible', 'waiting');
-    console.log('[Popup] Recording UI should now be visible');
-  }
-
-  /**
-   * Start recording after user clicks Start button
-   */
-  async startRecording() {
-    if (this.recordingState !== 'waiting') return;
-
-    console.log('[Popup] User clicked Start button');
-    // Tell background to start recording
-    await chrome.runtime.sendMessage({
-      type: 'START_RECORDING_NOW',
-      sessionId: this.currentSessionId
-    });
-  }
-
-  /**
-   * Switch UI from waiting to active state
-   */
-  switchToActive() {
-    this.recordingState = 'active';
-    this.recordingStartTime = Date.now();
-
-    // Switch to active state
-    this.elements.recordingWaiting.style.display = 'none';
-    this.elements.recordingActive.style.display = 'block';
-    this.elements.recordingSection.classList.remove('waiting');
-
-    this.elements.recordingRequestActive.textContent = this.currentRequest;
-    this.elements.recordingActions.textContent = '0';
-    this.elements.recordingTime.textContent = '0';
-
-    // Start timer
-    if (this.recordingTimerInterval) {
-      clearInterval(this.recordingTimerInterval);
-    }
-    this.recordingTimerInterval = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - this.recordingStartTime) / 1000);
-      this.elements.recordingTime.textContent = elapsed;
-    }, 1000);
-  }
-
-  /**
-   * Cancel recording request
-   */
-  async cancelRecording() {
-    await chrome.runtime.sendMessage({
-      type: 'RECORDING_CANCELLED',
-      sessionId: this.currentSessionId
-    });
-    this.hideRecording();
-  }
-
-  /**
-   * Update recording stats
-   */
-  updateRecordingStats(actionCount) {
-    if (this.recordingState === 'active') {
-      this.elements.recordingActions.textContent = actionCount;
-    }
-  }
-
-  /**
-   * Hide recording UI
-   */
-  hideRecording() {
-    this.elements.recordingSection.classList.remove('visible', 'waiting');
-    this.elements.recordingWaiting.style.display = 'none';
-    this.elements.recordingActive.style.display = 'none';
-    if (this.recordingTimerInterval) {
-      clearInterval(this.recordingTimerInterval);
-      this.recordingTimerInterval = null;
-    }
-    this.recordingState = 'none';
-    this.currentSessionId = null;
-    this.currentRequest = null;
-  }
-
-  /**
-   * Stop recording
-   */
-  async stopRecording() {
-    if (this.currentSessionId) {
-      await chrome.runtime.sendMessage({
-        type: 'RECORDING_COMPLETE',
-        sessionId: this.currentSessionId
-      });
-    }
   }
 }
 
