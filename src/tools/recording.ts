@@ -13,20 +13,15 @@ export const requestDemonstration: ToolFactory = (snapshot) => ({
   handle: async (context, params) => {
     const { request, timeout } = RequestDemonstrationTool.shape.arguments.parse(params);
 
-    // Start the recording (non-blocking) and wait for completion
-    const resultPromise = context.sendSocketMessage("browser_request_demonstration", {
-      request
-    });
+    // Calculate WebSocket timeout: use user's timeout if specified, otherwise indefinite
+    const wsTimeoutMs = timeout ? timeout * 1000 : undefined;
 
-    // If timeout is specified, race against it; otherwise wait indefinitely
-    const result = timeout
-      ? await Promise.race([
-          resultPromise,
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(`Recording timeout after ${timeout} seconds`)), timeout * 1000)
-          )
-        ])
-      : await resultPromise;
+    // Start the recording and wait for completion with appropriate timeout
+    const result = await context.sendSocketMessage(
+      "browser_request_demonstration",
+      { request },
+      { timeoutMs: wsTimeoutMs }
+    );
 
     // Format the recorded demonstration for display
     const actions = result.actions || [];

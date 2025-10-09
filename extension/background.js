@@ -1333,6 +1333,9 @@ class BackgroundController {
               console.log('[Background] Session already stopped, ignoring');
               return;
             }
+            // Clear currentRecordingRequest immediately to prevent re-injection
+            this.currentRecordingRequest = null;
+            chrome.action.setBadgeText({ text: '' });
             this.stopRecording(sessionId);
           } else if (message.type === 'RECORDING_RESULT' && message.result.sessionId === sessionId) {
             console.log('[Background] Received RECORDING_RESULT:', message.result);
