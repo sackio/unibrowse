@@ -124,6 +124,21 @@ class BackgroundController {
       return true; // Keep channel open for async response
     });
 
+    // Notification button clicks
+    chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) => {
+      if (notificationId.startsWith('recording-')) {
+        const sessionId = notificationId.replace('recording-', '');
+        if (buttonIndex === 0) {
+          // Start Recording button clicked
+          this.handlePopupMessage({ type: 'START_RECORDING_NOW', sessionId }, () => {});
+        } else {
+          // Cancel button clicked
+          this.handlePopupMessage({ type: 'RECORDING_CANCELLED', sessionId }, () => {});
+        }
+        chrome.notifications.clear(notificationId);
+      }
+    });
+
     // Console API called (for console log collection)
     chrome.debugger.onEvent.addListener((source, method, params) => {
       if (source.tabId === this.state.tabId) {
@@ -1331,6 +1346,19 @@ class BackgroundController {
         // Show badge to indicate recording requested
         chrome.action.setBadgeText({ text: '⏸' });
         chrome.action.setBadgeBackgroundColor({ color: '#4a90e2' });
+
+        // Show notification to alert user
+        chrome.notifications.create(`recording-${sessionId}`, {
+          type: 'basic',
+          iconUrl: 'icon-128.png',
+          title: '🎬 Demonstration Request',
+          message: request,
+          buttons: [
+            { title: 'Start Recording' },
+            { title: 'Cancel' }
+          ],
+          requireInteraction: true
+        });
 
         // Content script injection happens when user clicks Start button in popup
         // No timeout - recordings can be long-running
