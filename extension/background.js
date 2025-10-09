@@ -128,14 +128,25 @@ class BackgroundController {
     chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) => {
       if (notificationId.startsWith('recording-')) {
         const sessionId = notificationId.replace('recording-', '');
-        if (buttonIndex === 0) {
-          // Start Recording button clicked
-          this.handlePopupMessage({ type: 'START_RECORDING_NOW', sessionId }, () => {});
-        } else {
-          // Cancel button clicked
-          this.handlePopupMessage({ type: 'RECORDING_CANCELLED', sessionId }, () => {});
+        const currentRequest = this.currentRecordingRequest;
+
+        if (currentRequest && currentRequest.state === 'waiting') {
+          // Waiting state buttons: Start (0) or Cancel (1)
+          if (buttonIndex === 0) {
+            // Start Recording button clicked - trigger via runtime message
+            chrome.runtime.sendMessage({ type: 'START_RECORDING_NOW', sessionId });
+          } else {
+            // Cancel button clicked
+            chrome.runtime.sendMessage({ type: 'RECORDING_CANCELLED', sessionId });
+            chrome.notifications.clear(notificationId);
+          }
+        } else if (currentRequest && currentRequest.state === 'active') {
+          // Active state button: Stop (0)
+          if (buttonIndex === 0) {
+            // Stop button clicked
+            chrome.runtime.sendMessage({ type: 'RECORDING_COMPLETE', sessionId });
+          }
         }
-        chrome.notifications.clear(notificationId);
       }
     });
 
@@ -1263,6 +1274,18 @@ class BackgroundController {
             // Show recording badge
             chrome.action.setBadgeText({ text: '●' });
             chrome.action.setBadgeBackgroundColor({ color: '#ff4444' });
+
+            // Update notification to show Stop button
+            chrome.notifications.update(`recording-${sessionId}`, {
+              type: 'basic',
+              iconUrl: 'icon-128.png',
+              title: '🔴 Recording in Progress',
+              message: `${request}\n\nPress Ctrl+Shift+D or click Stop to finish.`,
+              buttons: [
+                { title: 'Stop Recording' }
+              ],
+              requireInteraction: true
+            });
             // User clicked Start in popup - inject and start content script
             chrome.scripting.executeScript({
               target: { tabId: this.state.tabId },
@@ -1320,6 +1343,9 @@ class BackgroundController {
 
             // Clear badge
             chrome.action.setBadgeText({ text: '' });
+
+            // Clear notification
+            chrome.notifications.clear(`recording-${sessionId}`);
 
             // Clean up
             this.recordingSessions.delete(sessionId);
