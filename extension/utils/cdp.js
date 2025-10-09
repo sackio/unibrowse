@@ -112,9 +112,59 @@ class CDPHelper {
   }
 
   /**
+   * Query by accessibility nodeId and return element info
+   */
+  async queryByNodeId(nodeId) {
+    // Get the full accessibility tree
+    const tree = await this.getAccessibilityTree();
+
+    // Find the node by nodeId
+    const node = tree.nodes.find(n => n.nodeId === nodeId);
+    if (!node) {
+      throw new Error(`Accessibility node not found: ${nodeId}`);
+    }
+
+    // Get the backend DOM node ID
+    if (!node.backendDOMNodeId) {
+      throw new Error(`Node ${nodeId} does not have a DOM node reference`);
+    }
+
+    // Use DOM.getBoxModel to get the element's bounding box
+    try {
+      const boxModel = await this.sendCommand('DOM.getBoxModel', {
+        backendNodeId: node.backendDOMNodeId
+      });
+
+      // Calculate center of content box
+      const content = boxModel.model.content;
+      const x = (content[0] + content[2] + content[4] + content[6]) / 4;
+      const y = (content[1] + content[3] + content[5] + content[7]) / 4;
+      const width = Math.max(content[2] - content[0], content[4] - content[6]);
+      const height = Math.max(content[5] - content[1], content[7] - content[3]);
+
+      return {
+        exists: true,
+        nodeId,
+        backendDOMNodeId: node.backendDOMNodeId,
+        rect: { x, y, width, height }
+      };
+    } catch (error) {
+      console.error(`[CDP] Failed to get box model for node ${nodeId}:`, error);
+      throw new Error(`Failed to get element coordinates for node ${nodeId}`);
+    }
+  }
+
+  /**
    * Query DOM selector and return element info
    */
   async querySelector(selector) {
+    // Check if selector is a nodeId (numeric string) or CSS selector
+    if (/^\d+$/.test(selector)) {
+      // It's a nodeId from accessibility tree
+      return this.queryByNodeId(selector);
+    }
+
+    // It's a CSS selector
     return this.evaluate(`
       (function() {
         const el = document.querySelector('${selector.replace(/'/g, "\\'")}');
