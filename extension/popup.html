@@ -74,14 +74,10 @@
       50% { opacity: 0.5; }
     }
 
-    .buttons {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 20px;
-    }
-
     button {
+      width: 100%;
       padding: 10px 16px;
+      margin-bottom: 15px;
       border: none;
       border-radius: 6px;
       font-size: 14px;
@@ -90,12 +86,8 @@
       transition: all 0.2s;
     }
 
-    #connection-btn {
-      flex: 1;
-    }
-
-    #goto-tab-btn {
-      flex: 0 0 auto;
+    button.goto-tab {
+      margin-bottom: 20px;
     }
 
     button:disabled {
@@ -195,10 +187,9 @@
     <span id="status-text">Disconnected</span>
   </div>
 
-  <div class="buttons">
-    <button class="primary" id="connection-btn">Connect</button>
-    <button class="secondary" id="goto-tab-btn" style="display: none;">Go to Tab</button>
-  </div>
+  <button class="primary" id="connection-btn">Connect</button>
+
+  <button class="secondary goto-tab" id="goto-tab-btn" style="display: none;">Go to Active Tab</button>
 
   <div class="info">
     <div class="info-row">
