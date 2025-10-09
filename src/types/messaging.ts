@@ -59,6 +59,7 @@ export interface SocketMessageMap {
 
   // Recording/demonstration tools
   browser_request_demonstration: { request: string };
+  browser_request_user_action: { request: string };
 
   // Background interaction log tools
   browser_get_interactions: {

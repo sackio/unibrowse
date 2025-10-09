@@ -15,6 +15,7 @@ import * as interactions from "@/tools/interactions";
 import * as recording from "@/tools/recording";
 import * as snapshot from "@/tools/snapshot";
 import * as tabs from "@/tools/tabs";
+import * as userAction from "@/tools/user-action";
 import type { Tool } from "@/tools/tool";
 
 import packageJSON from "../package.json";
@@ -69,6 +70,7 @@ const formTools: Tool[] = [
 
 const recordingTools: Tool[] = [
   recording.requestDemonstration(false),
+  userAction.requestUserAction(false),
 ];
 
 const interactionTools: Tool[] = [

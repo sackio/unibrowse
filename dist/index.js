@@ -7,6 +7,7 @@ import {
   ListTabsTool,
   PruneInteractionsTool,
   RequestDemonstrationTool,
+  RequestUserActionTool,
   SearchInteractionsTool,
   SubmitFormTool,
   SwitchTabTool,
@@ -41,7 +42,7 @@ import {
   snapshot,
   type,
   wait
-} from "./chunk-K3YQ5BOV.js";
+} from "./chunk-LPW34GRT.js";
 
 // src/index.ts
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -475,6 +476,105 @@ var closeTab = {
   }
 };
 
+// src/tools/user-action.ts
+import { zodToJsonSchema as zodToJsonSchema5 } from "zod-to-json-schema";
+var requestUserAction = (snapshot2) => ({
+  schema: {
+    name: RequestUserActionTool.shape.name.value,
+    description: RequestUserActionTool.shape.description.value,
+    inputSchema: zodToJsonSchema5(RequestUserActionTool.shape.arguments)
+  },
+  handle: async (context, params) => {
+    const { request, timeout } = RequestUserActionTool.shape.arguments.parse(params);
+    const wsTimeoutMs = timeout ? timeout * 1e3 : 3e5;
+    const result = await context.sendSocketMessage(
+      "browser_request_user_action",
+      { request },
+      { timeoutMs: wsTimeoutMs }
+    );
+    const interactions = result.interactions || [];
+    const status = result.status;
+    let summary = `# User Action Request
+
+`;
+    summary += `**Request**: ${request}
+`;
+    summary += `**Status**: ${status}
+`;
+    summary += `**Duration**: ${(result.duration / 1e3).toFixed(1)}s
+`;
+    summary += `**Start Time**: ${new Date(result.startTime).toISOString()}
+`;
+    summary += `**End Time**: ${new Date(result.endTime).toISOString()}
+
+`;
+    if (status === "rejected") {
+      summary += `The user rejected this request.
+`;
+    } else if (status === "timeout") {
+      summary += `The request timed out after ${timeout || 300}s.
+`;
+    } else {
+      summary += `## Interactions Captured (${interactions.length})
+
+`;
+      if (interactions.length === 0) {
+        summary += `No interactions were captured during this period.
+`;
+      } else {
+        const grouped = interactions.reduce((acc, interaction) => {
+          const type2 = interaction.type;
+          if (!acc[type2]) acc[type2] = [];
+          acc[type2].push(interaction);
+          return acc;
+        }, {});
+        for (const [type2, items] of Object.entries(grouped)) {
+          summary += `### ${type2} (${items.length})
+`;
+          for (const interaction of items.slice(0, 10)) {
+            const time = new Date(interaction.timestamp).toISOString().split("T")[1].slice(0, -1);
+            summary += `- **${time}** `;
+            if (interaction.selector) {
+              summary += `\`${interaction.selector}\` `;
+            }
+            if (interaction.element?.tagName) {
+              summary += `<${interaction.element.tagName}> `;
+            }
+            if (interaction.element?.text) {
+              summary += `"${interaction.element.text.slice(0, 50)}" `;
+            }
+            if (interaction.key) {
+              summary += `Key: ${interaction.key} `;
+            }
+            if (interaction.value) {
+              summary += `Value: "${interaction.value.slice(0, 50)}" `;
+            }
+            if (interaction.url) {
+              summary += `URL: ${interaction.url} `;
+            }
+            summary += `
+`;
+          }
+          if (items.length > 10) {
+            summary += `... and ${items.length - 10} more ${type2} interactions
+`;
+          }
+          summary += `
+`;
+        }
+      }
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: summary
+        }
+      ]
+    };
+  }
+});
+
 // src/index.ts
 function setupExitWatchdog(server) {
   process.stdin.on("close", async () => {
@@ -519,7 +619,8 @@ var formTools = [
   submitForm
 ];
 var recordingTools = [
-  requestDemonstration(false)
+  requestDemonstration(false),
+  requestUserAction(false)
 ];
 var interactionTools = [
   getInteractions,

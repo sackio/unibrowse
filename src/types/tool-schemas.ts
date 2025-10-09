@@ -384,6 +384,17 @@ export const RequestDemonstrationTool = z.object({
   }),
 });
 
+export const RequestUserActionTool = z.object({
+  name: z.literal("browser_request_user_action"),
+  description: z.literal(
+    "Request the user to perform an action in the browser. Shows a notification and overlay with instructions. User can complete or reject the request. Captures all interactions from request to completion via the background log. More flexible than request_demonstration - use this for both learning workflows AND getting user assistance."
+  ),
+  arguments: z.object({
+    request: z.string().describe("Clear instructions for what you want the user to do (e.g., 'Please navigate to your shopping cart and add an item')"),
+    timeout: z.number().optional().describe("Maximum time to wait for user response in seconds (default: 300s = 5 minutes). After timeout, request is automatically cancelled."),
+  }),
+});
+
 // Background Interaction Log Tools
 
 export const GetInteractionsTool = z.object({

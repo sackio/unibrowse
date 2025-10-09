@@ -528,6 +528,7 @@ class BackgroundController {
 
     // Recording/Learning handlers
     this.handlers['browser_request_demonstration'] = this.handleRequestDemonstration.bind(this);
+    this.handlers['browser_request_user_action'] = this.handleRequestUserAction.bind(this);
 
     // Background interaction log handlers
     this.handlers['browser_get_interactions'] = this.handleGetInteractions.bind(this);
@@ -1780,6 +1781,283 @@ class BackgroundController {
         session.resolve(result);
       }
     }
+  }
+
+  /**
+   * Inject draggable user action overlay into page
+   */
+  async injectUserActionOverlay(requestId, request) {
+    await chrome.scripting.executeScript({
+      target: { tabId: this.state.tabId },
+      func: (requestId, request) => {
+        // Remove any existing overlay first
+        const existing = document.getElementById('mcp-user-action-overlay');
+        if (existing) existing.remove();
+
+        // Create draggable overlay
+        const overlay = document.createElement('div');
+        overlay.id = 'mcp-user-action-overlay';
+        overlay.style.cssText = `
+          position: fixed;
+          top: 20px;
+          left: 20px;
+          background: white;
+          border: 2px solid #4a90e2;
+          border-radius: 8px;
+          padding: 20px;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+          z-index: 2147483647;
+          max-width: 400px;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          cursor: move;
+        `;
+
+        overlay.innerHTML = `
+          <div id="mcp-overlay-header" style="
+            margin-bottom: 15px;
+            cursor: move;
+            user-select: none;
+          ">
+            <div style="font-weight: 600; font-size: 16px; color: #2d3748; margin-bottom: 8px;">
+              🤖 Agent Request
+            </div>
+            <div style="font-size: 14px; color: #4a5568; line-height: 1.5; white-space: pre-wrap;">
+              ${request}
+            </div>
+          </div>
+          <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button id="mcp-reject-btn" style="
+              padding: 8px 16px;
+              border: 1px solid #e2e8f0;
+              border-radius: 6px;
+              background: white;
+              color: #4a5568;
+              cursor: pointer;
+              font-size: 14px;
+              font-weight: 500;
+            ">Reject</button>
+            <button id="mcp-complete-btn" style="
+              padding: 8px 16px;
+              border: none;
+              border-radius: 6px;
+              background: #4a90e2;
+              color: white;
+              cursor: pointer;
+              font-size: 14px;
+              font-weight: 500;
+            ">Complete</button>
+          </div>
+        `;
+
+        document.body.appendChild(overlay);
+
+        // Make overlay draggable
+        let isDragging = false;
+        let currentX;
+        let currentY;
+        let initialX;
+        let initialY;
+        let xOffset = 0;
+        let yOffset = 0;
+
+        const header = document.getElementById('mcp-overlay-header');
+
+        header.addEventListener('mousedown', dragStart);
+        document.addEventListener('mousemove', drag);
+        document.addEventListener('mouseup', dragEnd);
+
+        function dragStart(e) {
+          initialX = e.clientX - xOffset;
+          initialY = e.clientY - yOffset;
+
+          if (e.target === header || header.contains(e.target)) {
+            isDragging = true;
+          }
+        }
+
+        function drag(e) {
+          if (isDragging) {
+            e.preventDefault();
+
+            currentX = e.clientX - initialX;
+            currentY = e.clientY - initialY;
+
+            xOffset = currentX;
+            yOffset = currentY;
+
+            setTranslate(currentX, currentY, overlay);
+          }
+        }
+
+        function dragEnd(e) {
+          initialX = currentX;
+          initialY = currentY;
+          isDragging = false;
+        }
+
+        function setTranslate(xPos, yPos, el) {
+          el.style.transform = `translate3d(${xPos}px, ${yPos}px, 0)`;
+        }
+
+        // Button handlers
+        document.getElementById('mcp-complete-btn').addEventListener('click', () => {
+          chrome.runtime.sendMessage({
+            type: 'USER_ACTION_COMPLETE',
+            requestId: requestId
+          });
+          overlay.remove();
+        });
+
+        document.getElementById('mcp-reject-btn').addEventListener('click', () => {
+          chrome.runtime.sendMessage({
+            type: 'USER_ACTION_REJECTED',
+            requestId: requestId
+          });
+          overlay.remove();
+        });
+
+        // Hover effects
+        const completeBtn = document.getElementById('mcp-complete-btn');
+        const rejectBtn = document.getElementById('mcp-reject-btn');
+
+        completeBtn.addEventListener('mouseenter', () => completeBtn.style.background = '#3182ce');
+        completeBtn.addEventListener('mouseleave', () => completeBtn.style.background = '#4a90e2');
+
+        rejectBtn.addEventListener('mouseenter', () => rejectBtn.style.background = '#f7fafc');
+        rejectBtn.addEventListener('mouseleave', () => rejectBtn.style.background = 'white');
+      },
+      args: [requestId, request]
+    });
+  }
+
+  /**
+   * Handle request user action - simplified version using background log
+   */
+  async handleRequestUserAction({ request }) {
+    const requestId = `request-${Date.now()}`;
+    console.log('[Background] User action request:', { requestId, request });
+
+    return new Promise(async (resolve, reject) => {
+      try {
+        // Record start timestamp
+        const startTime = Date.now();
+
+        // Store request so overlay can access it
+        this.currentUserActionRequest = {
+          requestId,
+          request,
+          startTime,
+          resolve,
+          reject
+        };
+
+        // Set up message listener for user response
+        const messageListener = (message, sender) => {
+          if (message.type === 'USER_ACTION_COMPLETE' && message.requestId === requestId) {
+            console.log('[Background] User completed action');
+            const endTime = Date.now();
+
+            // Query background interaction log for this time period
+            const interactions = this.backgroundRecorder.get({
+              startTime,
+              endTime,
+              limit: 1000 // Get all interactions during this period
+            });
+
+            // Store navigation listener before cleanup
+            const navListener = this.currentUserActionRequest?.navigationListener;
+
+            // Clean up
+            this.currentUserActionRequest = null;
+            chrome.action.setBadgeText({ text: '' });
+            chrome.runtime.onMessage.removeListener(messageListener);
+
+            // Remove notification
+            chrome.notifications.clear(requestId);
+
+            // Remove navigation listener
+            if (navListener) {
+              chrome.webNavigation.onCommitted.removeListener(navListener);
+            }
+
+            resolve({
+              status: 'completed',
+              request,
+              startTime,
+              endTime,
+              duration: endTime - startTime,
+              interactions: interactions.interactions
+            });
+          } else if (message.type === 'USER_ACTION_REJECTED' && message.requestId === requestId) {
+            console.log('[Background] User rejected action');
+            const endTime = Date.now();
+
+            // Store navigation listener before cleanup
+            const navListener = this.currentUserActionRequest?.navigationListener;
+
+            // Clean up
+            this.currentUserActionRequest = null;
+            chrome.action.setBadgeText({ text: '' });
+            chrome.runtime.onMessage.removeListener(messageListener);
+
+            // Remove notification
+            chrome.notifications.clear(requestId);
+
+            // Remove navigation listener
+            if (navListener) {
+              chrome.webNavigation.onCommitted.removeListener(navListener);
+            }
+
+            resolve({
+              status: 'rejected',
+              request,
+              startTime,
+              endTime,
+              duration: endTime - startTime,
+              interactions: []
+            });
+          }
+        };
+
+        chrome.runtime.onMessage.addListener(messageListener);
+
+        // Show badge to indicate request pending
+        chrome.action.setBadgeText({ text: '?' });
+        chrome.action.setBadgeBackgroundColor({ color: '#4a90e2' });
+
+        // Create persistent notification
+        await chrome.notifications.create(requestId, {
+          type: 'basic',
+          iconUrl: 'icon-48.png',
+          title: '🤖 Agent Request Active',
+          message: request.substring(0, 100) + (request.length > 100 ? '...' : ''),
+          priority: 2,
+          requireInteraction: true
+        });
+
+        // Store navigation listener to re-inject overlay on navigation
+        const navigationListener = (details) => {
+          if (details.tabId === this.state.tabId && details.frameId === 0) {
+            console.log('[Background] Page navigated, re-injecting overlay');
+            // Re-inject overlay after navigation
+            setTimeout(() => {
+              this.injectUserActionOverlay(requestId, request);
+            }, 500);
+          }
+        };
+        chrome.webNavigation.onCommitted.addListener(navigationListener);
+        this.currentUserActionRequest.navigationListener = navigationListener;
+
+        // Inject user action overlay
+        await this.injectUserActionOverlay(requestId, request);
+        console.log('[Background] User action overlay injected');
+      } catch (error) {
+        console.error('[Background] Error in handleRequestUserAction:', error);
+        this.currentUserActionRequest = null;
+        chrome.action.setBadgeText({ text: '' });
+        reject(error);
+      }
+    });
   }
 
   /**
