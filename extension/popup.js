@@ -7,8 +7,8 @@ class PopupController {
     this.elements = {
       status: document.getElementById('status'),
       statusText: document.getElementById('status-text'),
-      connectBtn: document.getElementById('connect-btn'),
-      disconnectBtn: document.getElementById('disconnect-btn'),
+      connectionBtn: document.getElementById('connection-btn'),
+      gotoTabBtn: document.getElementById('goto-tab-btn'),
       wsState: document.getElementById('ws-state'),
       debuggerState: document.getElementById('debugger-state'),
       tabInfo: document.getElementById('tab-info'),
@@ -36,12 +36,21 @@ class PopupController {
    * Setup event listeners
    */
   setupEventListeners() {
-    this.elements.connectBtn.addEventListener('click', () => {
-      this.connect();
+    this.elements.connectionBtn.addEventListener('click', () => {
+      // Check current state and toggle
+      if (this.elements.connectionBtn.textContent === 'Connect') {
+        this.connect();
+      } else {
+        this.disconnect();
+      }
     });
 
-    this.elements.disconnectBtn.addEventListener('click', () => {
-      this.disconnect();
+    this.elements.gotoTabBtn.addEventListener('click', async () => {
+      const response = await chrome.runtime.sendMessage({ type: 'get_state' });
+      if (response.success && response.data.tabId) {
+        chrome.tabs.update(response.data.tabId, { active: true });
+        window.close(); // Close popup after switching
+      }
     });
   }
 
@@ -135,9 +144,18 @@ class PopupController {
       this.elements.tabInfo.classList.remove('visible');
     }
 
-    // Update buttons
-    this.elements.connectBtn.disabled = state.connected;
-    this.elements.disconnectBtn.disabled = !state.connected;
+    // Update connection button
+    if (state.connected) {
+      this.elements.connectionBtn.textContent = 'Disconnect';
+      this.elements.connectionBtn.classList.remove('primary');
+      this.elements.connectionBtn.classList.add('secondary');
+      this.elements.gotoTabBtn.style.display = 'block';
+    } else {
+      this.elements.connectionBtn.textContent = 'Connect';
+      this.elements.connectionBtn.classList.remove('secondary');
+      this.elements.connectionBtn.classList.add('primary');
+      this.elements.gotoTabBtn.style.display = 'none';
+    }
   }
 
   /**
@@ -167,13 +185,10 @@ class PopupController {
    * Enable/disable buttons
    */
   setButtonsEnabled(enabled) {
+    this.elements.connectionBtn.disabled = !enabled;
     if (enabled) {
-      // Enable appropriate button based on state
+      // Reload state to update button text
       this.loadState();
-    } else {
-      // Disable all buttons
-      this.elements.connectBtn.disabled = true;
-      this.elements.disconnectBtn.disabled = true;
     }
   }
 

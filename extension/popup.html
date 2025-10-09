@@ -81,7 +81,6 @@
     }
 
     button {
-      flex: 1;
       padding: 10px 16px;
       border: none;
       border-radius: 6px;
@@ -89,6 +88,14 @@
       font-weight: 500;
       cursor: pointer;
       transition: all 0.2s;
+    }
+
+    #connection-btn {
+      flex: 1;
+    }
+
+    #goto-tab-btn {
+      flex: 0 0 auto;
     }
 
     button:disabled {
@@ -189,8 +196,8 @@
   </div>
 
   <div class="buttons">
-    <button class="primary" id="connect-btn">Connect</button>
-    <button class="secondary" id="disconnect-btn" disabled>Disconnect</button>
+    <button class="primary" id="connection-btn">Connect</button>
+    <button class="secondary" id="goto-tab-btn" style="display: none;">Go to Tab</button>
   </div>
 
   <div class="info">
