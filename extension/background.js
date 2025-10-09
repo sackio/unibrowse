@@ -1221,7 +1221,7 @@ class BackgroundController {
 
     return new Promise(async (resolve, reject) => {
       try {
-        // Create recording session first
+        // Create recording session first - store tabId so we can use it even if disconnected
         const session = {
           sessionId,
           request,
@@ -1229,7 +1229,8 @@ class BackgroundController {
           actions: [],
           networkActivity: [],
           resolve,
-          reject
+          reject,
+          tabId: this.state.tabId  // Store tabId for later use
         };
 
         this.recordingSessions.set(sessionId, session);
@@ -1357,11 +1358,36 @@ class BackgroundController {
     session.networkActivity = this.networkLogs.slice(session.networkStartIndex);
     console.log('[Background] Captured', session.networkActivity.length, 'network requests');
 
+    // Use stored tabId from session (in case we've disconnected)
+    const tabId = session.tabId || this.state.tabId;
+    if (!tabId) {
+      console.error('[Background] No tabId available to stop recording');
+      // Resolve with what we have
+      const result = {
+        sessionId,
+        request: session.request,
+        duration: Date.now() - session.startTime,
+        startUrl: session.startUrl || '',
+        endUrl: '',
+        actions: session.actions,
+        network: session.networkActivity
+      };
+
+      this.currentRecordingRequest = null;
+      chrome.action.setBadgeText({ text: '' });
+      this.recordingSessions.delete(sessionId);
+
+      if (session.resolve) {
+        session.resolve(result);
+      }
+      return;
+    }
+
     // Send stop message to content script via executeScript
     try {
       console.log('[Background] Sending STOP_RECORDING to content script');
       await chrome.scripting.executeScript({
-        target: { tabId: this.state.tabId },
+        target: { tabId },
         func: (sessionId) => {
           console.log('[Content] Received STOP_RECORDING');
           window.postMessage({
@@ -1374,6 +1400,25 @@ class BackgroundController {
       console.log('[Background] STOP_RECORDING message sent');
     } catch (error) {
       console.error('[Background] Error stopping recording:', error);
+
+      // If we can't inject, resolve with what we have
+      const result = {
+        sessionId,
+        request: session.request,
+        duration: Date.now() - session.startTime,
+        startUrl: session.startUrl || '',
+        endUrl: '',
+        actions: session.actions,
+        network: session.networkActivity
+      };
+
+      this.currentRecordingRequest = null;
+      chrome.action.setBadgeText({ text: '' });
+      this.recordingSessions.delete(sessionId);
+
+      if (session.resolve) {
+        session.resolve(result);
+      }
     }
   }
 }
