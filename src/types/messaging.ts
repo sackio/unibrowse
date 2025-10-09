@@ -56,4 +56,7 @@ export interface SocketMessageMap {
   };
   browser_get_form_values: { formSelector?: string };
   browser_check_element_state: { selector: string };
+
+  // Recording/demonstration tools
+  browser_request_demonstration: { request: string };
 }

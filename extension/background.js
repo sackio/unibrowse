@@ -77,32 +77,62 @@ class BackgroundController {
         if (changeInfo.status === 'complete' && this.state.connected) {
           this.injectTabIndicator();
 
-          // Re-inject content script if there's an active recording
-          if (this.currentRecordingRequest && this.currentRecordingRequest.state === 'active') {
+          // Re-inject overlay and content script if there's an active recording
+          if (this.currentRecordingRequest) {
             const sessionId = this.currentRecordingRequest.sessionId;
             const session = this.recordingSessions.get(sessionId);
             if (session) {
-              console.log('[Background] Re-injecting content script after navigation');
+              console.log('[Background] Re-injecting overlay and content script after navigation');
+
+              // Re-inject overlay first
               chrome.scripting.executeScript({
                 target: { tabId: this.state.tabId },
-                files: ['content-script.js']
+                files: ['recording-overlay.js']
               }).then(() => {
-                // Wait a bit then send start message
-                setTimeout(() => {
-                  chrome.scripting.executeScript({
-                    target: { tabId: this.state.tabId },
-                    func: (sessionId, request) => {
-                      window.postMessage({
-                        type: 'START_RECORDING',
-                        data: { sessionId, request }
-                      }, '*');
-                    },
-                    args: [sessionId, session.request]
-                  });
-                }, 100);
+                // Restore the overlay with its current state
+                const overlayState = {
+                  state: this.currentRecordingRequest.state === 'active' ? 'recording' : 'waiting',
+                  actionCount: this.currentRecordingRequest.actionCount || 0,
+                  startTime: session.recordingStartTime || null,
+                  position: { x: null, y: null }
+                };
+
+                chrome.scripting.executeScript({
+                  target: { tabId: this.state.tabId },
+                  func: (sessionId, request, state) => {
+                    if (window.RecordingOverlay) {
+                      window.mcpRecordingOverlay = new window.RecordingOverlay(sessionId, request, state);
+                    }
+                  },
+                  args: [sessionId, session.request, overlayState]
+                });
               }).catch(err => {
-                console.error('[Background] Failed to re-inject content script:', err);
+                console.error('[Background] Failed to re-inject overlay:', err);
               });
+
+              // Re-inject content script if recording is active
+              if (this.currentRecordingRequest.state === 'active') {
+                chrome.scripting.executeScript({
+                  target: { tabId: this.state.tabId },
+                  files: ['content-script.js']
+                }).then(() => {
+                  // Wait a bit then send start message
+                  setTimeout(() => {
+                    chrome.scripting.executeScript({
+                      target: { tabId: this.state.tabId },
+                      func: (sessionId, request) => {
+                        window.postMessage({
+                          type: 'START_RECORDING',
+                          data: { sessionId, request }
+                        }, '*');
+                      },
+                      args: [sessionId, session.request]
+                    });
+                  }, 100);
+                }).catch(err => {
+                  console.error('[Background] Failed to re-inject content script:', err);
+                });
+              }
             }
           }
         }
@@ -131,31 +161,6 @@ class BackgroundController {
     });
 
     // Notification button clicks
-    chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) => {
-      if (notificationId.startsWith('recording-')) {
-        const sessionId = notificationId.replace('recording-', '');
-        const currentRequest = this.currentRecordingRequest;
-
-        if (currentRequest && currentRequest.state === 'waiting') {
-          // Waiting state buttons: Start (0) or Cancel (1)
-          if (buttonIndex === 0) {
-            // Start Recording button clicked - trigger via runtime message
-            chrome.runtime.sendMessage({ type: 'START_RECORDING_NOW', sessionId });
-          } else {
-            // Cancel button clicked
-            chrome.runtime.sendMessage({ type: 'RECORDING_CANCELLED', sessionId });
-            chrome.notifications.clear(notificationId);
-          }
-        } else if (currentRequest && currentRequest.state === 'active') {
-          // Active state button: Stop (0)
-          if (buttonIndex === 0) {
-            // Stop button clicked
-            chrome.runtime.sendMessage({ type: 'RECORDING_COMPLETE', sessionId });
-          }
-        }
-      }
-    });
-
     // Console API called (for console log collection)
     chrome.debugger.onEvent.addListener((source, method, params) => {
       if (source.tabId === this.state.tabId) {
@@ -1273,27 +1278,19 @@ class BackgroundController {
         const messageListener = (message, sender) => {
           if (message.type === 'START_RECORDING_NOW' && message.sessionId === sessionId) {
             console.log('[Background] User clicked Start, injecting content script');
-            // Update state to active
+            // Update state to active and set recording start time
             if (this.currentRecordingRequest && this.currentRecordingRequest.sessionId === sessionId) {
               this.currentRecordingRequest.state = 'active';
               this.currentRecordingRequest.actionCount = 0;
             }
+            // Set recording start time in session
+            session.recordingStartTime = Date.now();
+
             // Show recording badge
             chrome.action.setBadgeText({ text: '●' });
             chrome.action.setBadgeBackgroundColor({ color: '#ff4444' });
 
-            // Update notification to show Stop button
-            chrome.notifications.update(`recording-${sessionId}`, {
-              type: 'basic',
-              iconUrl: 'icon-128.png',
-              title: '🔴 Recording in Progress',
-              message: `${request}\n\nPress Ctrl+Shift+D or click Stop to finish.`,
-              buttons: [
-                { title: 'Stop Recording' }
-              ],
-              requireInteraction: true
-            });
-            // User clicked Start in popup - inject and start content script
+            // User clicked Start in overlay - inject and start content script
             chrome.scripting.executeScript({
               target: { tabId: this.state.tabId },
               files: ['content-script.js']
@@ -1351,9 +1348,6 @@ class BackgroundController {
             // Clear badge
             chrome.action.setBadgeText({ text: '' });
 
-            // Clear notification
-            chrome.notifications.clear(`recording-${sessionId}`);
-
             // Clean up
             this.recordingSessions.delete(sessionId);
             chrome.runtime.onMessage.removeListener(messageListener);
@@ -1380,22 +1374,29 @@ class BackgroundController {
         chrome.action.setBadgeText({ text: '⏸' });
         chrome.action.setBadgeBackgroundColor({ color: '#4a90e2' });
 
-        // Show notification to alert user
-        chrome.notifications.create(`recording-${sessionId}`, {
-          type: 'basic',
-          iconUrl: 'icon-128.png',
-          title: '🎬 Demonstration Request',
-          message: request,
-          buttons: [
-            { title: 'Start Recording' },
-            { title: 'Cancel' }
-          ],
-          requireInteraction: true
+        // Inject recording overlay into the page
+        console.log('[Background] Injecting recording overlay');
+        chrome.scripting.executeScript({
+          target: { tabId: this.state.tabId },
+          files: ['recording-overlay.js']
+        }).then(() => {
+          console.log('[Background] Overlay script injected, creating overlay UI');
+          // Create the overlay with sessionId and request
+          chrome.scripting.executeScript({
+            target: { tabId: this.state.tabId },
+            func: (sessionId, request) => {
+              if (window.RecordingOverlay) {
+                window.mcpRecordingOverlay = new window.RecordingOverlay(sessionId, request);
+              } else {
+                console.error('[Overlay] RecordingOverlay class not found');
+              }
+            },
+            args: [sessionId, request]
+          });
+        }).catch(err => {
+          console.error('[Background] Failed to inject recording overlay:', err);
+          reject(err);
         });
-
-        // Content script injection happens when user clicks Start button in popup
-        // No timeout - recordings can be long-running
-        // User will stop recording manually via hotkey or Done button in popup
 
       } catch (error) {
         this.recordingSessions.delete(sessionId);

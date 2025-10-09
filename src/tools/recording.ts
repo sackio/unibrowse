@@ -11,11 +11,22 @@ export const requestDemonstration: ToolFactory = (snapshot) => ({
     inputSchema: zodToJsonSchema(RequestDemonstrationTool.shape.arguments),
   },
   handle: async (context, params) => {
-    const { request } = RequestDemonstrationTool.shape.arguments.parse(params);
+    const { request, timeout } = RequestDemonstrationTool.shape.arguments.parse(params);
 
-    const result = await context.sendSocketMessage("browser_request_demonstration", {
+    // Start the recording (non-blocking) and wait for completion
+    const resultPromise = context.sendSocketMessage("browser_request_demonstration", {
       request
     });
+
+    // If timeout is specified, race against it; otherwise wait indefinitely
+    const result = timeout
+      ? await Promise.race([
+          resultPromise,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`Recording timeout after ${timeout} seconds`)), timeout * 1000)
+          )
+        ])
+      : await resultPromise;
 
     // Format the recorded demonstration for display
     const actions = result.actions || [];

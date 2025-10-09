@@ -380,5 +380,6 @@ export const RequestDemonstrationTool = z.object({
   ),
   arguments: z.object({
     request: z.string().describe("Description of what you want the user to demonstrate (e.g., 'Please add an item to your cart')"),
+    timeout: z.number().optional().describe("Maximum time to wait for the demonstration in seconds (default: no timeout - waits indefinitely). Specify a timeout only if you need to limit the duration."),
   }),
 });

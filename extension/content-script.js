@@ -5,6 +5,9 @@
  * when the user is demonstrating a workflow to Claude.
  */
 
+// Prevent redefinition on re-injection
+if (!window.DemonstrationRecorder) {
+
 class DemonstrationRecorder {
   constructor(sessionId, request) {
     this.sessionId = sessionId;
@@ -332,6 +335,12 @@ class DemonstrationRecorder {
       const count = this.actions.length;
       countEl.textContent = `${count} action${count !== 1 ? 's' : ''}`;
     }
+
+    // Also update the overlay if it exists
+    if (window.mcpRecordingOverlay) {
+      window.mcpRecordingOverlay.actionCount = this.actions.length;
+      window.mcpRecordingOverlay.updateActionCount();
+    }
   }
 
   /**
@@ -547,6 +556,30 @@ class DemonstrationRecorder {
       }, 500);
     };
 
+    // Mouse movement tracking (debounced to reduce data)
+    const mouseMoveHandler = (e) => {
+      // Ignore if hovering over recording UI
+      if (e.target.closest('#mcp-recording-ui') || e.target.closest('#mcp-recording-overlay-container')) {
+        return;
+      }
+
+      clearTimeout(this.mouseMoveTimeout);
+      this.mouseMoveTimeout = setTimeout(() => {
+        // Get element under mouse
+        const elementUnderMouse = document.elementFromPoint(e.clientX, e.clientY);
+
+        this.recordAction('mousemove', {
+          x: e.clientX,
+          y: e.clientY,
+          pageX: e.pageX,
+          pageY: e.pageY,
+          screenX: e.screenX,
+          screenY: e.screenY,
+          elementUnder: elementUnderMouse ? this.captureElementContext(elementUnderMouse) : null
+        });
+      }, 300); // Record every 300ms of movement
+    };
+
     // Store listeners for cleanup
     this.listeners = [
       { event: 'click', handler: clickHandler, options: { capture: true } },
@@ -564,6 +597,7 @@ class DemonstrationRecorder {
       { event: 'drop', handler: dropHandler },
       { event: 'scroll', handler: scrollHandler },
       { event: 'wheel', handler: wheelHandler },
+      { event: 'mousemove', handler: mouseMoveHandler },
       { event: 'focus', handler: focusHandler, options: { capture: true } },
       { event: 'blur', handler: blurHandler, options: { capture: true } }
     ];
@@ -603,6 +637,11 @@ class DemonstrationRecorder {
     }
   }
 }
+
+// Store class globally
+window.DemonstrationRecorder = DemonstrationRecorder;
+
+} // End of redefinition check
 
 // Message handler from background script
 window.addEventListener('message', (event) => {

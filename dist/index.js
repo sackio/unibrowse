@@ -38,7 +38,7 @@ import {
   snapshot,
   type,
   wait
-} from "./chunk-7GVK4SL5.js";
+} from "./chunk-3J7X7WQL.js";
 
 // src/index.ts
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -94,10 +94,16 @@ var requestDemonstration = (snapshot2) => ({
     inputSchema: zodToJsonSchema2(RequestDemonstrationTool.shape.arguments)
   },
   handle: async (context, params) => {
-    const { request } = RequestDemonstrationTool.shape.arguments.parse(params);
-    const result = await context.sendSocketMessage("browser_request_demonstration", {
+    const { request, timeout } = RequestDemonstrationTool.shape.arguments.parse(params);
+    const resultPromise = context.sendSocketMessage("browser_request_demonstration", {
       request
     });
+    const result = timeout ? await Promise.race([
+      resultPromise,
+      new Promise(
+        (_, reject) => setTimeout(() => reject(new Error(`Recording timeout after ${timeout} seconds`)), timeout * 1e3)
+      )
+    ]) : await resultPromise;
     const actions = result.actions || [];
     const network = result.network || [];
     let summary = `# Demonstration Recording
