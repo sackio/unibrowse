@@ -3,7 +3,7 @@
  * Central coordinator for WebSocket, Chrome Debugger, and message routing
  */
 
-importScripts('utils/websocket.js', 'utils/cdp.js');
+importScripts('utils/websocket-offscreen.js', 'utils/cdp.js');
 
 /**
  * Background Interaction Recorder
@@ -268,7 +268,7 @@ class BackgroundRecorder {
 
 class BackgroundController {
   constructor() {
-    this.ws = new WebSocketManager('ws://localhost:9009');
+    this.ws = new WebSocketManager('ws://localhost:9010/ws');
     this.cdp = new CDPHelper();
     this.handlers = {};
     this.consoleLogs = [];
@@ -413,10 +413,18 @@ class BackgroundController {
 
     // Messages from popup
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      // Handle background interaction capture
-      if (message.type === 'BACKGROUND_INTERACTION' && this.state.connected) {
-        this.backgroundRecorder.addAction(message.interaction);
+      // Handle WebSocket messages from offscreen document
+      if (message.type === 'WS_MESSAGE') {
+        console.log('[Background] Received WS_MESSAGE from offscreen:', message.message?.type);
+        this.handleMCPMessage(message.message);
         return false;
+      }
+
+      // Handle background interaction capture
+      // Always accept interactions, even when not connected, so we don't lose data
+      if (message.type === 'BACKGROUND_INTERACTION') {
+        this.backgroundRecorder.addAction(message.interaction);
+        return false; // Synchronous response - no need to keep channel open
       }
 
       // Only handle popup-specific messages here
@@ -623,10 +631,10 @@ class BackgroundController {
   /**
    * Update connection state and notify popup
    */
-  updateConnectionState() {
+  async updateConnectionState() {
     const state = {
       connected: this.state.connected,
-      wsState: this.ws.getState(),
+      wsState: await this.ws.getState(),
       debuggerAttached: this.cdp.isAttached(),
       tabId: this.state.tabId,
       tabUrl: this.state.tabUrl,
@@ -907,9 +915,11 @@ class BackgroundController {
     const handler = this.handlers[type];
     if (!handler) {
       console.warn('[Background] No handler for message type:', type);
-      this.ws.send({
+      this.ws.sendNoResponse({
         id,
         error: `Unknown message type: ${type}`
+      }).catch(err => {
+        console.error('[Background] Failed to send error response:', err);
       });
       return;
     }
@@ -917,21 +927,25 @@ class BackgroundController {
     // Execute handler
     try {
       const result = await handler(payload);
-      this.ws.send({
+      this.ws.sendNoResponse({
         type: 'messageResponse',
         payload: {
           requestId: id,
           result
         }
+      }).catch(err => {
+        console.error('[Background] Failed to send success response:', err);
       });
     } catch (error) {
       console.error('[Background] Handler error:', error);
-      this.ws.send({
+      this.ws.sendNoResponse({
         type: 'messageResponse',
         payload: {
           requestId: id,
           error: error.message
         }
+      }).catch(err => {
+        console.error('[Background] Failed to send error response:', err);
       });
     }
   }
@@ -962,18 +976,34 @@ class BackgroundController {
         break;
 
       case 'get_state':
-        sendResponse({
-          success: true,
-          data: {
-            connected: this.state.connected,
-            wsState: this.ws.getState(),
-            debuggerAttached: this.cdp.isAttached(),
-            tabId: this.state.tabId,
-            tabUrl: this.state.tabUrl,
-            tabTitle: this.state.tabTitle,
-            recordingRequest: this.currentRecordingRequest || null
-          }
-        });
+        try {
+          const wsState = await this.ws.getState();
+          sendResponse({
+            success: true,
+            data: {
+              connected: this.state.connected,
+              wsState: wsState,
+              debuggerAttached: this.cdp.isAttached(),
+              tabId: this.state.tabId,
+              tabUrl: this.state.tabUrl,
+              tabTitle: this.state.tabTitle,
+              recordingRequest: this.currentRecordingRequest || null
+            }
+          });
+        } catch (error) {
+          sendResponse({
+            success: true,
+            data: {
+              connected: this.state.connected,
+              wsState: 'disconnected',
+              debuggerAttached: this.cdp.isAttached(),
+              tabId: this.state.tabId,
+              tabUrl: this.state.tabUrl,
+              tabTitle: this.state.tabTitle,
+              recordingRequest: this.currentRecordingRequest || null
+            }
+          });
+        }
         break;
 
       default:
@@ -1627,7 +1657,7 @@ class BackgroundController {
             // Ignore if already stopping
             if (!this.recordingSessions.has(sessionId)) {
               console.log('[Background] Session already stopped, ignoring');
-              return;
+              return false;
             }
             // Clear currentRecordingRequest immediately to prevent re-injection
             this.currentRecordingRequest = null;
@@ -1653,6 +1683,8 @@ class BackgroundController {
 
             resolve(result);
           }
+          // Explicitly return false to indicate no async response needed
+          return false;
         };
 
         chrome.runtime.onMessage.addListener(messageListener);
@@ -2017,6 +2049,8 @@ class BackgroundController {
               interactions: []
             });
           }
+          // Explicitly return false to indicate no async response needed
+          return false;
         };
 
         chrome.runtime.onMessage.addListener(messageListener);
