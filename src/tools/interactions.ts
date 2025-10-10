@@ -5,9 +5,17 @@ import {
   PruneInteractionsTool,
   SearchInteractionsTool
 } from "@/types/tool-schemas";
+import { textResponse, errorResponse } from "@/utils/response-helpers";
 
 import type { Tool } from "./tool";
 
+/**
+ * Retrieve user interactions from the background audit log
+ * Retrieves interactions that have been continuously recorded in the background while
+ * connected to a tab. Supports flexible filtering by time range, interaction types,
+ * URL patterns, and selector patterns. Can paginate results with offset and limit.
+ * Returns formatted markdown summary of interactions with timestamps, URLs, elements, and values.
+ */
 export const getInteractions: Tool = {
   schema: {
     name: GetInteractionsTool.shape.name.value,
@@ -15,9 +23,11 @@ export const getInteractions: Tool = {
     inputSchema: zodToJsonSchema(GetInteractionsTool.shape.arguments),
   },
   handle: async (context, params) => {
-    const validatedParams = GetInteractionsTool.shape.arguments.parse(params);
+    try {
+      await context.ensureAttached();
+      const validatedParams = GetInteractionsTool.shape.arguments.parse(params);
 
-    const result = await context.sendSocketMessage("browser_get_interactions", validatedParams);
+      const result = await context.sendSocketMessage("browser_get_interactions", validatedParams);
 
     const interactions = result.interactions || [];
     const totalCount = result.totalCount || 0;
@@ -76,21 +86,24 @@ export const getInteractions: Tool = {
       summary += `\n`;
     }
 
-    if (interactions.length === 0) {
-      summary += `No interactions found matching the specified criteria.\n`;
-    }
+      if (interactions.length === 0) {
+        summary += `No interactions found matching the specified criteria.\n`;
+      }
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: summary,
-        },
-      ],
-    };
+      return textResponse(summary);
+    } catch (error) {
+      return errorResponse(`Failed to get interactions: ${error.message}`, false, error);
+    }
   },
 };
 
+/**
+ * Remove interactions from the background audit log
+ * Allows selective pruning of interactions based on various criteria including time ranges,
+ * counts (keep first/last N, remove oldest N), interaction types, URL patterns, and selector
+ * patterns. Useful for managing log size and removing irrelevant or sensitive interaction data.
+ * Returns summary of how many interactions were removed and how many remain.
+ */
 export const pruneInteractions: Tool = {
   schema: {
     name: PruneInteractionsTool.shape.name.value,
@@ -98,9 +111,11 @@ export const pruneInteractions: Tool = {
     inputSchema: zodToJsonSchema(PruneInteractionsTool.shape.arguments),
   },
   handle: async (context, params) => {
-    const validatedParams = PruneInteractionsTool.shape.arguments.parse(params);
+    try {
+      await context.ensureAttached();
+      const validatedParams = PruneInteractionsTool.shape.arguments.parse(params);
 
-    const result = await context.sendSocketMessage("browser_prune_interactions", validatedParams);
+      const result = await context.sendSocketMessage("browser_prune_interactions", validatedParams);
 
     const removedCount = result.removedCount || 0;
     const remainingCount = result.remainingCount || 0;
@@ -142,21 +157,24 @@ export const pruneInteractions: Tool = {
       criteria.push(`selector pattern: ${validatedParams.selectorPattern}`);
     }
 
-    if (criteria.length > 0) {
-      summary += `**Criteria**: ${criteria.join(', ')}\n`;
-    }
+      if (criteria.length > 0) {
+        summary += `**Criteria**: ${criteria.join(', ')}\n`;
+      }
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: summary,
-        },
-      ],
-    };
+      return textResponse(summary);
+    } catch (error) {
+      return errorResponse(`Failed to prune interactions: ${error.message}`, false, error);
+    }
   },
 };
 
+/**
+ * Search the background interaction log using text queries
+ * Performs text search across interaction data including selectors, values, URLs, and
+ * element text content. Supports filtering by time range and interaction types. Returns
+ * matching interactions with highlighted matched fields. Useful for finding specific
+ * interactions or understanding what actions were performed related to specific content.
+ */
 export const searchInteractions: Tool = {
   schema: {
     name: SearchInteractionsTool.shape.name.value,
@@ -164,9 +182,11 @@ export const searchInteractions: Tool = {
     inputSchema: zodToJsonSchema(SearchInteractionsTool.shape.arguments),
   },
   handle: async (context, params) => {
-    const validatedParams = SearchInteractionsTool.shape.arguments.parse(params);
+    try {
+      await context.ensureAttached();
+      const validatedParams = SearchInteractionsTool.shape.arguments.parse(params);
 
-    const result = await context.sendSocketMessage("browser_search_interactions", validatedParams);
+      const result = await context.sendSocketMessage("browser_search_interactions", validatedParams);
 
     const interactions = result.interactions || [];
     const totalMatches = result.totalMatches || 0;
@@ -209,17 +229,13 @@ export const searchInteractions: Tool = {
       summary += `\n`;
     }
 
-    if (interactions.length === 0) {
-      summary += `No interactions found matching "${validatedParams.query}".\n`;
-    }
+      if (interactions.length === 0) {
+        summary += `No interactions found matching "${validatedParams.query}".\n`;
+      }
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: summary,
-        },
-      ],
-    };
+      return textResponse(summary);
+    } catch (error) {
+      return errorResponse(`Failed to search interactions: ${error.message}`, false, error);
+    }
   },
 };

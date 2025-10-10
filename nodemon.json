@@ -1,8 +1,8 @@
 {
-  "watch": ["src", "extension"],
-  "ext": "ts,js",
+  "watch": ["src", "extension", ".env"],
+  "ext": "ts,js,env",
   "ignore": ["dist", "node_modules"],
-  "exec": "npm run build && node dist/http-server.js",
+  "exec": "npm run build && node --env-file=.env dist/http-server.js",
   "env": {
     "NODE_ENV": "development"
   },

@@ -17,13 +17,12 @@ module.exports = {
     autorestart: true,
     watch: false,
     max_memory_restart: '500M',
+    node_args: '--env-file=.env',
     env: {
-      NODE_ENV: 'production',
-      PORT: 3010
+      NODE_ENV: 'production'
     },
     env_development: {
-      NODE_ENV: 'development',
-      PORT: 3010
+      NODE_ENV: 'development'
     },
     error_file: '/home/ben/code/forks/browser-mcp/logs/error.log',
     out_file: '/home/ben/code/forks/browser-mcp/logs/out.log',

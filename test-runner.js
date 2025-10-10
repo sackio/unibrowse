@@ -16,8 +16,8 @@
  *   --quick    Run only essential tests (skip demonstrations)
  */
 
-const { spawn } = require('child_process');
-const readline = require('readline');
+import { spawn } from 'child_process';
+import readline from 'readline';
 
 class MCPTestRunner {
   constructor(quickMode = false) {

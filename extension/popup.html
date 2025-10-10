@@ -177,6 +177,128 @@
       color: #666;
       word-break: break-all;
     }
+
+    /* Multi-window tab list styles */
+    .tabs-section {
+      margin-top: 20px;
+    }
+
+    .tabs-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .tabs-header h2 {
+      font-size: 16px;
+      font-weight: 600;
+      color: #1a1a1a;
+      margin: 0;
+    }
+
+    .refresh-tabs {
+      background: none;
+      border: none;
+      color: #007bff;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 4px 8px;
+      text-decoration: underline;
+      width: auto;
+      margin: 0;
+    }
+
+    .refresh-tabs:hover {
+      color: #0056b3;
+    }
+
+    .window-group {
+      margin-bottom: 15px;
+    }
+
+    .window-title {
+      font-weight: 600;
+      font-size: 13px;
+      color: #666;
+      margin-bottom: 8px;
+      padding-left: 8px;
+      border-left: 3px solid #007bff;
+    }
+
+    .tab-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .tab-item {
+      padding: 10px 12px;
+      margin-bottom: 6px;
+      background-color: #f8f9fa;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+      border-left: 3px solid transparent;
+    }
+
+    .tab-item:hover {
+      background-color: #e9ecef;
+    }
+
+    .tab-item.active {
+      background-color: #e7f3ff;
+      border-left-color: #007bff;
+    }
+
+    .tab-item.attached {
+      background-color: #d4edda;
+      border-left-color: #28a745;
+    }
+
+    .tab-item-title {
+      font-weight: 500;
+      font-size: 13px;
+      color: #1a1a1a;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .tab-item-url {
+      font-size: 11px;
+      color: #666;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .tab-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      margin-left: 6px;
+    }
+
+    .tab-badge.active {
+      background-color: #007bff;
+      color: white;
+    }
+
+    .tab-badge.attached {
+      background-color: #28a745;
+      color: white;
+    }
+
+    .no-tabs {
+      text-align: center;
+      padding: 20px;
+      color: #999;
+      font-size: 13px;
+    }
   </style>
 </head>
 <body>
@@ -188,8 +310,6 @@
   </div>
 
   <button class="primary" id="connection-btn">Connect</button>
-
-  <button class="secondary goto-tab" id="goto-tab-btn" style="display: none;">Go to Active Tab</button>
 
   <div class="info">
     <div class="info-row">
@@ -206,9 +326,12 @@
     </div>
   </div>
 
-  <div class="tab-info" id="tab-info">
-    <div class="tab-title" id="tab-title"></div>
-    <div class="tab-url" id="tab-url"></div>
+  <div class="tabs-section" id="tabs-section" style="display: none;">
+    <div class="tabs-header">
+      <h2>Browser Windows & Tabs</h2>
+      <button class="refresh-tabs" id="refresh-tabs-btn">Refresh</button>
+    </div>
+    <div id="tabs-list"></div>
   </div>
 
   <div class="error" id="error"></div>

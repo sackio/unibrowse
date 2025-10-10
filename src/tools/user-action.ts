@@ -1,9 +1,17 @@
 import { zodToJsonSchema } from "zod-to-json-schema";
 
 import { RequestUserActionTool } from "@/types/tool-schemas";
+import { textResponse, errorResponse } from "@/utils/response-helpers";
 
 import type { Tool, ToolFactory } from "./tool";
 
+/**
+ * Request the user to perform an action in the browser
+ * Shows a notification and overlay with instructions. User can complete or reject the
+ * request. Captures all interactions from request to completion via the background log.
+ * More flexible than requestDemonstration - use this for both learning workflows and
+ * getting user assistance. Returns grouped interactions by type with timestamps and details.
+ */
 export const requestUserAction: ToolFactory = (snapshot) => ({
   schema: {
     name: RequestUserActionTool.shape.name.value,
@@ -11,21 +19,23 @@ export const requestUserAction: ToolFactory = (snapshot) => ({
     inputSchema: zodToJsonSchema(RequestUserActionTool.shape.arguments),
   },
   handle: async (context, params) => {
-    const { request, timeout } = RequestUserActionTool.shape.arguments.parse(params);
+    try {
+      await context.ensureAttached();
+      const { request, timeout } = RequestUserActionTool.shape.arguments.parse(params);
 
-    // Calculate WebSocket timeout: use user's timeout if specified, otherwise 5 minutes default
-    const wsTimeoutMs = timeout ? timeout * 1000 : 300000; // 5 minutes default
+      // Calculate WebSocket timeout: use user's timeout if specified, otherwise 5 minutes default
+      const wsTimeoutMs = timeout ? timeout * 1000 : 300000; // 5 minutes default
 
-    // Send request to browser and wait for user response
-    const result = await context.sendSocketMessage(
-      "browser_request_user_action",
-      { request },
-      { timeoutMs: wsTimeoutMs }
-    );
+      // Send request to browser and wait for user response
+      const result = await context.sendSocketMessage(
+        "browser_request_user_action",
+        { request },
+        { timeoutMs: wsTimeoutMs }
+      );
 
-    // Format the result
-    const interactions = result.interactions || [];
-    const status = result.status; // 'completed', 'rejected', 'timeout'
+      // Format the result
+      const interactions = result.interactions || [];
+      const status = result.status; // 'completed', 'rejected', 'timeout'
 
     let summary = `# User Action Request\n\n`;
     summary += `**Request**: ${request}\n`;
@@ -82,17 +92,13 @@ export const requestUserAction: ToolFactory = (snapshot) => ({
             summary += `... and ${items.length - 10} more ${type} interactions\n`;
           }
           summary += `\n`;
+          }
         }
       }
-    }
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: summary,
-        },
-      ],
-    };
+      return textResponse(summary);
+    } catch (error) {
+      return errorResponse(`Failed to request user action: ${error.message}`, false, error);
+    }
   },
 });

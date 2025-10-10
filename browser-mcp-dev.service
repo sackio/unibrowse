@@ -1,0 +1,27 @@
+[Unit]
+Description=Browser MCP Server (Development Mode with Hot Reload)
+Documentation=https://browsermcp.io
+After=network.target
+
+[Service]
+Type=simple
+User=ben
+WorkingDirectory=/home/ben/code/forks/browser-mcp
+Environment="NODE_ENV=development"
+Environment="PATH=/home/ben/.nvm/versions/node/v22.19.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/ben/.nvm/versions/node/v22.19.0/bin/npm run dev
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=browser-mcp-dev
+
+# Less restrictive security for development
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ben/code/forks/browser-mcp
+
+[Install]
+WantedBy=multi-user.target

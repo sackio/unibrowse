@@ -8,8 +8,7 @@ Type=simple
 User=ben
 WorkingDirectory=/home/ben/code/forks/browser-mcp
 Environment="NODE_ENV=production"
-Environment="PORT=3010"
-ExecStart=/usr/bin/node /home/ben/code/forks/browser-mcp/dist/http-server.js
+ExecStart=/usr/bin/node --env-file=/home/ben/code/forks/browser-mcp/.env /home/ben/code/forks/browser-mcp/dist/http-server.js
 Restart=always
 RestartSec=10
 StandardOutput=journal

@@ -9,6 +9,7 @@ if (!window.backgroundInteractionCapture) {
   class BackgroundInteractionCapture {
     constructor() {
       this.captureStartTime = Date.now();
+      this.extensionInvalidated = false;
       this.setupListeners();
       console.log('[BackgroundCapture] Started capturing interactions');
     }
@@ -80,6 +81,18 @@ if (!window.backgroundInteractionCapture) {
      * Send interaction to background
      */
     sendInteraction(type, data = {}) {
+      // Stop sending if extension is invalidated
+      if (this.extensionInvalidated) {
+        return;
+      }
+
+      // Check if runtime is still valid
+      if (!chrome.runtime?.id) {
+        this.extensionInvalidated = true;
+        console.log('[BackgroundCapture] Extension context invalidated, stopping capture');
+        return;
+      }
+
       const interaction = {
         type,
         timestamp: Date.now(),
@@ -87,15 +100,26 @@ if (!window.backgroundInteractionCapture) {
         ...data
       };
 
-      chrome.runtime.sendMessage({
-        type: 'BACKGROUND_INTERACTION',
-        interaction
-      }).catch(err => {
-        // Silently fail if extension is reloading or disconnected
-        if (!err.message.includes('Extension context invalidated')) {
-          console.error('[BackgroundCapture] Failed to send interaction:', err);
+      try {
+        chrome.runtime.sendMessage({
+          type: 'BACKGROUND_INTERACTION',
+          interaction
+        }).catch(err => {
+          // Handle extension reload/disconnect
+          if (err.message?.includes('Extension context invalidated')) {
+            this.extensionInvalidated = true;
+            console.log('[BackgroundCapture] Extension reloaded, stopping capture');
+          } else {
+            console.error('[BackgroundCapture] Failed to send interaction:', err);
+          }
+        });
+      } catch (err) {
+        // Synchronous error - extension likely invalidated
+        if (err.message?.includes('Extension context invalidated') ||
+            err.message?.includes('context was destroyed')) {
+          this.extensionInvalidated = true;
         }
-      });
+      }
     }
 
     /**

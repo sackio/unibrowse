@@ -11,7 +11,22 @@
     "storage",
     "notifications",
     "webNavigation",
-    "offscreen"
+    "offscreen",
+    "webRequest",
+    "declarativeNetRequest",
+    "cookies",
+    "history",
+    "bookmarks",
+    "sessions",
+    "downloads",
+    "downloads.shelf",
+    "clipboardRead",
+    "clipboardWrite",
+    "system.cpu",
+    "system.memory",
+    "system.storage",
+    "management",
+    "contextMenus"
   ],
   "host_permissions": [
     "<all_urls>"

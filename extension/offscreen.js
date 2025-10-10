@@ -176,6 +176,19 @@ class OffscreenManager {
           console.log('[Offscreen] WebSocket connected');
           this.connectionState = 'connected';
 
+          // IMPORTANT: Send identification message to server
+          // This tells the server that this connection is from the browser extension
+          // (not from an external MCP client like the test suite)
+          try {
+            this.ws.send(JSON.stringify({
+              type: 'EXTENSION_REGISTER',
+              source: 'browser-extension'
+            }));
+            console.log('[Offscreen] Sent extension identification to server');
+          } catch (error) {
+            console.error('[Offscreen] Failed to send extension identification:', error);
+          }
+
           // Store connection info (only if Chrome APIs available)
           if (this.isChromeAvailable()) {
             try {
