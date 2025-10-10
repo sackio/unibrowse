@@ -5,6 +5,10 @@
 
 importScripts('utils/websocket-offscreen.js', 'utils/cdp.js');
 
+// Global state for auto-connect
+let offscreenReady = false;
+let autoConnectAttempted = false;
+
 /**
  * Background Interaction Recorder
  * Continuously records all user interactions in a circular buffer
@@ -312,11 +316,11 @@ class BackgroundController {
       console.log('[Background] Extension icon clicked');
     });
 
-    // Tab closed/removed
+    // Tab closed/removed - enhanced detection with recording cleanup
     chrome.tabs.onRemoved.addListener((tabId) => {
       if (this.state.tabId === tabId) {
         console.log('[Background] Active tab closed');
-        this.disconnect();
+        this.handleTabClosed(tabId);
       }
     });
 
@@ -336,7 +340,8 @@ class BackgroundController {
           }
         }
         // Re-inject indicator when page finishes loading
-        if (changeInfo.status === 'complete' && this.state.connected) {
+        // Only if debugger is attached (indicators require CDP)
+        if (changeInfo.status === 'complete' && this.state.connected && this.cdp.isAttached()) {
           this.injectTabIndicator();
           this.injectBackgroundCapture(); // Always re-inject background capture on navigation
 
@@ -413,6 +418,13 @@ class BackgroundController {
 
     // Messages from popup
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      // Handle offscreen document ready signal
+      if (message.type === 'OFFSCREEN_READY') {
+        console.log('[Background] Offscreen document ready');
+        offscreenReady = true;
+        return false;
+      }
+
       // Handle WebSocket messages from offscreen document
       if (message.type === 'WS_MESSAGE') {
         console.log('[Background] Received WS_MESSAGE from offscreen:', message.message?.type);
@@ -428,7 +440,7 @@ class BackgroundController {
       }
 
       // Only handle popup-specific messages here
-      const popupMessages = ['connect', 'disconnect', 'get_state'];
+      const popupMessages = ['connect', 'disconnect', 'get_state', 'ensure_attached'];
       if (popupMessages.includes(message.type)) {
         this.handlePopupMessage(message, sendResponse);
         return true; // Keep channel open for async response
@@ -485,6 +497,9 @@ class BackgroundController {
   registerHandlers() {
     // We'll import handlers from separate files
     // For now, define inline handlers as placeholders
+
+    // Connection/Attachment handlers
+    this.handlers['browser_ensure_attached'] = this.handleEnsureAttached.bind(this);
 
     // Navigation handlers
     this.handlers['browser_navigate'] = this.handleNavigate.bind(this);
@@ -543,49 +558,75 @@ class BackgroundController {
     this.handlers['browser_prune_interactions'] = this.handlePruneInteractions.bind(this);
     this.handlers['browser_search_interactions'] = this.handleSearchInteractions.bind(this);
 
+    // Cookie management handlers
+    this.handlers['browser_get_cookies'] = this.handleGetCookies.bind(this);
+    this.handlers['browser_set_cookie'] = this.handleSetCookie.bind(this);
+    this.handlers['browser_delete_cookie'] = this.handleDeleteCookie.bind(this);
+    this.handlers['browser_clear_cookies'] = this.handleClearCookies.bind(this);
+
+    // Download management handlers
+    this.handlers['browser_download_file'] = this.handleDownloadFile.bind(this);
+    this.handlers['browser_get_downloads'] = this.handleGetDownloads.bind(this);
+    this.handlers['browser_cancel_download'] = this.handleCancelDownload.bind(this);
+    this.handlers['browser_open_download'] = this.handleOpenDownload.bind(this);
+
+    // Clipboard handlers
+    this.handlers['browser_get_clipboard'] = this.handleGetClipboard.bind(this);
+    this.handlers['browser_set_clipboard'] = this.handleSetClipboard.bind(this);
+
+    // History handlers
+    this.handlers['browser_search_history'] = this.handleSearchHistory.bind(this);
+    this.handlers['browser_get_history_visits'] = this.handleGetHistoryVisits.bind(this);
+    this.handlers['browser_delete_history'] = this.handleDeleteHistory.bind(this);
+    this.handlers['browser_clear_history'] = this.handleClearHistory.bind(this);
+
+    // System information handlers
+    this.handlers['browser_get_version'] = this.handleGetVersion.bind(this);
+    this.handlers['browser_get_system_info'] = this.handleGetSystemInfo.bind(this);
+    this.handlers['browser_get_browser_info'] = this.handleGetBrowserInfo.bind(this);
+
+    // Network handlers
+    this.handlers['browser_get_network_state'] = this.handleGetNetworkState.bind(this);
+    this.handlers['browser_set_network_conditions'] = this.handleSetNetworkConditions.bind(this);
+    this.handlers['browser_clear_cache'] = this.handleClearCache.bind(this);
+
+    // Bookmark handlers
+    this.handlers['browser_get_bookmarks'] = this.handleGetBookmarks.bind(this);
+    this.handlers['browser_create_bookmark'] = this.handleCreateBookmark.bind(this);
+    this.handlers['browser_delete_bookmark'] = this.handleDeleteBookmark.bind(this);
+    this.handlers['browser_search_bookmarks'] = this.handleSearchBookmarks.bind(this);
+
+    // Extension management handlers
+    this.handlers['browser_list_extensions'] = this.handleListExtensions.bind(this);
+    this.handlers['browser_get_extension_info'] = this.handleGetExtensionInfo.bind(this);
+    this.handlers['browser_enable_extension'] = this.handleEnableExtension.bind(this);
+    this.handlers['browser_disable_extension'] = this.handleDisableExtension.bind(this);
+
     console.log('[Background] Registered', Object.keys(this.handlers).length, 'handlers');
   }
 
   /**
-   * Connect to MCP server and attach debugger
+   * Connect to MCP server via WebSocket
+   * Debugger attachment is deferred until first tool use (lazy attachment)
    */
   async connect() {
     try {
-      // Get active tab
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab) {
-        throw new Error('No active tab found');
-      }
+      console.log('[Background] Connecting to MCP server...');
 
-      console.log('[Background] Connecting to tab:', tab.id, tab.url);
+      // Connect WebSocket (no debugger attachment yet - lazy attachment)
+      this.ws.connect();
 
-      // Attach debugger
-      await this.cdp.attach(tab.id);
-
-      // Update state
-      this.state.tabId = tab.id;
-      this.state.tabUrl = tab.url;
-      this.state.originalTabTitle = tab.title;
-      this.state.tabTitle = tab.title;
+      // Update state - connected now means WebSocket connected
+      // Debugger will be attached on-demand via ensureAttached()
+      this.state.connected = true;
       this.consoleLogs = [];
       this.networkLogs = [];
 
-      // Connect WebSocket
-      this.ws.connect();
-
-      this.state.connected = true;
       this.updateConnectionState();
 
-      // Update tab title to show MCP indicator
-      await this.updateTabTitle();
+      console.log('[Background] Connected to MCP server (WebSocket only, debugger will attach on first tool use)');
 
-      // Inject visual indicator on the page
-      await this.injectTabIndicator();
-
-      // Inject background interaction capture script
-      await this.injectBackgroundCapture();
-
-      return { success: true, tabId: tab.id, url: tab.url };
+      return { success: true, message: 'Connected to MCP server. Debugger will attach on first tool use.' };
     } catch (error) {
       console.error('[Background] Connection failed:', error);
       await this.disconnect();
@@ -626,6 +667,157 @@ class BackgroundController {
 
     this.updateConnectionState();
     console.log('[Background] Disconnect complete');
+  }
+
+  /**
+   * Handle tab closure with proper cleanup
+   * Cleans up recording sessions, user action requests, and disconnects gracefully
+   * @param {number} tabId - The ID of the closed tab
+   */
+  async handleTabClosed(tabId) {
+    console.log('[Background] handleTabClosed called for tab:', tabId);
+
+    // Check if there's an active recording session
+    if (this.currentRecordingRequest) {
+      const sessionId = this.currentRecordingRequest.sessionId;
+      const session = this.recordingSessions.get(sessionId);
+
+      console.log('[Background] Active recording session detected, cancelling:', sessionId);
+
+      // Cancel the recording session
+      if (session && session.reject) {
+        session.reject(new Error('Tab closed during recording'));
+      }
+
+      // Clean up recording state
+      this.recordingSessions.delete(sessionId);
+      this.currentRecordingRequest = null;
+      chrome.action.setBadgeText({ text: '' });
+
+      console.log('[Background] Recording session cleaned up');
+    }
+
+    // Check if there's an active user action request
+    if (this.currentUserActionRequest) {
+      const requestId = this.currentUserActionRequest.requestId;
+      const navListener = this.currentUserActionRequest.navigationListener;
+
+      console.log('[Background] Active user action request detected, cancelling:', requestId);
+
+      // Remove navigation listener if it exists
+      if (navListener) {
+        chrome.webNavigation.onCommitted.removeListener(navListener);
+        console.log('[Background] Navigation listener removed');
+      }
+
+      // Send cancellation notification through WebSocket if still connected
+      if (this.ws && this.state.connected) {
+        try {
+          await this.ws.send(JSON.stringify({
+            type: 'notification',
+            method: 'notifications/cancelled',
+            params: {
+              reason: 'Tab closed during user action request',
+              requestId: requestId
+            }
+          }));
+        } catch (error) {
+          console.error('[Background] Failed to send cancellation notification:', error);
+        }
+      }
+
+      // Clean up user action request
+      this.currentUserActionRequest = null;
+
+      console.log('[Background] User action request cleaned up');
+    }
+
+    // Disconnect normally
+    console.log('[Background] Tab closed, initiating disconnect...');
+    await this.disconnect();
+
+    console.log('[Background] Tab closure cleanup complete');
+  }
+
+  /**
+   * Ensure debugger is attached to a tab (lazy attachment)
+   * If no tabId is provided, attaches to the current active tab
+   * If already attached to the requested tab, does nothing (idempotent)
+   * If attached to a different tab, switches to the new tab
+   *
+   * @param {Object} payload - { tabId: number | null }
+   * @returns {Object} - { tabId: number }
+   */
+  async handleEnsureAttached({ tabId }) {
+    try {
+      // Determine which tab to attach to
+      let targetTabId = tabId;
+
+      // If no tabId provided, use stored tabId from auto-connect or previous attachment
+      if (targetTabId === null || targetTabId === undefined) {
+        // First try to use stored tabId (from auto-connect)
+        if (this.state.tabId !== null) {
+          console.log('[Background] Using stored tab from auto-connect:', this.state.tabId);
+          targetTabId = this.state.tabId;
+        } else {
+          // No stored tab, get current active tab
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (!tab) {
+            throw new Error('No active tab found');
+          }
+          targetTabId = tab.id;
+        }
+      }
+
+      // Check if already attached to this tab (idempotent)
+      if (this.state.tabId === targetTabId && this.cdp.isAttached()) {
+        console.log('[Background] Already attached to tab:', targetTabId);
+        return { tabId: targetTabId };
+      }
+
+      // Track if this is first attachment (for injecting indicators)
+      const isFirstAttachment = this.state.tabId === null;
+
+      // If attached to a different tab, clean up old tab first
+      if (this.state.tabId !== null && this.state.tabId !== targetTabId && this.cdp.isAttached()) {
+        console.log('[Background] Switching from tab', this.state.tabId, 'to tab', targetTabId);
+        // Restore the old tab's title before detaching
+        await this.restoreTabTitle();
+        await this.cdp.detach();
+      }
+
+      // Get tab info
+      const tab = await chrome.tabs.get(targetTabId);
+      if (!tab) {
+        throw new Error(`Tab ${targetTabId} not found`);
+      }
+
+      console.log('[Background] Attaching to tab:', targetTabId, tab.url);
+
+      // Attach debugger
+      await this.cdp.attach(targetTabId);
+
+      // Update state with new tab info
+      const previousTabId = this.state.tabId;
+      this.state.tabId = targetTabId;
+      this.state.tabUrl = tab.url;
+      this.state.tabTitle = tab.title;
+      // Store original title for new tab (before we modify it with [MCP] prefix)
+      this.state.originalTabTitle = tab.title;
+
+      // Inject indicators and background capture on first attachment or tab switch
+      console.log('[Background] Injecting indicators and background capture...');
+      await this.updateTabTitle();
+      await this.injectTabIndicator();
+      await this.injectBackgroundCapture();
+
+      console.log('[Background] Successfully attached to tab:', targetTabId);
+
+      return { tabId: targetTabId };
+    } catch (error) {
+      console.error('[Background] ensureAttached failed:', error);
+      throw error;
+    }
   }
 
   /**
@@ -698,6 +890,11 @@ class BackgroundController {
    */
   async updateTabTitle() {
     if (!this.state.tabId || !this.state.originalTabTitle) return;
+
+    // Only update title if debugger is attached
+    if (!this.cdp.isAttached()) {
+      return;
+    }
 
     try {
       // Don't add prefix if it's already there
@@ -777,39 +974,45 @@ class BackgroundController {
           const existing = document.getElementById('browser-mcp-indicator');
           if (existing) existing.remove();
 
-          // Create indicator element
-          const indicator = document.createElement('div');
-          indicator.id = 'browser-mcp-indicator';
-          indicator.innerHTML = \`
-            <div style="
-              position: fixed;
-              bottom: 16px;
-              right: 16px;
-              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-              color: white;
-              padding: 8px 16px;
-              border-radius: 8px;
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-              font-size: 13px;
-              font-weight: 500;
-              box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-              z-index: 2147483647;
-              display: flex;
-              align-items: center;
-              gap: 8px;
-              pointer-events: none;
-              animation: mcpFadeIn 0.3s ease-out;
-            ">
-              <div style="
-                width: 8px;
-                height: 8px;
-                background: #10b981;
-                border-radius: 50%;
-                animation: mcpPulse 2s ease-in-out infinite;
-              "></div>
-              MCP Connected
-            </div>
+          // Create indicator using DOM methods (no innerHTML - works with TrustedHTML policies)
+          const container = document.createElement('div');
+          container.id = 'browser-mcp-indicator';
+          container.style.cssText = \`
+            position: fixed;
+            bottom: 16px;
+            right: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-size: 13px;
+            font-weight: 500;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 2147483647;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            pointer-events: none;
+            animation: mcpFadeIn 0.3s ease-out;
           \`;
+
+          // Create pulse dot
+          const dot = document.createElement('div');
+          dot.style.cssText = \`
+            width: 8px;
+            height: 8px;
+            background: #10b981;
+            border-radius: 50%;
+            animation: mcpPulse 2s ease-in-out infinite;
+          \`;
+
+          // Create text node
+          const text = document.createTextNode('MCP Connected');
+
+          // Assemble indicator
+          container.appendChild(dot);
+          container.appendChild(text);
 
           // Add animations
           const style = document.createElement('style');
@@ -825,7 +1028,7 @@ class BackgroundController {
           \`;
           document.head.appendChild(style);
 
-          document.body.appendChild(indicator);
+          document.body.appendChild(container);
         })();
       `, true);
       console.log('[Background] Tab indicator injected');
@@ -916,8 +1119,11 @@ class BackgroundController {
     if (!handler) {
       console.warn('[Background] No handler for message type:', type);
       this.ws.sendNoResponse({
-        id,
-        error: `Unknown message type: ${type}`
+        type: 'messageResponse',
+        payload: {
+          requestId: id,
+          error: `Unknown message type: ${type}`
+        }
       }).catch(err => {
         console.error('[Background] Failed to send error response:', err);
       });
@@ -1003,6 +1209,15 @@ class BackgroundController {
               recordingRequest: this.currentRecordingRequest || null
             }
           });
+        }
+        break;
+
+      case 'ensure_attached':
+        try {
+          const result = await this.handleEnsureAttached(message.payload || {});
+          sendResponse({ success: true, data: result });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
         }
         break;
 
@@ -2125,9 +2340,660 @@ class BackgroundController {
     });
     return result;
   }
+
+  /**
+   * Handle browser_get_cookies - Get cookies with optional filtering
+   */
+  async handleGetCookies(data) {
+    console.log('[Background] Getting cookies:', data);
+
+    // Build query details
+    const details = {};
+    if (data.url) {
+      details.url = data.url;
+    }
+    if (data.name) {
+      details.name = data.name;
+    }
+    if (data.domain) {
+      details.domain = data.domain;
+    }
+
+    // Get cookies using Chrome API
+    const cookies = await chrome.cookies.getAll(details);
+
+    return { cookies };
+  }
+
+  /**
+   * Handle browser_set_cookie - Set a cookie
+   */
+  async handleSetCookie(data) {
+    console.log('[Background] Setting cookie:', data);
+
+    // Build cookie details
+    const details = {
+      url: data.url,
+      name: data.name,
+      value: data.value,
+    };
+
+    // Optional parameters
+    if (data.domain !== undefined) details.domain = data.domain;
+    if (data.path !== undefined) details.path = data.path;
+    if (data.secure !== undefined) details.secure = data.secure;
+    if (data.httpOnly !== undefined) details.httpOnly = data.httpOnly;
+    if (data.sameSite !== undefined) details.sameSite = data.sameSite;
+    if (data.expirationDate !== undefined) details.expirationDate = data.expirationDate;
+
+    // Set the cookie
+    await chrome.cookies.set(details);
+
+    return { success: true };
+  }
+
+  /**
+   * Handle browser_delete_cookie - Delete a specific cookie
+   */
+  async handleDeleteCookie(data) {
+    console.log('[Background] Deleting cookie:', data);
+
+    // Delete the cookie
+    const result = await chrome.cookies.remove({
+      url: data.url,
+      name: data.name,
+    });
+
+    return { success: result !== null };
+  }
+
+  /**
+   * Handle browser_clear_cookies - Clear cookies with optional filtering
+   */
+  async handleClearCookies(data) {
+    console.log('[Background] Clearing cookies:', data);
+
+    // Build query details
+    const details = {};
+    if (data.url) {
+      details.url = data.url;
+    }
+    if (data.domain) {
+      details.domain = data.domain;
+    }
+
+    // Get all cookies matching the filter
+    const cookies = await chrome.cookies.getAll(details);
+
+    // Delete each cookie
+    let count = 0;
+    for (const cookie of cookies) {
+      const url = `http${cookie.secure ? 's' : ''}://${cookie.domain}${cookie.path}`;
+      const result = await chrome.cookies.remove({
+        url: url,
+        name: cookie.name,
+      });
+      if (result !== null) {
+        count++;
+      }
+    }
+
+    return { count };
+  }
+
+  /**
+   * Handle browser_download_file - Download a file from a URL
+   */
+  async handleDownloadFile(data) {
+    console.log('[Background] Downloading file:', data);
+
+    // Build download options
+    const options = {
+      url: data.url,
+    };
+
+    // Optional parameters
+    if (data.filename !== undefined) {
+      options.filename = data.filename;
+    }
+    if (data.saveAs !== undefined) {
+      options.saveAs = data.saveAs;
+    }
+
+    // Initiate download
+    const downloadId = await chrome.downloads.download(options);
+
+    return { downloadId };
+  }
+
+  /**
+   * Handle browser_get_downloads - Get download items with optional filtering
+   */
+  async handleGetDownloads(data) {
+    console.log('[Background] Getting downloads:', data);
+
+    // Build query
+    const query = {};
+    if (data.query && data.query.length > 0) {
+      query.query = data.query;
+    }
+    if (data.orderBy && data.orderBy.length > 0) {
+      query.orderBy = data.orderBy;
+    }
+    if (data.limit !== undefined) {
+      query.limit = data.limit;
+    }
+
+    // Search downloads
+    const downloads = await chrome.downloads.search(query);
+
+    return { downloads };
+  }
+
+  /**
+   * Handle browser_cancel_download - Cancel a download
+   */
+  async handleCancelDownload(data) {
+    console.log('[Background] Cancelling download:', data);
+
+    // Cancel the download
+    await chrome.downloads.cancel(data.downloadId);
+
+    return { success: true };
+  }
+
+  /**
+   * Handle browser_open_download - Open a downloaded file
+   */
+  async handleOpenDownload(data) {
+    console.log('[Background] Opening download:', data);
+
+    // Open the download
+    await chrome.downloads.open(data.downloadId);
+
+    return { success: true };
+  }
+
+  /**
+   * Handle browser_get_clipboard - Read text from clipboard
+   */
+  async handleGetClipboard(data) {
+    console.log('[Background] Getting clipboard');
+
+    // Read text from clipboard using execCommand
+    const text = await this.cdp.evaluate(`
+      (async () => {
+        try {
+          // Try using the Clipboard API (requires user interaction in most browsers)
+          if (navigator.clipboard && navigator.clipboard.readText) {
+            return await navigator.clipboard.readText();
+          }
+
+          // Fallback: use a temporary textarea
+          const textarea = document.createElement('textarea');
+          textarea.style.position = 'fixed';
+          textarea.style.opacity = '0';
+          document.body.appendChild(textarea);
+          textarea.focus();
+          document.execCommand('paste');
+          const text = textarea.value;
+          document.body.removeChild(textarea);
+          return text;
+        } catch (error) {
+          throw new Error('Failed to read clipboard: ' + error.message);
+        }
+      })()
+    `, true);
+
+    return { text };
+  }
+
+  /**
+   * Handle browser_set_clipboard - Write text to clipboard
+   */
+  async handleSetClipboard(data) {
+    console.log('[Background] Setting clipboard:', data.text.substring(0, 50));
+
+    // Write text to clipboard using execCommand
+    await this.cdp.evaluate(`
+      (async () => {
+        const text = ${JSON.stringify(data.text)};
+        try {
+          // Try using the Clipboard API first
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            return;
+          }
+
+          // Fallback: use a temporary textarea
+          const textarea = document.createElement('textarea');
+          textarea.value = text;
+          textarea.style.position = 'fixed';
+          textarea.style.opacity = '0';
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textarea);
+        } catch (error) {
+          throw new Error('Failed to write clipboard: ' + error.message);
+        }
+      })()
+    `, true);
+
+    return { success: true };
+  }
+
+  /**
+   * Handle browser_search_history - Search browsing history
+   */
+  async handleSearchHistory(data) {
+    console.log('[Background] Searching history:', data.text);
+
+    // Build query
+    const query = {
+      text: data.text,
+    };
+    if (data.startTime !== undefined) {
+      query.startTime = data.startTime;
+    }
+    if (data.endTime !== undefined) {
+      query.endTime = data.endTime;
+    }
+    if (data.maxResults !== undefined) {
+      query.maxResults = data.maxResults;
+    }
+
+    // Search history
+    const results = await chrome.history.search(query);
+
+    return { results };
+  }
+
+  /**
+   * Handle browser_get_history_visits - Get visit details for a URL
+   */
+  async handleGetHistoryVisits(data) {
+    console.log('[Background] Getting history visits for:', data.url);
+
+    // Get visits for URL
+    const visits = await chrome.history.getVisits({ url: data.url });
+
+    return { visits };
+  }
+
+  /**
+   * Handle browser_delete_history - Delete specific URLs from history
+   */
+  async handleDeleteHistory(data) {
+    console.log('[Background] Deleting history for:', data.urls);
+
+    // Delete each URL from history
+    for (const url of data.urls) {
+      await chrome.history.deleteUrl({ url });
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * Handle browser_clear_history - Clear history for time range
+   */
+  async handleClearHistory(data) {
+    console.log('[Background] Clearing history from:', data.startTime, 'to:', data.endTime);
+
+    // Delete history range
+    await chrome.history.deleteRange({
+      startTime: data.startTime,
+      endTime: data.endTime,
+    });
+
+    return { success: true };
+  }
+
+  // System Information Handlers
+
+  /**
+   * Get browser version information
+   */
+  async handleGetVersion(data) {
+    console.log('[Background] Getting browser version');
+
+    // Get browser info from runtime
+    const manifest = chrome.runtime.getManifest();
+    const browserInfo = await chrome.runtime.getPlatformInfo();
+
+    return {
+      browserName: 'Chrome',
+      browserVersion: /Chrome\/([0-9.]+)/.exec(navigator.userAgent)?.[1] || 'Unknown',
+      extensionVersion: manifest.version,
+      userAgent: navigator.userAgent,
+      platform: browserInfo,
+    };
+  }
+
+  /**
+   * Get system information
+   */
+  async handleGetSystemInfo(data) {
+    console.log('[Background] Getting system info');
+
+    const platformInfo = await chrome.runtime.getPlatformInfo();
+
+    return {
+      os: platformInfo.os,
+      arch: platformInfo.arch,
+      platform: platformInfo.os,
+      nacl_arch: platformInfo.nacl_arch,
+    };
+  }
+
+  /**
+   * Get browser capabilities and information
+   */
+  async handleGetBrowserInfo(data) {
+    console.log('[Background] Getting browser info');
+
+    const manifest = chrome.runtime.getManifest();
+    const platformInfo = await chrome.runtime.getPlatformInfo();
+
+    // Get installed extensions count (only this extension)
+    let extensionCount = 0;
+    try {
+      const extensions = await chrome.management.getAll();
+      extensionCount = extensions.filter(ext => ext.enabled && ext.type === 'extension').length;
+    } catch (error) {
+      console.warn('[Background] Could not get extensions:', error);
+    }
+
+    return {
+      browserVersion: /Chrome\/([0-9.]+)/.exec(navigator.userAgent)?.[1] || 'Unknown',
+      extensionName: manifest.name,
+      extensionVersion: manifest.version,
+      manifestVersion: manifest.manifest_version,
+      platform: platformInfo,
+      installedExtensions: extensionCount,
+      permissions: manifest.permissions || [],
+      hostPermissions: manifest.host_permissions || [],
+    };
+  }
+
+  // Network Handlers
+
+  /**
+   * Get current network connection state
+   */
+  async handleGetNetworkState(data) {
+    console.log('[Background] Getting network state');
+
+    // Evaluate navigator.connection in the page context
+    const connectionInfo = await this.cdp.evaluate(`
+      (() => {
+        const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+        if (!conn) {
+          return {
+            online: navigator.onLine,
+            type: 'unknown',
+          };
+        }
+        return {
+          online: navigator.onLine,
+          type: conn.effectiveType || conn.type || 'unknown',
+          downlink: conn.downlink,
+          downlinkMax: conn.downlinkMax,
+          rtt: conn.rtt,
+          saveData: conn.saveData,
+        };
+      })()
+    `, true);
+
+    return connectionInfo;
+  }
+
+  /**
+   * Set network throttling conditions
+   */
+  async handleSetNetworkConditions(data) {
+    console.log('[Background] Setting network conditions:', data);
+
+    // Use CDP to emulate network conditions
+    const conditions = {
+      offline: data.offline || false,
+      latency: data.latency || 0,
+      downloadThroughput: data.downloadThroughput !== undefined ? data.downloadThroughput : -1,
+      uploadThroughput: data.uploadThroughput !== undefined ? data.uploadThroughput : -1,
+    };
+
+    await this.cdp.sendCommand('Network.emulateNetworkConditions', conditions);
+
+    return { success: true, conditions };
+  }
+
+  /**
+   * Clear browser cache
+   */
+  async handleClearCache(data) {
+    console.log('[Background] Clearing cache');
+
+    const cacheStorage = data.cacheStorage !== false;
+
+    // Clear browsing data using Chrome API
+    await chrome.browsingData.remove(
+      {},
+      {
+        cache: true,
+        cacheStorage: cacheStorage,
+      }
+    );
+
+    return { success: true };
+  }
+
+  // Bookmark Handlers
+
+  /**
+   * Get bookmarks from the browser
+   */
+  async handleGetBookmarks(data) {
+    console.log('[Background] Getting bookmarks:', data);
+
+    // Get bookmarks from a specific parent or the entire tree
+    let bookmarks;
+    if (data.parentId) {
+      bookmarks = await chrome.bookmarks.getChildren(data.parentId);
+    } else {
+      bookmarks = await chrome.bookmarks.getTree();
+    }
+
+    return { bookmarks };
+  }
+
+  /**
+   * Create a new bookmark
+   */
+  async handleCreateBookmark(data) {
+    console.log('[Background] Creating bookmark:', data.title);
+
+    const bookmark = {
+      title: data.title,
+      url: data.url,
+    };
+
+    if (data.parentId) {
+      bookmark.parentId = data.parentId;
+    }
+
+    const created = await chrome.bookmarks.create(bookmark);
+
+    return { bookmark: created };
+  }
+
+  /**
+   * Delete a bookmark
+   */
+  async handleDeleteBookmark(data) {
+    console.log('[Background] Deleting bookmark:', data.id);
+
+    await chrome.bookmarks.remove(data.id);
+
+    return { success: true };
+  }
+
+  /**
+   * Search bookmarks
+   */
+  async handleSearchBookmarks(data) {
+    console.log('[Background] Searching bookmarks:', data.query);
+
+    // Search bookmarks
+    const results = await chrome.bookmarks.search(data.query);
+
+    // Limit results if specified
+    const bookmarks = data.maxResults
+      ? results.slice(0, data.maxResults)
+      : results;
+
+    return { bookmarks };
+  }
+
+  // Extension Management Handlers
+
+  /**
+   * List all installed extensions
+   */
+  async handleListExtensions(data) {
+    console.log('[Background] Listing extensions');
+
+    const extensions = await chrome.management.getAll();
+
+    return { extensions };
+  }
+
+  /**
+   * Get extension information
+   */
+  async handleGetExtensionInfo(data) {
+    console.log('[Background] Getting extension info:', data.id);
+
+    const extension = await chrome.management.get(data.id);
+
+    return { extension };
+  }
+
+  /**
+   * Enable an extension
+   */
+  async handleEnableExtension(data) {
+    console.log('[Background] Enabling extension:', data.id);
+
+    await chrome.management.setEnabled(data.id, true);
+
+    return { success: true };
+  }
+
+  /**
+   * Disable an extension
+   */
+  async handleDisableExtension(data) {
+    console.log('[Background] Disabling extension:', data.id);
+
+    await chrome.management.setEnabled(data.id, false);
+
+    return { success: true };
+  }
 }
 
 // Initialize controller
 const controller = new BackgroundController();
 
 console.log('[Background] Browser MCP extension loaded');
+
+// Auto-connect functionality
+async function autoConnect() {
+  // Don't attempt twice
+  if (autoConnectAttempted) {
+    return;
+  }
+
+  try {
+    console.log('[Background] Starting auto-connect...');
+    autoConnectAttempted = true;
+
+    // Wait for offscreen document to be ready (with timeout)
+    if (!offscreenReady) {
+      console.log('[Background] Waiting for offscreen document...');
+      const startTime = Date.now();
+      while (!offscreenReady && (Date.now() - startTime) < 5000) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      if (!offscreenReady) {
+        console.log('[Background] Offscreen document not ready after 5s, proceeding anyway...');
+      }
+    }
+
+    // Connect WebSocket to server
+    await controller.connect();
+    console.log('[Background] WebSocket connected');
+
+    // Auto-select active tab, but skip restricted URLs
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    // Filter out restricted URLs (chrome://, chrome-extension://, about:, etc.)
+    const restrictedPrefixes = ['chrome://', 'chrome-extension://', 'about:', 'edge://', 'view-source:'];
+    const isRestricted = (url) => {
+      if (!url) return true;
+      return restrictedPrefixes.some(prefix => url.startsWith(prefix));
+    };
+
+    let selectedTab = null;
+
+    // First try the active tab
+    if (tabs.length > 0 && !isRestricted(tabs[0].url)) {
+      selectedTab = tabs[0];
+    } else {
+      // Find any non-restricted tab
+      console.log('[Background] Active tab is restricted, searching for valid tab...');
+      const allTabs = await chrome.tabs.query({});
+      for (const tab of allTabs) {
+        if (!isRestricted(tab.url)) {
+          selectedTab = tab;
+          console.log('[Background] Found valid tab:', tab.id, tab.url);
+          break;
+        }
+      }
+    }
+
+    if (selectedTab) {
+      console.log('[Background] Auto-connecting to tab:', selectedTab.id, selectedTab.url);
+
+      // Update state with selected tab
+      controller.state.tabId = selectedTab.id;
+      controller.state.tabUrl = selectedTab.url;
+      controller.state.tabTitle = selectedTab.title;
+
+      console.log('[Background] Auto-connect complete - ready for MCP commands');
+    } else {
+      console.log('[Background] No valid tabs found - will connect when a valid tab becomes active');
+      console.log('[Background] Note: chrome://, about:, and other restricted URLs cannot be controlled');
+    }
+  } catch (error) {
+    console.error('[Background] Auto-connect failed:', error);
+    autoConnectAttempted = false; // Allow retry
+    // Retry after 3 seconds
+    setTimeout(autoConnect, 3000);
+  }
+}
+
+// Start auto-connect on extension load
+autoConnect();
+
+// Auto-reconnect if tab changes
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  if (controller.state.connected && !controller.state.tabId) {
+    console.log('[Background] Tab activated, auto-connecting:', activeInfo.tabId);
+    const tab = await chrome.tabs.get(activeInfo.tabId);
+    controller.state.tabId = tab.id;
+    controller.state.tabUrl = tab.url;
+    controller.state.tabTitle = tab.title;
+  }
+});
