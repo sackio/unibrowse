@@ -373,17 +373,6 @@ export const CheckElementStateTool = z.object({
   }),
 });
 
-export const RequestDemonstrationTool = z.object({
-  name: z.literal("browser_request_demonstration"),
-  description: z.literal(
-    "Ask the user to demonstrate how to perform a task. Shows a notification in the browser with a Start button. Records all DOM interactions and network activity until the user clicks Done or presses Ctrl+Shift+D."
-  ),
-  arguments: z.object({
-    request: z.string().describe("Description of what you want the user to demonstrate (e.g., 'Please add an item to your cart')"),
-    timeout: z.number().optional().describe("Maximum time to wait for the demonstration in seconds (default: no timeout - waits indefinitely). Specify a timeout only if you need to limit the duration."),
-  }),
-});
-
 export const RequestUserActionTool = z.object({
   name: z.literal("browser_request_user_action"),
   description: z.literal(
@@ -512,5 +501,324 @@ export const SearchInteractionsTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of results (default: 50)"),
+  }),
+});
+
+// Cookie Management Tools
+export const GetCookiesTool = z.object({
+  name: z.literal("browser_get_cookies"),
+  description: z.literal("Get cookies for a specific URL or all cookies"),
+  arguments: z.object({
+    url: z
+      .string()
+      .optional()
+      .describe("URL to get cookies for (if not provided, gets all cookies)"),
+    name: z
+      .string()
+      .optional()
+      .describe("Filter by cookie name"),
+    domain: z
+      .string()
+      .optional()
+      .describe("Filter by cookie domain"),
+  }),
+});
+
+export const SetCookieTool = z.object({
+  name: z.literal("browser_set_cookie"),
+  description: z.literal("Set a cookie for a specific URL"),
+  arguments: z.object({
+    url: z.string().describe("URL to set the cookie for"),
+    name: z.string().describe("Cookie name"),
+    value: z.string().describe("Cookie value"),
+    domain: z.string().optional().describe("Cookie domain"),
+    path: z.string().optional().describe("Cookie path (default: /)"),
+    secure: z.boolean().optional().describe("Secure flag (default: false)"),
+    httpOnly: z.boolean().optional().describe("HttpOnly flag (default: false)"),
+    sameSite: z
+      .enum(["no_restriction", "lax", "strict"])
+      .optional()
+      .describe("SameSite attribute"),
+    expirationDate: z
+      .number()
+      .optional()
+      .describe("Expiration date in Unix timestamp (seconds since epoch)"),
+  }),
+});
+
+export const DeleteCookieTool = z.object({
+  name: z.literal("browser_delete_cookie"),
+  description: z.literal("Delete a specific cookie"),
+  arguments: z.object({
+    url: z.string().describe("URL of the cookie to delete"),
+    name: z.string().describe("Name of the cookie to delete"),
+  }),
+});
+
+export const ClearCookiesTool = z.object({
+  name: z.literal("browser_clear_cookies"),
+  description: z.literal("Clear all cookies, optionally filtered by URL or domain"),
+  arguments: z.object({
+    url: z
+      .string()
+      .optional()
+      .describe("Only clear cookies for this URL"),
+    domain: z
+      .string()
+      .optional()
+      .describe("Only clear cookies for this domain"),
+  }),
+});
+
+// Download Management Tools
+export const DownloadFileTool = z.object({
+  name: z.literal("browser_download_file"),
+  description: z.literal("Download a file from a URL"),
+  arguments: z.object({
+    url: z.string().describe("URL of the file to download"),
+    filename: z
+      .string()
+      .optional()
+      .describe("Suggested filename for the download"),
+    saveAs: z
+      .boolean()
+      .optional()
+      .describe("Whether to prompt user for save location (default: false)"),
+  }),
+});
+
+export const GetDownloadsTool = z.object({
+  name: z.literal("browser_get_downloads"),
+  description: z.literal("Get list of downloads with optional filtering"),
+  arguments: z.object({
+    query: z
+      .array(z.string())
+      .optional()
+      .describe("Search query terms to filter downloads"),
+    orderBy: z
+      .array(z.enum(["startTime", "endTime", "url", "filename", "bytesReceived"]))
+      .optional()
+      .describe("Fields to order results by"),
+    limit: z
+      .number()
+      .optional()
+      .describe("Maximum number of downloads to return"),
+  }),
+});
+
+export const CancelDownloadTool = z.object({
+  name: z.literal("browser_cancel_download"),
+  description: z.literal("Cancel a download in progress"),
+  arguments: z.object({
+    downloadId: z.number().describe("ID of the download to cancel"),
+  }),
+});
+
+export const OpenDownloadTool = z.object({
+  name: z.literal("browser_open_download"),
+  description: z.literal("Open a downloaded file"),
+  arguments: z.object({
+    downloadId: z.number().describe("ID of the download to open"),
+  }),
+});
+
+// Clipboard Tools
+export const GetClipboardTool = z.object({
+  name: z.literal("browser_get_clipboard"),
+  description: z.literal("Read text from the clipboard"),
+  arguments: z.object({}),
+});
+
+export const SetClipboardTool = z.object({
+  name: z.literal("browser_set_clipboard"),
+  description: z.literal("Write text to the clipboard"),
+  arguments: z.object({
+    text: z.string().describe("Text to write to the clipboard"),
+  }),
+});
+
+// History Tools
+export const SearchHistoryTool = z.object({
+  name: z.literal("browser_search_history"),
+  description: z.literal("Search browsing history"),
+  arguments: z.object({
+    text: z.string().describe("Text to search for in history"),
+    startTime: z
+      .number()
+      .optional()
+      .describe("Start time in milliseconds since epoch"),
+    endTime: z
+      .number()
+      .optional()
+      .describe("End time in milliseconds since epoch"),
+    maxResults: z
+      .number()
+      .optional()
+      .describe("Maximum number of results to return (default: 100)"),
+  }),
+});
+
+export const GetHistoryVisitsTool = z.object({
+  name: z.literal("browser_get_history_visits"),
+  description: z.literal("Get visit details for a URL"),
+  arguments: z.object({
+    url: z.string().describe("URL to get visit history for"),
+  }),
+});
+
+export const DeleteHistoryTool = z.object({
+  name: z.literal("browser_delete_history"),
+  description: z.literal("Delete specific URLs from history"),
+  arguments: z.object({
+    urls: z.array(z.string()).describe("URLs to delete from history"),
+  }),
+});
+
+export const ClearHistoryTool = z.object({
+  name: z.literal("browser_clear_history"),
+  description: z.literal("Clear browsing history for a time range"),
+  arguments: z.object({
+    startTime: z
+      .number()
+      .describe("Start time in milliseconds since epoch"),
+    endTime: z
+      .number()
+      .describe("End time in milliseconds since epoch"),
+  }),
+});
+
+// System Information Tools
+export const GetVersionTool = z.object({
+  name: z.literal("browser_get_version"),
+  description: z.literal("Get browser version information"),
+  arguments: z.object({}),
+});
+
+export const GetSystemInfoTool = z.object({
+  name: z.literal("browser_get_system_info"),
+  description: z.literal("Get system information including OS, platform, and architecture"),
+  arguments: z.object({}),
+});
+
+export const GetBrowserInfoTool = z.object({
+  name: z.literal("browser_get_browser_info"),
+  description: z.literal("Get browser capabilities and information"),
+  arguments: z.object({}),
+});
+
+// Network Tools
+export const GetNetworkStateTool = z.object({
+  name: z.literal("browser_get_network_state"),
+  description: z.literal("Get current network connection state"),
+  arguments: z.object({}),
+});
+
+export const SetNetworkConditionsTool = z.object({
+  name: z.literal("browser_set_network_conditions"),
+  description: z.literal("Set network throttling conditions for testing"),
+  arguments: z.object({
+    offline: z
+      .boolean()
+      .optional()
+      .describe("Simulate offline mode (default: false)"),
+    latency: z
+      .number()
+      .optional()
+      .describe("Minimum latency in milliseconds (default: 0)"),
+    downloadThroughput: z
+      .number()
+      .optional()
+      .describe("Download throughput in bytes/sec (default: -1 for unlimited)"),
+    uploadThroughput: z
+      .number()
+      .optional()
+      .describe("Upload throughput in bytes/sec (default: -1 for unlimited)"),
+  }),
+});
+
+export const ClearCacheTool = z.object({
+  name: z.literal("browser_clear_cache"),
+  description: z.literal("Clear browser cache"),
+  arguments: z.object({
+    cacheStorage: z
+      .boolean()
+      .optional()
+      .describe("Clear cache storage (default: true)"),
+  }),
+});
+
+// Bookmark Tools
+export const GetBookmarksTool = z.object({
+  name: z.literal("browser_get_bookmarks"),
+  description: z.literal("Get bookmarks from the browser"),
+  arguments: z.object({
+    parentId: z
+      .string()
+      .optional()
+      .describe("Parent folder ID to get bookmarks from (default: root)"),
+  }),
+});
+
+export const CreateBookmarkTool = z.object({
+  name: z.literal("browser_create_bookmark"),
+  description: z.literal("Create a new bookmark"),
+  arguments: z.object({
+    title: z.string().describe("Bookmark title"),
+    url: z.string().describe("Bookmark URL"),
+    parentId: z
+      .string()
+      .optional()
+      .describe("Parent folder ID (default: root)"),
+  }),
+});
+
+export const DeleteBookmarkTool = z.object({
+  name: z.literal("browser_delete_bookmark"),
+  description: z.literal("Delete a bookmark by ID"),
+  arguments: z.object({
+    id: z.string().describe("Bookmark ID to delete"),
+  }),
+});
+
+export const SearchBookmarksTool = z.object({
+  name: z.literal("browser_search_bookmarks"),
+  description: z.literal("Search bookmarks by query"),
+  arguments: z.object({
+    query: z.string().describe("Search query"),
+    maxResults: z
+      .number()
+      .optional()
+      .describe("Maximum number of results (default: 100)"),
+  }),
+});
+
+// Extension Management Tools
+export const ListExtensionsTool = z.object({
+  name: z.literal("browser_list_extensions"),
+  description: z.literal("List all installed browser extensions"),
+  arguments: z.object({}),
+});
+
+export const GetExtensionInfoTool = z.object({
+  name: z.literal("browser_get_extension_info"),
+  description: z.literal("Get detailed information about a specific extension"),
+  arguments: z.object({
+    id: z.string().describe("Extension ID"),
+  }),
+});
+
+export const EnableExtensionTool = z.object({
+  name: z.literal("browser_enable_extension"),
+  description: z.literal("Enable a disabled extension"),
+  arguments: z.object({
+    id: z.string().describe("Extension ID to enable"),
+  }),
+});
+
+export const DisableExtensionTool = z.object({
+  name: z.literal("browser_disable_extension"),
+  description: z.literal("Disable an enabled extension"),
+  arguments: z.object({
+    id: z.string().describe("Extension ID to disable"),
   }),
 });
