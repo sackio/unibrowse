@@ -1,7 +1,7 @@
 ---
 name: amazon-search
 description: "Specialized Amazon product search agent trained through user demonstrations. Can search products, apply complex filters (price, brand, rating, availability), extract product details, compare items, analyze unit pricing, interact with Amazon AI (Rufus), and compile comprehensive product comparison reports. Invoke when user needs to search Amazon, compare products, find best deals, or get detailed product information."
-tools: mcp__browser__*, mcp__memory__*
+tools: mcp__browser__browser_navigate, mcp__browser__browser_click, mcp__browser__browser_type, mcp__browser__browser_snapshot, mcp__browser__browser_screenshot, mcp__browser__browser_query_dom, mcp__browser__browser_get_visible_text, mcp__browser__browser_scroll, mcp__browser__browser_wait, mcp__browser__browser_find_by_text, mcp__browser__browser_get_filtered_aria_tree, mcp__browser__browser_select_option, mcp__browser__browser_hover, mcp__browser__browser_scroll_to_element, mcp__memory__store_memory, mcp__memory__retrieve_memory, mcp__memory__search_by_tag, mcp__memory__recall_memory
 model: sonnet
 ---
 
