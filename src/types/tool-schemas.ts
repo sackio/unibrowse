@@ -822,3 +822,74 @@ export const DisableExtensionTool = z.object({
     id: z.string().describe("Extension ID to disable"),
   }),
 });
+
+// Macro Management Tools
+export const StoreMacroTool = z.object({
+  name: z.literal("browser_store_macro"),
+  description: z.literal("Store a new executable JavaScript macro for site-specific automation. Macros are reusable functions that encapsulate common workflows like searching, extracting data, or interacting with specific sites."),
+  arguments: z.object({
+    site: z.string().describe("Site domain (e.g., 'amazon.com') or '*' for universal macros"),
+    category: z.string().describe("Macro category: 'search', 'extraction', 'navigation', 'interaction', 'form', 'util'"),
+    name: z.string().describe("Human-readable macro name (unique per site)"),
+    description: z.string().describe("What the macro does and when to use it"),
+    parameters: z.record(z.object({
+      type: z.enum(["string", "number", "boolean", "object", "array"]).describe("Parameter data type"),
+      description: z.string().describe("What this parameter is for"),
+      required: z.boolean().describe("Whether this parameter is required"),
+      default: z.any().optional().describe("Default value if not provided"),
+    })).describe("Macro parameters schema"),
+    code: z.string().describe("JavaScript function code: (params) => { /* your code */ return result; }"),
+    returnType: z.string().describe("Description of what the macro returns"),
+    reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Reliability rating (default: untested)"),
+    tags: z.array(z.string()).optional().describe("Tags for filtering and search"),
+  }),
+});
+
+export const ListMacrosTool = z.object({
+  name: z.literal("browser_list_macros"),
+  description: z.literal("List available macros with optional filtering by site, category, or tags. Returns macro metadata without the code."),
+  arguments: z.object({
+    site: z.string().optional().describe("Filter by site domain or '*' for universal"),
+    category: z.string().optional().describe("Filter by category: search, extraction, navigation, interaction, form, util"),
+    tags: z.array(z.string()).optional().describe("Filter by tags (returns macros matching ANY tag)"),
+    search: z.string().optional().describe("Search in name and description"),
+    reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Filter by reliability rating"),
+    limit: z.number().optional().describe("Maximum number of results (default: 50)"),
+  }),
+});
+
+export const ExecuteMacroTool = z.object({
+  name: z.literal("browser_execute_macro"),
+  description: z.literal("Execute a stored macro by ID with provided parameters. The macro runs in the page context and returns the result."),
+  arguments: z.object({
+    id: z.string().describe("Macro ID to execute"),
+    params: z.record(z.any()).optional().describe("Parameters to pass to the macro function"),
+  }),
+});
+
+export const UpdateMacroTool = z.object({
+  name: z.literal("browser_update_macro"),
+  description: z.literal("Update an existing macro. Creates a new version while preserving the old one. Only the owner can update macros."),
+  arguments: z.object({
+    id: z.string().describe("Macro ID to update"),
+    description: z.string().optional().describe("Updated description"),
+    parameters: z.record(z.object({
+      type: z.enum(["string", "number", "boolean", "object", "array"]),
+      description: z.string(),
+      required: z.boolean(),
+      default: z.any().optional(),
+    })).optional().describe("Updated parameters schema"),
+    code: z.string().optional().describe("Updated JavaScript code"),
+    returnType: z.string().optional().describe("Updated return type description"),
+    reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Updated reliability rating"),
+    tags: z.array(z.string()).optional().describe("Updated tags"),
+  }),
+});
+
+export const DeleteMacroTool = z.object({
+  name: z.literal("browser_delete_macro"),
+  description: z.literal("Delete a macro by ID. This action cannot be undone. Only the owner can delete macros."),
+  arguments: z.object({
+    id: z.string().describe("Macro ID to delete"),
+  }),
+});
