@@ -8,7 +8,7 @@
 const fs = require('fs');
 const WebSocket = require('ws');
 
-const SERVER_URL = 'ws://localhost:3100';
+const SERVER_URL = 'ws://localhost:3100/ws';
 const TEST_MACROS_FILE = './test-macros.json';
 
 let ws;

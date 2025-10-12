@@ -23,6 +23,7 @@ import * as snapshot from "@/tools/snapshot";
 import * as system from "@/tools/system";
 import * as tabs from "@/tools/tabs";
 import * as userAction from "@/tools/user-action";
+import * as macros from "@/tools/macros";
 import type { Tool } from "@/tools/tool";
 
 import packageJSON from "../package.json";
@@ -129,6 +130,14 @@ const extensionTools: Tool[] = [
   extensions.disableExtension,
 ];
 
+const macroTools: Tool[] = [
+  macros.storeMacro,
+  macros.listMacros,
+  macros.executeMacro,
+  macros.updateMacro,
+  macros.deleteMacro,
+];
+
 const snapshotTools: Tool[] = [
   common.navigate(false),
   common.goBack(false),
@@ -154,6 +163,7 @@ const snapshotTools: Tool[] = [
   ...networkTools,
   ...bookmarkTools,
   ...extensionTools,
+  ...macroTools,
 ];
 
 const resources: Resource[] = [];

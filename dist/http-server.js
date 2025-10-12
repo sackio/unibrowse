@@ -17,11 +17,13 @@ import {
   deleteBookmark,
   deleteCookie,
   deleteHistory,
+  deleteMacro,
   disableExtension,
   downloadFile,
   drag,
   enableExtension,
   evaluate,
+  executeMacro,
   fillForm,
   findByText,
   getAttributes,
@@ -47,6 +49,7 @@ import {
   goForward,
   hover,
   listExtensions,
+  listMacros,
   listTabs,
   navigate,
   openDownload,
@@ -66,11 +69,13 @@ import {
   setCookie,
   setNetworkConditions,
   snapshot,
+  storeMacro,
   submitForm,
   switchTab,
   type,
+  updateMacro,
   wait
-} from "./chunk-AQCJSZ5J.js";
+} from "./chunk-C5WGINTN.js";
 import "./chunk-ITTVOQ2V.js";
 
 // src/http-server.ts
@@ -163,6 +168,13 @@ var extensionTools = [
   enableExtension,
   disableExtension
 ];
+var macroTools = [
+  storeMacro,
+  listMacros,
+  executeMacro,
+  updateMacro,
+  deleteMacro
+];
 var snapshotTools = [
   navigate(false),
   goBack(false),
@@ -187,7 +199,8 @@ var snapshotTools = [
   ...systemTools,
   ...networkTools,
   ...bookmarkTools,
-  ...extensionTools
+  ...extensionTools,
+  ...macroTools
 ];
 var resources = [];
 async function main() {
