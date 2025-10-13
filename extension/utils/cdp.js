@@ -91,12 +91,31 @@ class CDPHelper {
       console.log(`[CDP] ${method}:`, result);
       return result;
     } catch (error) {
-      // Check if error is due to detachment
-      if (error.message && error.message.includes('Detached')) {
+      // Parse CDP error if it's in stringified JSON format
+      let cdpError = error;
+      if (error.message && error.message.startsWith('{')) {
+        try {
+          cdpError = JSON.parse(error.message);
+        } catch {
+          // Not JSON, use original error
+        }
+      }
+
+      // Check for various detachment/navigation scenarios
+      const errorMessage = cdpError.message || error.message || '';
+      const errorCode = cdpError.code || '';
+
+      if (errorMessage.includes('Detached') || errorMessage.includes('detached')) {
         console.warn(`[CDP] ${method} failed due to detachment`);
         this.isDetaching = true;
         this.target = null;
+      } else if (errorCode === -32000 && errorMessage.includes('Inspected target navigated or closed')) {
+        // Page navigated - this is not necessarily an error
+        console.warn(`[CDP] ${method} interrupted by page navigation`);
+        // Don't mark as detaching - debugger is still attached, just page navigated
+        throw new Error('Page navigation interrupted command execution. This is normal for actions that trigger navigation.');
       }
+
       console.error(`[CDP] ${method} failed:`, error);
       throw error;
     }
@@ -106,18 +125,31 @@ class CDPHelper {
    * Evaluate JavaScript in page context
    */
   async evaluate(expression, returnByValue = true) {
-    const result = await this.sendCommand('Runtime.evaluate', {
-      expression,
-      returnByValue,
-      awaitPromise: true,
-      userGesture: true
-    });
+    try {
+      const result = await this.sendCommand('Runtime.evaluate', {
+        expression,
+        returnByValue,
+        awaitPromise: true,
+        userGesture: true
+      });
 
-    if (result.exceptionDetails) {
-      throw new Error(`Evaluation error: ${result.exceptionDetails.exception.description}`);
+      if (result.exceptionDetails) {
+        throw new Error(`Evaluation error: ${result.exceptionDetails.exception.description}`);
+      }
+
+      return result.result.value;
+    } catch (error) {
+      // Check if this is a navigation interruption
+      if (error.message && error.message.includes('Page navigation interrupted command execution')) {
+        // Return a special value indicating navigation occurred
+        console.log('[CDP] Evaluation interrupted by navigation - returning navigation indicator');
+        return {
+          __navigation_occurred: true,
+          message: 'Command execution interrupted by page navigation'
+        };
+      }
+      throw error;
     }
-
-    return result.result.value;
   }
 
   /**
