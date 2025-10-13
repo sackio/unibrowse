@@ -24,6 +24,7 @@ import * as system from "@/tools/system";
 import * as tabs from "@/tools/tabs";
 import * as userAction from "@/tools/user-action";
 import * as macros from "@/tools/macros";
+import * as realisticInput from "@/tools/realistic-input";
 import type { Tool } from "@/tools/tool";
 
 import packageJSON from "../package.json";
@@ -146,6 +147,12 @@ const macroTools: Tool[] = [
   macros.deleteMacro,
 ];
 
+const realisticInputTools: Tool[] = [
+  realisticInput.realisticMouseMove,
+  realisticInput.realisticClick,
+  realisticInput.realisticType,
+];
+
 const snapshotTools: Tool[] = [
   common.navigate(false),
   common.goBack(false),
@@ -172,6 +179,7 @@ const snapshotTools: Tool[] = [
   ...bookmarkTools,
   ...extensionTools,
   ...macroTools,
+  ...realisticInputTools,
 ];
 
 const resources: Resource[] = [];
