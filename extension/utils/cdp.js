@@ -7,6 +7,7 @@ class CDPHelper {
   constructor() {
     this.target = null;
     this.enabledDomains = new Set();
+    this.isDetaching = false; // Flag to prevent operations during detachment
   }
 
   /**
@@ -15,6 +16,7 @@ class CDPHelper {
   async attach(tabId) {
     try {
       this.target = { tabId };
+      this.isDetaching = false;
       await chrome.debugger.attach(this.target, '1.3');
       console.log('[CDP] Debugger attached to tab:', tabId);
 
@@ -38,12 +40,17 @@ class CDPHelper {
     }
 
     try {
+      this.isDetaching = true; // Set flag before detaching
       await chrome.debugger.detach(this.target);
       console.log('[CDP] Debugger detached');
       this.target = null;
       this.enabledDomains.clear();
+      this.isDetaching = false;
     } catch (error) {
       console.error('[CDP] Failed to detach debugger:', error);
+      this.target = null;
+      this.enabledDomains.clear();
+      this.isDetaching = false;
     }
   }
 
@@ -74,11 +81,22 @@ class CDPHelper {
       throw new Error('Debugger not attached');
     }
 
+    // Check if debugger is detaching
+    if (this.isDetaching) {
+      throw new Error('Debugger is detaching');
+    }
+
     try {
       const result = await chrome.debugger.sendCommand(this.target, method, params);
       console.log(`[CDP] ${method}:`, result);
       return result;
     } catch (error) {
+      // Check if error is due to detachment
+      if (error.message && error.message.includes('Detached')) {
+        console.warn(`[CDP] ${method} failed due to detachment`);
+        this.isDetaching = true;
+        this.target = null;
+      }
       console.error(`[CDP] ${method} failed:`, error);
       throw error;
     }
@@ -262,19 +280,34 @@ class CDPHelper {
    * Type text
    */
   async type(text) {
-    for (const char of text) {
-      await this.sendCommand('Input.dispatchKeyEvent', {
-        type: 'keyDown',
-        text: char
-      });
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
 
-      await this.sendCommand('Input.dispatchKeyEvent', {
-        type: 'keyUp',
-        text: char
-      });
+      // Check if still attached before each keystroke
+      if (!this.isAttached() || this.isDetaching) {
+        throw new Error(`Typing interrupted: debugger detached after ${i} characters`);
+      }
 
-      // Small delay between keystrokes
-      await new Promise(resolve => setTimeout(resolve, 10));
+      try {
+        await this.sendCommand('Input.dispatchKeyEvent', {
+          type: 'keyDown',
+          text: char
+        });
+
+        await this.sendCommand('Input.dispatchKeyEvent', {
+          type: 'keyUp',
+          text: char
+        });
+
+        // Small delay between keystrokes
+        await new Promise(resolve => setTimeout(resolve, 10));
+      } catch (error) {
+        // If detached during typing, throw with context
+        if (error.message && error.message.includes('Detached')) {
+          throw new Error(`Typing interrupted by detachment after ${i} of ${text.length} characters`);
+        }
+        throw error;
+      }
     }
   }
 
@@ -392,6 +425,228 @@ class CDPHelper {
    */
   getTarget() {
     return this.target;
+  }
+
+  /**
+   * Generate bezier curve points for natural mouse movement
+   * Uses cubic bezier curve with random control points
+   */
+  generateBezierCurve(startX, startY, endX, endY, steps = 20) {
+    const points = [];
+
+    // Generate random control points for natural curve
+    const cp1x = startX + (endX - startX) * (0.25 + Math.random() * 0.25);
+    const cp1y = startY + (endY - startY) * (Math.random() * 0.5 - 0.25);
+    const cp2x = startX + (endX - startX) * (0.5 + Math.random() * 0.25);
+    const cp2y = startY + (endY - startY) * (0.5 + Math.random() * 0.5);
+
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const invT = 1 - t;
+
+      // Cubic bezier formula
+      const x = Math.pow(invT, 3) * startX +
+                3 * Math.pow(invT, 2) * t * cp1x +
+                3 * invT * Math.pow(t, 2) * cp2x +
+                Math.pow(t, 3) * endX;
+
+      const y = Math.pow(invT, 3) * startY +
+                3 * Math.pow(invT, 2) * t * cp1y +
+                3 * invT * Math.pow(t, 2) * cp2y +
+                Math.pow(t, 3) * endY;
+
+      points.push({ x: Math.round(x), y: Math.round(y) });
+    }
+
+    return points;
+  }
+
+  /**
+   * Move mouse along natural bezier curve path
+   * @param {number} targetX - Destination X coordinate
+   * @param {number} targetY - Destination Y coordinate
+   * @param {object} options - Movement options
+   * @param {number} options.duration - Movement duration in ms (default: 500)
+   * @param {number} options.currentX - Current mouse X position (default: 0)
+   * @param {number} options.currentY - Current mouse Y position (default: 0)
+   * @param {number} options.steps - Number of movement steps (default: 20)
+   */
+  async moveMouseRealistic(targetX, targetY, options = {}) {
+    const {
+      duration = 500,
+      currentX = 0,
+      currentY = 0,
+      steps = 20
+    } = options;
+
+    const points = this.generateBezierCurve(currentX, currentY, targetX, targetY, steps);
+    const delayPerStep = duration / steps;
+
+    for (const point of points) {
+      if (!this.isAttached() || this.isDetaching) {
+        throw new Error('Mouse movement interrupted: debugger detached');
+      }
+
+      await this.sendCommand('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: point.x,
+        y: point.y
+      });
+
+      // Variable delay with slight randomness for human-like behavior
+      const randomDelay = delayPerStep * (0.8 + Math.random() * 0.4);
+      await new Promise(resolve => setTimeout(resolve, randomDelay));
+    }
+
+    return { x: targetX, y: targetY };
+  }
+
+  /**
+   * Perform realistic click with human-like timing
+   * @param {number} x - X coordinate
+   * @param {number} y - Y coordinate
+   * @param {object} options - Click options
+   * @param {string} options.button - Mouse button ('left', 'right', 'middle')
+   * @param {number} options.clickCount - Number of clicks (1 = single, 2 = double)
+   * @param {number} options.downDelay - Delay between press and release in ms (default: 50-100 random)
+   * @param {boolean} options.moveFirst - Whether to move mouse to position first (default: true)
+   * @param {number} options.moveDuration - Duration of mouse movement in ms (default: 300)
+   */
+  async clickRealistic(x, y, options = {}) {
+    const {
+      button = 'left',
+      clickCount = 1,
+      downDelay = 50 + Math.random() * 50,
+      moveFirst = true,
+      moveDuration = 300,
+      currentX = 0,
+      currentY = 0
+    } = options;
+
+    // Move mouse to position first if requested
+    if (moveFirst) {
+      await this.moveMouseRealistic(x, y, {
+        duration: moveDuration,
+        currentX,
+        currentY
+      });
+      // Small pause before clicking (human reaction time)
+      await new Promise(resolve => setTimeout(resolve, 50 + Math.random() * 100));
+    }
+
+    // Perform click(s)
+    for (let i = 0; i < clickCount; i++) {
+      await this.sendCommand('Input.dispatchMouseEvent', {
+        type: 'mousePressed',
+        x,
+        y,
+        button,
+        clickCount: i + 1
+      });
+
+      // Variable delay between press and release
+      await new Promise(resolve => setTimeout(resolve, downDelay));
+
+      await this.sendCommand('Input.dispatchMouseEvent', {
+        type: 'mouseReleased',
+        x,
+        y,
+        button,
+        clickCount: i + 1
+      });
+
+      // Delay between multiple clicks (for double-click)
+      if (i < clickCount - 1) {
+        await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 50));
+      }
+    }
+  }
+
+  /**
+   * Type text with realistic human-like timing
+   * @param {string} text - Text to type
+   * @param {object} options - Typing options
+   * @param {number} options.minDelay - Minimum delay between keystrokes in ms (default: 50)
+   * @param {number} options.maxDelay - Maximum delay between keystrokes in ms (default: 150)
+   * @param {number} options.mistakeChance - Chance of making a typo (0-1, default: 0)
+   * @param {boolean} options.pressEnter - Whether to press Enter after typing (default: false)
+   */
+  async typeRealistic(text, options = {}) {
+    const {
+      minDelay = 50,
+      maxDelay = 150,
+      mistakeChance = 0,
+      pressEnter = false
+    } = options;
+
+    for (let i = 0; i < text.length; i++) {
+      if (!this.isAttached() || this.isDetaching) {
+        throw new Error(`Typing interrupted: debugger detached after ${i} characters`);
+      }
+
+      const char = text[i];
+
+      // Occasionally make a typo and correct it
+      if (mistakeChance > 0 && Math.random() < mistakeChance) {
+        // Type a random wrong character
+        const wrongChar = String.fromCharCode(97 + Math.floor(Math.random() * 26));
+        await this._typeChar(wrongChar);
+        await new Promise(resolve => setTimeout(resolve, minDelay + Math.random() * (maxDelay - minDelay)));
+
+        // Backspace to delete it
+        await this.sendCommand('Input.dispatchKeyEvent', {
+          type: 'keyDown',
+          key: 'Backspace',
+          code: 'Backspace',
+          windowsVirtualKeyCode: 8
+        });
+        await this.sendCommand('Input.dispatchKeyEvent', {
+          type: 'keyUp',
+          key: 'Backspace',
+          code: 'Backspace',
+          windowsVirtualKeyCode: 8
+        });
+        await new Promise(resolve => setTimeout(resolve, minDelay + Math.random() * (maxDelay - minDelay)));
+      }
+
+      // Type the actual character
+      await this._typeChar(char);
+
+      // Variable delay between keystrokes
+      const delay = minDelay + Math.random() * (maxDelay - minDelay);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+
+    // Press Enter if requested
+    if (pressEnter) {
+      await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 100));
+      await this.sendCommand('Input.dispatchKeyEvent', {
+        type: 'keyDown',
+        key: 'Enter',
+        code: 'Enter',
+        windowsVirtualKeyCode: 13
+      });
+      await this.sendCommand('Input.dispatchKeyEvent', {
+        type: 'keyUp',
+        key: 'Enter',
+        code: 'Enter',
+        windowsVirtualKeyCode: 13
+      });
+    }
+  }
+
+  /**
+   * Helper to type a single character
+   */
+  async _typeChar(char) {
+    await this.sendCommand('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      text: char
+    });
+    await this.sendCommand('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      text: char
+    });
   }
 }
 

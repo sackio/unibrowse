@@ -893,3 +893,42 @@ export const DeleteMacroTool = z.object({
     id: z.string().describe("Macro ID to delete"),
   }),
 });
+
+export const RealisticMouseMoveTool = z.object({
+  name: z.literal("browser_realistic_mouse_move"),
+  description: z.literal("Move mouse cursor along a natural bezier curve path to target coordinates. More human-like than instant positioning. Uses CDP Input domain for OS-level events."),
+  arguments: z.object({
+    x: z.number().describe("Target X coordinate"),
+    y: z.number().describe("Target Y coordinate"),
+    duration: z.number().optional().describe("Movement duration in milliseconds (default: 500)"),
+    currentX: z.number().optional().describe("Current mouse X position (default: 0)"),
+    currentY: z.number().optional().describe("Current mouse Y position (default: 0)"),
+  }),
+});
+
+export const RealisticClickTool = z.object({
+  name: z.literal("browser_realistic_click"),
+  description: z.literal("Perform a realistic click at coordinates with human-like timing and optional mouse movement. Supports double-clicks. Uses CDP Input domain for OS-level events."),
+  arguments: z.object({
+    x: z.number().describe("Target X coordinate to click"),
+    y: z.number().describe("Target Y coordinate to click"),
+    button: z.enum(["left", "right", "middle"]).optional().describe("Mouse button to click (default: 'left')"),
+    clickCount: z.number().optional().describe("Number of clicks - 1 for single, 2 for double (default: 1)"),
+    moveFirst: z.boolean().optional().describe("Whether to move mouse to position first with bezier curve (default: true)"),
+    moveDuration: z.number().optional().describe("Duration of mouse movement in ms if moveFirst is true (default: 300)"),
+    currentX: z.number().optional().describe("Current mouse X position for movement calculation (default: 0)"),
+    currentY: z.number().optional().describe("Current mouse Y position for movement calculation (default: 0)"),
+  }),
+});
+
+export const RealisticTypeTool = z.object({
+  name: z.literal("browser_realistic_type"),
+  description: z.literal("Type text with realistic human-like timing and optional typos. Variable delays between keystrokes. Uses CDP Input domain for OS-level keyboard events."),
+  arguments: z.object({
+    text: z.string().describe("Text to type"),
+    minDelay: z.number().optional().describe("Minimum delay between keystrokes in ms (default: 50)"),
+    maxDelay: z.number().optional().describe("Maximum delay between keystrokes in ms (default: 150)"),
+    mistakeChance: z.number().optional().describe("Probability of making a typo that gets corrected, 0-1 (default: 0)"),
+    pressEnter: z.boolean().optional().describe("Whether to press Enter after typing (default: false)"),
+  }),
+});

@@ -285,7 +285,8 @@ class BackgroundController {
       tabId: null,
       tabUrl: null,
       tabTitle: null,
-      originalTabTitle: null
+      originalTabTitle: null,
+      temporarilyDetached: false // Track temporary detachments (e.g., extension popups)
     };
 
     this.setupListeners();
@@ -325,12 +326,36 @@ class BackgroundController {
     });
 
     // Tab updated (navigation, etc)
-    chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       if (this.state.tabId === tabId) {
         if (changeInfo.url) {
           console.log('[Background] Tab navigated to:', changeInfo.url);
           this.state.tabUrl = changeInfo.url;
         }
+
+        // Re-attach debugger if we're in a temporary detachment state
+        if (changeInfo.status === 'complete' && this.state.temporarilyDetached && this.state.connected) {
+          // Check if the URL is now a normal URL (not chrome-extension://)
+          const url = tab.url || this.state.tabUrl;
+          if (url && !url.startsWith('chrome-extension://') && !url.startsWith('chrome://')) {
+            console.log('[Background] Tab returned from temporary detachment, re-attaching debugger...');
+            try {
+              await this.cdp.attach(tabId);
+              this.state.temporarilyDetached = false;
+              console.log('[Background] Debugger re-attached successfully');
+
+              // Re-inject indicators and background capture
+              await this.updateTabTitle();
+              await this.injectTabIndicator();
+              await this.injectBackgroundCapture();
+            } catch (error) {
+              console.error('[Background] Failed to re-attach debugger:', error);
+              // If re-attachment fails, fully disconnect
+              this.disconnect();
+            }
+          }
+        }
+
         // Update title tracking when it changes (but ignore our own MCP prefix)
         if (changeInfo.title && this.state.connected) {
           // Only update if the title doesn't already have our MCP prefix
@@ -411,8 +436,27 @@ class BackgroundController {
     chrome.debugger.onDetach.addListener((source, reason) => {
       if (source.tabId === this.state.tabId) {
         console.log('[Background] Debugger detached:', reason);
-        // Always disconnect regardless of reason to ensure cleanup
-        this.disconnect();
+
+        // Check if this is a permanent or temporary detachment
+        const permanentReasons = ['target_closed', 'canceled_by_user'];
+
+        if (permanentReasons.includes(reason)) {
+          // Permanent detachment - fully disconnect
+          console.log('[Background] Permanent detachment, disconnecting completely');
+          this.disconnect();
+        } else {
+          // Temporary detachment (e.g., navigation to chrome-extension:// URL)
+          console.log('[Background] Temporary detachment, keeping connection state');
+          this.state.temporarilyDetached = true;
+
+          // Mark CDP as detached but keep state
+          this.cdp.target = null;
+          this.cdp.isDetaching = false;
+          this.cdp.enabledDomains.clear();
+
+          // Note: Tab navigation listener will attempt to re-attach when tab returns to normal URL
+          console.log('[Background] Waiting for tab to navigate back to re-attach...');
+        }
       }
     });
 
@@ -516,6 +560,11 @@ class BackgroundController {
     this.handlers['browser_press_key'] = this.handlePressKey.bind(this);
     this.handlers['browser_scroll'] = this.handleScroll.bind(this);
     this.handlers['browser_scroll_to_element'] = this.handleScrollToElement.bind(this);
+
+    // Realistic input handlers (CDP-based)
+    this.handlers['browser_realistic_mouse_move'] = this.handleRealisticMouseMove.bind(this);
+    this.handlers['browser_realistic_click'] = this.handleRealisticClick.bind(this);
+    this.handlers['browser_realistic_type'] = this.handleRealisticType.bind(this);
 
     // Tab management handlers
     this.handlers['browser_list_tabs'] = this.handleListTabs.bind(this);
@@ -647,11 +696,10 @@ class BackgroundController {
     // Set connected to false FIRST to prevent event listeners from re-adding indicators
     this.state.connected = false;
 
-    // Restore original tab title
-    await this.restoreTabTitle();
-
-    // Remove visual indicator from the page
-    await this.removeTabIndicator();
+    // Clean up ALL tabs (not just the active one)
+    // This handles cases where indicators were left behind after crashes
+    await this.removeAllTabPrefixes();
+    await this.removeAllTabIndicators();
 
     this.ws.disconnect();
     await this.cdp.detach();
@@ -660,6 +708,7 @@ class BackgroundController {
     this.state.tabUrl = null;
     this.state.tabTitle = null;
     this.state.originalTabTitle = null;
+    this.state.temporarilyDetached = false;
     this.consoleLogs = [];
     this.networkLogs = [];
     this.backgroundRecorder.clear(); // Clear background interaction log
@@ -793,6 +842,11 @@ class BackgroundController {
 
       console.log('[Background] Attaching to tab:', targetTabId, tab.url);
 
+      // Remove MCP prefix and indicator from ALL tabs before attaching to new one
+      // This ensures only the active tab has the prefix and indicator
+      await this.removeAllTabPrefixes();
+      await this.removeAllTabIndicators();
+
       // Attach debugger
       await this.cdp.attach(targetTabId);
 
@@ -802,7 +856,10 @@ class BackgroundController {
       this.state.tabUrl = tab.url;
       this.state.tabTitle = tab.title;
       // Store original title for new tab (before we modify it with [MCP] prefix)
-      this.state.originalTabTitle = tab.title;
+      // Make sure to strip any existing prefix first
+      this.state.originalTabTitle = tab.title.startsWith('🟢 [MCP] ')
+        ? tab.title.replace('🟢 [MCP] ', '')
+        : tab.title;
 
       // Inject indicators and background capture on first attachment or tab switch
       console.log('[Background] Injecting indicators and background capture...');
@@ -890,8 +947,8 @@ class BackgroundController {
   async updateTabTitle() {
     if (!this.state.tabId || !this.state.originalTabTitle) return;
 
-    // Only update title if debugger is attached
-    if (!this.cdp.isAttached()) {
+    // Only update title if debugger is attached and not detaching
+    if (!this.cdp.isAttached() || this.cdp.isDetaching) {
       return;
     }
 
@@ -920,10 +977,11 @@ class BackgroundController {
 
     console.log('[Background] restoreTabTitle: Starting cleanup');
     console.log('[Background] restoreTabTitle: CDP attached?', this.cdp.isAttached());
+    console.log('[Background] restoreTabTitle: CDP detaching?', this.cdp.isDetaching);
 
     try {
-      // Try using CDP if debugger is still attached
-      if (this.cdp.isAttached()) {
+      // Try using CDP only if debugger is attached AND not detaching
+      if (this.cdp.isAttached() && !this.cdp.isDetaching) {
         console.log('[Background] restoreTabTitle: Using CDP path');
         await this.cdp.evaluate(`
           if (document.title.startsWith('🟢 [MCP] ')) {
@@ -932,7 +990,7 @@ class BackgroundController {
         `, true);
         console.log('[Background] restoreTabTitle: CDP cleanup successful');
       } else {
-        // Fallback to chrome.scripting if debugger already detached
+        // Use chrome.scripting if debugger already detached or detaching
         console.log('[Background] restoreTabTitle: Using chrome.scripting fallback');
         console.log('[Background] restoreTabTitle: Target tabId:', this.state.tabId);
 
@@ -955,8 +1013,205 @@ class BackgroundController {
       }
       console.log('[Background] Tab title restored');
     } catch (error) {
-      console.error('[Background] Failed to restore tab title:', error);
-      console.error('[Background] Error details:', error.message, error.stack);
+      // Log but don't throw - cleanup should be best-effort
+      console.warn('[Background] Failed to restore tab title (non-fatal):', error.message);
+    }
+  }
+
+  /**
+   * Remove MCP prefix from all tabs
+   * Used when switching tabs to ensure only the active tab has the prefix
+   */
+  async removeAllTabPrefixes() {
+    console.log('[Background] Removing MCP prefix from all tabs');
+
+    try {
+      // Get all tabs
+      const tabs = await chrome.tabs.query({});
+
+      // Remove prefix from each tab that has it
+      for (const tab of tabs) {
+        // Skip if title doesn't have the prefix
+        if (!tab.title || !tab.title.startsWith('🟢 [MCP] ')) {
+          continue;
+        }
+
+        try {
+          // Use chrome.scripting to remove prefix
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => {
+              if (document.title.startsWith('🟢 [MCP] ')) {
+                document.title = document.title.replace('🟢 [MCP] ', '');
+              }
+            }
+          });
+          console.log(`[Background] Removed MCP prefix from tab ${tab.id}`);
+        } catch (error) {
+          // Tab may be restricted or unavailable - skip
+          console.warn(`[Background] Could not remove prefix from tab ${tab.id}:`, error.message);
+        }
+      }
+    } catch (error) {
+      console.warn('[Background] Failed to remove all tab prefixes (non-fatal):', error.message);
+    }
+  }
+
+  /**
+   * Remove MCP indicator from all tabs
+   * Used when switching tabs and for cleanup after crashes
+   */
+  async removeAllTabIndicators() {
+    console.log('[Background] Removing MCP indicator from all tabs');
+
+    try {
+      // Get all tabs
+      const tabs = await chrome.tabs.query({});
+
+      // Remove indicator from each tab
+      for (const tab of tabs) {
+        try {
+          // Use chrome.scripting to remove indicator
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => {
+              const indicator = document.getElementById('browser-mcp-indicator');
+              if (indicator) {
+                indicator.remove();
+                console.log('[Page] MCP indicator removed');
+              }
+            }
+          });
+          console.log(`[Background] Removed MCP indicator from tab ${tab.id}`);
+        } catch (error) {
+          // Tab may be restricted or unavailable - skip
+          console.warn(`[Background] Could not remove indicator from tab ${tab.id}:`, error.message);
+        }
+      }
+    } catch (error) {
+      console.warn('[Background] Failed to remove all tab indicators (non-fatal):', error.message);
+    }
+  }
+
+  /**
+   * Cleanup on extension startup/reload
+   * Removes all MCP prefixes and indicators from all tabs
+   * Ensures clean state on startup
+   * Optionally adds indicators to a specific tab after cleanup
+   */
+  async cleanupOnStartup(activeTabId = null) {
+    console.log('[Background] Running startup cleanup...');
+
+    try {
+      // Remove all prefixes and indicators from all tabs
+      await this.removeAllTabPrefixes();
+      await this.removeAllTabIndicators();
+
+      console.log('[Background] Startup cleanup complete');
+
+      // If we have an active tab, add indicators to it
+      if (activeTabId) {
+        console.log('[Background] Adding indicators to active tab:', activeTabId);
+
+        // Store original title before adding prefix
+        const tab = await chrome.tabs.get(activeTabId);
+        this.state.originalTabTitle = tab.title.startsWith('🟢 [MCP] ')
+          ? tab.title.replace('🟢 [MCP] ', '')
+          : tab.title;
+
+        // Add indicators using chrome.scripting (no CDP needed yet)
+        await this.addIndicatorsWithoutCDP(activeTabId);
+      }
+    } catch (error) {
+      console.error('[Background] Startup cleanup failed:', error);
+    }
+  }
+
+  /**
+   * Add indicators to a tab without using CDP
+   * Used during startup before debugger is attached
+   */
+  async addIndicatorsWithoutCDP(tabId) {
+    try {
+      // Add title prefix
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          if (!document.title.startsWith('🟢 [MCP] ')) {
+            document.title = `🟢 [MCP] ${document.title}`;
+          }
+        }
+      });
+
+      // Add visual indicator
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          // Remove any existing indicator
+          const existing = document.getElementById('browser-mcp-indicator');
+          if (existing) existing.remove();
+
+          // Create indicator using DOM methods
+          const container = document.createElement('div');
+          container.id = 'browser-mcp-indicator';
+          container.style.cssText = `
+            position: fixed;
+            bottom: 16px;
+            right: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-size: 13px;
+            font-weight: 500;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 2147483647;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            pointer-events: none;
+            animation: mcpFadeIn 0.3s ease-out;
+          `;
+
+          // Create pulse dot
+          const dot = document.createElement('div');
+          dot.style.cssText = `
+            width: 8px;
+            height: 8px;
+            background: #10b981;
+            border-radius: 50%;
+            animation: mcpPulse 2s ease-in-out infinite;
+          `;
+
+          // Create text node
+          const text = document.createTextNode('MCP Connected');
+
+          // Assemble indicator
+          container.appendChild(dot);
+          container.appendChild(text);
+
+          // Add animations
+          const style = document.createElement('style');
+          style.textContent = `
+            @keyframes mcpFadeIn {
+              from { opacity: 0; transform: translateY(10px); }
+              to { opacity: 1; transform: translateY(0); }
+            }
+            @keyframes mcpPulse {
+              0%, 100% { opacity: 1; }
+              50% { opacity: 0.5; }
+            }
+          `;
+          document.head.appendChild(style);
+
+          document.body.appendChild(container);
+        }
+      });
+
+      console.log('[Background] Indicators added to tab:', tabId);
+    } catch (error) {
+      console.warn('[Background] Failed to add indicators (non-fatal):', error.message);
     }
   }
 
@@ -965,6 +1220,12 @@ class BackgroundController {
    */
   async injectTabIndicator() {
     if (!this.state.tabId) return;
+
+    // Only inject if debugger is attached and not detaching
+    if (!this.cdp.isAttached() || this.cdp.isDetaching) {
+      console.log('[Background] Skipping indicator injection: debugger not available');
+      return;
+    }
 
     try {
       await this.cdp.evaluate(`
@@ -1064,10 +1325,11 @@ class BackgroundController {
 
     console.log('[Background] removeTabIndicator: Starting cleanup');
     console.log('[Background] removeTabIndicator: CDP attached?', this.cdp.isAttached());
+    console.log('[Background] removeTabIndicator: CDP detaching?', this.cdp.isDetaching);
 
     try {
-      // Try using CDP if debugger is still attached
-      if (this.cdp.isAttached()) {
+      // Try using CDP only if debugger is attached AND not detaching
+      if (this.cdp.isAttached() && !this.cdp.isDetaching) {
         console.log('[Background] removeTabIndicator: Using CDP path');
         await this.cdp.evaluate(`
           (() => {
@@ -1077,7 +1339,7 @@ class BackgroundController {
         `, true);
         console.log('[Background] removeTabIndicator: CDP cleanup successful');
       } else {
-        // Fallback to chrome.scripting if debugger already detached
+        // Use chrome.scripting if debugger already detached or detaching
         console.log('[Background] removeTabIndicator: Using chrome.scripting fallback');
         console.log('[Background] removeTabIndicator: Target tabId:', this.state.tabId);
 
@@ -1101,8 +1363,8 @@ class BackgroundController {
       }
       console.log('[Background] Tab indicator removed');
     } catch (error) {
-      console.error('[Background] Failed to remove indicator:', error);
-      console.error('[Background] Error details:', error.message, error.stack);
+      // Log but don't throw - cleanup should be best-effort
+      console.warn('[Background] Failed to remove indicator (non-fatal):', error.message);
     }
   }
 
@@ -1265,28 +1527,47 @@ class BackgroundController {
   }
 
   async handleType({ element, ref, text, submit }) {
-    // Focus the element first by clicking it
-    const elemInfo = await this.cdp.querySelector(ref);
-    if (!elemInfo) {
-      throw new Error(`Element not found: ${ref}`);
+    try {
+      // Focus the element first by clicking it
+      const elemInfo = await this.cdp.querySelector(ref);
+      if (!elemInfo) {
+        throw new Error(`Element not found: ${ref}`);
+      }
+
+      const x = elemInfo.rect.x + elemInfo.rect.width / 2;
+      const y = elemInfo.rect.y + elemInfo.rect.height / 2;
+
+      // Check if still attached before clicking
+      if (!this.cdp.isAttached() || this.cdp.isDetaching) {
+        throw new Error('Debugger detached before typing could start');
+      }
+
+      await this.cdp.click(x, y);
+
+      // Wait a moment for focus
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Check if still attached before typing
+      if (!this.cdp.isAttached() || this.cdp.isDetaching) {
+        throw new Error('Debugger detached before typing could start');
+      }
+
+      // Type the text (this will throw if detachment occurs mid-typing)
+      await this.cdp.type(text);
+
+      // Submit if requested (only if still attached)
+      if (submit && this.cdp.isAttached() && !this.cdp.isDetaching) {
+        await this.cdp.pressKey('Enter');
+      }
+
+      return { success: true, element, text };
+    } catch (error) {
+      // Provide better error messages for detachment scenarios
+      if (error.message && (error.message.includes('Detached') || error.message.includes('detached'))) {
+        throw new Error(`Typing operation interrupted: tab closed or navigated during input. Partial text may have been entered.`);
+      }
+      throw error;
     }
-
-    const x = elemInfo.rect.x + elemInfo.rect.width / 2;
-    const y = elemInfo.rect.y + elemInfo.rect.height / 2;
-    await this.cdp.click(x, y);
-
-    // Wait a moment for focus
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    // Type the text
-    await this.cdp.type(text);
-
-    // Submit if requested
-    if (submit) {
-      await this.cdp.pressKey('Enter');
-    }
-
-    return { success: true, element, text };
   }
 
   async handleHover({ element, ref }) {
@@ -1355,6 +1636,64 @@ class BackgroundController {
       throw new Error(result.error || 'Failed to scroll to element');
     }
     return { success: true, element, ref };
+  }
+
+  async handleRealisticMouseMove({ x, y, duration, currentX, currentY }) {
+    const result = await this.cdp.moveMouseRealistic(x, y, {
+      duration,
+      currentX,
+      currentY
+    });
+    return {
+      success: true,
+      position: result,
+      message: `Moved mouse to (${x}, ${y})`
+    };
+  }
+
+  async handleRealisticClick({ x, y, button, clickCount, moveFirst, moveDuration, currentX, currentY }) {
+    await this.cdp.clickRealistic(x, y, {
+      button,
+      clickCount,
+      moveFirst,
+      moveDuration,
+      currentX,
+      currentY
+    });
+    return {
+      success: true,
+      position: { x, y },
+      button: button || 'left',
+      clickCount: clickCount || 1,
+      message: `${clickCount === 2 ? 'Double-' : ''}Clicked ${button || 'left'} button at (${x}, ${y})`
+    };
+  }
+
+  async handleRealisticType({ text, minDelay, maxDelay, mistakeChance, pressEnter }) {
+    try {
+      if (!this.cdp.isAttached() || this.cdp.isDetaching) {
+        throw new Error('Debugger detached before typing could start');
+      }
+
+      await this.cdp.typeRealistic(text, {
+        minDelay,
+        maxDelay,
+        mistakeChance,
+        pressEnter
+      });
+
+      return {
+        success: true,
+        text,
+        length: text.length,
+        message: `Typed "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"${pressEnter ? ' and pressed Enter' : ''}`
+      };
+    } catch (error) {
+      if (error.message && (error.message.includes('Detached') || error.message.includes('detached'))) {
+        throw new Error(`Typing operation interrupted: tab closed or navigated during input. Partial text may have been entered.`);
+      }
+      throw error;
+    }
   }
 
   async handleListTabs() {
@@ -1908,22 +2247,131 @@ class BackgroundController {
           el.style.transform = `translate3d(${xPos}px, ${yPos}px, 0)`;
         }
 
-        // Button handlers
+        // Button handlers - show feedback modal instead of immediate completion
         document.getElementById('mcp-complete-btn').addEventListener('click', () => {
-          chrome.runtime.sendMessage({
-            type: 'USER_ACTION_COMPLETE',
-            requestId: requestId
-          });
-          overlay.remove();
+          showFeedbackModal('completed');
         });
 
         document.getElementById('mcp-reject-btn').addEventListener('click', () => {
-          chrome.runtime.sendMessage({
-            type: 'USER_ACTION_REJECTED',
-            requestId: requestId
-          });
-          overlay.remove();
+          showFeedbackModal('rejected');
         });
+
+        // Show feedback modal
+        function showFeedbackModal(action) {
+          // Hide the main overlay temporarily
+          overlay.style.display = 'none';
+
+          // Create feedback modal
+          const feedbackModal = document.createElement('div');
+          feedbackModal.id = 'mcp-feedback-modal';
+          feedbackModal.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            border: 2px solid ${action === 'completed' ? '#4a90e2' : '#e53e3e'};
+            border-radius: 8px;
+            padding: 24px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+            z-index: 2147483648;
+            width: 420px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          `;
+
+          feedbackModal.innerHTML = `
+            <div style="margin-bottom: 16px;">
+              <div style="font-weight: 600; font-size: 16px; color: #2d3748; margin-bottom: 8px;">
+                ${action === 'completed' ? '✅ Action Completed' : '❌ Action Rejected'}
+              </div>
+              <div style="font-size: 14px; color: #4a5568; line-height: 1.5;">
+                ${action === 'completed'
+                  ? 'Optionally provide additional information about what you did:'
+                  : 'Optionally explain why you rejected this request:'}
+              </div>
+            </div>
+            <textarea id="mcp-feedback-text" placeholder="Enter feedback here (optional)..." style="
+              width: 100%;
+              min-height: 100px;
+              padding: 12px;
+              border: 1px solid #e2e8f0;
+              border-radius: 6px;
+              font-size: 14px;
+              font-family: inherit;
+              resize: vertical;
+              margin-bottom: 16px;
+              box-sizing: border-box;
+            "></textarea>
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+              <button id="mcp-feedback-cancel" style="
+                padding: 8px 16px;
+                border: 1px solid #e2e8f0;
+                border-radius: 6px;
+                background: white;
+                color: #4a5568;
+                cursor: pointer;
+                font-size: 14px;
+                font-weight: 500;
+              ">Back</button>
+              <button id="mcp-feedback-send" style="
+                padding: 8px 20px;
+                border: none;
+                border-radius: 6px;
+                background: ${action === 'completed' ? '#4a90e2' : '#e53e3e'};
+                color: white;
+                cursor: pointer;
+                font-size: 14px;
+                font-weight: 500;
+              ">Send</button>
+            </div>
+          `;
+
+          document.body.appendChild(feedbackModal);
+
+          // Focus textarea
+          const textarea = document.getElementById('mcp-feedback-text');
+          setTimeout(() => textarea.focus(), 100);
+
+          // Cancel button - go back to main overlay
+          document.getElementById('mcp-feedback-cancel').addEventListener('click', () => {
+            feedbackModal.remove();
+            overlay.style.display = 'block';
+          });
+
+          // Send button - send message with feedback
+          document.getElementById('mcp-feedback-send').addEventListener('click', () => {
+            const feedbackText = textarea.value.trim();
+            chrome.runtime.sendMessage({
+              type: action === 'completed' ? 'USER_ACTION_COMPLETE' : 'USER_ACTION_REJECTED',
+              requestId: requestId,
+              feedback: feedbackText || null
+            });
+            feedbackModal.remove();
+            overlay.remove();
+          });
+
+          // Enter key submits (Ctrl+Enter for newline)
+          textarea.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey) {
+              e.preventDefault();
+              document.getElementById('mcp-feedback-send').click();
+            }
+          });
+
+          // Hover effects for buttons
+          const sendBtn = document.getElementById('mcp-feedback-send');
+          const cancelBtn = document.getElementById('mcp-feedback-cancel');
+
+          sendBtn.addEventListener('mouseenter', () => {
+            sendBtn.style.background = action === 'completed' ? '#3182ce' : '#c53030';
+          });
+          sendBtn.addEventListener('mouseleave', () => {
+            sendBtn.style.background = action === 'completed' ? '#4a90e2' : '#e53e3e';
+          });
+
+          cancelBtn.addEventListener('mouseenter', () => cancelBtn.style.background = '#f7fafc');
+          cancelBtn.addEventListener('mouseleave', () => cancelBtn.style.background = 'white');
+        }
 
         // Hover effects
         const completeBtn = document.getElementById('mcp-complete-btn');
@@ -1963,7 +2411,7 @@ class BackgroundController {
         // Set up message listener for user response
         const messageListener = (message, sender) => {
           if (message.type === 'USER_ACTION_COMPLETE' && message.requestId === requestId) {
-            console.log('[Background] User completed action');
+            console.log('[Background] User completed action', message.feedback ? `with feedback: ${message.feedback}` : 'without feedback');
             const endTime = Date.now();
 
             // Query background interaction log for this time period
@@ -1995,10 +2443,11 @@ class BackgroundController {
               startTime,
               endTime,
               duration: endTime - startTime,
-              interactions: interactions.interactions
+              interactions: interactions.interactions,
+              feedback: message.feedback || null
             });
           } else if (message.type === 'USER_ACTION_REJECTED' && message.requestId === requestId) {
-            console.log('[Background] User rejected action');
+            console.log('[Background] User rejected action', message.feedback ? `with reason: ${message.feedback}` : 'without reason');
             const endTime = Date.now();
 
             // Store navigation listener before cleanup
@@ -2023,7 +2472,8 @@ class BackgroundController {
               startTime,
               endTime,
               duration: endTime - startTime,
-              interactions: []
+              interactions: [],
+              feedback: message.feedback || null
             });
           }
           // Explicitly return false to indicate no async response needed
@@ -2282,32 +2732,45 @@ class BackgroundController {
   async handleGetClipboard(data) {
     console.log('[Background] Getting clipboard');
 
-    // Read text from clipboard using execCommand
-    const text = await this.cdp.evaluate(`
-      (async () => {
-        try {
-          // Try using the Clipboard API (requires user interaction in most browsers)
-          if (navigator.clipboard && navigator.clipboard.readText) {
-            return await navigator.clipboard.readText();
+    try {
+      // Use chrome.scripting with proper user gesture context
+      // This is more reliable than CDP evaluation for clipboard operations
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: this.state.tabId },
+        func: async () => {
+          try {
+            // Focus the document first to ensure we have user gesture
+            window.focus();
+            document.body.focus();
+
+            // Try using the Clipboard API
+            if (navigator.clipboard && navigator.clipboard.readText) {
+              return await navigator.clipboard.readText();
+            }
+
+            // Fallback: use a temporary textarea
+            const textarea = document.createElement('textarea');
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            document.execCommand('paste');
+            const text = textarea.value;
+            document.body.removeChild(textarea);
+            return text;
+          } catch (error) {
+            throw new Error('Failed to read clipboard: ' + error.message);
           }
+        },
+        world: 'MAIN'
+      });
 
-          // Fallback: use a temporary textarea
-          const textarea = document.createElement('textarea');
-          textarea.style.position = 'fixed';
-          textarea.style.opacity = '0';
-          document.body.appendChild(textarea);
-          textarea.focus();
-          document.execCommand('paste');
-          const text = textarea.value;
-          document.body.removeChild(textarea);
-          return text;
-        } catch (error) {
-          throw new Error('Failed to read clipboard: ' + error.message);
-        }
-      })()
-    `, true);
-
-    return { text };
+      const text = results[0]?.result || '';
+      return { text };
+    } catch (error) {
+      console.error('[Background] Clipboard read failed:', error);
+      throw new Error(`Clipboard read failed: ${error.message}`);
+    }
   }
 
   /**
@@ -2316,33 +2779,45 @@ class BackgroundController {
   async handleSetClipboard(data) {
     console.log('[Background] Setting clipboard:', data.text.substring(0, 50));
 
-    // Write text to clipboard using execCommand
-    await this.cdp.evaluate(`
-      (async () => {
-        const text = ${JSON.stringify(data.text)};
-        try {
-          // Try using the Clipboard API first
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            await navigator.clipboard.writeText(text);
-            return;
+    try {
+      // Use chrome.scripting with proper user gesture context
+      // This is more reliable than CDP evaluation for clipboard operations
+      await chrome.scripting.executeScript({
+        target: { tabId: this.state.tabId },
+        func: async (text) => {
+          try {
+            // Focus the document first to ensure we have user gesture
+            window.focus();
+            document.body.focus();
+
+            // Try using the Clipboard API first
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              await navigator.clipboard.writeText(text);
+              return;
+            }
+
+            // Fallback: use a temporary textarea
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+          } catch (error) {
+            throw new Error('Failed to write clipboard: ' + error.message);
           }
+        },
+        args: [data.text],
+        world: 'MAIN'
+      });
 
-          // Fallback: use a temporary textarea
-          const textarea = document.createElement('textarea');
-          textarea.value = text;
-          textarea.style.position = 'fixed';
-          textarea.style.opacity = '0';
-          document.body.appendChild(textarea);
-          textarea.select();
-          document.execCommand('copy');
-          document.body.removeChild(textarea);
-        } catch (error) {
-          throw new Error('Failed to write clipboard: ' + error.message);
-        }
-      })()
-    `, true);
-
-    return { success: true };
+      return { success: true };
+    } catch (error) {
+      console.error('[Background] Clipboard write failed:', error);
+      throw new Error(`Clipboard write failed: ${error.message}`);
+    }
   }
 
   /**
@@ -2671,6 +3146,10 @@ console.log('[Background] Browser MCP extension loaded');
 
 // Auto-connect functionality
 async function autoConnect() {
+  // First clean up any leftover indicators/prefixes from previous sessions
+  await controller.cleanupOnStartup();
+  console.log('[Background] Extension initialized and cleaned up');
+
   // Don't attempt twice
   if (autoConnectAttempted) {
     return;
@@ -2732,6 +3211,15 @@ async function autoConnect() {
       controller.state.tabId = selectedTab.id;
       controller.state.tabUrl = selectedTab.url;
       controller.state.tabTitle = selectedTab.title;
+      controller.state.originalTabTitle = selectedTab.title;
+
+      // Add indicators to the selected tab (after cleanup has run)
+      try {
+        await controller.addIndicatorsWithoutCDP(selectedTab.id);
+        console.log('[Background] Indicators added to auto-connected tab');
+      } catch (error) {
+        console.warn('[Background] Failed to add indicators to auto-connected tab:', error);
+      }
 
       console.log('[Background] Auto-connect complete - ready for MCP commands');
     } else {

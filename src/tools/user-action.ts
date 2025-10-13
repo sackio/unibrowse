@@ -36,16 +36,25 @@ export const requestUserAction: ToolFactory = (snapshot) => ({
       // Format the result
       const interactions = result.interactions || [];
       const status = result.status; // 'completed', 'rejected', 'timeout'
+      const feedback = result.feedback;
 
     let summary = `# User Action Request\n\n`;
     summary += `**Request**: ${request}\n`;
     summary += `**Status**: ${status}\n`;
     summary += `**Duration**: ${(result.duration / 1000).toFixed(1)}s\n`;
     summary += `**Start Time**: ${new Date(result.startTime).toISOString()}\n`;
-    summary += `**End Time**: ${new Date(result.endTime).toISOString()}\n\n`;
+    summary += `**End Time**: ${new Date(result.endTime).toISOString()}\n`;
+
+    if (feedback) {
+      summary += `**User Feedback**: ${feedback}\n`;
+    }
+    summary += `\n`;
 
     if (status === 'rejected') {
       summary += `The user rejected this request.\n`;
+      if (feedback) {
+        summary += `\n**Reason provided**: ${feedback}\n`;
+      }
     } else if (status === 'timeout') {
       summary += `The request timed out after ${timeout || 300}s.\n`;
     } else {

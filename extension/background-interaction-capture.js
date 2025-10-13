@@ -105,10 +105,21 @@ if (!window.backgroundInteractionCapture) {
           type: 'BACKGROUND_INTERACTION',
           interaction
         }).catch(err => {
+          // Filter out benign "message channel closed" errors
+          // This happens when the background script doesn't send a response (which is intentional)
+          if (err.message?.includes('message channel closed')) {
+            // This is expected - background script doesn't respond to these messages
+            return;
+          }
+
           // Handle extension reload/disconnect
           if (err.message?.includes('Extension context invalidated')) {
             this.extensionInvalidated = true;
             console.log('[BackgroundCapture] Extension reloaded, stopping capture');
+          } else if (err.message?.includes('Receiving end does not exist')) {
+            // Extension disconnected - stop sending
+            this.extensionInvalidated = true;
+            console.log('[BackgroundCapture] Extension disconnected, stopping capture');
           } else {
             console.error('[BackgroundCapture] Failed to send interaction:', err);
           }
@@ -116,7 +127,8 @@ if (!window.backgroundInteractionCapture) {
       } catch (err) {
         // Synchronous error - extension likely invalidated
         if (err.message?.includes('Extension context invalidated') ||
-            err.message?.includes('context was destroyed')) {
+            err.message?.includes('context was destroyed') ||
+            err.message?.includes('message channel closed')) {
           this.extensionInvalidated = true;
         }
       }
