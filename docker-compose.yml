@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: browser-mcp-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: browser_mcp
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    networks:
+      - browser-mcp-network
+    # No ports exposed to host - MongoDB is only accessible within Docker network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: browser-mcp-server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9010:9010"  # Only expose on localhost
+    environment:
+      PORT: 9010
+      MONGODB_URI: mongodb://mongodb:27017
+      MONGODB_DB: browser_mcp
+      NODE_ENV: production
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - browser-mcp-network
+    volumes:
+      # Mount for development (optional - remove in production)
+      - ./dist:/app/dist:ro
+
+networks:
+  browser-mcp-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+    driver: local
+  mongodb_config:
+    driver: local
