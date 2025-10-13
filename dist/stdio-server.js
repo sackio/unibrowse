@@ -56,6 +56,9 @@ import {
   pressKey,
   pruneInteractions,
   queryDOM,
+  realisticClick,
+  realisticMouseMove,
+  realisticType,
   requestUserAction,
   screenshot,
   scroll,
@@ -74,7 +77,7 @@ import {
   type,
   updateMacro,
   wait
-} from "./chunk-C5WGINTN.js";
+} from "./chunk-CP6VOCYE.js";
 import "./chunk-ITTVOQ2V.js";
 
 // src/stdio-server.ts
@@ -181,6 +184,11 @@ var macroTools = [
   updateMacro,
   deleteMacro
 ];
+var realisticInputTools = [
+  realisticMouseMove,
+  realisticClick,
+  realisticType
+];
 var snapshotTools = [
   navigate(false),
   goBack(false),
@@ -206,7 +214,8 @@ var snapshotTools = [
   ...networkTools,
   ...bookmarkTools,
   ...extensionTools,
-  ...macroTools
+  ...macroTools,
+  ...realisticInputTools
 ];
 var resources = [];
 async function createServer() {

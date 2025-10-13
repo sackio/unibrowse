@@ -183,13 +183,14 @@ export const executeMacro: Tool = {
         return errorResponse(`Macro with ID "${validatedParams.id}" not found`, true);
       }
 
-      // Wrap the macro code in an IIFE and pass params
+      // Wrap the macro code in an async IIFE and pass params
+      // This handles both sync and async macros correctly
       const wrappedCode = `
-        (function() {
+        (async function() {
           const macroFunction = ${macro.code};
           const params = ${JSON.stringify(validatedParams.params || {})};
           try {
-            const result = macroFunction(params);
+            const result = await macroFunction(params);
             return { success: true, result: result };
           } catch (error) {
             return { success: false, error: error.message, stack: error.stack };
