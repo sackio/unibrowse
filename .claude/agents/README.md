@@ -4,9 +4,9 @@ This directory contains specialized agents for Browser MCP automation.
 
 ## Available Agents
 
-### browser-automation
+### browser-agent
 
-**Purpose:** Browser automation with macro awareness
+**Purpose:** Browser agent with macro awareness
 
 **Capabilities:**
 - Executes stored macros for common browser tasks
@@ -26,7 +26,7 @@ This directory contains specialized agents for Browser MCP automation.
 
 ### Auto-Context Updates
 
-The `browser-automation` agent receives automatic context updates via hooks:
+The `browser-agent` receives automatic context updates via hooks:
 
 1. **On Navigation** - When you navigate to a new site, hooks inject available macros
 2. **On Tab Switch** - When switching tabs, context refreshes for new tab
@@ -59,7 +59,7 @@ Hooks are configured in `.claude/hooks/browser-navigation.json`:
 ```
 User: "Find cheap wireless headphones on Google Shopping"
   ↓
-[Launch browser-automation agent]
+[Launch browser-agent]
   ↓
 Agent:
   1. Lists macros for current site
@@ -129,7 +129,7 @@ Test macro querying:
 
 **Agent not aware of macros:**
 - Check that hooks are configured correctly
-- Ensure agent is actually `browser-automation` name
+- Ensure agent is actually `browser-agent` name
 - Manually test: `./scripts/hooks/update-macro-context.sh`
 
 ## Best Practices

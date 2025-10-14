@@ -55,7 +55,7 @@ fi
 echo "{\"domain\": \"$NEW_DOMAIN\", \"url\": \"$NEW_URL\", \"timestamp\": \"$(date -Iseconds)\"}" > "$STATE_FILE"
 
 # Only output if agent is active
-if [[ "${CLAUDE_SUBAGENT_NAME:-}" == "browser-automation" ]] || [[ "${CLAUDE_AGENT_ACTIVE:-0}" == "1" ]]; then
+if [[ "${CLAUDE_SUBAGENT_NAME:-}" == "browser-agent" ]] || [[ "${CLAUDE_AGENT_ACTIVE:-0}" == "1" ]]; then
     echo ""
     echo "🔄 **Navigation Detected - Macro Context Updated**"
     echo ""
