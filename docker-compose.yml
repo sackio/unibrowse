@@ -7,12 +7,13 @@ services:
     restart: unless-stopped
     environment:
       MONGO_INITDB_DATABASE: browser_mcp
+    ports:
+      - "127.0.0.1:27017:27017"  # Expose MongoDB on localhost
     volumes:
       - mongodb_data:/data/db
       - mongodb_config:/data/configdb
     networks:
       - browser-mcp-network
-    # No ports exposed to host - MongoDB is only accessible within Docker network
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s

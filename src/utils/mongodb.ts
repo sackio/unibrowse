@@ -20,14 +20,14 @@ class MongoDB {
 
   /**
    * Connect to MongoDB
-   * Default: mongodb://192.168.1.42:27017/browser_mcp
+   * Default: mongodb://localhost:27017/browser_mcp
    */
   public async connect(uri?: string): Promise<void> {
     if (this.connected && this.client) {
       return;
     }
 
-    const connectionUri = uri || process.env.MONGODB_URI || "mongodb://192.168.1.42:27017";
+    const connectionUri = uri || process.env.MONGODB_URI || "mongodb://localhost:27017";
     const dbName = process.env.MONGODB_DB || "browser_mcp";
 
     try {
