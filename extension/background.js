@@ -289,11 +289,44 @@ class BackgroundController {
       temporarilyDetached: false // Track temporary detachments (e.g., extension popups)
     };
 
+    this.keepaliveInterval = null; // Keepalive timer to maintain connection
+
     this.setupListeners();
     this.registerHandlers();
 
     // Initialize badge to disconnected state
     this.updateBadge(false);
+  }
+
+  /**
+   * Check if a URL is restricted and cannot be debugged
+   */
+  isRestrictedUrl(url) {
+    if (!url) return true;
+
+    return (
+      url.startsWith('chrome://') ||
+      url.startsWith('chrome-extension://') ||
+      url.startsWith('edge://') ||
+      url.startsWith('about:') ||
+      url.startsWith('devtools://')
+    );
+  }
+
+  /**
+   * Find the first valid (non-restricted) tab
+   */
+  async findFirstValidTab() {
+    const tabs = await chrome.tabs.query({});
+
+    for (const tab of tabs) {
+      if (!this.isRestrictedUrl(tab.url)) {
+        console.log('[Background] Found valid tab:', tab.id, tab.url);
+        return tab;
+      }
+    }
+
+    throw new Error('No valid tabs found - all tabs have restricted URLs (chrome://, chrome-extension://, etc.)');
   }
 
   /**
@@ -329,20 +362,36 @@ class BackgroundController {
     chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       if (this.state.tabId === tabId) {
         if (changeInfo.url) {
-          console.log('[Background] Tab navigated to:', changeInfo.url);
+          console.log('[Background] Tab URL changed to:', changeInfo.url);
           this.state.tabUrl = changeInfo.url;
+
+          // If navigating to restricted URL while attached, mark as temporarily detached
+          if (this.isRestrictedUrl(changeInfo.url) && this.cdp.isAttached()) {
+            console.log('[Background] Navigating to restricted URL, will need to reattach after navigation');
+            this.state.temporarilyDetached = true;
+          }
         }
 
         // Re-attach debugger if we're in a temporary detachment state
-        if (changeInfo.status === 'complete' && this.state.temporarilyDetached && this.state.connected) {
-          // Check if the URL is now a normal URL (not chrome-extension://)
+        // Only attempt reattachment when page is fully loaded and not already attached
+        if (changeInfo.status === 'complete' &&
+            this.state.temporarilyDetached &&
+            this.state.connected &&
+            !this.cdp.isAttached()) {
+
+          // Check if the URL is now accessible (not chrome-extension://)
           const url = tab.url || this.state.tabUrl;
-          if (url && !url.startsWith('chrome-extension://') && !url.startsWith('chrome://')) {
-            console.log('[Background] Tab returned from temporary detachment, re-attaching debugger...');
+          if (url && !this.isRestrictedUrl(url)) {
+            console.log('[Background] Tab load complete, re-attaching debugger to:', url);
             try {
               await this.cdp.attach(tabId);
               this.state.temporarilyDetached = false;
               console.log('[Background] Debugger re-attached successfully');
+
+              // Update stored title
+              this.state.originalTabTitle = tab.title.startsWith('🟢 [MCP] ')
+                ? tab.title.replace('🟢 [MCP] ', '')
+                : tab.title;
 
               // Re-inject indicators and background capture
               await this.updateTabTitle();
@@ -350,9 +399,16 @@ class BackgroundController {
               await this.injectBackgroundCapture();
             } catch (error) {
               console.error('[Background] Failed to re-attach debugger:', error);
-              // If re-attachment fails, fully disconnect
-              this.disconnect();
+              // If re-attachment fails after multiple attempts, disconnect
+              if (error.message && error.message.includes('restricted URL')) {
+                console.log('[Background] Cannot reattach to restricted URL, staying in temporary detachment');
+              } else {
+                console.error('[Background] Reattachment failed permanently, disconnecting');
+                this.disconnect();
+              }
             }
+          } else {
+            console.log('[Background] Tab still on restricted URL, not reattaching yet:', url);
           }
         }
 
@@ -433,14 +489,62 @@ class BackgroundController {
     });
 
     // Debugger detached
-    chrome.debugger.onDetach.addListener((source, reason) => {
+    chrome.debugger.onDetach.addListener(async (source, reason) => {
       if (source.tabId === this.state.tabId) {
         console.log('[Background] Debugger detached:', reason);
 
-        // Check if this is a permanent or temporary detachment
-        const permanentReasons = ['target_closed', 'canceled_by_user'];
+        // For 'target_closed', verify if the tab actually still exists
+        // CDP can report 'target_closed' for many reasons besides actual tab closure:
+        // - Page navigation within the same tab
+        // - Frame destruction during page updates
+        // - Dynamic content loading that creates/destroys frames
+        // - Security-triggered detachments
+        // - Redirects or error pages
+        if (reason === 'target_closed') {
+          try {
+            const tab = await chrome.tabs.get(source.tabId);
+            if (tab) {
+              // Tab still exists! This is a temporary detachment, not actual closure
+              console.log('[Background] Tab still exists despite target_closed event - treating as temporary detachment');
+              console.log('[Background] Tab URL:', tab.url);
 
-        if (permanentReasons.includes(reason)) {
+              // Treat as temporary detachment
+              this.state.temporarilyDetached = true;
+              this.cdp.target = null;
+              this.cdp.isDetaching = false;
+              this.cdp.enabledDomains.clear();
+
+              // Attempt to reattach after a brief delay
+              console.log('[Background] Will attempt to reattach to tab...');
+              setTimeout(async () => {
+                try {
+                  // Verify tab still exists before reattaching
+                  const currentTab = await chrome.tabs.get(source.tabId);
+                  if (currentTab && this.state.tabId === source.tabId) {
+                    console.log('[Background] Reattaching to tab after target_closed event');
+                    await this.cdp.attach(source.tabId);
+                    this.state.temporarilyDetached = false;
+                    console.log('[Background] Successfully reattached');
+                  }
+                } catch (error) {
+                  console.error('[Background] Failed to reattach:', error);
+                  // If reattachment fails, disconnect
+                  this.disconnect();
+                }
+              }, 1000);
+
+              return; // Don't disconnect
+            }
+          } catch (error) {
+            // Tab doesn't exist - this is a real closure
+            console.log('[Background] Tab no longer exists - confirming permanent detachment');
+          }
+        }
+
+        // Handle other permanent reasons or confirmed tab closure
+        const permanentReasons = ['canceled_by_user'];
+
+        if (permanentReasons.includes(reason) || reason === 'target_closed') {
           // Permanent detachment - fully disconnect
           console.log('[Background] Permanent detachment, disconnecting completely');
           this.disconnect();
@@ -495,7 +599,7 @@ class BackgroundController {
 
     // Notification button clicks
     // Console API called (for console log collection)
-    chrome.debugger.onEvent.addListener((source, method, params) => {
+    chrome.debugger.onEvent.addListener(async (source, method, params) => {
       if (source.tabId === this.state.tabId) {
         if (method === 'Console.messageAdded') {
           this.consoleLogs.push({
@@ -503,6 +607,47 @@ class BackgroundController {
             text: params.message.text,
             timestamp: Date.now()
           });
+        }
+
+        // Page navigation events - track navigations to prevent disconnection
+        if (method === 'Page.frameNavigated' && params.frame.parentId === undefined) {
+          // Main frame navigated
+          console.log('[Background] Main frame navigated to:', params.frame.url);
+          this.state.tabUrl = params.frame.url;
+
+          // Check if we need to reattach after navigation to restricted URL
+          if (this.state.temporarilyDetached) {
+            if (!this.isRestrictedUrl(params.frame.url)) {
+              console.log('[Background] Navigation returned from restricted URL, will reattach...');
+              // Wait a bit for page to stabilize before reattaching
+              setTimeout(async () => {
+                try {
+                  if (this.state.temporarilyDetached && this.state.connected) {
+                    await this.cdp.attach(this.state.tabId);
+                    this.state.temporarilyDetached = false;
+                    console.log('[Background] Debugger re-attached after navigation');
+
+                    // Get current tab and update title
+                    const tab = await chrome.tabs.get(this.state.tabId);
+                    this.state.originalTabTitle = tab.title.startsWith('🟢 [MCP] ')
+                      ? tab.title.replace('🟢 [MCP] ', '')
+                      : tab.title;
+
+                    // Re-inject indicators
+                    await this.updateTabTitle();
+                    await this.injectTabIndicator();
+                    await this.injectBackgroundCapture();
+                  }
+                } catch (error) {
+                  console.error('[Background] Failed to reattach after navigation:', error);
+                }
+              }, 500);
+            }
+          }
+        }
+
+        if (method === 'Page.loadEventFired') {
+          console.log('[Background] Page load completed');
         }
 
         // Network events (for network log collection)
@@ -672,6 +817,9 @@ class BackgroundController {
 
       this.updateConnectionState();
 
+      // Start keepalive mechanism to maintain debugger connection
+      this.startKeepalive();
+
       console.log('[Background] Connected to MCP server (WebSocket only, debugger will attach on first tool use)');
 
       return { success: true, message: 'Connected to MCP server. Debugger will attach on first tool use.' };
@@ -696,6 +844,9 @@ class BackgroundController {
     // Set connected to false FIRST to prevent event listeners from re-adding indicators
     this.state.connected = false;
 
+    // Stop keepalive mechanism
+    this.stopKeepalive();
+
     // Clean up ALL tabs (not just the active one)
     // This handles cases where indicators were left behind after crashes
     await this.removeAllTabPrefixes();
@@ -715,6 +866,69 @@ class BackgroundController {
 
     this.updateConnectionState();
     console.log('[Background] Disconnect complete');
+  }
+
+  /**
+   * Start keepalive mechanism to maintain debugger connection
+   * Periodically checks connection state and reattaches if needed
+   */
+  startKeepalive() {
+    // Clear any existing keepalive interval
+    this.stopKeepalive();
+
+    console.log('[Background] Starting keepalive mechanism (checks every 2 seconds)');
+
+    this.keepaliveInterval = setInterval(async () => {
+      // Only run keepalive if we're connected and have a tab
+      if (!this.state.connected || !this.state.tabId) {
+        return;
+      }
+
+      // Check if we're in a temporarily detached state
+      if (this.state.temporarilyDetached && !this.cdp.isAttached()) {
+        console.log('[Background] Keepalive detected temporarily detached state, attempting reattachment...');
+
+        try {
+          // Get current tab info
+          const tab = await chrome.tabs.get(this.state.tabId);
+
+          // Only reattach if URL is accessible
+          if (tab && tab.url && !this.isRestrictedUrl(tab.url)) {
+            console.log('[Background] Keepalive reattaching to:', tab.url);
+            await this.cdp.attach(this.state.tabId);
+            this.state.temporarilyDetached = false;
+            console.log('[Background] Keepalive reattachment successful');
+
+            // Update stored URL and title
+            this.state.tabUrl = tab.url;
+            this.state.originalTabTitle = tab.title.startsWith('🟢 [MCP] ')
+              ? tab.title.replace('🟢 [MCP] ', '')
+              : tab.title;
+
+            // Re-inject indicators
+            await this.updateTabTitle();
+            await this.injectTabIndicator();
+            await this.injectBackgroundCapture();
+          } else {
+            console.log('[Background] Keepalive skipping reattachment - tab still on restricted URL:', tab?.url);
+          }
+        } catch (error) {
+          console.error('[Background] Keepalive reattachment failed:', error);
+          // Don't disconnect on keepalive failure - let the normal error handling deal with it
+        }
+      }
+    }, 2000); // Check every 2 seconds
+  }
+
+  /**
+   * Stop keepalive mechanism
+   */
+  stopKeepalive() {
+    if (this.keepaliveInterval) {
+      console.log('[Background] Stopping keepalive mechanism');
+      clearInterval(this.keepaliveInterval);
+      this.keepaliveInterval = null;
+    }
   }
 
   /**
@@ -835,9 +1049,22 @@ class BackgroundController {
       }
 
       // Get tab info
-      const tab = await chrome.tabs.get(targetTabId);
+      let tab = await chrome.tabs.get(targetTabId);
       if (!tab) {
         throw new Error(`Tab ${targetTabId} not found`);
+      }
+
+      // Check if the target tab has a restricted URL
+      if (this.isRestrictedUrl(tab.url)) {
+        console.warn('[Background] Cannot attach to restricted URL:', tab.url);
+        console.log('[Background] Searching for first valid tab...');
+
+        // Find the first valid tab
+        const validTab = await this.findFirstValidTab();
+        targetTabId = validTab.id;
+        tab = validTab;
+
+        console.log('[Background] Switched to valid tab:', targetTabId, tab.url);
       }
 
       console.log('[Background] Attaching to tab:', targetTabId, tab.url);
@@ -1564,7 +1791,7 @@ class BackgroundController {
     } catch (error) {
       // Provide better error messages for detachment scenarios
       if (error.message && (error.message.includes('Detached') || error.message.includes('detached'))) {
-        throw new Error(`Typing operation interrupted: tab closed or navigated during input. Partial text may have been entered.`);
+        throw new Error(`Typing operation interrupted: debugger detached (page navigation, frame update, or dynamic content change). Partial text may have been entered. The browser will attempt to reconnect automatically.`);
       }
       throw error;
     }
@@ -1690,7 +1917,7 @@ class BackgroundController {
       };
     } catch (error) {
       if (error.message && (error.message.includes('Detached') || error.message.includes('detached'))) {
-        throw new Error(`Typing operation interrupted: tab closed or navigated during input. Partial text may have been entered.`);
+        throw new Error(`Typing operation interrupted: debugger detached (page navigation, frame update, or dynamic content change). Partial text may have been entered. The browser will attempt to reconnect automatically.`);
       }
       throw error;
     }
@@ -1707,10 +1934,33 @@ class BackgroundController {
   }
 
   async handleSwitchTab({ tabId }) {
-    await chrome.tabs.update(tabId, { active: true });
-    const tab = await chrome.tabs.get(tabId);
+    let targetTabId = tabId;
+    let tab = await chrome.tabs.get(tabId);
+
+    // Check if the requested tab has a restricted URL
+    if (this.isRestrictedUrl(tab.url)) {
+      console.warn('[Background] Cannot switch to restricted URL:', tab.url);
+      console.log('[Background] Finding first valid tab instead...');
+
+      // Find the first valid tab
+      const validTab = await this.findFirstValidTab();
+      targetTabId = validTab.id;
+      tab = validTab;
+
+      console.log('[Background] Switched to valid tab:', targetTabId, tab.url);
+    }
+
+    await chrome.tabs.update(targetTabId, { active: true });
     await chrome.windows.update(tab.windowId, { focused: true });
-    return { success: true, tabId };
+
+    return {
+      success: true,
+      tabId: targetTabId,
+      url: tab.url,
+      message: targetTabId !== tabId
+        ? `Requested tab has restricted URL, switched to ${tab.url} instead`
+        : undefined
+    };
   }
 
   async handleCreateTab({ url }) {
@@ -1787,9 +2037,34 @@ class BackgroundController {
   }
 
   async handleSnapshot() {
-    const tree = await this.cdp.getPartialAccessibilityTree(10);
-    // Return YAML-formatted string
-    return JSON.stringify(tree, null, 2);
+    try {
+      const tree = await this.cdp.getPartialAccessibilityTree(10);
+
+      // Check if tree is empty due to restricted frames
+      if (!tree.nodes || tree.nodes.length === 0) {
+        console.warn('[Background] Accessibility tree is empty - page may contain restricted iframes');
+        return JSON.stringify({
+          error: 'Page contains restricted content',
+          message: 'The page has iframes (like about:blank#blocked or chrome:// URLs) that cannot be accessed. Try using browser_evaluate to interact with the main page content instead.',
+          nodes: []
+        }, null, 2);
+      }
+
+      // Return YAML-formatted string
+      return JSON.stringify(tree, null, 2);
+    } catch (error) {
+      // If we get a restricted frame error, return a helpful message
+      if (error.message && error.message.includes('restricted content')) {
+        console.warn('[Background] Snapshot failed due to restricted content:', error.message);
+        return JSON.stringify({
+          error: 'Page contains restricted content',
+          message: error.message,
+          suggestion: 'Use browser_evaluate to interact with accessible parts of the page',
+          nodes: []
+        }, null, 2);
+      }
+      throw error;
+    }
   }
 
   async handleScreenshot() {
