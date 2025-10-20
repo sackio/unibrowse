@@ -290,6 +290,7 @@ class BackgroundController {
     };
 
     this.keepaliveInterval = null; // Keepalive timer to maintain connection
+    this.isReattaching = false; // Track if reattachment is in progress
 
     this.setupListeners();
     this.registerHandlers();
@@ -327,6 +328,103 @@ class BackgroundController {
     }
 
     throw new Error('No valid tabs found - all tabs have restricted URLs (chrome://, chrome-extension://, etc.)');
+  }
+
+  /**
+   * Attempt to reattach debugger with exponential backoff retry logic
+   * This handles cases where other extensions (like 1Password) temporarily interfere
+   *
+   * @param {number} tabId - The tab ID to reattach to
+   * @param {number} attemptNumber - Current attempt number (0-indexed)
+   * @param {number} maxAttempts - Maximum number of retry attempts (default: 5)
+   */
+  async attemptReattachWithRetry(tabId, attemptNumber, maxAttempts = 5) {
+    const baseDelay = 500; // Start with 500ms
+    const delay = baseDelay * Math.pow(2, attemptNumber); // Exponential backoff
+
+    // Set reattaching flag on first attempt
+    if (attemptNumber === 0) {
+      this.isReattaching = true;
+    }
+
+    setTimeout(async () => {
+      try {
+        // Verify tab still exists
+        const currentTab = await chrome.tabs.get(tabId);
+
+        // Check if we're still tracking this tab
+        if (!currentTab || this.state.tabId !== tabId) {
+          console.log('[Background] Tab no longer tracked, aborting reattach');
+          this.isReattaching = false;
+          return;
+        }
+
+        // Check if tab is at a restricted URL (another extension interfering)
+        if (this.isRestrictedUrl(currentTab.url)) {
+          console.log(`[Background] Tab at restricted URL (${currentTab.url}), attempt ${attemptNumber + 1}/${maxAttempts}`);
+
+          if (attemptNumber < maxAttempts - 1) {
+            console.log(`[Background] Will retry reattachment in ${delay * 2}ms...`);
+            this.attemptReattachWithRetry(tabId, attemptNumber + 1, maxAttempts);
+            return;
+          } else {
+            console.error('[Background] Max reattachment attempts reached while tab at restricted URL');
+            this.isReattaching = false;
+            this.disconnect();
+            return;
+          }
+        }
+
+        // Tab is at a normal URL, attempt reattachment
+        console.log(`[Background] Reattaching to tab ${tabId} (attempt ${attemptNumber + 1}/${maxAttempts}) at: ${currentTab.url}`);
+        await this.cdp.attach(tabId);
+        this.state.temporarilyDetached = false;
+        this.isReattaching = false;
+        console.log('[Background] Successfully reattached after detachment');
+
+      } catch (error) {
+        const errorMsg = error.message || '';
+
+        // Check if error is due to restricted URL
+        if (errorMsg.includes('chrome-extension://') || errorMsg.includes('Cannot access')) {
+          console.log(`[Background] Reattachment blocked by extension interference (attempt ${attemptNumber + 1}/${maxAttempts})`);
+
+          // Retry if we haven't exceeded max attempts
+          if (attemptNumber < maxAttempts - 1) {
+            const nextDelay = baseDelay * Math.pow(2, attemptNumber + 1);
+            console.log(`[Background] Will retry reattachment in ${nextDelay}ms...`);
+            this.attemptReattachWithRetry(tabId, attemptNumber + 1, maxAttempts);
+            return;
+          } else {
+            console.error('[Background] Max reattachment attempts reached, giving up');
+            this.isReattaching = false;
+            this.disconnect();
+            return;
+          }
+        }
+
+        // Check if tab was actually closed
+        try {
+          await chrome.tabs.get(tabId);
+          // Tab still exists but reattachment failed for other reason
+          console.error('[Background] Reattachment failed with unexpected error:', error);
+
+          if (attemptNumber < maxAttempts - 1) {
+            console.log(`[Background] Will retry after unexpected error...`);
+            this.attemptReattachWithRetry(tabId, attemptNumber + 1, maxAttempts);
+            return;
+          }
+        } catch {
+          // Tab was closed
+          console.log('[Background] Tab was closed during reattachment attempt');
+        }
+
+        // Either tab was closed or we've exhausted retries
+        console.log('[Background] Disconnecting after failed reattachment');
+        this.isReattaching = false;
+        this.disconnect();
+      }
+    }, delay);
   }
 
   /**
@@ -514,24 +612,9 @@ class BackgroundController {
               this.cdp.isDetaching = false;
               this.cdp.enabledDomains.clear();
 
-              // Attempt to reattach after a brief delay
+              // Attempt to reattach with retry logic to handle other extensions
               console.log('[Background] Will attempt to reattach to tab...');
-              setTimeout(async () => {
-                try {
-                  // Verify tab still exists before reattaching
-                  const currentTab = await chrome.tabs.get(source.tabId);
-                  if (currentTab && this.state.tabId === source.tabId) {
-                    console.log('[Background] Reattaching to tab after target_closed event');
-                    await this.cdp.attach(source.tabId);
-                    this.state.temporarilyDetached = false;
-                    console.log('[Background] Successfully reattached');
-                  }
-                } catch (error) {
-                  console.error('[Background] Failed to reattach:', error);
-                  // If reattachment fails, disconnect
-                  this.disconnect();
-                }
-              }, 1000);
+              this.attemptReattachWithRetry(source.tabId, 0);
 
               return; // Don't disconnect
             }
@@ -885,7 +968,8 @@ class BackgroundController {
       }
 
       // Check if we're in a temporarily detached state
-      if (this.state.temporarilyDetached && !this.cdp.isAttached()) {
+      // Skip if reattachment is already in progress (from target_closed handler)
+      if (this.state.temporarilyDetached && !this.cdp.isAttached() && !this.isReattaching) {
         console.log('[Background] Keepalive detected temporarily detached state, attempting reattachment...');
 
         try {
