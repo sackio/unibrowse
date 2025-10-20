@@ -169,6 +169,53 @@ This fix addresses:
 - Interruptions during macro execution across navigation events
 - False "tab closed" errors when tabs remain open
 
+## Additional Fix: Extension Interference (2025-10-20)
+
+After the initial fix, we discovered another issue: **other browser extensions** (like 1Password) can temporarily interfere during the reattachment window, causing the simple 1-second retry to fail.
+
+### The Extension Interference Problem
+
+When the extension tried to reattach after detecting a temporary detachment:
+
+1. Extension detects `target_closed` and verifies tab still exists ✓
+2. Sets 1-second timeout to reattach ✓
+3. **During that 1 second**, 1Password injects UI or briefly shows extension page
+4. Reattachment fails with "Cannot access chrome-extension:// URL of different extension"
+5. Extension disconnects completely ✗
+
+### Solution: Exponential Backoff Retry
+
+Implemented smart retry logic with exponential backoff (commit `b5eea53`):
+
+```javascript
+async attemptReattachWithRetry(tabId, attemptNumber, maxAttempts = 5) {
+  const baseDelay = 500; // Start with 500ms
+  const delay = baseDelay * Math.pow(2, attemptNumber); // Exponential backoff
+
+  // Check tab URL before each attempt
+  // If at chrome-extension:// URL, wait and retry
+  // If at normal URL, attempt reattachment
+  // Retry up to 5 times with increasing delays
+}
+```
+
+**Retry schedule:**
+- Attempt 1: 500ms delay
+- Attempt 2: 1,000ms delay
+- Attempt 3: 2,000ms delay
+- Attempt 4: 4,000ms delay
+- Attempt 5: 8,000ms delay
+- **Total**: Up to 15.5 seconds of retry attempts
+
+**Additional improvements:**
+- Added `isReattaching` flag to prevent keepalive mechanism from conflicting
+- Updated keepalive to skip reattachment if retry logic is already running
+- Proper cleanup of reattachment flag on all exit paths
+
+This allows the Browser MCP to **wait out temporary extension interference** while still properly disconnecting on actual tab closure or persistent failures.
+
 ## Version
 
 Fixed in: Browser MCP v1.0.0 (2025-10-20)
+- Commit `50c3d4f`: Initial fix for false target_closed disconnections
+- Commit `b5eea53`: Added exponential backoff retry for extension interference
