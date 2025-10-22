@@ -1,6 +1,6 @@
 # Browser MCP Tools Reference
 
-Complete reference for all 68 MCP tools available in Browser MCP.
+Complete reference for all 72 MCP tools available in Browser MCP.
 
 ## Table of Contents
 
@@ -9,6 +9,7 @@ Complete reference for all 68 MCP tools available in Browser MCP.
 - [DOM Exploration](#dom-exploration) (11 tools)
 - [Custom](#custom) (4 tools)
 - [Tabs](#tabs) (4 tools)
+- [Multi-Tab Management](#multi-tab-management) (4 tools)
 - [Forms](#forms) (2 tools)
 - [Recording](#recording) (2 tools)
 - [Interaction Log](#interaction-log) (3 tools)
@@ -383,6 +384,140 @@ Close a specific tab.
 
 **Parameters:**
 - `tabId` (number, required): Tab ID to close
+
+---
+
+## Multi-Tab Management
+
+Browser MCP supports attaching to and managing multiple tabs simultaneously. All tools support an optional `tabTarget` parameter to specify which attached tab to operate on.
+
+### `browser_list_attached_tabs`
+List all currently attached tabs with their labels and metadata.
+
+**Parameters:** None
+
+**Returns:** Array of attached tab objects with:
+- `tabId` (number): Chrome tab ID
+- `label` (string): Auto-generated or custom label
+- `title` (string): Page title
+- `url` (string): Current URL
+- `lastUsedAt` (number): Timestamp of last operation
+- `isActive` (boolean): Whether this is the most recently used tab
+
+**Example:**
+```json
+// Response:
+[
+  {
+    "tabId": 123,
+    "label": "amazon.com",
+    "title": "Amazon.com: Shopping",
+    "url": "https://www.amazon.com",
+    "lastUsedAt": 1704999600000,
+    "isActive": true
+  },
+  {
+    "tabId": 456,
+    "label": "github.com",
+    "title": "GitHub - Browser MCP",
+    "url": "https://github.com/modelcontextprotocol/browser-mcp",
+    "lastUsedAt": 1704999500000,
+    "isActive": false
+  }
+]
+```
+
+### `browser_set_tab_label`
+Set a custom label for an attached tab.
+
+**Parameters:**
+- `tabTarget` (number | string, required): Tab ID or current label to update
+- `label` (string, required): New label for the tab
+
+**Example:**
+```json
+{
+  "tabTarget": 123,
+  "label": "shopping-cart"
+}
+```
+
+**Note:** Labels must be unique across all attached tabs.
+
+### `browser_detach_tab`
+Detach debugger from a specific tab.
+
+**Parameters:**
+- `tabTarget` (number | string, required): Tab ID or label to detach from
+
+**Example:**
+```json
+{
+  "tabTarget": "shopping-cart"
+}
+```
+
+**Note:** After detaching, the tab will no longer be available for automation until reattached.
+
+### `browser_get_active_tab`
+Get information about the currently active (most recently used) tab.
+
+**Parameters:** None
+
+**Returns:** Tab object with tabId, label, title, url, and lastUsedAt
+
+**Example:**
+```json
+// Response:
+{
+  "tabId": 123,
+  "label": "amazon.com",
+  "title": "Amazon.com: Shopping",
+  "url": "https://www.amazon.com",
+  "lastUsedAt": 1704999600000
+}
+```
+
+### Tab Target Parameter
+
+Most browser automation tools support an optional `tabTarget` parameter to specify which attached tab to operate on:
+
+**Parameters:**
+- `tabTarget` (number | string, optional): Tab ID (number) or label (string) of the target tab
+  - If omitted, operates on the active (most recently used) tab
+  - Can be a numeric tab ID: `123`
+  - Can be a string label: `"amazon.com"` or `"shopping-cart"`
+
+**Example:**
+```json
+// Take screenshot of specific tab
+{
+  "tabTarget": "github.com",
+  "fullPage": true
+}
+
+// Navigate on tab with ID 456
+{
+  "url": "https://example.com",
+  "tabTarget": 456
+}
+
+// Click on active tab (no tabTarget specified)
+{
+  "element": "Submit button",
+  "ref": "123"
+}
+```
+
+**Supported Tools:**
+The following tool categories support the `tabTarget` parameter:
+- Navigation & Common: All tools
+- Snapshot & Interaction: All tools
+- DOM Exploration: Most tools
+- Custom: screenshot, evaluate, get console logs, get network logs
+- Forms: All tools
+
+**Note:** Tab management operations (list_tabs, switch_tab, create_tab, close_tab) do not use `tabTarget` as they operate on the browser level, not individual attached tabs.
 
 ---
 
@@ -951,6 +1086,6 @@ Common error scenarios:
 
 ## Version
 
-This reference is for Browser MCP version 0.1.3 with 68 total tools.
+This reference is for Browser MCP version 0.2.0 with 72 total tools including multi-tab management.
 
-Last updated: 2025-01-10
+Last updated: 2025-01-22
