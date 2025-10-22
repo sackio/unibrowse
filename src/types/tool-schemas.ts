@@ -1,5 +1,36 @@
 import { z } from "zod";
 
+/**
+ * Multi-tab Tool Schemas - Phase 4 Status
+ *
+ * UPDATED (25/74 tools): Tools that now support tabTarget parameter:
+ * - Navigation: Navigate, GoBack, GoForward, PressKey
+ * - Interaction: Click, Drag, Hover, Type, SelectOption, FillForm, SubmitForm
+ * - Information: Snapshot, Screenshot, Evaluate
+ * - DOM Exploration: QueryDOM, GetVisibleText, GetComputedStyles, CheckVisibility,
+ *   GetAttributes, CountElements, GetPageMetadata, GetFilteredAriaTree,
+ *   FindByText, GetFormValues, CheckElementState
+ * - New: ListAttachedTabs, SetTabLabel, DetachTab, GetActiveTab
+ *
+ * REMAINING (~49 tools): Tools that still need tabTarget parameter added:
+ * - Tab Management: ListTabs, SwitchTab, CreateTab, CloseTab (legacy single-tab ops)
+ * - Scrolling: Scroll, ScrollToElement
+ * - Realistic Input: RealisticMouseMove, RealisticClick, RealisticType
+ * - Network: GetNetworkLogs
+ * - Cookies: GetCookies, SetCookie, DeleteCookie, ClearCookies
+ * - Downloads: DownloadFile, GetDownloads, CancelDownload, OpenDownload
+ * - Clipboard: GetClipboard, SetClipboard
+ * - History: SearchHistory, GetHistoryVisits, DeleteHistory, ClearHistory
+ * - Browser Info: GetVersion, GetSystemInfo, GetBrowserInfo, GetNetworkState,
+ *   SetNetworkConditions, ClearCache
+ * - Bookmarks: GetBookmarks, CreateBookmark, DeleteBookmark, SearchBookmarks
+ * - Extensions: ListExtensions, GetExtensionInfo, EnableExtension, DisableExtension
+ * - Request User Action: RequestUserAction
+ * - Interactions Log: GetInteractions, PruneInteractions, SearchInteractions
+ *
+ * TODO: Add `.merge(TabTargetSchema)` to remaining tool argument schemas
+ */
+
 const ElementSchema = z.object({
   element: z
     .string()
@@ -11,24 +42,35 @@ const ElementSchema = z.object({
     .describe("Exact target element reference from the page snapshot"),
 });
 
+// Schema for optional tab targeting (used across all browser automation tools)
+const TabTargetSchema = z.object({
+  tabTarget: z
+    .union([z.number(), z.string()])
+    .optional()
+    .describe(
+      "Optional tab identifier (tab ID or label) to target a specific attached tab. " +
+      "If not provided, uses the last-used tab. Use browser_list_attached_tabs to see available tabs."
+    ),
+});
+
 export const NavigateTool = z.object({
   name: z.literal("browser_navigate"),
   description: z.literal("Navigate to a URL"),
   arguments: z.object({
     url: z.string().describe("The URL to navigate to"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const GoBackTool = z.object({
   name: z.literal("browser_go_back"),
   description: z.literal("Go back to the previous page"),
-  arguments: z.object({}),
+  arguments: TabTargetSchema,
 });
 
 export const GoForwardTool = z.object({
   name: z.literal("browser_go_forward"),
   description: z.literal("Go forward to the next page"),
-  arguments: z.object({}),
+  arguments: TabTargetSchema,
 });
 
 export const WaitTool = z.object({
@@ -48,7 +90,7 @@ export const PressKeyTool = z.object({
       .describe(
         "Name of the key to press or a character to generate, such as `ArrowLeft` or `a`"
       ),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const ScrollTool = z.object({
@@ -113,13 +155,13 @@ export const FillFormTool = z.object({
           .describe("Value to fill in the field"),
       })
     ).describe("Array of fields to fill"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const SubmitFormTool = z.object({
   name: z.literal("browser_submit_form"),
   description: z.literal("Submit a form"),
-  arguments: ElementSchema,
+  arguments: ElementSchema.merge(TabTargetSchema),
 });
 
 export const GetNetworkLogsTool = z.object({
@@ -135,13 +177,13 @@ export const SnapshotTool = z.object({
   description: z.literal(
     "Capture accessibility snapshot of the current page. Use this for getting references to elements to interact with."
   ),
-  arguments: z.object({}),
+  arguments: TabTargetSchema,
 });
 
 export const ClickTool = z.object({
   name: z.literal("browser_click"),
   description: z.literal("Perform click on a web page"),
-  arguments: ElementSchema,
+  arguments: ElementSchema.merge(TabTargetSchema),
 });
 
 export const DragTool = z.object({
@@ -164,13 +206,13 @@ export const DragTool = z.object({
     endRef: z
       .string()
       .describe("Exact target element reference from the page snapshot"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const HoverTool = z.object({
   name: z.literal("browser_hover"),
   description: z.literal("Hover over element on page"),
-  arguments: ElementSchema,
+  arguments: ElementSchema.merge(TabTargetSchema),
 });
 
 export const TypeTool = z.object({
@@ -181,7 +223,7 @@ export const TypeTool = z.object({
     submit: z
       .boolean()
       .describe("Whether to submit entered text (press Enter after)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const SelectOptionTool = z.object({
@@ -193,13 +235,13 @@ export const SelectOptionTool = z.object({
       .describe(
         "Array of values to select in the dropdown. This can be a single value or multiple values."
       ),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const ScreenshotTool = z.object({
   name: z.literal("browser_screenshot"),
   description: z.literal("Take a screenshot of the current page"),
-  arguments: z.object({}),
+  arguments: TabTargetSchema,
 });
 
 export const GetConsoleLogsTool = z.object({
@@ -215,7 +257,7 @@ export const EvaluateTool = z.object({
     expression: z
       .string()
       .describe("JavaScript expression to evaluate in page context"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 // DOM Exploration Tools
@@ -231,7 +273,7 @@ export const QueryDOMTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of elements to return (default: 10)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const GetVisibleTextTool = z.object({
@@ -248,7 +290,7 @@ export const GetVisibleTextTool = z.object({
       .number()
       .optional()
       .describe("Maximum text length to return (default: 5000)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const GetComputedStylesTool = z.object({
@@ -262,7 +304,7 @@ export const GetComputedStylesTool = z.object({
       .describe(
         "Specific CSS properties to retrieve (e.g. ['display', 'color']). If not specified, returns common layout properties."
       ),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const CheckVisibilityTool = z.object({
@@ -272,7 +314,7 @@ export const CheckVisibilityTool = z.object({
   ),
   arguments: z.object({
     selector: z.string().describe("CSS selector for the target element"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const GetAttributesTool = z.object({
@@ -286,7 +328,7 @@ export const GetAttributesTool = z.object({
       .describe(
         "Specific attributes to retrieve (e.g. ['href', 'class']). If not specified, returns all attributes."
       ),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const CountElementsTool = z.object({
@@ -294,7 +336,7 @@ export const CountElementsTool = z.object({
   description: z.literal("Count number of elements matching a CSS selector"),
   arguments: z.object({
     selector: z.string().describe("CSS selector to count matching elements"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const GetPageMetadataTool = z.object({
@@ -302,7 +344,7 @@ export const GetPageMetadataTool = z.object({
   description: z.literal(
     "Get page metadata including title, description, Open Graph tags, schema.org data, etc."
   ),
-  arguments: z.object({}),
+  arguments: TabTargetSchema,
 });
 
 export const GetFilteredAriaTreeTool = z.object({
@@ -325,7 +367,7 @@ export const GetFilteredAriaTreeTool = z.object({
       .boolean()
       .optional()
       .describe("Only include interactive elements (buttons, links, inputs, etc.)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const FindByTextTool = z.object({
@@ -347,7 +389,7 @@ export const FindByTextTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of results to return (default: 10)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const GetFormValuesTool = z.object({
@@ -360,7 +402,7 @@ export const GetFormValuesTool = z.object({
       .string()
       .optional()
       .describe("Optional CSS selector for a specific form. If not specified, gets all form fields on the page."),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const CheckElementStateTool = z.object({
@@ -370,7 +412,7 @@ export const CheckElementStateTool = z.object({
   ),
   arguments: z.object({
     selector: z.string().describe("CSS selector for the target element"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const RequestUserActionTool = z.object({
@@ -931,4 +973,45 @@ export const RealisticTypeTool = z.object({
     mistakeChance: z.number().optional().describe("Probability of making a typo that gets corrected, 0-1 (default: 0)"),
     pressEnter: z.boolean().optional().describe("Whether to press Enter after typing (default: false)"),
   }),
+});
+
+// ==================== MULTI-TAB MANAGEMENT TOOLS ====================
+
+export const ListAttachedTabsTool = z.object({
+  name: z.literal("browser_list_attached_tabs"),
+  description: z.literal(
+    "List all tabs that have debugger attached with their labels. " +
+    "Use this to see available tabs and their labels for targeting specific tabs."
+  ),
+  arguments: z.object({}),
+});
+
+export const SetTabLabelTool = z.object({
+  name: z.literal("browser_set_tab_label"),
+  description: z.literal(
+    "Set or update a tab's label. Labels are used to identify tabs in a human-readable way."
+  ),
+  arguments: z.object({
+    tabId: z.number().describe("The tab ID to update"),
+    label: z.string().describe("The new label for the tab"),
+  }),
+});
+
+export const DetachTabTool = z.object({
+  name: z.literal("browser_detach_tab"),
+  description: z.literal(
+    "Detach debugger from a specific tab. This removes the tab from the list of attached tabs."
+  ),
+  arguments: z.object({
+    tabId: z.number().describe("The tab ID to detach from"),
+  }),
+});
+
+export const GetActiveTabTool = z.object({
+  name: z.literal("browser_get_active_tab"),
+  description: z.literal(
+    "Get information about the currently active (last-used) tab. " +
+    "Returns tab ID, label, URL, and last used timestamp."
+  ),
+  arguments: z.object({}),
 });
