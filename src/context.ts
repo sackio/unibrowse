@@ -12,6 +12,7 @@ const noConnectionMessage = `No connection to browser extension. In order to pro
 
 export class Context {
   private _ws: WebSocket | undefined;
+  private _activeTabId: number | null = null;
 
   get ws(): WebSocket {
     if (!this._ws) {
@@ -26,6 +27,34 @@ export class Context {
 
   hasWs(): boolean {
     return !!this._ws;
+  }
+
+  /**
+   * Get the currently active tab ID (where debugger is attached)
+   */
+  get activeTabId(): number | null {
+    return this._activeTabId;
+  }
+
+  /**
+   * Ensure debugger is attached to a tab (lazy attachment)
+   * If no tabId is provided, attaches to the current active tab in the browser
+   * If already attached to the requested tab, does nothing
+   * If attached to a different tab, switches to the new tab
+   *
+   * @param tabId - Optional tab ID to attach to. If not provided, uses current active tab
+   * @returns The tab ID that is now attached
+   */
+  async ensureAttached(tabId?: number): Promise<number> {
+    // Send message to extension to ensure attachment
+    const result = await this.sendSocketMessage("browser_ensure_attached", {
+      tabId: tabId ?? null,
+    });
+
+    // Update our cached active tab ID
+    this._activeTabId = result.tabId;
+
+    return result.tabId;
   }
 
   async sendSocketMessage<T extends MessageType<SocketMessageMap>>(

@@ -373,13 +373,562 @@ export const CheckElementStateTool = z.object({
   }),
 });
 
-export const RequestDemonstrationTool = z.object({
-  name: z.literal("browser_request_demonstration"),
+export const RequestUserActionTool = z.object({
+  name: z.literal("browser_request_user_action"),
   description: z.literal(
-    "Ask the user to demonstrate how to perform a task. Shows a notification in the browser with a Start button. Records all DOM interactions and network activity until the user clicks Done or presses Ctrl+Shift+D."
+    "Request the user to perform an action in the browser. Shows a notification and overlay with instructions. User can complete or reject the request. Captures all interactions from request to completion via the background log. More flexible than request_demonstration - use this for both learning workflows AND getting user assistance."
   ),
   arguments: z.object({
-    request: z.string().describe("Description of what you want the user to demonstrate (e.g., 'Please add an item to your cart')"),
-    timeout: z.number().optional().describe("Maximum time to wait for the demonstration in seconds (default: no timeout - waits indefinitely). Specify a timeout only if you need to limit the duration."),
+    request: z.string().describe("Clear instructions for what you want the user to do (e.g., 'Please navigate to your shopping cart and add an item')"),
+    timeout: z.number().optional().describe("Maximum time to wait for user response in seconds (default: 300s = 5 minutes). After timeout, request is automatically cancelled."),
+  }),
+});
+
+// Background Interaction Log Tools
+
+export const GetInteractionsTool = z.object({
+  name: z.literal("browser_get_interactions"),
+  description: z.literal(
+    "Retrieve user interactions from the background audit log. Interactions are continuously recorded in the background while connected to a tab. Query any time segment with flexible filtering."
+  ),
+  arguments: z.object({
+    startTime: z
+      .number()
+      .optional()
+      .describe("Start time as Unix timestamp in ms, or negative offset from now (e.g., -60000 = last minute)"),
+    endTime: z
+      .number()
+      .optional()
+      .describe("End time as Unix timestamp in ms, or negative offset from now"),
+    limit: z
+      .number()
+      .optional()
+      .describe("Maximum number of interactions to return (default: 50)"),
+    offset: z
+      .number()
+      .optional()
+      .describe("Skip first N interactions for pagination (default: 0)"),
+    types: z
+      .array(z.string())
+      .optional()
+      .describe("Filter by interaction types (e.g., ['click', 'keyboard', 'scroll', 'navigation'])"),
+    urlPattern: z
+      .string()
+      .optional()
+      .describe("Filter by URL regex pattern"),
+    selectorPattern: z
+      .string()
+      .optional()
+      .describe("Filter by CSS selector regex pattern"),
+    sortOrder: z
+      .enum(["asc", "desc"])
+      .optional()
+      .describe("Sort order by timestamp (default: desc - newest first)"),
+  }),
+});
+
+export const PruneInteractionsTool = z.object({
+  name: z.literal("browser_prune_interactions"),
+  description: z.literal(
+    "Remove interactions from the background audit log based on various criteria. Allows selective pruning by time, count, type, or pattern."
+  ),
+  arguments: z.object({
+    before: z
+      .number()
+      .optional()
+      .describe("Remove all interactions before this Unix timestamp in ms"),
+    after: z
+      .number()
+      .optional()
+      .describe("Remove all interactions after this Unix timestamp in ms"),
+    between: z
+      .tuple([z.number(), z.number()])
+      .optional()
+      .describe("Remove interactions within time range [startTime, endTime] in ms"),
+    keepLast: z
+      .number()
+      .optional()
+      .describe("Keep only the last N interactions, remove all older ones"),
+    keepFirst: z
+      .number()
+      .optional()
+      .describe("Keep only the first N interactions, remove all newer ones"),
+    removeOldest: z
+      .number()
+      .optional()
+      .describe("Remove the oldest N interactions"),
+    types: z
+      .array(z.string())
+      .optional()
+      .describe("Remove only these interaction types"),
+    excludeTypes: z
+      .array(z.string())
+      .optional()
+      .describe("Remove all interactions except these types"),
+    urlPattern: z
+      .string()
+      .optional()
+      .describe("Remove interactions matching this URL regex"),
+    selectorPattern: z
+      .string()
+      .optional()
+      .describe("Remove interactions matching this selector regex"),
+  }),
+});
+
+export const SearchInteractionsTool = z.object({
+  name: z.literal("browser_search_interactions"),
+  description: z.literal(
+    "Search the background interaction log using text queries. Searches across selectors, values, URLs, and element text content."
+  ),
+  arguments: z.object({
+    query: z
+      .string()
+      .describe("Text to search for in interactions (searches selectors, values, URLs, element text)"),
+    types: z
+      .array(z.string())
+      .optional()
+      .describe("Filter by interaction types"),
+    startTime: z
+      .number()
+      .optional()
+      .describe("Start time filter (Unix timestamp in ms or negative offset)"),
+    endTime: z
+      .number()
+      .optional()
+      .describe("End time filter (Unix timestamp in ms or negative offset)"),
+    limit: z
+      .number()
+      .optional()
+      .describe("Maximum number of results (default: 50)"),
+  }),
+});
+
+// Cookie Management Tools
+export const GetCookiesTool = z.object({
+  name: z.literal("browser_get_cookies"),
+  description: z.literal("Get cookies for a specific URL or all cookies"),
+  arguments: z.object({
+    url: z
+      .string()
+      .optional()
+      .describe("URL to get cookies for (if not provided, gets all cookies)"),
+    name: z
+      .string()
+      .optional()
+      .describe("Filter by cookie name"),
+    domain: z
+      .string()
+      .optional()
+      .describe("Filter by cookie domain"),
+  }),
+});
+
+export const SetCookieTool = z.object({
+  name: z.literal("browser_set_cookie"),
+  description: z.literal("Set a cookie for a specific URL"),
+  arguments: z.object({
+    url: z.string().describe("URL to set the cookie for"),
+    name: z.string().describe("Cookie name"),
+    value: z.string().describe("Cookie value"),
+    domain: z.string().optional().describe("Cookie domain"),
+    path: z.string().optional().describe("Cookie path (default: /)"),
+    secure: z.boolean().optional().describe("Secure flag (default: false)"),
+    httpOnly: z.boolean().optional().describe("HttpOnly flag (default: false)"),
+    sameSite: z
+      .enum(["no_restriction", "lax", "strict"])
+      .optional()
+      .describe("SameSite attribute"),
+    expirationDate: z
+      .number()
+      .optional()
+      .describe("Expiration date in Unix timestamp (seconds since epoch)"),
+  }),
+});
+
+export const DeleteCookieTool = z.object({
+  name: z.literal("browser_delete_cookie"),
+  description: z.literal("Delete a specific cookie"),
+  arguments: z.object({
+    url: z.string().describe("URL of the cookie to delete"),
+    name: z.string().describe("Name of the cookie to delete"),
+  }),
+});
+
+export const ClearCookiesTool = z.object({
+  name: z.literal("browser_clear_cookies"),
+  description: z.literal("Clear all cookies, optionally filtered by URL or domain"),
+  arguments: z.object({
+    url: z
+      .string()
+      .optional()
+      .describe("Only clear cookies for this URL"),
+    domain: z
+      .string()
+      .optional()
+      .describe("Only clear cookies for this domain"),
+  }),
+});
+
+// Download Management Tools
+export const DownloadFileTool = z.object({
+  name: z.literal("browser_download_file"),
+  description: z.literal("Download a file from a URL"),
+  arguments: z.object({
+    url: z.string().describe("URL of the file to download"),
+    filename: z
+      .string()
+      .optional()
+      .describe("Suggested filename for the download"),
+    saveAs: z
+      .boolean()
+      .optional()
+      .describe("Whether to prompt user for save location (default: false)"),
+  }),
+});
+
+export const GetDownloadsTool = z.object({
+  name: z.literal("browser_get_downloads"),
+  description: z.literal("Get list of downloads with optional filtering"),
+  arguments: z.object({
+    query: z
+      .array(z.string())
+      .optional()
+      .describe("Search query terms to filter downloads"),
+    orderBy: z
+      .array(z.enum(["startTime", "endTime", "url", "filename", "bytesReceived"]))
+      .optional()
+      .describe("Fields to order results by"),
+    limit: z
+      .number()
+      .optional()
+      .describe("Maximum number of downloads to return"),
+  }),
+});
+
+export const CancelDownloadTool = z.object({
+  name: z.literal("browser_cancel_download"),
+  description: z.literal("Cancel a download in progress"),
+  arguments: z.object({
+    downloadId: z.number().describe("ID of the download to cancel"),
+  }),
+});
+
+export const OpenDownloadTool = z.object({
+  name: z.literal("browser_open_download"),
+  description: z.literal("Open a downloaded file"),
+  arguments: z.object({
+    downloadId: z.number().describe("ID of the download to open"),
+  }),
+});
+
+// Clipboard Tools
+export const GetClipboardTool = z.object({
+  name: z.literal("browser_get_clipboard"),
+  description: z.literal("Read text from the clipboard"),
+  arguments: z.object({}),
+});
+
+export const SetClipboardTool = z.object({
+  name: z.literal("browser_set_clipboard"),
+  description: z.literal("Write text to the clipboard"),
+  arguments: z.object({
+    text: z.string().describe("Text to write to the clipboard"),
+  }),
+});
+
+// History Tools
+export const SearchHistoryTool = z.object({
+  name: z.literal("browser_search_history"),
+  description: z.literal("Search browsing history"),
+  arguments: z.object({
+    text: z.string().describe("Text to search for in history"),
+    startTime: z
+      .number()
+      .optional()
+      .describe("Start time in milliseconds since epoch"),
+    endTime: z
+      .number()
+      .optional()
+      .describe("End time in milliseconds since epoch"),
+    maxResults: z
+      .number()
+      .optional()
+      .describe("Maximum number of results to return (default: 100)"),
+  }),
+});
+
+export const GetHistoryVisitsTool = z.object({
+  name: z.literal("browser_get_history_visits"),
+  description: z.literal("Get visit details for a URL"),
+  arguments: z.object({
+    url: z.string().describe("URL to get visit history for"),
+  }),
+});
+
+export const DeleteHistoryTool = z.object({
+  name: z.literal("browser_delete_history"),
+  description: z.literal("Delete specific URLs from history"),
+  arguments: z.object({
+    urls: z.array(z.string()).describe("URLs to delete from history"),
+  }),
+});
+
+export const ClearHistoryTool = z.object({
+  name: z.literal("browser_clear_history"),
+  description: z.literal("Clear browsing history for a time range"),
+  arguments: z.object({
+    startTime: z
+      .number()
+      .describe("Start time in milliseconds since epoch"),
+    endTime: z
+      .number()
+      .describe("End time in milliseconds since epoch"),
+  }),
+});
+
+// System Information Tools
+export const GetVersionTool = z.object({
+  name: z.literal("browser_get_version"),
+  description: z.literal("Get browser version information"),
+  arguments: z.object({}),
+});
+
+export const GetSystemInfoTool = z.object({
+  name: z.literal("browser_get_system_info"),
+  description: z.literal("Get system information including OS, platform, and architecture"),
+  arguments: z.object({}),
+});
+
+export const GetBrowserInfoTool = z.object({
+  name: z.literal("browser_get_browser_info"),
+  description: z.literal("Get browser capabilities and information"),
+  arguments: z.object({}),
+});
+
+// Network Tools
+export const GetNetworkStateTool = z.object({
+  name: z.literal("browser_get_network_state"),
+  description: z.literal("Get current network connection state"),
+  arguments: z.object({}),
+});
+
+export const SetNetworkConditionsTool = z.object({
+  name: z.literal("browser_set_network_conditions"),
+  description: z.literal("Set network throttling conditions for testing"),
+  arguments: z.object({
+    offline: z
+      .boolean()
+      .optional()
+      .describe("Simulate offline mode (default: false)"),
+    latency: z
+      .number()
+      .optional()
+      .describe("Minimum latency in milliseconds (default: 0)"),
+    downloadThroughput: z
+      .number()
+      .optional()
+      .describe("Download throughput in bytes/sec (default: -1 for unlimited)"),
+    uploadThroughput: z
+      .number()
+      .optional()
+      .describe("Upload throughput in bytes/sec (default: -1 for unlimited)"),
+  }),
+});
+
+export const ClearCacheTool = z.object({
+  name: z.literal("browser_clear_cache"),
+  description: z.literal("Clear browser cache"),
+  arguments: z.object({
+    cacheStorage: z
+      .boolean()
+      .optional()
+      .describe("Clear cache storage (default: true)"),
+  }),
+});
+
+// Bookmark Tools
+export const GetBookmarksTool = z.object({
+  name: z.literal("browser_get_bookmarks"),
+  description: z.literal("Get bookmarks from the browser"),
+  arguments: z.object({
+    parentId: z
+      .string()
+      .optional()
+      .describe("Parent folder ID to get bookmarks from (default: root)"),
+  }),
+});
+
+export const CreateBookmarkTool = z.object({
+  name: z.literal("browser_create_bookmark"),
+  description: z.literal("Create a new bookmark"),
+  arguments: z.object({
+    title: z.string().describe("Bookmark title"),
+    url: z.string().describe("Bookmark URL"),
+    parentId: z
+      .string()
+      .optional()
+      .describe("Parent folder ID (default: root)"),
+  }),
+});
+
+export const DeleteBookmarkTool = z.object({
+  name: z.literal("browser_delete_bookmark"),
+  description: z.literal("Delete a bookmark by ID"),
+  arguments: z.object({
+    id: z.string().describe("Bookmark ID to delete"),
+  }),
+});
+
+export const SearchBookmarksTool = z.object({
+  name: z.literal("browser_search_bookmarks"),
+  description: z.literal("Search bookmarks by query"),
+  arguments: z.object({
+    query: z.string().describe("Search query"),
+    maxResults: z
+      .number()
+      .optional()
+      .describe("Maximum number of results (default: 100)"),
+  }),
+});
+
+// Extension Management Tools
+export const ListExtensionsTool = z.object({
+  name: z.literal("browser_list_extensions"),
+  description: z.literal("List all installed browser extensions"),
+  arguments: z.object({}),
+});
+
+export const GetExtensionInfoTool = z.object({
+  name: z.literal("browser_get_extension_info"),
+  description: z.literal("Get detailed information about a specific extension"),
+  arguments: z.object({
+    id: z.string().describe("Extension ID"),
+  }),
+});
+
+export const EnableExtensionTool = z.object({
+  name: z.literal("browser_enable_extension"),
+  description: z.literal("Enable a disabled extension"),
+  arguments: z.object({
+    id: z.string().describe("Extension ID to enable"),
+  }),
+});
+
+export const DisableExtensionTool = z.object({
+  name: z.literal("browser_disable_extension"),
+  description: z.literal("Disable an enabled extension"),
+  arguments: z.object({
+    id: z.string().describe("Extension ID to disable"),
+  }),
+});
+
+// Macro Management Tools
+export const StoreMacroTool = z.object({
+  name: z.literal("browser_store_macro"),
+  description: z.literal("Store a new executable JavaScript macro for site-specific automation. Macros are reusable functions that encapsulate common workflows like searching, extracting data, or interacting with specific sites."),
+  arguments: z.object({
+    site: z.string().describe("Site domain (e.g., 'amazon.com') or '*' for universal macros"),
+    category: z.string().describe("Macro category: 'search', 'extraction', 'navigation', 'interaction', 'form', 'util'"),
+    name: z.string().describe("Human-readable macro name (unique per site)"),
+    description: z.string().describe("What the macro does and when to use it"),
+    parameters: z.record(z.object({
+      type: z.enum(["string", "number", "boolean", "object", "array"]).describe("Parameter data type"),
+      description: z.string().describe("What this parameter is for"),
+      required: z.boolean().describe("Whether this parameter is required"),
+      default: z.any().optional().describe("Default value if not provided"),
+    })).describe("Macro parameters schema"),
+    code: z.string().describe("JavaScript function code: (params) => { /* your code */ return result; }"),
+    returnType: z.string().describe("Description of what the macro returns"),
+    reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Reliability rating (default: untested)"),
+    tags: z.array(z.string()).optional().describe("Tags for filtering and search"),
+  }),
+});
+
+export const ListMacrosTool = z.object({
+  name: z.literal("browser_list_macros"),
+  description: z.literal("List available macros with optional filtering by site, category, or tags. Returns macro metadata without the code."),
+  arguments: z.object({
+    site: z.string().optional().describe("Filter by site domain or '*' for universal"),
+    category: z.string().optional().describe("Filter by category: search, extraction, navigation, interaction, form, util"),
+    tags: z.array(z.string()).optional().describe("Filter by tags (returns macros matching ANY tag)"),
+    search: z.string().optional().describe("Search in name and description"),
+    reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Filter by reliability rating"),
+    limit: z.number().optional().describe("Maximum number of results (default: 50)"),
+  }),
+});
+
+export const ExecuteMacroTool = z.object({
+  name: z.literal("browser_execute_macro"),
+  description: z.literal("Execute a stored macro by ID with provided parameters. The macro runs in the page context and returns the result."),
+  arguments: z.object({
+    id: z.string().describe("Macro ID to execute"),
+    params: z.record(z.any()).optional().describe("Parameters to pass to the macro function"),
+  }),
+});
+
+export const UpdateMacroTool = z.object({
+  name: z.literal("browser_update_macro"),
+  description: z.literal("Update an existing macro. Creates a new version while preserving the old one. Only the owner can update macros."),
+  arguments: z.object({
+    id: z.string().describe("Macro ID to update"),
+    description: z.string().optional().describe("Updated description"),
+    parameters: z.record(z.object({
+      type: z.enum(["string", "number", "boolean", "object", "array"]),
+      description: z.string(),
+      required: z.boolean(),
+      default: z.any().optional(),
+    })).optional().describe("Updated parameters schema"),
+    code: z.string().optional().describe("Updated JavaScript code"),
+    returnType: z.string().optional().describe("Updated return type description"),
+    reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Updated reliability rating"),
+    tags: z.array(z.string()).optional().describe("Updated tags"),
+  }),
+});
+
+export const DeleteMacroTool = z.object({
+  name: z.literal("browser_delete_macro"),
+  description: z.literal("Delete a macro by ID. This action cannot be undone. Only the owner can delete macros."),
+  arguments: z.object({
+    id: z.string().describe("Macro ID to delete"),
+  }),
+});
+
+export const RealisticMouseMoveTool = z.object({
+  name: z.literal("browser_realistic_mouse_move"),
+  description: z.literal("Move mouse cursor along a natural bezier curve path to target coordinates. More human-like than instant positioning. Uses CDP Input domain for OS-level events."),
+  arguments: z.object({
+    x: z.number().describe("Target X coordinate"),
+    y: z.number().describe("Target Y coordinate"),
+    duration: z.number().optional().describe("Movement duration in milliseconds (default: 500)"),
+    currentX: z.number().optional().describe("Current mouse X position (default: 0)"),
+    currentY: z.number().optional().describe("Current mouse Y position (default: 0)"),
+  }),
+});
+
+export const RealisticClickTool = z.object({
+  name: z.literal("browser_realistic_click"),
+  description: z.literal("Perform a realistic click at coordinates with human-like timing and optional mouse movement. Supports double-clicks. Uses CDP Input domain for OS-level events."),
+  arguments: z.object({
+    x: z.number().describe("Target X coordinate to click"),
+    y: z.number().describe("Target Y coordinate to click"),
+    button: z.enum(["left", "right", "middle"]).optional().describe("Mouse button to click (default: 'left')"),
+    clickCount: z.number().optional().describe("Number of clicks - 1 for single, 2 for double (default: 1)"),
+    moveFirst: z.boolean().optional().describe("Whether to move mouse to position first with bezier curve (default: true)"),
+    moveDuration: z.number().optional().describe("Duration of mouse movement in ms if moveFirst is true (default: 300)"),
+    currentX: z.number().optional().describe("Current mouse X position for movement calculation (default: 0)"),
+    currentY: z.number().optional().describe("Current mouse Y position for movement calculation (default: 0)"),
+  }),
+});
+
+export const RealisticTypeTool = z.object({
+  name: z.literal("browser_realistic_type"),
+  description: z.literal("Type text with realistic human-like timing and optional typos. Variable delays between keystrokes. Uses CDP Input domain for OS-level keyboard events."),
+  arguments: z.object({
+    text: z.string().describe("Text to type"),
+    minDelay: z.number().optional().describe("Minimum delay between keystrokes in ms (default: 50)"),
+    maxDelay: z.number().optional().describe("Maximum delay between keystrokes in ms (default: 150)"),
+    mistakeChance: z.number().optional().describe("Probability of making a typo that gets corrected, 0-1 (default: 0)"),
+    pressEnter: z.boolean().optional().describe("Whether to press Enter after typing (default: false)"),
   }),
 });

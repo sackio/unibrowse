@@ -1,0 +1,93 @@
+[
+  {
+    "name": "amazon_search_submit",
+    "site": "amazon.com",
+    "category": "search",
+    "description": "Submit an Amazon search query. Finds the search box, types the query, and clicks the submit button.",
+    "parameters": {
+      "query": {
+        "type": "string",
+        "description": "Search query text",
+        "required": true
+      }
+    },
+    "code": "(params) => {\n  const searchBox = document.querySelector('input#twotabsearchtextbox');\n  const submitBtn = document.querySelector('span#nav-search-submit-text input');\n  if (!searchBox || !submitBtn) {\n    return { success: false, error: 'Search elements not found' };\n  }\n  searchBox.value = params.query;\n  submitBtn.click();\n  return { success: true, action: 'search_submitted', query: params.query };\n}",
+    "returnType": "{ success: boolean, action?: string, query?: string, error?: string }",
+    "reliability": "high",
+    "tags": ["amazon", "search", "navigation"]
+  },
+  {
+    "name": "amazon_extract_products",
+    "site": "amazon.com",
+    "category": "extraction",
+    "description": "Extract product information from Amazon search results. Returns array of products with title, price, rating, and link.",
+    "parameters": {
+      "limit": {
+        "type": "number",
+        "description": "Maximum number of products to extract",
+        "required": false,
+        "default": 10
+      }
+    },
+    "code": "(params) => {\n  const limit = params.limit || 10;\n  const results = [];\n  const containers = document.querySelectorAll('div[data-component-type=\"s-search-result\"]');\n  \n  for (let i = 0; i < Math.min(containers.length, limit); i++) {\n    const container = containers[i];\n    \n    const titleEl = container.querySelector('h2 a span');\n    const priceEl = container.querySelector('span.a-price-whole');\n    const ratingEl = container.querySelector('span.a-icon-alt');\n    const linkEl = container.querySelector('h2 a');\n    \n    if (titleEl && linkEl) {\n      const product = {\n        title: titleEl.textContent.trim(),\n        price: priceEl ? priceEl.textContent.trim() : null,\n        rating: ratingEl ? ratingEl.textContent.trim() : null,\n        link: linkEl.href\n      };\n      results.push(product);\n    }\n  }\n  \n  return { success: true, count: results.length, products: results };\n}",
+    "returnType": "{ success: boolean, count: number, products: Array<{title: string, price: string|null, rating: string|null, link: string}> }",
+    "reliability": "high",
+    "tags": ["amazon", "extraction", "search-results"]
+  },
+  {
+    "name": "amazon_apply_prime_filter",
+    "site": "amazon.com",
+    "category": "navigation",
+    "description": "Apply the Prime filter on Amazon search results page",
+    "parameters": {},
+    "code": "(params) => {\n  const primeLinks = document.querySelectorAll('a, span');\n  let primeFilter = null;\n  \n  for (const el of primeLinks) {\n    if (el.textContent && (el.textContent.includes('All Prime') || el.textContent.includes('Prime Delivery'))) {\n      primeFilter = el;\n      break;\n    }\n  }\n  \n  if (!primeFilter) {\n    return { success: false, error: 'Prime filter not found' };\n  }\n  \n  primeFilter.click();\n  return { success: true, action: 'prime_filter_applied' };\n}",
+    "returnType": "{ success: boolean, action?: string, error?: string }",
+    "reliability": "high",
+    "tags": ["amazon", "filter", "prime"]
+  },
+  {
+    "name": "amazon_get_price_range",
+    "site": "amazon.com",
+    "category": "extraction",
+    "description": "Get price range (min and max) from current search results",
+    "parameters": {},
+    "code": "(params) => {\n  const prices = [];\n  const priceElements = document.querySelectorAll('span.a-price-whole');\n  \n  priceElements.forEach(el => {\n    const priceText = el.textContent.replace(/[^0-9.]/g, '');\n    const price = parseFloat(priceText);\n    if (!isNaN(price) && price > 0) {\n      prices.push(price);\n    }\n  });\n  \n  if (prices.length === 0) {\n    return { success: false, error: 'No prices found' };\n  }\n  \n  return {\n    success: true,\n    count: prices.length,\n    min: Math.min(...prices),\n    max: Math.max(...prices),\n    average: prices.reduce((a, b) => a + b, 0) / prices.length\n  };\n}",
+    "returnType": "{ success: boolean, count: number, min: number, max: number, average: number, error?: string }",
+    "reliability": "high",
+    "tags": ["amazon", "extraction", "price-analysis"]
+  },
+  {
+    "name": "amazon_extract_unit_price",
+    "site": "amazon.com",
+    "category": "extraction",
+    "description": "Extract unit price from product detail page (e.g., $/ounce)",
+    "parameters": {},
+    "code": "(params) => {\n  const priceDisplay = document.querySelector('#corePriceDisplay_desktop_feature_div');\n  if (!priceDisplay) {\n    return { success: false, error: 'Price display not found' };\n  }\n  \n  const text = priceDisplay.textContent;\n  const unitPriceMatch = text.match(/\\$(\\d+\\.\\d+)\\s*\\/\\s*(\\w+)/);\n  \n  if (unitPriceMatch) {\n    return {\n      success: true,\n      unitPrice: parseFloat(unitPriceMatch[1]),\n      unit: unitPriceMatch[2],\n      formatted: `$${unitPriceMatch[1]}/${unitPriceMatch[2]}`\n    };\n  }\n  \n  return { success: false, error: 'Unit price not found in page' };\n}",
+    "returnType": "{ success: boolean, unitPrice?: number, unit?: string, formatted?: string, error?: string }",
+    "reliability": "medium",
+    "tags": ["amazon", "extraction", "unit-price", "product-page"]
+  },
+  {
+    "name": "universal_wait_for_selector",
+    "site": "*",
+    "category": "util",
+    "description": "Wait for a CSS selector to appear on the page with timeout",
+    "parameters": {
+      "selector": {
+        "type": "string",
+        "description": "CSS selector to wait for",
+        "required": true
+      },
+      "timeout": {
+        "type": "number",
+        "description": "Maximum time to wait in milliseconds",
+        "required": false,
+        "default": 5000
+      }
+    },
+    "code": "(params) => {\n  return new Promise((resolve) => {\n    const timeout = params.timeout || 5000;\n    const startTime = Date.now();\n    \n    const checkExists = () => {\n      const element = document.querySelector(params.selector);\n      if (element) {\n        resolve({ success: true, found: true, element: params.selector });\n      } else if (Date.now() - startTime > timeout) {\n        resolve({ success: false, found: false, error: 'Timeout waiting for selector' });\n      } else {\n        setTimeout(checkExists, 100);\n      }\n    };\n    \n    checkExists();\n  });\n}",
+    "returnType": "Promise<{ success: boolean, found: boolean, element?: string, error?: string }>",
+    "reliability": "high",
+    "tags": ["universal", "utility", "wait"]
+  }
+]

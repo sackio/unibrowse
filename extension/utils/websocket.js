@@ -4,7 +4,7 @@
  */
 
 class WebSocketManager {
-  constructor(url = 'ws://localhost:9009') {
+  constructor(url = 'ws://localhost:9010/ws') {
     this.url = url;
     this.ws = null;
     this.reconnectAttempts = 0;

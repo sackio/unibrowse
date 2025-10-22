@@ -18,6 +18,38 @@ class DemonstrationRecorder {
     this.recording = false;
     this.ui = null;
     this.listeners = [];
+    this.extensionInvalidated = false;
+  }
+
+  /**
+   * Safe wrapper for chrome.runtime.sendMessage
+   */
+  safeSendMessage(message, callback) {
+    if (this.extensionInvalidated) {
+      return;
+    }
+
+    if (!chrome.runtime?.id) {
+      this.extensionInvalidated = true;
+      console.log('[DemonstrationRecorder] Extension context invalidated');
+      return;
+    }
+
+    try {
+      if (callback) {
+        chrome.runtime.sendMessage(message, callback);
+      } else {
+        chrome.runtime.sendMessage(message).catch(err => {
+          if (err.message?.includes('Extension context invalidated')) {
+            this.extensionInvalidated = true;
+          }
+        });
+      }
+    } catch (err) {
+      if (err.message?.includes('Extension context invalidated')) {
+        this.extensionInvalidated = true;
+      }
+    }
   }
 
   /**
@@ -101,7 +133,7 @@ class DemonstrationRecorder {
     this.updateUI();
 
     // Send action to background script
-    chrome.runtime.sendMessage({
+    this.safeSendMessage({
       type: 'RECORDING_ACTION',
       sessionId: this.sessionId,
       action
@@ -224,7 +256,7 @@ class DemonstrationRecorder {
     // Cancel button handler
     document.getElementById('mcp-cancel-btn').addEventListener('click', () => {
       this.removeStartNotification();
-      chrome.runtime.sendMessage({
+      this.safeSendMessage({
         type: 'RECORDING_CANCELLED',
         sessionId: this.sessionId
       });
@@ -319,7 +351,7 @@ class DemonstrationRecorder {
     // Done button handler
     const doneBtn = document.getElementById('mcp-done-btn');
     doneBtn.addEventListener('click', () => {
-      chrome.runtime.sendMessage({
+      this.safeSendMessage({
         type: 'RECORDING_COMPLETE',
         sessionId: this.sessionId
       });
@@ -656,10 +688,19 @@ window.addEventListener('message', (event) => {
   } else if (type === 'STOP_RECORDING') {
     if (window.__mcpRecorder) {
       const result = window.__mcpRecorder.stop();
-      chrome.runtime.sendMessage({
-        type: 'RECORDING_RESULT',
-        result
-      });
+      // Safe send for message listener context
+      if (chrome.runtime?.id) {
+        try {
+          chrome.runtime.sendMessage({
+            type: 'RECORDING_RESULT',
+            result
+          }).catch(() => {
+            // Extension context invalidated during reload
+          });
+        } catch (err) {
+          // Extension context invalidated
+        }
+      }
       window.__mcpRecorder = null;
     }
   }

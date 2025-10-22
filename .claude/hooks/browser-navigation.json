@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__browser__browser_navigate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/scripts/hooks/update-macro-context.sh",
+            "description": "Update macro context when navigation occurs"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__browser__browser_switch_tab",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/scripts/hooks/update-macro-context.sh",
+            "description": "Update macro context when switching tabs"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__browser__browser_click",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/scripts/hooks/check-navigation.sh",
+            "description": "Check if click caused navigation and update context"
+          }
+        ]
+      }
+    ]
+  }
+}

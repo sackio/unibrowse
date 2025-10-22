@@ -1,42 +1,99 @@
 #!/usr/bin/env node
 import {
   appConfig,
+  cancelDownload,
   checkElementState,
   checkVisibility,
+  clearCache,
+  clearCookies,
+  clearHistory,
   click,
+  closeTab,
   countElements,
+  createBookmark,
   createServerWithTools,
   createServerWithoutWebSocket,
+  createTab,
+  deleteBookmark,
+  deleteCookie,
+  deleteHistory,
+  deleteMacro,
+  disableExtension,
+  downloadFile,
+  drag,
+  enableExtension,
   evaluate,
+  executeMacro,
+  fillForm,
   findByText,
   getAttributes,
+  getBookmarks,
+  getBrowserInfo,
+  getClipboard,
   getComputedStyles,
   getConsoleLogs,
+  getCookies,
+  getDownloads,
+  getExtensionInfo,
   getFilteredAriaTree,
   getFormValues,
+  getHistoryVisits,
+  getInteractions,
+  getNetworkLogs,
+  getNetworkState,
   getPageMetadata,
+  getSystemInfo,
+  getVersion,
   getVisibleText,
   goBack,
   goForward,
   hover,
+  listExtensions,
+  listMacros,
+  listTabs,
   navigate,
+  openDownload,
   package_default,
   pressKey,
+  pruneInteractions,
   queryDOM,
+  realisticClick,
+  realisticMouseMove,
+  realisticType,
+  requestUserAction,
   screenshot,
+  scroll,
+  scrollToElement,
+  searchBookmarks,
+  searchHistory,
+  searchInteractions,
   selectOption,
+  setClipboard,
+  setCookie,
+  setNetworkConditions,
   snapshot,
+  storeMacro,
+  submitForm,
+  switchTab,
   type,
+  updateMacro,
   wait
-} from "./chunk-3J7X7WQL.js";
+} from "./chunk-XNPL7CS2.js";
+import "./chunk-ITTVOQ2V.js";
 
 // src/http-server.ts
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
-var commonTools = [pressKey, wait];
+var commonTools = [
+  pressKey,
+  scroll,
+  scrollToElement,
+  wait
+];
 var customTools = [
   evaluate,
   getConsoleLogs,
+  getNetworkLogs,
   screenshot
 ];
 var explorationTools = [
@@ -52,68 +109,148 @@ var explorationTools = [
   getFormValues,
   checkElementState
 ];
+var tabTools = [
+  listTabs,
+  switchTab,
+  createTab,
+  closeTab
+];
+var formTools = [
+  fillForm,
+  submitForm
+];
+var recordingTools = [
+  requestUserAction(false)
+];
+var interactionTools = [
+  getInteractions,
+  pruneInteractions,
+  searchInteractions
+];
+var cookieTools = [
+  getCookies,
+  setCookie,
+  deleteCookie,
+  clearCookies
+];
+var downloadTools = [
+  downloadFile,
+  getDownloads,
+  cancelDownload,
+  openDownload
+];
+var clipboardTools = [
+  getClipboard,
+  setClipboard
+];
+var historyTools = [
+  searchHistory,
+  getHistoryVisits,
+  deleteHistory,
+  clearHistory
+];
+var systemTools = [
+  getVersion,
+  getSystemInfo,
+  getBrowserInfo
+];
+var networkTools = [
+  getNetworkState,
+  setNetworkConditions,
+  clearCache
+];
+var bookmarkTools = [
+  getBookmarks,
+  createBookmark,
+  deleteBookmark,
+  searchBookmarks
+];
+var extensionTools = [
+  listExtensions,
+  getExtensionInfo,
+  enableExtension,
+  disableExtension
+];
+var macroTools = [
+  storeMacro,
+  listMacros,
+  executeMacro,
+  updateMacro,
+  deleteMacro
+];
+var realisticInputTools = [
+  realisticMouseMove,
+  realisticClick,
+  realisticType
+];
 var snapshotTools = [
   navigate(false),
   goBack(false),
   goForward(false),
   snapshot,
   click,
+  drag,
   hover,
   type,
   selectOption,
   ...commonTools,
   ...customTools,
-  ...explorationTools
+  ...explorationTools,
+  ...tabTools,
+  ...formTools,
+  ...recordingTools,
+  ...interactionTools,
+  ...cookieTools,
+  ...downloadTools,
+  ...clipboardTools,
+  ...historyTools,
+  ...systemTools,
+  ...networkTools,
+  ...bookmarkTools,
+  ...extensionTools,
+  ...macroTools,
+  ...realisticInputTools
 ];
 var resources = [];
-async function createServerWithWebSocket() {
-  return createServerWithTools({
+async function main() {
+  const app = express();
+  app.use(express.json());
+  const port = parseInt(process.env.PORT || "9010");
+  app.get("/health", (req, res) => {
+    res.json({ status: "ok", version: package_default.version });
+  });
+  const httpMcpServer = await createServerWithoutWebSocket({
     name: appConfig.name,
     version: package_default.version,
     tools: snapshotTools,
     resources
   });
-}
-async function main() {
-  const app = express();
-  app.use(express.json());
-  const port = parseInt(process.env.PORT || "3010");
-  await createServerWithWebSocket();
-  console.log("[HTTP] WebSocket server ready on ws://localhost:9009");
-  app.get("/health", (req, res) => {
-    res.json({ status: "ok", version: package_default.version });
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: void 0
+    // Stateless mode
   });
-  app.get("/sse", async (req, res) => {
-    console.log(`[HTTP] New SSE connection from ${req.ip}`);
-    try {
-      const server = await createServerWithoutWebSocket({
-        name: appConfig.name,
-        version: package_default.version,
-        tools: snapshotTools,
-        resources
-      });
-      const transport = new SSEServerTransport("/message", res);
-      await server.connect(transport);
-      console.log(`[HTTP] SSE server connected successfully`);
-      req.on("close", () => {
-        console.log(`[HTTP] SSE connection closed`);
-      });
-    } catch (error) {
-      console.error(`[HTTP] SSE connection error:`, error);
-      if (!res.headersSent) {
-        res.status(500).json({ error: String(error) });
-      }
-    }
+  await httpMcpServer.connect(transport);
+  app.post("/mcp", (req, res) => {
+    console.log(`[HTTP] New MCP request from ${req.ip}`);
+    transport.handleRequest(req, res, req.body);
   });
-  app.post("/message", express.json(), (req, res) => {
-    res.sendStatus(200);
-  });
-  app.listen(port, () => {
+  const httpServer = app.listen(port, () => {
     console.log(`[HTTP] Browser MCP server listening on http://localhost:${port}`);
-    console.log(`[HTTP] SSE endpoint: http://localhost:${port}/sse`);
+    console.log(`[HTTP] MCP endpoint: http://localhost:${port}/mcp`);
     console.log(`[HTTP] Health check: http://localhost:${port}/health`);
-    console.log(`[HTTP] WebSocket (extension): ws://localhost:9009`);
   });
+  const { createWebSocketServerFromHTTP } = await import("./ws-NVCKGOAZ.js");
+  const wss = createWebSocketServerFromHTTP(httpServer);
+  await createServerWithTools({
+    name: appConfig.name,
+    version: package_default.version,
+    tools: snapshotTools,
+    resources,
+    wss
+    // Pass the WebSocket server
+  });
+  console.log(`[HTTP] WebSocket endpoint: ws://localhost:${port}/ws`);
+  console.log(`[HTTP] Combined HTTP + WebSocket server ready`);
 }
 main().catch((error) => {
   console.error("[HTTP] Fatal error:", error);

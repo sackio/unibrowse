@@ -58,5 +58,36 @@ export interface SocketMessageMap {
   browser_check_element_state: { selector: string };
 
   // Recording/demonstration tools
-  browser_request_demonstration: { request: string };
+  browser_request_user_action: { request: string };
+
+  // Background interaction log tools
+  browser_get_interactions: {
+    startTime?: number;
+    endTime?: number;
+    limit?: number;
+    offset?: number;
+    types?: string[];
+    urlPattern?: string;
+    selectorPattern?: string;
+    sortOrder?: 'asc' | 'desc';
+  };
+  browser_prune_interactions: {
+    before?: number;
+    after?: number;
+    between?: [number, number];
+    keepLast?: number;
+    keepFirst?: number;
+    removeOldest?: number;
+    types?: string[];
+    excludeTypes?: string[];
+    urlPattern?: string;
+    selectorPattern?: string;
+  };
+  browser_search_interactions: {
+    query: string;
+    types?: string[];
+    startTime?: number;
+    endTime?: number;
+    limit?: number;
+  };
 }

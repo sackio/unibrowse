@@ -7,31 +7,35 @@
   "bugs": "https://github.com/browsermcp/mcp/issues",
   "type": "module",
   "bin": {
-    "mcp-server-browsermcp": "dist/index.js"
+    "mcp-server-browsermcp": "dist/http-server.js"
   },
   "files": [
     "dist"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsup src/index.ts src/http-server.ts --format esm && shx chmod +x dist/*.js",
+    "build": "tsup src/http-server.ts src/stdio-server.ts --format esm && shx chmod +x dist/*.js",
     "prepare": "npm run build",
-    "watch": "tsup src/index.ts src/http-server.ts --format esm --watch",
-    "dev:http": "nodemon",
-    "start:http": "node dist/http-server.js",
-    "inspector": "CLIENT_PORT=9001 SERVER_PORT=9002 pnpx @modelcontextprotocol/inspector node dist/index.js"
+    "watch": "tsup src/http-server.ts src/stdio-server.ts --format esm --watch",
+    "dev": "nodemon",
+    "start": "node --env-file=.env dist/http-server.js",
+    "start:stdio": "node dist/stdio-server.js",
+    "inspector": "CLIENT_PORT=9001 SERVER_PORT=9002 pnpx @modelcontextprotocol/inspector node dist/stdio-server.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.8.0",
+    "@modelcontextprotocol/sdk": "^1.20.0",
     "commander": "^13.1.0",
     "express": "^5.1.0",
+    "mongodb": "^6.20.0",
     "nodemon": "^3.1.10",
+    "uuid": "^13.0.0",
     "ws": "^8.18.1",
     "zod": "^3.24.2",
     "zod-to-json-schema": "^3.24.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
+    "@types/uuid": "^10.0.0",
     "@types/ws": "^8.18.0",
     "shx": "^0.3.4",
     "tsup": "^8.4.0",
