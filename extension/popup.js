@@ -10,6 +10,9 @@ class PopupController {
       connectionBtn: document.getElementById('connection-btn'),
       wsState: document.getElementById('ws-state'),
       debuggerState: document.getElementById('debugger-state'),
+      attachedTabsSection: document.getElementById('attached-tabs-section'),
+      attachedTabsList: document.getElementById('attached-tabs-list'),
+      refreshAttachedTabsBtn: document.getElementById('refresh-attached-tabs-btn'),
       tabsSection: document.getElementById('tabs-section'),
       tabsList: document.getElementById('tabs-list'),
       refreshTabsBtn: document.getElementById('refresh-tabs-btn'),
@@ -17,6 +20,7 @@ class PopupController {
     };
 
     this.currentState = null;
+    this.attachedTabs = [];
     this.windows = [];
     this.tabs = [];
 
@@ -51,6 +55,10 @@ class PopupController {
     this.elements.refreshTabsBtn.addEventListener('click', () => {
       this.loadTabsAndWindows();
     });
+
+    this.elements.refreshAttachedTabsBtn.addEventListener('click', () => {
+      this.loadAttachedTabs();
+    });
   }
 
   /**
@@ -66,6 +74,7 @@ class PopupController {
         // Load tabs/windows if connected
         if (response.data.connected) {
           await this.loadTabsAndWindows();
+          await this.loadAttachedTabs();
         }
       }
     } catch (error) {
@@ -210,6 +219,176 @@ class PopupController {
   }
 
   /**
+   * Load attached tabs from background
+   */
+  async loadAttachedTabs() {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'list_attached_tabs'
+      });
+
+      if (response.success) {
+        this.attachedTabs = response.tabs || [];
+        this.renderAttachedTabs();
+      } else {
+        console.error('Failed to load attached tabs:', response.error);
+      }
+    } catch (error) {
+      console.error('Failed to load attached tabs:', error);
+    }
+  }
+
+  /**
+   * Render attached tabs with label management UI
+   */
+  renderAttachedTabs() {
+    const container = this.elements.attachedTabsList;
+    container.innerHTML = '';
+
+    if (this.attachedTabs.length === 0) {
+      container.innerHTML = '<div class="no-tabs">No attached tabs</div>';
+      return;
+    }
+
+    this.attachedTabs.forEach(tab => {
+      const tabItem = document.createElement('div');
+      tabItem.className = 'attached-tab-item';
+
+      // Highlight active (last-used) tab
+      if (tab.isActive) {
+        tabItem.classList.add('active-tab');
+      }
+
+      // Header with label and controls
+      const header = document.createElement('div');
+      header.className = 'attached-tab-header';
+
+      // Label (editable)
+      const labelSpan = document.createElement('span');
+      labelSpan.className = 'attached-tab-label';
+      labelSpan.textContent = tab.label;
+      labelSpan.title = 'Click to edit label';
+
+      // Add active indicator if this is the last-used tab
+      if (tab.isActive) {
+        const activeIndicator = document.createElement('span');
+        activeIndicator.className = 'active-indicator';
+        activeIndicator.textContent = 'ACTIVE';
+        labelSpan.appendChild(activeIndicator);
+      }
+
+      labelSpan.addEventListener('click', () => {
+        this.editTabLabel(tab.tabId, labelSpan);
+      });
+
+      header.appendChild(labelSpan);
+
+      // Controls
+      const controls = document.createElement('div');
+      controls.className = 'attached-tab-controls';
+
+      // Detach button
+      const detachBtn = document.createElement('button');
+      detachBtn.className = 'detach-btn';
+      detachBtn.textContent = 'Detach';
+      detachBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await this.detachTab(tab.tabId);
+      });
+
+      controls.appendChild(detachBtn);
+      header.appendChild(controls);
+
+      tabItem.appendChild(header);
+
+      // Tab info
+      const info = document.createElement('div');
+      info.className = 'attached-tab-info';
+      info.textContent = `Tab ${tab.tabId} • ${tab.title}`;
+      tabItem.appendChild(info);
+
+      // URL
+      const url = document.createElement('div');
+      url.className = 'attached-tab-url';
+      url.textContent = tab.url;
+      tabItem.appendChild(url);
+
+      container.appendChild(tabItem);
+    });
+  }
+
+  /**
+   * Edit tab label inline
+   */
+  editTabLabel(tabId, labelElement) {
+    const currentLabel = labelElement.textContent.replace(' ACTIVE', '').trim();
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentLabel;
+
+    labelElement.textContent = '';
+    labelElement.appendChild(input);
+    input.focus();
+    input.select();
+
+    const saveLabel = async () => {
+      const newLabel = input.value.trim();
+      if (newLabel && newLabel !== currentLabel) {
+        try {
+          const response = await chrome.runtime.sendMessage({
+            type: 'set_tab_label',
+            payload: { tabId, label: newLabel }
+          });
+
+          if (response.success) {
+            await this.loadAttachedTabs();
+          } else {
+            console.error('Failed to update label:', response.error);
+            labelElement.textContent = currentLabel;
+          }
+        } catch (error) {
+          console.error('Failed to update label:', error);
+          labelElement.textContent = currentLabel;
+        }
+      } else {
+        labelElement.textContent = currentLabel;
+      }
+    };
+
+    input.addEventListener('blur', saveLabel);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        saveLabel();
+      } else if (e.key === 'Escape') {
+        labelElement.textContent = currentLabel;
+      }
+    });
+  }
+
+  /**
+   * Detach from a specific tab
+   */
+  async detachTab(tabId) {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'detach_tab',
+        payload: { tabId }
+      });
+
+      if (response.success) {
+        console.log('Successfully detached from tab:', tabId);
+        await this.loadAttachedTabs();
+        await this.loadState();
+      } else {
+        this.showError(response.error || 'Failed to detach from tab');
+      }
+    } catch (error) {
+      console.error('Failed to detach from tab:', error);
+      this.showError(error.message);
+    }
+  }
+
+  /**
    * Connect to MCP server
    */
   async connect() {
@@ -276,10 +455,12 @@ class PopupController {
       ? `Attached to tab ${state.tabId}`
       : 'Not attached';
 
-    // Show/hide tabs section based on connection status
+    // Show/hide tabs sections based on connection status
     if (state.connected) {
+      this.elements.attachedTabsSection.style.display = 'block';
       this.elements.tabsSection.style.display = 'block';
     } else {
+      this.elements.attachedTabsSection.style.display = 'none';
       this.elements.tabsSection.style.display = 'none';
     }
 

@@ -914,7 +914,7 @@ class BackgroundController {
       }
 
       // Only handle popup-specific messages here
-      const popupMessages = ['connect', 'disconnect', 'get_state', 'ensure_attached'];
+      const popupMessages = ['connect', 'disconnect', 'get_state', 'ensure_attached', 'list_attached_tabs', 'set_tab_label', 'detach_tab'];
       if (popupMessages.includes(message.type)) {
         this.handlePopupMessage(message, sendResponse);
         return true; // Keep channel open for async response
@@ -2169,6 +2169,40 @@ class BackgroundController {
         try {
           const result = await this.handleEnsureAttached(message.payload || {});
           sendResponse({ success: true, data: result });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+        break;
+
+      case 'list_attached_tabs':
+        try {
+          const tabs = this.tabManager.listTabs();
+          const lastUsedTabId = this.tabManager.getLastUsedTabId();
+          const tabsWithActiveFlag = tabs.map(tab => ({
+            ...tab,
+            isActive: tab.tabId === lastUsedTabId
+          }));
+          sendResponse({ success: true, tabs: tabsWithActiveFlag });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+        break;
+
+      case 'set_tab_label':
+        try {
+          const { tabId, label } = message.payload;
+          this.tabManager.setTabLabel(tabId, label);
+          sendResponse({ success: true });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+        break;
+
+      case 'detach_tab':
+        try {
+          const { tabId } = message.payload;
+          await this.tabManager.detachTab(tabId);
+          sendResponse({ success: true });
         } catch (error) {
           sendResponse({ success: false, error: error.message });
         }

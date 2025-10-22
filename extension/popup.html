@@ -299,6 +299,104 @@
       color: #999;
       font-size: 13px;
     }
+
+    /* Attached tabs section styles */
+    .attached-tabs-section {
+      margin-top: 20px;
+    }
+
+    .attached-tab-item {
+      padding: 12px;
+      margin-bottom: 8px;
+      background-color: #d4edda;
+      border-radius: 6px;
+      border-left: 3px solid #28a745;
+    }
+
+    .attached-tab-item.active-tab {
+      background-color: #cfe2ff;
+      border-left-color: #0d6efd;
+    }
+
+    .attached-tab-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+
+    .attached-tab-label {
+      font-weight: 600;
+      font-size: 13px;
+      color: #1a1a1a;
+      cursor: pointer;
+      flex: 1;
+      padding: 2px 4px;
+      border-radius: 3px;
+    }
+
+    .attached-tab-label:hover {
+      background-color: rgba(0, 0, 0, 0.05);
+    }
+
+    .attached-tab-label input {
+      width: 100%;
+      border: none;
+      background: white;
+      padding: 2px 4px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 3px;
+    }
+
+    .attached-tab-controls {
+      display: flex;
+      gap: 6px;
+    }
+
+    .detach-btn {
+      padding: 4px 8px;
+      font-size: 11px;
+      background-color: #dc3545;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      width: auto;
+      margin: 0;
+    }
+
+    .detach-btn:hover {
+      background-color: #c82333;
+    }
+
+    .attached-tab-info {
+      font-size: 11px;
+      color: #666;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-bottom: 4px;
+    }
+
+    .attached-tab-url {
+      font-size: 11px;
+      color: #666;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .active-indicator {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      background-color: #0d6efd;
+      color: white;
+      margin-left: 6px;
+    }
   </style>
 </head>
 <body>
@@ -324,6 +422,14 @@
       <span class="info-label">Debugger:</span>
       <span class="info-value" id="debugger-state">Not attached</span>
     </div>
+  </div>
+
+  <div class="attached-tabs-section" id="attached-tabs-section" style="display: none;">
+    <div class="tabs-header">
+      <h2>Attached Tabs</h2>
+      <button class="refresh-tabs" id="refresh-attached-tabs-btn">Refresh</button>
+    </div>
+    <div id="attached-tabs-list"></div>
   </div>
 
   <div class="tabs-section" id="tabs-section" style="display: none;">
