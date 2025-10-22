@@ -1,34 +1,37 @@
 import { z } from "zod";
 
 /**
- * Multi-tab Tool Schemas - Phase 4 Status
+ * Multi-tab Tool Schemas - Phase 4 Complete ✅
  *
- * UPDATED (25/74 tools): Tools that now support tabTarget parameter:
- * - Navigation: Navigate, GoBack, GoForward, PressKey
+ * ALL 72 tools now support the tabTarget parameter (except WaitTool and legacy tab management tools).
+ *
+ * Tools supporting tabTarget (68 tools):
+ * - Navigation & Common: Navigate, GoBack, GoForward, PressKey, Scroll, ScrollToElement
  * - Interaction: Click, Drag, Hover, Type, SelectOption, FillForm, SubmitForm
- * - Information: Snapshot, Screenshot, Evaluate
+ * - Information: Snapshot, Screenshot, Evaluate, GetConsoleLogs, GetNetworkLogs
  * - DOM Exploration: QueryDOM, GetVisibleText, GetComputedStyles, CheckVisibility,
  *   GetAttributes, CountElements, GetPageMetadata, GetFilteredAriaTree,
  *   FindByText, GetFormValues, CheckElementState
- * - New: ListAttachedTabs, SetTabLabel, DetachTab, GetActiveTab
- *
- * REMAINING (~49 tools): Tools that still need tabTarget parameter added:
- * - Tab Management: ListTabs, SwitchTab, CreateTab, CloseTab (legacy single-tab ops)
- * - Scrolling: Scroll, ScrollToElement
- * - Realistic Input: RealisticMouseMove, RealisticClick, RealisticType
- * - Network: GetNetworkLogs
+ * - Interaction Log: GetInteractions, PruneInteractions, SearchInteractions
  * - Cookies: GetCookies, SetCookie, DeleteCookie, ClearCookies
  * - Downloads: DownloadFile, GetDownloads, CancelDownload, OpenDownload
  * - Clipboard: GetClipboard, SetClipboard
  * - History: SearchHistory, GetHistoryVisits, DeleteHistory, ClearHistory
- * - Browser Info: GetVersion, GetSystemInfo, GetBrowserInfo, GetNetworkState,
- *   SetNetworkConditions, ClearCache
+ * - System Info: GetVersion, GetSystemInfo, GetBrowserInfo
+ * - Network: GetNetworkState, SetNetworkConditions, ClearCache
  * - Bookmarks: GetBookmarks, CreateBookmark, DeleteBookmark, SearchBookmarks
  * - Extensions: ListExtensions, GetExtensionInfo, EnableExtension, DisableExtension
+ * - Macros: StoreMacro, ListMacros, ExecuteMacro, UpdateMacro, DeleteMacro
+ * - Realistic Input: RealisticMouseMove, RealisticClick, RealisticType
  * - Request User Action: RequestUserAction
- * - Interactions Log: GetInteractions, PruneInteractions, SearchInteractions
+ * - Multi-tab Management: ListAttachedTabs, SetTabLabel, DetachTab, GetActiveTab
  *
- * TODO: Add `.merge(TabTargetSchema)` to remaining tool argument schemas
+ * Tools NOT supporting tabTarget (4 tools - global operations):
+ * - WaitTool: Timing utility, not tab-specific
+ * - ListTabsTool: Lists all browser tabs globally
+ * - SwitchTabTool: Switches active Chrome tab
+ * - CreateTabTool: Creates new Chrome tab
+ * - CloseTabTool: Closes a Chrome tab
  */
 
 const ElementSchema = z.object({
@@ -99,13 +102,13 @@ export const ScrollTool = z.object({
   arguments: z.object({
     x: z.number().optional().describe("Horizontal scroll amount in pixels (positive = right, negative = left). Default: 0"),
     y: z.number().describe("Vertical scroll amount in pixels (positive = down, negative = up)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const ScrollToElementTool = z.object({
   name: z.literal("browser_scroll_to_element"),
   description: z.literal("Scroll to make a specific element visible in the viewport"),
-  arguments: ElementSchema,
+  arguments: ElementSchema.merge(TabTargetSchema),
 });
 
 export const ListTabsTool = z.object({
@@ -169,7 +172,7 @@ export const GetNetworkLogsTool = z.object({
   description: z.literal("Get network requests and responses captured since page load"),
   arguments: z.object({
     filter: z.string().optional().describe("Optional filter to match URLs (e.g., 'api', '.json')"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const SnapshotTool = z.object({
@@ -247,7 +250,7 @@ export const ScreenshotTool = z.object({
 export const GetConsoleLogsTool = z.object({
   name: z.literal("browser_get_console_logs"),
   description: z.literal("Get the console logs from the browser"),
-  arguments: z.object({}),
+  arguments: TabTargetSchema,
 });
 
 export const EvaluateTool = z.object({
@@ -423,7 +426,7 @@ export const RequestUserActionTool = z.object({
   arguments: z.object({
     request: z.string().describe("Clear instructions for what you want the user to do (e.g., 'Please navigate to your shopping cart and add an item')"),
     timeout: z.number().optional().describe("Maximum time to wait for user response in seconds (default: 300s = 5 minutes). After timeout, request is automatically cancelled."),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 // Background Interaction Log Tools
@@ -466,7 +469,7 @@ export const GetInteractionsTool = z.object({
       .enum(["asc", "desc"])
       .optional()
       .describe("Sort order by timestamp (default: desc - newest first)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const PruneInteractionsTool = z.object({
@@ -515,7 +518,7 @@ export const PruneInteractionsTool = z.object({
       .string()
       .optional()
       .describe("Remove interactions matching this selector regex"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const SearchInteractionsTool = z.object({
@@ -543,7 +546,7 @@ export const SearchInteractionsTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of results (default: 50)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 // Cookie Management Tools
@@ -563,7 +566,7 @@ export const GetCookiesTool = z.object({
       .string()
       .optional()
       .describe("Filter by cookie domain"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const SetCookieTool = z.object({
@@ -585,7 +588,7 @@ export const SetCookieTool = z.object({
       .number()
       .optional()
       .describe("Expiration date in Unix timestamp (seconds since epoch)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const DeleteCookieTool = z.object({
@@ -594,7 +597,7 @@ export const DeleteCookieTool = z.object({
   arguments: z.object({
     url: z.string().describe("URL of the cookie to delete"),
     name: z.string().describe("Name of the cookie to delete"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const ClearCookiesTool = z.object({
@@ -609,7 +612,7 @@ export const ClearCookiesTool = z.object({
       .string()
       .optional()
       .describe("Only clear cookies for this domain"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 // Download Management Tools
@@ -626,7 +629,7 @@ export const DownloadFileTool = z.object({
       .boolean()
       .optional()
       .describe("Whether to prompt user for save location (default: false)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const GetDownloadsTool = z.object({
@@ -645,7 +648,7 @@ export const GetDownloadsTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of downloads to return"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const CancelDownloadTool = z.object({
@@ -653,7 +656,7 @@ export const CancelDownloadTool = z.object({
   description: z.literal("Cancel a download in progress"),
   arguments: z.object({
     downloadId: z.number().describe("ID of the download to cancel"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const OpenDownloadTool = z.object({
@@ -661,14 +664,14 @@ export const OpenDownloadTool = z.object({
   description: z.literal("Open a downloaded file"),
   arguments: z.object({
     downloadId: z.number().describe("ID of the download to open"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 // Clipboard Tools
 export const GetClipboardTool = z.object({
   name: z.literal("browser_get_clipboard"),
   description: z.literal("Read text from the clipboard"),
-  arguments: z.object({}),
+  arguments: TabTargetSchema,
 });
 
 export const SetClipboardTool = z.object({
@@ -676,7 +679,7 @@ export const SetClipboardTool = z.object({
   description: z.literal("Write text to the clipboard"),
   arguments: z.object({
     text: z.string().describe("Text to write to the clipboard"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 // History Tools
@@ -697,7 +700,7 @@ export const SearchHistoryTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of results to return (default: 100)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const GetHistoryVisitsTool = z.object({
@@ -705,7 +708,7 @@ export const GetHistoryVisitsTool = z.object({
   description: z.literal("Get visit details for a URL"),
   arguments: z.object({
     url: z.string().describe("URL to get visit history for"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const DeleteHistoryTool = z.object({
@@ -713,7 +716,7 @@ export const DeleteHistoryTool = z.object({
   description: z.literal("Delete specific URLs from history"),
   arguments: z.object({
     urls: z.array(z.string()).describe("URLs to delete from history"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const ClearHistoryTool = z.object({
@@ -726,33 +729,33 @@ export const ClearHistoryTool = z.object({
     endTime: z
       .number()
       .describe("End time in milliseconds since epoch"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 // System Information Tools
 export const GetVersionTool = z.object({
   name: z.literal("browser_get_version"),
   description: z.literal("Get browser version information"),
-  arguments: z.object({}),
+  arguments: TabTargetSchema,
 });
 
 export const GetSystemInfoTool = z.object({
   name: z.literal("browser_get_system_info"),
   description: z.literal("Get system information including OS, platform, and architecture"),
-  arguments: z.object({}),
+  arguments: TabTargetSchema,
 });
 
 export const GetBrowserInfoTool = z.object({
   name: z.literal("browser_get_browser_info"),
   description: z.literal("Get browser capabilities and information"),
-  arguments: z.object({}),
+  arguments: TabTargetSchema,
 });
 
 // Network Tools
 export const GetNetworkStateTool = z.object({
   name: z.literal("browser_get_network_state"),
   description: z.literal("Get current network connection state"),
-  arguments: z.object({}),
+  arguments: TabTargetSchema,
 });
 
 export const SetNetworkConditionsTool = z.object({
@@ -775,7 +778,7 @@ export const SetNetworkConditionsTool = z.object({
       .number()
       .optional()
       .describe("Upload throughput in bytes/sec (default: -1 for unlimited)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const ClearCacheTool = z.object({
@@ -786,7 +789,7 @@ export const ClearCacheTool = z.object({
       .boolean()
       .optional()
       .describe("Clear cache storage (default: true)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 // Bookmark Tools
@@ -798,7 +801,7 @@ export const GetBookmarksTool = z.object({
       .string()
       .optional()
       .describe("Parent folder ID to get bookmarks from (default: root)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const CreateBookmarkTool = z.object({
@@ -811,7 +814,7 @@ export const CreateBookmarkTool = z.object({
       .string()
       .optional()
       .describe("Parent folder ID (default: root)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const DeleteBookmarkTool = z.object({
@@ -819,7 +822,7 @@ export const DeleteBookmarkTool = z.object({
   description: z.literal("Delete a bookmark by ID"),
   arguments: z.object({
     id: z.string().describe("Bookmark ID to delete"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const SearchBookmarksTool = z.object({
@@ -831,14 +834,14 @@ export const SearchBookmarksTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of results (default: 100)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 // Extension Management Tools
 export const ListExtensionsTool = z.object({
   name: z.literal("browser_list_extensions"),
   description: z.literal("List all installed browser extensions"),
-  arguments: z.object({}),
+  arguments: TabTargetSchema,
 });
 
 export const GetExtensionInfoTool = z.object({
@@ -846,7 +849,7 @@ export const GetExtensionInfoTool = z.object({
   description: z.literal("Get detailed information about a specific extension"),
   arguments: z.object({
     id: z.string().describe("Extension ID"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const EnableExtensionTool = z.object({
@@ -854,7 +857,7 @@ export const EnableExtensionTool = z.object({
   description: z.literal("Enable a disabled extension"),
   arguments: z.object({
     id: z.string().describe("Extension ID to enable"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const DisableExtensionTool = z.object({
@@ -862,7 +865,7 @@ export const DisableExtensionTool = z.object({
   description: z.literal("Disable an enabled extension"),
   arguments: z.object({
     id: z.string().describe("Extension ID to disable"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 // Macro Management Tools
@@ -884,7 +887,7 @@ export const StoreMacroTool = z.object({
     returnType: z.string().describe("Description of what the macro returns"),
     reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Reliability rating (default: untested)"),
     tags: z.array(z.string()).optional().describe("Tags for filtering and search"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const ListMacrosTool = z.object({
@@ -897,7 +900,7 @@ export const ListMacrosTool = z.object({
     search: z.string().optional().describe("Search in name and description"),
     reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Filter by reliability rating"),
     limit: z.number().optional().describe("Maximum number of results (default: 50)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const ExecuteMacroTool = z.object({
@@ -906,7 +909,7 @@ export const ExecuteMacroTool = z.object({
   arguments: z.object({
     id: z.string().describe("Macro ID to execute"),
     params: z.record(z.any()).optional().describe("Parameters to pass to the macro function"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const UpdateMacroTool = z.object({
@@ -925,7 +928,7 @@ export const UpdateMacroTool = z.object({
     returnType: z.string().optional().describe("Updated return type description"),
     reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Updated reliability rating"),
     tags: z.array(z.string()).optional().describe("Updated tags"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const DeleteMacroTool = z.object({
@@ -933,7 +936,7 @@ export const DeleteMacroTool = z.object({
   description: z.literal("Delete a macro by ID. This action cannot be undone. Only the owner can delete macros."),
   arguments: z.object({
     id: z.string().describe("Macro ID to delete"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const RealisticMouseMoveTool = z.object({
@@ -945,7 +948,7 @@ export const RealisticMouseMoveTool = z.object({
     duration: z.number().optional().describe("Movement duration in milliseconds (default: 500)"),
     currentX: z.number().optional().describe("Current mouse X position (default: 0)"),
     currentY: z.number().optional().describe("Current mouse Y position (default: 0)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const RealisticClickTool = z.object({
@@ -960,7 +963,7 @@ export const RealisticClickTool = z.object({
     moveDuration: z.number().optional().describe("Duration of mouse movement in ms if moveFirst is true (default: 300)"),
     currentX: z.number().optional().describe("Current mouse X position for movement calculation (default: 0)"),
     currentY: z.number().optional().describe("Current mouse Y position for movement calculation (default: 0)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 export const RealisticTypeTool = z.object({
@@ -972,7 +975,7 @@ export const RealisticTypeTool = z.object({
     maxDelay: z.number().optional().describe("Maximum delay between keystrokes in ms (default: 150)"),
     mistakeChance: z.number().optional().describe("Probability of making a typo that gets corrected, 0-1 (default: 0)"),
     pressEnter: z.boolean().optional().describe("Whether to press Enter after typing (default: false)"),
-  }),
+  }).merge(TabTargetSchema),
 });
 
 // ==================== MULTI-TAB MANAGEMENT TOOLS ====================
