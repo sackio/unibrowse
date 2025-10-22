@@ -25,6 +25,7 @@ import * as tabs from "@/tools/tabs";
 import * as userAction from "@/tools/user-action";
 import * as macros from "@/tools/macros";
 import * as realisticInput from "@/tools/realistic-input";
+import * as multiTabManagement from "@/tools/multi-tab-management";
 import type { Tool } from "@/tools/tool";
 
 import packageJSON from "../package.json";
@@ -153,6 +154,13 @@ const realisticInputTools: Tool[] = [
   realisticInput.realisticType,
 ];
 
+const multiTabTools: Tool[] = [
+  multiTabManagement.listAttachedTabs,
+  multiTabManagement.setTabLabel,
+  multiTabManagement.detachTab,
+  multiTabManagement.getActiveTab,
+];
+
 const snapshotTools: Tool[] = [
   common.navigate(false),
   common.goBack(false),
@@ -180,6 +188,7 @@ const snapshotTools: Tool[] = [
   ...extensionTools,
   ...macroTools,
   ...realisticInputTools,
+  ...multiTabTools,
 ];
 
 const resources: Resource[] = [];

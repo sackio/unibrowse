@@ -18,6 +18,7 @@ import {
   deleteCookie,
   deleteHistory,
   deleteMacro,
+  detachTab,
   disableExtension,
   downloadFile,
   drag,
@@ -26,6 +27,7 @@ import {
   executeMacro,
   fillForm,
   findByText,
+  getActiveTab,
   getAttributes,
   getBookmarks,
   getBrowserInfo,
@@ -48,6 +50,7 @@ import {
   goBack,
   goForward,
   hover,
+  listAttachedTabs,
   listExtensions,
   listMacros,
   listTabs,
@@ -71,6 +74,7 @@ import {
   setClipboard,
   setCookie,
   setNetworkConditions,
+  setTabLabel,
   snapshot,
   storeMacro,
   submitForm,
@@ -78,7 +82,7 @@ import {
   type,
   updateMacro,
   wait
-} from "./chunk-PT4C6M2D.js";
+} from "./chunk-TFH6IYWI.js";
 import "./chunk-ITTVOQ2V.js";
 
 // src/http-server.ts
@@ -183,6 +187,12 @@ var realisticInputTools = [
   realisticClick,
   realisticType
 ];
+var multiTabTools = [
+  listAttachedTabs,
+  setTabLabel,
+  detachTab,
+  getActiveTab
+];
 var snapshotTools = [
   navigate(false),
   goBack(false),
@@ -209,7 +219,8 @@ var snapshotTools = [
   ...bookmarkTools,
   ...extensionTools,
   ...macroTools,
-  ...realisticInputTools
+  ...realisticInputTools,
+  ...multiTabTools
 ];
 var resources = [];
 async function main() {

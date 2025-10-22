@@ -176,8 +176,8 @@ export const getPageMetadata: Tool = {
   handle: async (context, params) => {
     try {
       await context.ensureAttached();
-      GetPageMetadataTool.shape.arguments.parse(params);
-      const result = await context.sendSocketMessage("browser_get_page_metadata", {});
+      const validatedParams = GetPageMetadataTool.shape.arguments.parse(params);
+      const result = await context.sendSocketMessage("browser_get_page_metadata", validatedParams);
       return jsonResponse(result);
     } catch (error) {
       return errorResponse(`Failed to get page metadata: ${error.message}`, false, error);

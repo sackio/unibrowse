@@ -29,12 +29,12 @@ export const navigate: ToolFactory = (snapshot) => ({
   handle: async (context, params) => {
     try {
       await context.ensureAttached();
-      const { url } = NavigateTool.shape.arguments.parse(params);
-      await context.sendSocketMessage("browser_navigate", { url });
+      const validatedParams = NavigateTool.shape.arguments.parse(params);
+      await context.sendSocketMessage("browser_navigate", validatedParams);
       if (snapshot) {
-        return captureAriaSnapshot(context);
+        return captureAriaSnapshot(context, "", validatedParams.tabTarget);
       }
-      return textResponse(`Navigated to ${url}`);
+      return textResponse(`Navigated to ${validatedParams.url}`);
     } catch (error) {
       return errorResponse(`Failed to navigate: ${error.message}`, false, error);
     }
@@ -52,12 +52,13 @@ export const goBack: ToolFactory = (snapshot) => ({
     description: GoBackTool.shape.description.value,
     inputSchema: zodToJsonSchema(GoBackTool.shape.arguments),
   },
-  handle: async (context) => {
+  handle: async (context, params) => {
     try {
       await context.ensureAttached();
-      await context.sendSocketMessage("browser_go_back", {});
+      const validatedParams = GoBackTool.shape.arguments.parse(params);
+      await context.sendSocketMessage("browser_go_back", validatedParams);
       if (snapshot) {
-        return captureAriaSnapshot(context);
+        return captureAriaSnapshot(context, "", validatedParams.tabTarget);
       }
       return textResponse("Navigated back");
     } catch (error) {
@@ -77,12 +78,13 @@ export const goForward: ToolFactory = (snapshot) => ({
     description: GoForwardTool.shape.description.value,
     inputSchema: zodToJsonSchema(GoForwardTool.shape.arguments),
   },
-  handle: async (context) => {
+  handle: async (context, params) => {
     try {
       await context.ensureAttached();
-      await context.sendSocketMessage("browser_go_forward", {});
+      const validatedParams = GoForwardTool.shape.arguments.parse(params);
+      await context.sendSocketMessage("browser_go_forward", validatedParams);
       if (snapshot) {
-        return captureAriaSnapshot(context);
+        return captureAriaSnapshot(context, "", validatedParams.tabTarget);
       }
       return textResponse("Navigated forward");
     } catch (error) {
@@ -128,9 +130,9 @@ export const pressKey: Tool = {
   handle: async (context, params) => {
     try {
       await context.ensureAttached();
-      const { key } = PressKeyTool.shape.arguments.parse(params);
-      await context.sendSocketMessage("browser_press_key", { key });
-      return textResponse(`Pressed key ${key}`);
+      const validatedParams = PressKeyTool.shape.arguments.parse(params);
+      await context.sendSocketMessage("browser_press_key", validatedParams);
+      return textResponse(`Pressed key ${validatedParams.key}`);
     } catch (error) {
       return errorResponse(`Failed to press key: ${error.message}`, false, error);
     }

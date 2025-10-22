@@ -49,12 +49,13 @@ export const screenshot: Tool = {
     description: ScreenshotTool.shape.description.value,
     inputSchema: zodToJsonSchema(ScreenshotTool.shape.arguments),
   },
-  handle: async (context, _params) => {
+  handle: async (context, params) => {
     try {
       await context.ensureAttached();
+      const validatedParams = ScreenshotTool.shape.arguments.parse(params);
       const screenshot = await context.sendSocketMessage(
         "browser_screenshot",
-        {},
+        validatedParams,
       );
       return imageResponse(screenshot, "image/png");
     } catch (error) {

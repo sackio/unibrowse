@@ -26,10 +26,11 @@ export const snapshot: Tool = {
     description: SnapshotTool.shape.description.value,
     inputSchema: zodToJsonSchema(SnapshotTool.shape.arguments),
   },
-  handle: async (context: Context) => {
+  handle: async (context: Context, params) => {
     try {
       await context.ensureAttached();
-      return await captureAriaSnapshot(context);
+      const validatedParams = SnapshotTool.shape.arguments.parse(params);
+      return await captureAriaSnapshot(context, "", validatedParams.tabTarget);
     } catch (error) {
       return errorResponse(`Failed to capture snapshot: ${error.message}`, false, error);
     }
