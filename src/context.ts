@@ -30,31 +30,37 @@ export class Context {
   }
 
   /**
-   * Get the currently active tab ID (where debugger is attached)
+   * Get the currently active (last-used) tab ID
+   * Note: With multi-tab support, this only tracks the most recently used tab
    */
   get activeTabId(): number | null {
     return this._activeTabId;
   }
 
   /**
-   * Ensure debugger is attached to a tab (lazy attachment)
-   * If no tabId is provided, attaches to the current active tab in the browser
-   * If already attached to the requested tab, does nothing
-   * If attached to a different tab, switches to the new tab
+   * Ensure debugger is attached to a tab (lazy attachment with multi-tab support)
    *
-   * @param tabId - Optional tab ID to attach to. If not provided, uses current active tab
-   * @returns The tab ID that is now attached
+   * @param tabId - Optional tab ID to attach to
+   * @param label - Optional label to identify the tab (alternative to tabId)
+   * @param autoOpenUrl - Optional URL to open if no tabs are attached
+   * @returns Object with tabId and label of the attached tab
    */
-  async ensureAttached(tabId?: number): Promise<number> {
+  async ensureAttached(options?: {
+    tabId?: number;
+    label?: string;
+    autoOpenUrl?: string;
+  }): Promise<{ tabId: number; label: string }> {
     // Send message to extension to ensure attachment
     const result = await this.sendSocketMessage("browser_ensure_attached", {
-      tabId: tabId ?? null,
+      tabId: options?.tabId ?? null,
+      label: options?.label ?? null,
+      autoOpenUrl: options?.autoOpenUrl ?? null,
     });
 
-    // Update our cached active tab ID
+    // Update our cached active tab ID (for backwards compatibility)
     this._activeTabId = result.tabId;
 
-    return result.tabId;
+    return result;
   }
 
   async sendSocketMessage<T extends MessageType<SocketMessageMap>>(
