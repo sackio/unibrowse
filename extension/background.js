@@ -1489,7 +1489,7 @@ class BackgroundController {
         }
       }
 
-      // If STILL no target, check if we need to create a window
+      // If STILL no target, check if we need to create a window or use active tab
       if (!targetTabId) {
         // Check if there are any windows
         const windows = await chrome.windows.getAll();
@@ -1503,7 +1503,28 @@ class BackgroundController {
           // Wait for tab to be ready
           await new Promise(resolve => setTimeout(resolve, 500));
         } else {
-          throw new Error('No tab available. Provide tabId, label, or autoOpenUrl.');
+          // Windows exist - try to get active tab from last focused window
+          console.log('[Background] No explicit target, looking for active tab in current window...');
+          try {
+            const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+            if (activeTab) {
+              targetTabId = activeTab.id;
+              console.log('[Background] Using active tab from current window:', targetTabId);
+            } else {
+              // Fallback: get any tab from the first window
+              const [firstWindow] = windows;
+              const tabs = await chrome.tabs.query({ windowId: firstWindow.id });
+              if (tabs.length > 0) {
+                targetTabId = tabs[0].id;
+                console.log('[Background] Using first tab from first window:', targetTabId);
+              } else {
+                throw new Error('No tab available. Provide tabId, label, or autoOpenUrl.');
+              }
+            }
+          } catch (queryError) {
+            console.error('[Background] Failed to query for active tab:', queryError);
+            throw new Error('No tab available. Provide tabId, label, or autoOpenUrl.');
+          }
         }
       }
 
