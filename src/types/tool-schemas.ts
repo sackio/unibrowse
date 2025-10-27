@@ -26,12 +26,13 @@ import { z } from "zod";
  * - Request User Action: RequestUserAction
  * - Multi-tab Management: ListAttachedTabs, SetTabLabel, DetachTab, GetActiveTab
  *
- * Tools NOT supporting tabTarget (4 tools - global operations):
+ * Tools NOT supporting tabTarget (5 tools - global operations):
  * - WaitTool: Timing utility, not tab-specific
  * - ListTabsTool: Lists all browser tabs globally
  * - SwitchTabTool: Switches active Chrome tab
  * - CreateTabTool: Creates new Chrome tab
  * - CloseTabTool: Closes a Chrome tab
+ * - CreateWindowTool: Creates new browser window
  */
 
 const ElementSchema = z.object({
@@ -138,6 +139,18 @@ export const CloseTabTool = z.object({
   description: z.literal("Close a specific browser tab"),
   arguments: z.object({
     tabId: z.number().describe("The ID of the tab to close"),
+  }),
+});
+
+export const CreateWindowTool = z.object({
+  name: z.literal("browser_create_window"),
+  description: z.literal("Create a new browser window"),
+  arguments: z.object({
+    url: z.union([z.string(), z.array(z.string())]).optional().describe("URL or array of URLs to open in the new window (default: about:blank)"),
+    focused: z.boolean().optional().describe("Whether the new window should be focused (default: true)"),
+    incognito: z.boolean().optional().describe("Whether to open in incognito/private mode (default: false)"),
+    width: z.number().optional().describe("Window width in pixels"),
+    height: z.number().optional().describe("Window height in pixels"),
   }),
 });
 
@@ -995,7 +1008,9 @@ export const SetTabLabelTool = z.object({
     "Set or update a tab's label. Labels are used to identify tabs in a human-readable way."
   ),
   arguments: z.object({
-    tabId: z.number().describe("The tab ID to update"),
+    tabTarget: z
+      .union([z.number(), z.string()])
+      .describe("Tab identifier (tab ID or current label) of the tab to update"),
     label: z.string().describe("The new label for the tab"),
   }),
 });
@@ -1017,4 +1032,26 @@ export const GetActiveTabTool = z.object({
     "Returns tab ID, label, URL, and last used timestamp."
   ),
   arguments: z.object({}),
+});
+
+export const AttachTabTool = z.object({
+  name: z.literal("browser_attach_tab"),
+  description: z.literal(
+    "Attach debugger to a browser tab. Can attach to an existing tab by ID or open a new tab with a URL. " +
+    "Use this to start controlling a tab before performing operations on it."
+  ),
+  arguments: z.object({
+    tabId: z
+      .number()
+      .optional()
+      .describe("The tab ID to attach to (if attaching to existing tab)"),
+    autoOpenUrl: z
+      .string()
+      .optional()
+      .describe("URL to open in a new tab and attach to (if opening new tab)"),
+    label: z
+      .string()
+      .optional()
+      .describe("Optional label to assign to the tab after attaching"),
+  }),
 });

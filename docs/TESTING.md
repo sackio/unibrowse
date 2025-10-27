@@ -76,9 +76,9 @@ Tests the continuous recording system:
 ## Test Files
 
 ```
-TEST_SUITE.md       Comprehensive manual test plan with expected results
-run-tests.sh        Simple runner script (displays instructions)
-test-runner.js      Automated test framework (WIP - future enhancement)
+docs/TEST_SUITE.md       Comprehensive manual test plan with expected results
+scripts/run-tests.sh     Simple runner script (displays instructions)
+tests/test-runner.js     Automated test framework (WIP - future enhancement)
 ```
 
 ## Running Tests Manually

@@ -6,7 +6,7 @@ The Browser MCP WebSocket/HTTP server can run in several modes:
 
 ### Development (Hot Reload)
 ```bash
-./service.sh dev
+./scripts/service.sh dev
 # or
 npm run dev:http
 ```
@@ -16,10 +16,10 @@ npm run dev:http
 
 ### Production (PM2) - Recommended
 ```bash
-./service.sh start    # Start service
-./service.sh logs     # View logs
-./service.sh restart  # Restart
-./service.sh stop     # Stop
+./scripts/service.sh start    # Start service
+./scripts/service.sh logs     # View logs
+./scripts/service.sh restart  # Restart
+./scripts/service.sh stop     # Stop
 ```
 - Automatic restarts on crash
 - Log management
@@ -28,10 +28,10 @@ npm run dev:http
 
 ### Production (systemd) - Alternative
 ```bash
-./service.sh systemd-install  # One-time setup
-./service.sh systemd-start    # Start service
-./service.sh systemd-logs     # View logs
-./service.sh systemd-stop     # Stop
+./scripts/service.sh systemd-install  # One-time setup
+./scripts/service.sh systemd-start    # Start service
+./scripts/service.sh systemd-logs     # View logs
+./scripts/service.sh systemd-stop     # Stop
 ```
 - Runs as system service
 - Auto-start on boot
@@ -43,21 +43,21 @@ npm run dev:http
 
 ```bash
 # Development
-./service.sh dev              # Start with hot reload
+./scripts/service.sh dev              # Start with hot reload
 
 # PM2 (recommended for always-on)
-./service.sh start            # Start service
-./service.sh stop             # Stop service
-./service.sh restart          # Restart service
-./service.sh logs             # View logs (live tail)
-./service.sh status           # Check status
+./scripts/service.sh start            # Start service
+./scripts/service.sh stop             # Stop service
+./scripts/service.sh restart          # Restart service
+./scripts/service.sh logs             # View logs (live tail)
+./scripts/service.sh status           # Check status
 
 # Systemd (alternative for always-on)
-./service.sh systemd-install  # Install systemd service
-./service.sh systemd-start    # Start service
-./service.sh systemd-stop     # Stop service
-./service.sh systemd-status   # Check status
-./service.sh systemd-logs     # View logs
+./scripts/service.sh systemd-install  # Install systemd service
+./scripts/service.sh systemd-start    # Start service
+./scripts/service.sh systemd-stop     # Stop service
+./scripts/service.sh systemd-status   # Check status
+./scripts/service.sh systemd-logs     # View logs
 ```
 
 ## Method Comparison
@@ -79,7 +79,7 @@ npm install -g pm2
 ```
 
 ### Configuration
-Edit `ecosystem.config.js` to customize:
+Edit `config/ecosystem.config.js` to customize:
 - Memory limits
 - Environment variables
 - Log paths
@@ -108,10 +108,10 @@ pm2 flush                   # Clear logs
 
 ### Installation
 ```bash
-./service.sh systemd-install
+./scripts/service.sh systemd-install
 ```
 
-This copies `browser-mcp.service` to `~/.config/systemd/user/`
+This copies `config/browser-mcp.service` to `~/.config/systemd/user/`
 
 ### Service File Location
 - User service: `~/.config/systemd/user/browser-mcp.service`
@@ -140,8 +140,8 @@ journalctl --user -u browser-mcp.service -n 100  # Last 100 lines
 
 Change ports by editing:
 - `package.json` scripts
-- `ecosystem.config.js` (PM2)
-- `browser-mcp.service` (systemd)
+- `config/ecosystem.config.js` (PM2)
+- `config/browser-mcp.service` (systemd)
 
 ### Environment Variables
 - `NODE_ENV`: `development` or `production`
@@ -173,8 +173,8 @@ kill <PID>
 ### Service won't start
 ```bash
 # Check logs
-./service.sh logs              # PM2
-./service.sh systemd-logs      # Systemd
+./scripts/service.sh logs              # PM2
+./scripts/service.sh systemd-logs      # Systemd
 
 # Check if dist is built
 npm run build
@@ -189,7 +189,7 @@ npm install -g pm2
 ```
 
 ### Can't connect from browser extension
-1. Ensure service is running: `./service.sh status`
+1. Ensure service is running: `./scripts/service.sh status`
 2. Check WebSocket is listening: `lsof -i :9009`
 3. Check browser console for connection errors
 4. Verify firewall allows port 9009
@@ -198,7 +198,7 @@ npm install -g pm2
 
 **For Development:**
 ```bash
-./service.sh dev
+./scripts/service.sh dev
 ```
 
 **For Production (Local/LAN):**
@@ -207,7 +207,7 @@ npm install -g pm2
 npm install -g pm2
 
 # Start service
-./service.sh start
+./scripts/service.sh start
 
 # Enable auto-start on boot
 pm2 startup
@@ -216,6 +216,6 @@ pm2 save
 
 **For Production (System Service):**
 ```bash
-./service.sh systemd-install
-./service.sh systemd-start
+./scripts/service.sh systemd-install
+./scripts/service.sh systemd-start
 ```

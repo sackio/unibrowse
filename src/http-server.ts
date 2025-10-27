@@ -63,6 +63,7 @@ const tabTools: Tool[] = [
   tabs.switchTab,
   tabs.createTab,
   tabs.closeTab,
+  tabs.createWindow,
 ];
 
 const formTools: Tool[] = [
@@ -151,6 +152,7 @@ const multiTabTools: Tool[] = [
   multiTabManagement.setTabLabel,
   multiTabManagement.detachTab,
   multiTabManagement.getActiveTab,
+  multiTabManagement.attachTab,
 ];
 
 const snapshotTools: Tool[] = [

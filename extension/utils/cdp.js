@@ -95,22 +95,49 @@ class CDPHelper {
   async attach(tabId) {
     try {
       // Validate tab before attempting attach
+      console.log('[CDP] Validating tab:', tabId);
       await this.validateTab(tabId);
+      console.log('[CDP] Tab validated');
 
       this.target = { tabId };
       this.isDetaching = false;
       this.reattachAttempts = 0;
 
-      await chrome.debugger.attach(this.target, '1.3');
+      console.log('[CDP] Calling chrome.debugger.attach...');
+      try {
+        await chrome.debugger.attach(this.target, '1.3');
+      } catch (attachError) {
+        // If another debugger is already attached, try to detach it first
+        if (attachError.message && attachError.message.includes('Another debugger is already attached')) {
+          console.warn('[CDP] Another debugger is attached, attempting to detach first...');
+          try {
+            await chrome.debugger.detach(this.target);
+            console.log('[CDP] Detached previous debugger, retrying attach...');
+            // Brief delay to ensure cleanup
+            await new Promise(resolve => setTimeout(resolve, 100));
+            await chrome.debugger.attach(this.target, '1.3');
+          } catch (detachError) {
+            console.error('[CDP] Failed to detach and reattach:', detachError);
+            throw attachError; // Throw original error
+          }
+        } else {
+          throw attachError;
+        }
+      }
       console.log('[CDP] Debugger attached to tab:', tabId);
 
       // Setup detach listener
+      console.log('[CDP] Setting up detach listener...');
       this.setupDetachListener();
+      console.log('[CDP] Detach listener setup complete');
 
       // Enable essential CDP domains
       // Note: Input domain doesn't have .enable method
+      console.log('[CDP] Enabling CDP domains...');
       await this.enableDomains(['Page', 'Runtime', 'DOM', 'Accessibility', 'Console', 'Network']);
+      console.log('[CDP] All domains enabled');
 
+      console.log('[CDP] attach() complete, returning true');
       return true;
     } catch (error) {
       console.error('[CDP] Failed to attach debugger:', error);
@@ -155,19 +182,36 @@ class CDPHelper {
    * Enable CDP domains
    */
   async enableDomains(domains) {
+    console.log('[CDP] enableDomains called with:', domains);
+    const errors = [];
+
     for (const domain of domains) {
       if (this.enabledDomains.has(domain)) {
+        console.log(`[CDP] Domain ${domain} already enabled, skipping`);
         continue;
       }
 
       try {
+        console.log(`[CDP] Enabling domain: ${domain}...`);
         await this.sendCommand(`${domain}.enable`);
         this.enabledDomains.add(domain);
-        console.log(`[CDP] Enabled domain: ${domain}`);
+        console.log(`[CDP] ✓ Enabled domain: ${domain}`);
       } catch (error) {
-        console.warn(`[CDP] Failed to enable domain ${domain}:`, error);
+        console.warn(`[CDP] ✗ Failed to enable domain ${domain}:`, error.message);
+        errors.push({ domain, error: error.message });
+        // Continue with other domains - don't let one failure stop everything
       }
     }
+
+    if (errors.length > 0) {
+      console.warn('[CDP] Some domains failed to enable:', errors);
+      // Only throw if ALL domains failed
+      if (errors.length === domains.length) {
+        throw new Error(`Failed to enable all CDP domains: ${errors.map(e => e.domain).join(', ')}`);
+      }
+    }
+
+    console.log('[CDP] enableDomains complete - enabled:', Array.from(this.enabledDomains));
   }
 
   /**
@@ -210,16 +254,48 @@ class CDPHelper {
   }
 
   /**
-   * Send CDP command with retry logic
+   * Send CDP command with retry logic and timeout
+   * @param {string} method - CDP method name
+   * @param {object} params - Method parameters
+   * @param {number} retries - Current retry attempt
+   * @param {number} maxRetries - Maximum retry attempts
+   * @param {number} timeoutMs - Optional timeout in milliseconds (0 = no timeout)
    */
-  async sendCommand(method, params = {}, retries = 0, maxRetries = 1) {
+  async sendCommand(method, params = {}, retries = 0, maxRetries = 1, timeoutMs = null) {
     // Validate attachment before command
     await this.ensureAttached();
 
     try {
-      const result = await chrome.debugger.sendCommand(this.target, method, params);
-      console.log(`[CDP] ${method}:`, result);
-      return result;
+      // Determine timeout based on method type if not explicitly provided
+      if (timeoutMs === null) {
+        // Runtime.evaluate (macros): 2 minutes - complex operations need time
+        // Page navigation: 30 seconds - page loads can be slow
+        // Other commands: 10 seconds - general operations
+        if (method === 'Runtime.evaluate') {
+          timeoutMs = 120000; // 2 minutes for macros and JavaScript execution
+        } else if (method.startsWith('Page.navigate') || method.startsWith('Page.reload')) {
+          timeoutMs = 30000; // 30 seconds for navigation
+        } else {
+          timeoutMs = 10000; // 10 seconds for other commands
+        }
+      }
+
+      const commandPromise = chrome.debugger.sendCommand(this.target, method, params);
+
+      // Only apply timeout if timeoutMs > 0 (allows disabling timeout with 0)
+      if (timeoutMs > 0) {
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error(`CDP command ${method} timed out after ${timeoutMs/1000} seconds`)), timeoutMs);
+        });
+        const result = await Promise.race([commandPromise, timeoutPromise]);
+        console.log(`[CDP] ${method}:`, result);
+        return result;
+      } else {
+        // No timeout - wait indefinitely
+        const result = await commandPromise;
+        console.log(`[CDP] ${method}:`, result);
+        return result;
+      }
     } catch (error) {
       // Parse CDP error if it's in stringified JSON format
       let cdpError = error;
@@ -250,7 +326,7 @@ class CDPHelper {
           try {
             await new Promise(resolve => setTimeout(resolve, 500)); // Brief delay
             await this.attach(oldTabId);
-            return this.sendCommand(method, params, retries + 1, maxRetries);
+            return this.sendCommand(method, params, retries + 1, maxRetries, timeoutMs);
           } catch (reattachError) {
             console.error(`[CDP] Reattachment failed:`, reattachError);
             throw error; // Throw original error

@@ -5,6 +5,7 @@ import {
   SetTabLabelTool,
   DetachTabTool,
   GetActiveTabTool,
+  AttachTabTool,
 } from "@/types/tool-schemas";
 
 import type { Context } from "@/context";
@@ -26,7 +27,7 @@ export const listAttachedTabs: Tool = {
   },
   handle: async (context: Context) => {
     try {
-      await context.ensureAttached();
+      // Don't call ensureAttached() - we want to list tabs even if none attached
       const result = await context.sendSocketMessage(
         "browser_list_attached_tabs",
         {}
@@ -69,7 +70,7 @@ export const setTabLabel: Tool = {
   },
   handle: async (context: Context, params) => {
     try {
-      await context.ensureAttached();
+      // Multi-tab management doesn't need ensureAttached - just need WebSocket connection
       const validatedParams = SetTabLabelTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage(
         "browser_set_tab_label",
@@ -77,7 +78,7 @@ export const setTabLabel: Tool = {
       );
 
       return textResponse(
-        `Updated tab ${validatedParams.tabId} label to "${validatedParams.label}"`
+        `Updated tab ${validatedParams.tabTarget} label to "${validatedParams.label}"`
       );
     } catch (error) {
       return errorResponse(
@@ -136,7 +137,7 @@ export const getActiveTab: Tool = {
   },
   handle: async (context: Context) => {
     try {
-      await context.ensureAttached();
+      // Don't call ensureAttached() - we want to gracefully return no active tab
       const result = await context.sendSocketMessage(
         "browser_get_active_tab",
         {}
@@ -155,6 +156,39 @@ export const getActiveTab: Tool = {
     } catch (error) {
       return errorResponse(
         `Failed to get active tab: ${error.message}`,
+        false,
+        error
+      );
+    }
+  },
+};
+
+/**
+ * Attach debugger to a browser tab
+ * Can attach to an existing tab by ID or open a new tab with a URL.
+ * Optionally assign a label to the tab after attaching.
+ */
+export const attachTab: Tool = {
+  schema: {
+    name: AttachTabTool.shape.name.value,
+    description: AttachTabTool.shape.description.value,
+    inputSchema: zodToJsonSchema(AttachTabTool.shape.arguments),
+  },
+  handle: async (context: Context, params) => {
+    try {
+      const validatedParams = AttachTabTool.shape.arguments.parse(params);
+      const result = await context.sendSocketMessage(
+        "browser_ensure_attached",
+        validatedParams
+      );
+
+      return textResponse(
+        `Attached to tab ${result.tabId}${result.label ? ` (${result.label})` : ""}\n` +
+          `URL: ${result.url}`
+      );
+    } catch (error) {
+      return errorResponse(
+        `Failed to attach to tab: ${error.message}`,
         false,
         error
       );

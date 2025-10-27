@@ -8,9 +8,9 @@ class WebSocketManager {
     this.url = url;
     this.ws = null;
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 10;
+    this.maxReconnectAttempts = Infinity; // Never give up - keep trying indefinitely
     this.reconnectDelay = 1000; // Start with 1 second
-    this.maxReconnectDelay = 30000; // Max 30 seconds
+    this.maxReconnectDelay = 5000; // Max 5 seconds (reduced from 30s for faster recovery)
     this.isIntentionallyClosed = false;
     this.messageHandlers = new Map();
     this.stateChangeHandlers = [];

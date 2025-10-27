@@ -3,6 +3,7 @@ import zodToJsonSchema from "zod-to-json-schema";
 import {
   CloseTabTool,
   CreateTabTool,
+  CreateWindowTool,
   ListTabsTool,
   SwitchTabTool,
 } from "@/types/tool-schemas";
@@ -26,7 +27,7 @@ export const listTabs: Tool = {
   },
   handle: async (context: Context) => {
     try {
-      await context.ensureAttached();
+      // Don't call ensureAttached() - browser_list_tabs uses chrome.tabs.query which works without attachment
       const tabs = await context.sendSocketMessage("browser_list_tabs", {});
       return textResponse(`Open tabs:\n${JSON.stringify(tabs, null, 2)}`);
     } catch (error) {
@@ -106,6 +107,41 @@ export const closeTab: Tool = {
       return textResponse(`Closed tab ${validatedParams.tabId}`);
     } catch (error) {
       return errorResponse(`Failed to close tab: ${error.message}`, false, error);
+    }
+  },
+};
+
+/**
+ * Create a new browser window
+ * Opens a new browser window with optional configuration. Can open with a single URL,
+ * multiple URLs (one per tab), or as a blank window. Supports incognito mode and
+ * custom window dimensions. Useful when you need a fresh browser context or want to
+ * separate different tasks into different windows.
+ */
+export const createWindow: Tool = {
+  schema: {
+    name: CreateWindowTool.shape.name.value,
+    description: CreateWindowTool.shape.description.value,
+    inputSchema: zodToJsonSchema(CreateWindowTool.shape.arguments),
+  },
+  handle: async (context: Context, params) => {
+    try {
+      // Don't call ensureAttached() - creating a window doesn't need an existing attachment
+      const validatedParams = CreateWindowTool.shape.arguments.parse(params);
+      const result = await context.sendSocketMessage("browser_create_window", validatedParams);
+
+      let message = `Created new window ${result.windowId}`;
+      if (result.tabs && result.tabs.length > 0) {
+        const tabInfo = result.tabs.map((t: any) => `Tab ${t.tabId}: ${t.url}`).join(", ");
+        message += ` with ${result.tabs.length} tab(s) (${tabInfo})`;
+      }
+      if (result.incognito) {
+        message += " [Incognito Mode]";
+      }
+
+      return textResponse(message);
+    } catch (error) {
+      return errorResponse(`Failed to create window: ${error.message}`, false, error);
     }
   },
 };

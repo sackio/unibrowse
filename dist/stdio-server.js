@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {
   appConfig,
+  attachTab,
   cancelDownload,
   checkElementState,
   checkVisibility,
@@ -13,6 +14,7 @@ import {
   createBookmark,
   createServerWithTools,
   createTab,
+  createWindow,
   deleteBookmark,
   deleteCookie,
   deleteHistory,
@@ -81,7 +83,7 @@ import {
   type,
   updateMacro,
   wait
-} from "./chunk-TFH6IYWI.js";
+} from "./chunk-SU7PBJZZ.js";
 import "./chunk-ITTVOQ2V.js";
 
 // src/stdio-server.ts
@@ -123,7 +125,8 @@ var tabTools = [
   listTabs,
   switchTab,
   createTab,
-  closeTab
+  closeTab,
+  createWindow
 ];
 var formTools = [
   fillForm,
@@ -197,7 +200,8 @@ var multiTabTools = [
   listAttachedTabs,
   setTabLabel,
   detachTab,
-  getActiveTab
+  getActiveTab,
+  attachTab
 ];
 var snapshotTools = [
   navigate(false),

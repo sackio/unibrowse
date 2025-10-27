@@ -317,41 +317,74 @@ class TabManager {
    * Creates new CDP instance and stores tab info
    */
   async attachTab(tabId, url, title) {
-    // Check if already attached
-    if (this.attachedTabs.has(tabId)) {
-      console.log('[TabManager] Tab already attached:', tabId);
-      return this.attachedTabs.get(tabId);
+    try {
+      // Check if already attached
+      if (this.attachedTabs.has(tabId)) {
+        console.log('[TabManager] Tab already attached:', tabId);
+        return this.attachedTabs.get(tabId);
+      }
+
+      console.log('[TabManager] Attaching to tab:', tabId, url);
+
+      // Generate label
+      const label = this.generateLabel(url);
+
+      // Store original title (remove [MCP] prefix if it exists)
+      const originalTitle = title.startsWith('🟢 [MCP] ')
+        ? title.replace('🟢 [MCP] ', '')
+        : title;
+
+      // Create new CDP instance for this tab
+      const cdp = new CDPHelper();
+      console.log('[TabManager] Created CDP instance, about to attach...');
+
+      await cdp.attach(tabId);
+      console.log('[TabManager] CDP attach() returned successfully');
+
+      console.log('[TabManager] CDP attached, now creating tab info...');
+
+      // Create tab info FIRST, before trying to modify the page
+      const tabInfo = {
+        tabId,
+        label,
+        url,
+        title: originalTitle,
+        originalTitle: originalTitle,
+        attachedAt: Date.now(),
+        lastUsedAt: Date.now(),
+        cdp
+      };
+
+      // Store in map immediately
+      this.attachedTabs.set(tabId, tabInfo);
+      this.lastUsedTabId = tabId;
+      console.log('[TabManager] Tab info stored, now adding [MCP] prefix...');
+
+      // Add [MCP] prefix to tab title (do this AFTER storing in map)
+      try {
+        await cdp.evaluate(`
+          if (!document.title.startsWith('🟢 [MCP] ')) {
+            document.title = '🟢 [MCP] ' + document.title;
+          }
+        `, true);
+        console.log('[TabManager] Added [MCP] prefix to tab title');
+      } catch (error) {
+        console.error('[TabManager] Failed to update tab title:', error);
+        // Continue anyway - tab is still attached
+      }
+
+      console.log('[TabManager] Tab attached successfully:', label);
+      return tabInfo;
+    } catch (error) {
+      console.error('[TabManager] CRITICAL ERROR in attachTab:', error);
+      console.error('[TabManager] Error stack:', error.stack);
+      throw error;
     }
-
-    console.log('[TabManager] Attaching to tab:', tabId, url);
-
-    // Generate label
-    const label = this.generateLabel(url);
-
-    // Create new CDP instance for this tab
-    const cdp = new CDPHelper();
-    await cdp.attach(tabId);
-
-    const tabInfo = {
-      tabId,
-      label,
-      url,
-      title,
-      attachedAt: Date.now(),
-      lastUsedAt: Date.now(),
-      cdp
-    };
-
-    this.attachedTabs.set(tabId, tabInfo);
-    this.lastUsedTabId = tabId;
-
-    console.log('[TabManager] Tab attached successfully:', label);
-    return tabInfo;
   }
 
   /**
    * Detach debugger from a tab
-   * Cleans up CDP instance
+   * Cleans up CDP instance and restores original title
    */
   async detachTab(tabId) {
     const tabInfo = this.attachedTabs.get(tabId);
@@ -361,6 +394,35 @@ class TabManager {
     }
 
     console.log('[TabManager] Detaching from tab:', tabId, tabInfo.label);
+
+    // Remove [MCP] prefix from tab title before detaching
+    try {
+      // Try CDP first if still attached
+      if (tabInfo.cdp.isAttached()) {
+        await tabInfo.cdp.evaluate(`
+          if (document.title.startsWith('🟢 [MCP] ')) {
+            document.title = document.title.replace('🟢 [MCP] ', '');
+          }
+        `, true);
+        console.log('[TabManager] Removed [MCP] prefix using CDP');
+      }
+    } catch (error) {
+      // Fall back to chrome.scripting if CDP fails
+      console.warn('[TabManager] CDP title restoration failed, using chrome.scripting:', error);
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => {
+            if (document.title.startsWith('🟢 [MCP] ')) {
+              document.title = document.title.replace('🟢 [MCP] ', '');
+            }
+          }
+        });
+        console.log('[TabManager] Removed [MCP] prefix using chrome.scripting');
+      } catch (scriptError) {
+        console.error('[TabManager] Failed to restore tab title:', scriptError);
+      }
+    }
 
     // Detach CDP
     try {
@@ -682,6 +744,14 @@ class BackgroundController {
       // Handle incoming messages
       if (state === 'message') {
         this.handleMCPMessage(data);
+      }
+
+      // Reset autoConnectAttempted on disconnection
+      // This allows reconnection when server restarts or becomes available
+      // WebSocket will retry indefinitely with exponential backoff (max 5s delay)
+      if (state === 'disconnected' && !this.ws.isIntentionallyClosed) {
+        console.log('[Background] WebSocket disconnected, allowing auto-reconnect');
+        autoConnectAttempted = false;
       }
     });
 
@@ -1042,6 +1112,7 @@ class BackgroundController {
     this.handlers['browser_switch_tab'] = this.handleSwitchTab.bind(this);
     this.handlers['browser_create_tab'] = this.handleCreateTab.bind(this);
     this.handlers['browser_close_tab'] = this.handleCloseTab.bind(this);
+    this.handlers['browser_create_window'] = this.handleCreateWindow.bind(this);
 
     // Multi-tab management handlers (NEW)
     this.handlers['browser_list_attached_tabs'] = this.handleListAttachedTabs.bind(this);
@@ -1327,9 +1398,34 @@ class BackgroundController {
       console.log('[Background] User action request cleaned up');
     }
 
-    // Disconnect normally
-    console.log('[Background] Tab closed, initiating disconnect...');
-    await this.disconnect();
+    // Check if this tab is attached
+    if (this.tabManager.attachedTabs.has(tabId)) {
+      console.log('[Background] Attached tab closed, detaching:', tabId);
+      await this.tabManager.detachTab(tabId);
+      console.log('[Background] Tab detached successfully');
+
+      // Update backwards compatibility state if this was THE tracked tab
+      if (this.state.tabId === tabId) {
+        const lastUsedTabId = this.tabManager.getLastUsedTabId();
+        if (lastUsedTabId) {
+          const tabInfo = this.tabManager.attachedTabs.get(lastUsedTabId);
+          this.state.tabId = lastUsedTabId;
+          this.state.tabUrl = tabInfo.url;
+          this.state.tabTitle = tabInfo.title;
+          this.state.originalTabTitle = tabInfo.originalTitle;
+          console.log('[Background] Switched active tab to:', lastUsedTabId);
+        } else {
+          // No more attached tabs - stay connected but clear tab state
+          this.state.tabId = null;
+          this.state.tabUrl = null;
+          this.state.tabTitle = null;
+          this.state.originalTabTitle = null;
+          console.log('[Background] No more attached tabs, but staying connected');
+        }
+      }
+    } else {
+      console.log('[Background] Closed tab was not attached, no action needed');
+    }
 
     console.log('[Background] Tab closure cleanup complete');
   }
@@ -1355,21 +1451,14 @@ class BackgroundController {
         console.log('[Background] Resolved label', label, 'to tab', targetTabId);
       }
 
-      // If no target specified, use last-used tab
-      if (!targetTabId) {
-        targetTabId = this.tabManager.getLastUsedTabId();
-        if (targetTabId) {
-          console.log('[Background] Using last-used tab:', targetTabId);
-        }
-      }
-
-      // If STILL no target and autoOpenUrl provided, create new tab
+      // If no target but autoOpenUrl provided, create new tab
+      // (do this BEFORE falling back to last-used tab)
       if (!targetTabId && autoOpenUrl) {
-        console.log('[Background] No tabs attached, creating new tab with URL:', autoOpenUrl);
+        console.log('[Background] Creating new tab with URL:', autoOpenUrl);
         const newTab = await chrome.tabs.create({ url: autoOpenUrl, active: true });
         targetTabId = newTab.id;
 
-        // Wait for tab to load
+        // Wait for tab to load and URL to be populated
         await new Promise((resolve) => {
           const listener = (tabId, changeInfo) => {
             if (tabId === targetTabId && changeInfo.status === 'complete') {
@@ -1386,12 +1475,36 @@ class BackgroundController {
           }, 30000);
         });
 
+        // Small delay to ensure URL is fully populated in tab object
+        await new Promise(resolve => setTimeout(resolve, 100));
+
         console.log('[Background] New tab created and loaded:', targetTabId);
       }
 
-      // If STILL no target, error
+      // If still no target, try last-used tab
       if (!targetTabId) {
-        throw new Error('No tab available. Provide tabId, label, or autoOpenUrl.');
+        targetTabId = this.tabManager.getLastUsedTabId();
+        if (targetTabId) {
+          console.log('[Background] Using last-used tab:', targetTabId);
+        }
+      }
+
+      // If STILL no target, check if we need to create a window
+      if (!targetTabId) {
+        // Check if there are any windows
+        const windows = await chrome.windows.getAll();
+
+        if (windows.length === 0) {
+          console.log('[Background] No windows found, creating new window...');
+          const newWindow = await chrome.windows.create({ url: 'about:blank', focused: true });
+          targetTabId = newWindow.tabs[0].id;
+          console.log('[Background] Created new window and tab:', targetTabId);
+
+          // Wait for tab to be ready
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } else {
+          throw new Error('No tab available. Provide tabId, label, or autoOpenUrl.');
+        }
       }
 
       // Check if already attached to this tab (idempotent)
@@ -1405,7 +1518,7 @@ class BackgroundController {
         this.state.tabUrl = tabInfo.url;
         this.state.tabTitle = tabInfo.title;
 
-        return { tabId: targetTabId, label: tabInfo.label };
+        return { tabId: targetTabId, label: tabInfo.label, url: tabInfo.url };
       }
 
       // Get tab info
@@ -1447,7 +1560,7 @@ class BackgroundController {
 
       console.log('[Background] Successfully attached to tab:', targetTabId, 'with label:', tabInfo.label);
 
-      return { tabId: targetTabId, label: tabInfo.label };
+      return { tabId: targetTabId, label: tabInfo.label, url: tab.url };
     } catch (error) {
       console.error('[Background] ensureAttached failed:', error);
       throw error;
@@ -1470,23 +1583,23 @@ class BackgroundController {
   /**
    * Set or update a tab's label
    */
-  async handleSetTabLabel({ tabId, label }) {
+  async handleSetTabLabel({ tabTarget, label }) {
     try {
-      if (!tabId || !label) {
-        throw new Error('Both tabId and label are required');
+      if (!tabTarget || !label) {
+        throw new Error('Both tabTarget and label are required');
       }
 
-      // Ensure the tab is attached
-      const tabInfo = this.tabManager.attachedTabs.get(tabId);
+      // Resolve tab (can be ID or label)
+      const tabInfo = this.tabManager.resolveTab(tabTarget);
       if (!tabInfo) {
-        throw new Error(`Tab ${tabId} is not attached`);
+        throw new Error(`Tab ${tabTarget} not found`);
       }
 
       // Update the label
-      this.tabManager.setTabLabel(tabId, label);
+      this.tabManager.setTabLabel(tabInfo.tabId, label);
 
       return {
-        tabId,
+        tabId: tabInfo.tabId,
         label,
         success: true
       };
@@ -1711,39 +1824,56 @@ class BackgroundController {
   }
 
   /**
-   * Remove MCP prefix from all tabs
-   * Used when switching tabs to ensure only the active tab has the prefix
+   * Remove MCP prefix from all tabs that are NOT attached
+   * Attached tabs should keep their prefix
    */
   async removeAllTabPrefixes() {
-    console.log('[Background] Removing MCP prefix from all tabs');
+    console.log('[Background] Cleaning up MCP prefixes from unattached tabs');
 
     try {
       // Get all tabs
       const tabs = await chrome.tabs.query({});
 
-      // Remove prefix from each tab that has it
+      // Get set of attached tab IDs
+      const attachedTabIds = new Set(this.tabManager.attachedTabs.keys());
+      console.log('[Background] Currently attached tabs:', Array.from(attachedTabIds));
+
+      // Check each tab and remove prefix if NOT attached
       for (const tab of tabs) {
-        // Skip if title doesn't have the prefix
-        if (!tab.title || !tab.title.startsWith('🟢 [MCP] ')) {
+        // Skip restricted URLs that can't be scripted
+        if (this.isRestrictedUrl(tab.url)) {
+          continue;
+        }
+
+        // Skip if this tab is attached - it should keep the prefix
+        if (attachedTabIds.has(tab.id)) {
           continue;
         }
 
         try {
-          // Use chrome.scripting to remove prefix
-          await chrome.scripting.executeScript({
+          // Use chrome.scripting to remove prefix from unattached tabs
+          const result = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
             func: () => {
               if (document.title.startsWith('🟢 [MCP] ')) {
+                const oldTitle = document.title;
                 document.title = document.title.replace('🟢 [MCP] ', '');
+                return { removed: true, oldTitle, newTitle: document.title };
               }
+              return { removed: false };
             }
           });
-          console.log(`[Background] Removed MCP prefix from tab ${tab.id}`);
+
+          if (result?.[0]?.result?.removed) {
+            console.log(`[Background] Removed MCP prefix from unattached tab ${tab.id}: "${result[0].result.oldTitle}" -> "${result[0].result.newTitle}"`);
+          }
         } catch (error) {
           // Tab may be restricted or unavailable - skip
-          console.warn(`[Background] Could not remove prefix from tab ${tab.id}:`, error.message);
+          // Don't log this as it's expected for some tabs
         }
       }
+
+      console.log('[Background] Finished cleaning up MCP prefixes');
     } catch (error) {
       console.warn('[Background] Failed to remove all tab prefixes (non-fatal):', error.message);
     }
@@ -1992,17 +2122,18 @@ class BackgroundController {
   /**
    * Inject background interaction capture script
    */
-  async injectBackgroundCapture() {
-    if (!this.state.tabId) return;
+  async injectBackgroundCapture(tabTarget) {
+    const targetTabId = tabTarget || this.tabManager.lastUsedTabId;
+    if (!targetTabId) return;
 
     try {
       await chrome.scripting.executeScript({
-        target: { tabId: this.state.tabId },
+        target: { tabId: targetTabId },
         files: ['background-interaction-capture.js']
       });
-      console.log('[Background] Background interaction capture injected');
+      console.log('[Background] Background interaction capture injected into tab:', targetTabId);
     } catch (error) {
-      console.error('[Background] Failed to inject background capture:', error);
+      console.error('[Background] Failed to inject background capture into tab', targetTabId, ':', error);
     }
   }
 
@@ -2085,7 +2216,8 @@ class BackgroundController {
 
     // Execute handler
     try {
-      const result = await handler(payload);
+      // Pass empty object if payload is undefined to avoid destructuring errors
+      const result = await handler(payload !== undefined ? payload : {});
       this.ws.sendNoResponse({
         type: 'messageResponse',
         payload: {
@@ -2237,18 +2369,39 @@ class BackgroundController {
 
   async handleNavigate({ url, tabTarget }) {
     const cdp = await this.tabManager.getActiveCDP(tabTarget);
+    if (!cdp) {
+      throw new Error(
+        tabTarget
+          ? `Tab ${tabTarget} not found or not attached`
+          : 'No tabs currently attached. Please attach to a tab first.'
+      );
+    }
     await cdp.navigate(url);
     return { success: true, url };
   }
 
   async handleGoBack({ tabTarget }) {
     const cdp = await this.tabManager.getActiveCDP(tabTarget);
+    if (!cdp) {
+      throw new Error(
+        tabTarget
+          ? `Tab ${tabTarget} not found or not attached`
+          : 'No tabs currently attached. Please attach to a tab first.'
+      );
+    }
     await cdp.goBack();
     return { success: true };
   }
 
   async handleGoForward({ tabTarget }) {
     const cdp = await this.tabManager.getActiveCDP(tabTarget);
+    if (!cdp) {
+      throw new Error(
+        tabTarget
+          ? `Tab ${tabTarget} not found or not attached`
+          : 'No tabs currently attached. Please attach to a tab first.'
+      );
+    }
     await cdp.goForward();
     return { success: true };
   }
@@ -2321,9 +2474,11 @@ class BackgroundController {
     }
   }
 
-  async handleHover({ element, ref }) {
+  async handleHover({ element, ref, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+
     // Get element position
-    const elemInfo = await this.cdp.querySelector(ref);
+    const elemInfo = await cdp.querySelector(ref);
     if (!elemInfo) {
       throw new Error(`Element not found: ${ref}`);
     }
@@ -2332,7 +2487,7 @@ class BackgroundController {
     const x = elemInfo.rect.x + elemInfo.rect.width / 2;
     const y = elemInfo.rect.y + elemInfo.rect.height / 2;
 
-    await this.cdp.sendCommand('Input.dispatchMouseEvent', {
+    await cdp.sendCommand('Input.dispatchMouseEvent', {
       type: 'mouseMoved',
       x,
       y
@@ -2341,15 +2496,17 @@ class BackgroundController {
     return { success: true, element, ref };
   }
 
-  async handleDrag({ startElement, startRef, endElement, endRef }) {
+  async handleDrag({ startElement, startRef, endElement, endRef, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+
     // Get start element position
-    const startElemInfo = await this.cdp.querySelector(startRef);
+    const startElemInfo = await cdp.querySelector(startRef);
     if (!startElemInfo) {
       throw new Error(`Start element not found: ${startRef}`);
     }
 
     // Get end element position
-    const endElemInfo = await this.cdp.querySelector(endRef);
+    const endElemInfo = await cdp.querySelector(endRef);
     if (!endElemInfo) {
       throw new Error(`End element not found: ${endRef}`);
     }
@@ -2361,36 +2518,41 @@ class BackgroundController {
     const endY = endElemInfo.rect.y + endElemInfo.rect.height / 2;
 
     // Perform drag and drop
-    await this.cdp.drag(startX, startY, endX, endY);
+    await cdp.drag(startX, startY, endX, endY);
 
     return { success: true, startElement, endElement };
   }
 
-  async handleSelectOption({ element, ref, values }) {
+  async handleSelectOption({ element, ref, values, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
     // TODO: Select dropdown options
     return { success: true, values };
   }
 
-  async handlePressKey({ key }) {
-    await this.cdp.pressKey(key);
+  async handlePressKey({ key, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    await cdp.pressKey(key);
     return { success: true, key };
   }
 
-  async handleScroll({ x, y }) {
-    await this.cdp.scroll(x, y);
+  async handleScroll({ x, y, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    await cdp.scroll(x, y);
     return { success: true, x: x ?? 0, y };
   }
 
-  async handleScrollToElement({ element, ref }) {
-    const result = await this.cdp.scrollToElement(ref);
+  async handleScrollToElement({ element, ref, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const result = await cdp.scrollToElement(ref);
     if (!result.success) {
       throw new Error(result.error || 'Failed to scroll to element');
     }
     return { success: true, element, ref };
   }
 
-  async handleRealisticMouseMove({ x, y, duration, currentX, currentY }) {
-    const result = await this.cdp.moveMouseRealistic(x, y, {
+  async handleRealisticMouseMove({ x, y, duration, currentX, currentY, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const result = await cdp.moveMouseRealistic(x, y, {
       duration,
       currentX,
       currentY
@@ -2402,8 +2564,9 @@ class BackgroundController {
     };
   }
 
-  async handleRealisticClick({ x, y, button, clickCount, moveFirst, moveDuration, currentX, currentY }) {
-    await this.cdp.clickRealistic(x, y, {
+  async handleRealisticClick({ x, y, button, clickCount, moveFirst, moveDuration, currentX, currentY, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    await cdp.clickRealistic(x, y, {
       button,
       clickCount,
       moveFirst,
@@ -2420,13 +2583,14 @@ class BackgroundController {
     };
   }
 
-  async handleRealisticType({ text, minDelay, maxDelay, mistakeChance, pressEnter }) {
+  async handleRealisticType({ text, minDelay, maxDelay, mistakeChance, pressEnter, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
     try {
-      if (!this.cdp.isAttached() || this.cdp.isDetaching) {
+      if (!cdp.isAttached() || cdp.isDetaching) {
         throw new Error('Debugger detached before typing could start');
       }
 
-      await this.cdp.typeRealistic(text, {
+      await cdp.typeRealistic(text, {
         minDelay,
         maxDelay,
         mistakeChance,
@@ -2497,9 +2661,43 @@ class BackgroundController {
     return { success: true, tabId };
   }
 
-  async handleFillForm({ fields }) {
+  async handleCreateWindow({ url, focused, incognito, width, height }) {
+    const createData = {};
+
+    // Set URL - can be a string or array of URLs
+    if (url) {
+      if (Array.isArray(url)) {
+        createData.url = url;
+      } else {
+        createData.url = url;
+      }
+    } else {
+      createData.url = 'about:blank';
+    }
+
+    // Set window state
+    if (focused !== undefined) createData.focused = focused;
+    if (incognito !== undefined) createData.incognito = incognito;
+
+    // Set window size if provided
+    if (width !== undefined) createData.width = width;
+    if (height !== undefined) createData.height = height;
+
+    const window = await chrome.windows.create(createData);
+
+    return {
+      success: true,
+      windowId: window.id,
+      tabs: window.tabs.map(t => ({ tabId: t.id, url: t.url })),
+      focused: window.focused,
+      incognito: window.incognito
+    };
+  }
+
+  async handleFillForm({ fields, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
     // Use JavaScript to fill all fields at once (more reliable than keyboard simulation)
-    const result = await this.cdp.evaluate(`
+    const result = await cdp.evaluate(`
       (function() {
         const results = [];
         const fields = ${JSON.stringify(fields)};
@@ -2528,15 +2726,16 @@ class BackgroundController {
     return result;
   }
 
-  async handleSubmitForm({ element, ref }) {
+  async handleSubmitForm({ element, ref, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
     // Find the form element
-    const elemInfo = await this.cdp.querySelector(ref);
+    const elemInfo = await cdp.querySelector(ref);
     if (!elemInfo) {
       throw new Error(`Form not found: ${ref}`);
     }
 
     // Submit the form by pressing Enter or clicking submit button
-    await this.cdp.evaluate(`
+    await cdp.evaluate(`
       (function() {
         const form = document.querySelector('${ref.replace(/'/g, "\\'")}');
         if (!form) return { success: false, error: 'Form not found' };
@@ -2560,9 +2759,17 @@ class BackgroundController {
     return { success: true, element, ref };
   }
 
-  async handleSnapshot({ tabTarget }) {
+  async handleSnapshot(data) {
     try {
+      const { tabTarget } = data || {};
       const cdp = await this.tabManager.getActiveCDP(tabTarget);
+      if (!cdp) {
+        throw new Error(
+          tabTarget
+            ? `Tab ${tabTarget} not found or not attached`
+            : 'No tabs currently attached. Please attach to a tab first.'
+        );
+      }
       const tree = await cdp.getPartialAccessibilityTree(10);
 
       // Check if tree is empty due to restricted frames
@@ -2594,6 +2801,13 @@ class BackgroundController {
 
   async handleScreenshot({ tabTarget }) {
     const cdp = await this.tabManager.getActiveCDP(tabTarget);
+    if (!cdp) {
+      throw new Error(
+        tabTarget
+          ? `Tab ${tabTarget} not found or not attached`
+          : 'No tabs currently attached. Please attach to a tab first.'
+      );
+    }
     const data = await cdp.captureScreenshot();
     return data; // Return base64 string directly
   }
@@ -2639,8 +2853,9 @@ class BackgroundController {
     return this.state.tabTitle;
   }
 
-  async handleQueryDOM({ selector, limit = 10 }) {
-    return this.cdp.evaluate(`
+  async handleQueryDOM({ selector, limit = 10, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    return cdp.evaluate(`
       Array.from(document.querySelectorAll('${selector.replace(/'/g, "\\'")}'))
         .slice(0, ${limit})
         .map((el, index) => ({
@@ -2653,20 +2868,22 @@ class BackgroundController {
     `);
   }
 
-  async handleGetVisibleText({ selector, maxLength = 5000 }) {
+  async handleGetVisibleText({ selector, maxLength = 5000, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
     const script = selector
       ? `document.querySelector('${selector.replace(/'/g, "\\'")}')?.innerText || ''`
       : 'document.body.innerText || ""';
 
-    const text = await this.cdp.evaluate(script);
+    const text = await cdp.evaluate(script);
     return text.substring(0, maxLength);
   }
 
-  async handleGetComputedStyles({ selector, properties }) {
+  async handleGetComputedStyles({ selector, properties, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
     const defaultProperties = ['display', 'visibility', 'position', 'width', 'height', 'top', 'left', 'opacity', 'z-index'];
     const propsToGet = properties && properties.length > 0 ? properties : defaultProperties;
 
-    return await this.cdp.evaluate(`
+    return await cdp.evaluate(`
       (() => {
         const el = document.querySelector('${selector.replace(/'/g, "\\'")}');
         if (!el) return null;
@@ -2680,8 +2897,9 @@ class BackgroundController {
     `);
   }
 
-  async handleCheckVisibility({ selector }) {
-    return await this.cdp.evaluate(`
+  async handleCheckVisibility({ selector, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    return await cdp.evaluate(`
       (() => {
         const el = document.querySelector('${selector.replace(/'/g, "\\'")}');
         if (!el) return { exists: false };
@@ -2709,10 +2927,11 @@ class BackgroundController {
     `);
   }
 
-  async handleGetAttributes({ selector, attributes }) {
+  async handleGetAttributes({ selector, attributes, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
     const specificAttrs = attributes && attributes.length > 0;
 
-    return await this.cdp.evaluate(`
+    return await cdp.evaluate(`
       (() => {
         const el = document.querySelector('${selector.replace(/'/g, "\\'")}');
         if (!el) return null;
@@ -2735,12 +2954,14 @@ class BackgroundController {
     `);
   }
 
-  async handleCountElements({ selector }) {
-    return this.cdp.evaluate(`document.querySelectorAll('${selector.replace(/'/g, "\\'")}').length`);
+  async handleCountElements({ selector, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    return cdp.evaluate(`document.querySelectorAll('${selector.replace(/'/g, "\\'")}').length`);
   }
 
-  async handleGetPageMetadata() {
-    return await this.cdp.evaluate(`
+  async handleGetPageMetadata({ tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    return await cdp.evaluate(`
       (() => {
         const metadata = {
           title: document.title,
@@ -2794,9 +3015,10 @@ class BackgroundController {
     `);
   }
 
-  async handleGetFilteredAriaTree({ roles, maxDepth = 5, interactiveOnly }) {
+  async handleGetFilteredAriaTree({ roles, maxDepth = 5, interactiveOnly, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
     // Get full ARIA tree from CDP
-    const fullTree = await this.cdp.getPartialAccessibilityTree(maxDepth);
+    const fullTree = await cdp.getPartialAccessibilityTree(maxDepth);
 
     // Filter tree based on parameters
     const filterNode = (node, depth = 0) => {
@@ -2836,10 +3058,11 @@ class BackgroundController {
     return filterNode(fullTree);
   }
 
-  async handleFindByText({ text, selector, exact, limit = 10 }) {
+  async handleFindByText({ text, selector, exact, limit = 10, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
     const searchText = text.toLowerCase();
 
-    return await this.cdp.evaluate(`
+    return await cdp.evaluate(`
       (() => {
         const results = [];
         const scope = ${selector ? `document.querySelector('${selector.replace(/'/g, "\\'")}')` : 'document.body'};
@@ -2885,8 +3108,9 @@ class BackgroundController {
     `);
   }
 
-  async handleGetFormValues({ formSelector }) {
-    return await this.cdp.evaluate(`
+  async handleGetFormValues({ formSelector, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    return await cdp.evaluate(`
       (() => {
         const scope = ${formSelector ? `document.querySelector('${formSelector.replace(/'/g, "\\'")}')` : 'document'};
         if (!scope) return {};
@@ -2914,8 +3138,9 @@ class BackgroundController {
     `);
   }
 
-  async handleCheckElementState({ selector }) {
-    return await this.cdp.evaluate(`
+  async handleCheckElementState({ selector, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    return await cdp.evaluate(`
       (() => {
         const el = document.querySelector('${selector.replace(/'/g, "\\'")}');
         if (!el) return null;
@@ -3775,11 +4000,12 @@ class BackgroundController {
   /**
    * Get current network connection state
    */
-  async handleGetNetworkState(data) {
+  async handleGetNetworkState({ tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
     console.log('[Background] Getting network state');
 
     // Evaluate navigator.connection in the page context
-    const connectionInfo = await this.cdp.evaluate(`
+    const connectionInfo = await cdp.evaluate(`
       (() => {
         const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
         if (!conn) {
@@ -3805,18 +4031,19 @@ class BackgroundController {
   /**
    * Set network throttling conditions
    */
-  async handleSetNetworkConditions(data) {
-    console.log('[Background] Setting network conditions:', data);
+  async handleSetNetworkConditions({ offline, latency, downloadThroughput, uploadThroughput, tabTarget }) {
+    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    console.log('[Background] Setting network conditions:', { offline, latency, downloadThroughput, uploadThroughput });
 
     // Use CDP to emulate network conditions
     const conditions = {
-      offline: data.offline || false,
-      latency: data.latency || 0,
-      downloadThroughput: data.downloadThroughput !== undefined ? data.downloadThroughput : -1,
-      uploadThroughput: data.uploadThroughput !== undefined ? data.uploadThroughput : -1,
+      offline: offline || false,
+      latency: latency || 0,
+      downloadThroughput: downloadThroughput !== undefined ? downloadThroughput : -1,
+      uploadThroughput: uploadThroughput !== undefined ? uploadThroughput : -1,
     };
 
-    await this.cdp.sendCommand('Network.emulateNetworkConditions', conditions);
+    await cdp.sendCommand('Network.emulateNetworkConditions', conditions);
 
     return { success: true, conditions };
   }
@@ -4021,23 +4248,9 @@ async function autoConnect() {
     }
 
     if (selectedTab) {
-      console.log('[Background] Auto-connecting to tab:', selectedTab.id, selectedTab.url);
-
-      // Update state with selected tab
-      controller.state.tabId = selectedTab.id;
-      controller.state.tabUrl = selectedTab.url;
-      controller.state.tabTitle = selectedTab.title;
-      controller.state.originalTabTitle = selectedTab.title;
-
-      // Add indicators to the selected tab (after cleanup has run)
-      try {
-        await controller.addIndicatorsWithoutCDP(selectedTab.id);
-        console.log('[Background] Indicators added to auto-connected tab');
-      } catch (error) {
-        console.warn('[Background] Failed to add indicators to auto-connected tab:', error);
-      }
-
-      console.log('[Background] Auto-connect complete - ready for MCP commands');
+      console.log('[Background] Auto-connect found valid tab:', selectedTab.id, selectedTab.url);
+      console.log('[Background] Note: Tab is not attached yet - use popup to attach tabs');
+      console.log('[Background] Auto-connect complete - ready for MCP commands when tabs are attached');
     } else {
       console.log('[Background] No valid tabs found - will connect when a valid tab becomes active');
       console.log('[Background] Note: chrome://, about:, and other restricted URLs cannot be controlled');
@@ -4052,6 +4265,15 @@ async function autoConnect() {
 
 // Start auto-connect on extension load
 autoConnect();
+
+// Periodic health check - retry connection every 5 seconds if disconnected
+// This ensures the extension reconnects quickly when the server becomes available
+setInterval(() => {
+  if (!controller.ws.isConnected() && !autoConnectAttempted) {
+    console.log('[Background] Periodic health check: Attempting to reconnect...');
+    autoConnect();
+  }
+}, 5000); // Check every 5 seconds (reduced from 30s)
 
 // Auto-reconnect if tab changes
 chrome.tabs.onActivated.addListener(async (activeInfo) => {

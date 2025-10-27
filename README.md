@@ -102,6 +102,70 @@ Labels are automatically generated from the domain name:
 
 You can also set custom labels using `browser_set_tab_label` for easier identification.
 
+## Repository Structure
+
+The repository is organized into the following directories:
+
+```
+browser-mcp/
+├── src/               # Source code (TypeScript)
+├── dist/              # Compiled JavaScript
+├── extension/         # Chrome extension for browser integration
+├── config/            # Configuration files (PM2, systemd, nodemon)
+├── scripts/           # Operational scripts and utilities
+│   └── utils/         # Development utilities (list-macros, test-macro)
+├── tests/             # Test suites and test data
+├── macros/            # Browser automation macros
+│   └── storage/       # Scripts to load macros into MongoDB
+├── docs/              # Additional documentation
+├── backups/           # Database backups
+└── logs/              # Application logs
+```
+
+### Key Files and Directories
+
+- **src/** - Main source code for the MCP server
+- **extension/** - Chrome extension that enables browser automation
+- **config/** - PM2, systemd, and nodemon configurations
+- **scripts/** - Operational shell scripts and MongoDB utilities
+- **tests/** - Comprehensive test suites for all 72 tools
+- **macros/** - Reusable JavaScript macros for common automation tasks
+- **docs/** - Design documents, guides, and additional documentation
+
+See individual README files in each directory for more details.
+
+## Development
+
+### Running Tests
+
+```bash
+# Run comprehensive tests
+./scripts/run-tests.sh
+
+# Or run specific tests
+node tests/test-all-tools.js [tool_name]
+```
+
+### Using Utilities
+
+```bash
+# List available macros
+node scripts/utils/list-macros.js [search_term]
+
+# Test a specific macro
+node scripts/utils/test-macro.js <macro_id> [params_json]
+```
+
+### Service Management
+
+```bash
+# Using PM2
+pm2 start config/ecosystem.config.js
+
+# Using systemd
+./scripts/service.sh start|stop|restart|status
+```
+
 ## Contributing
 
 This repo contains all the core MCP code for Browser MCP, but currently cannot yet be built on its own due to dependencies on utils and types from the monorepo where it's developed.

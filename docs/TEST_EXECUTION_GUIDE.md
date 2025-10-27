@@ -25,12 +25,12 @@ The browser MCP server is configured in `~/.claude/mcp/browser.json` and points 
 2. **Ensure the HTTP/WebSocket server is running**:
    ```bash
    cd /mnt/nas/data/code/forks/browser-mcp
-   ./service.sh status
+   ./scripts/service.sh status
    ```
 
    If not running:
    ```bash
-   ./service.sh dev
+   ./scripts/service.sh dev
    ```
 
 3. **Start a new Claude Code session**:
@@ -89,24 +89,24 @@ The HTTP/WebSocket server is now running with service management:
 
 ### Development Mode (Current)
 ```bash
-./service.sh dev     # Running with hot reload
-./service.sh status  # Check if running
+./scripts/service.sh dev     # Running with hot reload
+./scripts/service.sh status  # Check if running
 ```
 
 ### Production Mode (PM2)
 ```bash
-./service.sh start   # Start with PM2
-./service.sh logs    # View logs
-./service.sh restart # Restart server
-./service.sh stop    # Stop server
+./scripts/service.sh start   # Start with PM2
+./scripts/service.sh logs    # View logs
+./scripts/service.sh restart # Restart server
+./scripts/service.sh stop    # Stop server
 ```
 
 ### Production Mode (systemd)
 ```bash
-./service.sh systemd-install  # One-time setup
-./service.sh systemd-start    # Start service
-./service.sh systemd-logs     # View logs
-./service.sh systemd-stop     # Stop service
+./scripts/service.sh systemd-install  # One-time setup
+./scripts/service.sh systemd-start    # Start service
+./scripts/service.sh systemd-logs     # View logs
+./scripts/service.sh systemd-stop     # Stop service
 ```
 
 ## Test Suite Structure
@@ -153,14 +153,14 @@ Choose one:
 
 ### New Files
 - `extension/background-interaction-capture.js` - Background capture script
-- `SERVICE.md` - Service management documentation
-- `service.sh` - Service management script
-- `ecosystem.config.js` - PM2 configuration
-- `browser-mcp.service` - systemd service file
-- `TEST_SUITE.md` - Comprehensive test suite
-- `TESTING.md` - Testing guide
-- `test-runner.js` - Automated test framework (skeleton)
-- `run-tests.sh` - Test execution script
+- `docs/SERVICE.md` - Service management documentation
+- `scripts/service.sh` - Service management script
+- `config/ecosystem.config.js` - PM2 configuration
+- `config/browser-mcp.service` - systemd service file
+- `docs/TEST_SUITE.md` - Comprehensive test suite
+- `docs/TESTING.md` - Testing guide
+- `tests/test-runner.js` - Automated test framework (skeleton)
+- `scripts/run-tests.sh` - Test execution script
 
 ### Modified Files
 - `src/tools/interactions.ts` - New interaction log tools

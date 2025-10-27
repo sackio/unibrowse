@@ -102,6 +102,7 @@ class PopupController {
         });
       });
 
+      // Note: loadState() already calls loadAttachedTabs(), so we don't duplicate it here
       this.renderTabs();
     } catch (error) {
       console.error('Failed to load tabs:', error);
@@ -120,30 +121,36 @@ class PopupController {
       return;
     }
 
+    // Build set of attached tab IDs for fast lookup
+    const attachedTabIds = new Set(this.attachedTabs.map(t => t.tabId));
+
     this.windows.forEach((window, index) => {
+      // Filter out attached tabs
+      const unattachedTabs = window.tabs.filter(tab => !attachedTabIds.has(tab.id));
+
+      // Skip windows with no unattached tabs
+      if (unattachedTabs.length === 0) {
+        return;
+      }
+
       const windowGroup = document.createElement('div');
       windowGroup.className = 'window-group';
 
       const windowTitle = document.createElement('div');
       windowTitle.className = 'window-title';
-      windowTitle.textContent = `Window ${index + 1}${window.focused ? ' (Current)' : ''} - ${window.tabs.length} tabs`;
+      windowTitle.textContent = `Window ${index + 1}${window.focused ? ' (Current)' : ''} - ${unattachedTabs.length} tabs`;
       windowGroup.appendChild(windowTitle);
 
       const tabList = document.createElement('ul');
       tabList.className = 'tab-list';
 
-      window.tabs.forEach(tab => {
+      unattachedTabs.forEach(tab => {
         const tabItem = document.createElement('li');
         tabItem.className = 'tab-item';
 
         // Highlight active tab in current window
         if (tab.active && window.focused) {
           tabItem.classList.add('active');
-        }
-
-        // Highlight attached tab
-        if (this.currentState && tab.id === this.currentState.tabId) {
-          tabItem.classList.add('attached');
         }
 
         const tabTitleDiv = document.createElement('div');
@@ -160,12 +167,6 @@ class PopupController {
           activeBadge.className = 'tab-badge active';
           activeBadge.textContent = 'Current';
           badges.appendChild(activeBadge);
-        }
-        if (this.currentState && tab.id === this.currentState.tabId) {
-          const attachedBadge = document.createElement('span');
-          attachedBadge.className = 'tab-badge attached';
-          attachedBadge.textContent = 'Attached';
-          badges.appendChild(attachedBadge);
         }
         tabTitleDiv.appendChild(badges);
 

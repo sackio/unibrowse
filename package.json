@@ -20,7 +20,14 @@
     "dev": "nodemon",
     "start": "node --env-file=.env dist/http-server.js",
     "start:stdio": "node dist/stdio-server.js",
-    "inspector": "CLIENT_PORT=9001 SERVER_PORT=9002 pnpx @modelcontextprotocol/inspector node dist/stdio-server.js"
+    "inspector": "CLIENT_PORT=9001 SERVER_PORT=9002 pnpx @modelcontextprotocol/inspector node dist/stdio-server.js",
+    "test": "node test-all-tools.js",
+    "test:multi-tab": "node test-multi-tab.js",
+    "test:window": "node test-create-window.js",
+    "test:utility-macros": "node test-utility-macros.js",
+    "test:advanced-macros": "node test-advanced-macros.js",
+    "store:macros": "node store-utility-macros.js",
+    "store:advanced-macros": "node store-advanced-macros.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",
