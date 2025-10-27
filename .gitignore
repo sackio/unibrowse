@@ -44,3 +44,6 @@ logs/
 backups/macros_backup_*.json
 # Keep macros_latest.json tracked
 !backups/macros_latest.json
+
+# Chrome isolated profiles (for testing)
+.chrome-profiles/

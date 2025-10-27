@@ -52,6 +52,7 @@ import {
   goBack,
   goForward,
   hover,
+  launchIsolatedChrome,
   listAttachedTabs,
   listExtensions,
   listMacros,
@@ -84,8 +85,8 @@ import {
   type,
   updateMacro,
   wait
-} from "./chunk-SU7PBJZZ.js";
-import "./chunk-ITTVOQ2V.js";
+} from "./chunk-AIW5ORYJ.js";
+import "./chunk-FT2ARCXD.js";
 
 // src/http-server.ts
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -159,7 +160,8 @@ var historyTools = [
 var systemTools = [
   getVersion,
   getSystemInfo,
-  getBrowserInfo
+  getBrowserInfo,
+  launchIsolatedChrome
 ];
 var networkTools = [
   getNetworkState,
@@ -254,7 +256,7 @@ async function main() {
     console.log(`[HTTP] MCP endpoint: http://localhost:${port}/mcp`);
     console.log(`[HTTP] Health check: http://localhost:${port}/health`);
   });
-  const { createWebSocketServerFromHTTP } = await import("./ws-NVCKGOAZ.js");
+  const { createWebSocketServerFromHTTP } = await import("./ws-XJAPUUIR.js");
   const wss = createWebSocketServerFromHTTP(httpServer);
   await createServerWithTools({
     name: appConfig.name,

@@ -13,6 +13,14 @@ class OffscreenManager {
     this.pendingRequests = new Map();
     this.messageId = 0;
 
+    // Auto-reconnect configuration
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = Infinity; // Always try to reconnect
+    this.reconnectDelay = 1000; // Start with 1 second
+    this.maxReconnectDelay = 30000; // Max 30 seconds between attempts
+    this.reconnectTimer = null;
+    this.intentionalDisconnect = false; // Track if disconnect was intentional
+
     console.log('[Offscreen] OffscreenManager constructing...');
 
     // ALWAYS set up message listener, even if Chrome APIs aren't fully ready yet
@@ -82,21 +90,66 @@ class OffscreenManager {
         return;
       }
 
-      // Check if Storage API is available
-      if (!this.isStorageAvailable()) {
-        console.log('[Offscreen] Storage API not available, skipping connection restore');
-        return;
-      }
-
-      // Try to get stored connection info
-      const stored = await chrome.storage.local.get(['serverUrl', 'isConnected']);
-      if (stored.isConnected && stored.serverUrl) {
-        console.log('[Offscreen] Restoring connection to', stored.serverUrl);
-        await this.connect(stored.serverUrl);
-      }
+      // Always try to connect to default server URL
+      const defaultUrl = 'ws://localhost:9010/ws';
+      console.log('[Offscreen] Auto-connecting to', defaultUrl);
+      this.intentionalDisconnect = false;
+      await this.connect(defaultUrl);
     } catch (error) {
-      console.log('[Offscreen] No previous connection to restore:', error.message);
+      console.log('[Offscreen] Initial connection failed, will retry:', error.message);
+      // Schedule reconnect - this will handle the retry logic
+      this.scheduleReconnect();
     }
+  }
+
+  /**
+   * Schedule a reconnection attempt with exponential backoff
+   */
+  scheduleReconnect() {
+    // Don't reconnect if it was an intentional disconnect
+    if (this.intentionalDisconnect) {
+      console.log('[Offscreen] Skipping reconnect - disconnect was intentional');
+      return;
+    }
+
+    // Clear any existing timer
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+
+    // Calculate delay with exponential backoff
+    const delay = Math.min(
+      this.reconnectDelay * Math.pow(2, this.reconnectAttempts),
+      this.maxReconnectDelay
+    );
+
+    this.reconnectAttempts++;
+    console.log(`[Offscreen] Scheduling reconnect attempt #${this.reconnectAttempts} in ${delay}ms`);
+
+    this.reconnectTimer = setTimeout(async () => {
+      console.log(`[Offscreen] Attempting reconnect #${this.reconnectAttempts}...`);
+      try {
+        await this.connect(this.serverUrl || 'ws://localhost:9010/ws');
+        // Success - reset attempts
+        this.reconnectAttempts = 0;
+        console.log('[Offscreen] Reconnected successfully!');
+      } catch (error) {
+        console.log('[Offscreen] Reconnect failed:', error.message);
+        // Schedule next attempt
+        this.scheduleReconnect();
+      }
+    }, delay);
+  }
+
+  /**
+   * Cancel any scheduled reconnection
+   */
+  cancelReconnect() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempts = 0;
   }
 
   async handleMessage(message, sender, sendResponse) {
@@ -243,6 +296,9 @@ class OffscreenManager {
             reject(new Error('WebSocket disconnected'));
           }
           this.pendingRequests.clear();
+
+          // Schedule reconnection (unless it was an intentional disconnect)
+          this.scheduleReconnect();
         };
 
         this.ws.onerror = (error) => {
@@ -280,6 +336,12 @@ class OffscreenManager {
 
   async disconnect() {
     console.log('[Offscreen] Disconnecting');
+
+    // Mark as intentional disconnect to prevent auto-reconnect
+    this.intentionalDisconnect = true;
+
+    // Cancel any pending reconnection attempts
+    this.cancelReconnect();
 
     if (this.ws) {
       this.ws.close();

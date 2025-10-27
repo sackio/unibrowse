@@ -21,6 +21,7 @@
     "start": "node --env-file=.env dist/http-server.js",
     "start:stdio": "node dist/stdio-server.js",
     "inspector": "CLIENT_PORT=9001 SERVER_PORT=9002 pnpx @modelcontextprotocol/inspector node dist/stdio-server.js",
+    "chrome": "./scripts/launch-chrome-isolated.sh",
     "test": "node test-all-tools.js",
     "test:multi-tab": "node test-multi-tab.js",
     "test:window": "node test-create-window.js",

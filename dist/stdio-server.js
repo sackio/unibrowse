@@ -51,6 +51,7 @@ import {
   goBack,
   goForward,
   hover,
+  launchIsolatedChrome,
   listAttachedTabs,
   listExtensions,
   listMacros,
@@ -83,8 +84,8 @@ import {
   type,
   updateMacro,
   wait
-} from "./chunk-SU7PBJZZ.js";
-import "./chunk-ITTVOQ2V.js";
+} from "./chunk-AIW5ORYJ.js";
+import "./chunk-FT2ARCXD.js";
 
 // src/stdio-server.ts
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -165,7 +166,8 @@ var historyTools = [
 var systemTools = [
   getVersion,
   getSystemInfo,
-  getBrowserInfo
+  getBrowserInfo,
+  launchIsolatedChrome
 ];
 var networkTools = [
   getNetworkState,

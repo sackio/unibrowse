@@ -1055,3 +1055,42 @@ export const AttachTabTool = z.object({
       .describe("Optional label to assign to the tab after attaching"),
   }),
 });
+
+// ==================== CHROME LAUNCHER TOOL ====================
+
+export const LaunchIsolatedChromeTool = z.object({
+  name: z.literal("browser_launch_isolated_chrome"),
+  description: z.literal(
+    "Launch Chrome in isolated mode with the Browser MCP extension pre-loaded. " +
+    "Creates an isolated profile separate from your main browser, useful for testing, " +
+    "automation, and development. The extension will auto-connect to the MCP server."
+  ),
+  arguments: z.object({
+    profileName: z
+      .string()
+      .optional()
+      .describe("Name for the isolated profile (default: 'browser-mcp-test'). " +
+               "Each profile is stored separately in .chrome-profiles/"),
+    url: z
+      .union([z.string(), z.array(z.string())])
+      .optional()
+      .describe("URL or array of URLs to open on launch (default: chrome://extensions/)"),
+    width: z
+      .number()
+      .optional()
+      .describe("Window width in pixels"),
+    height: z
+      .number()
+      .optional()
+      .describe("Window height in pixels"),
+    headless: z
+      .boolean()
+      .optional()
+      .describe("Launch in headless mode (default: false)"),
+    freshProfile: z
+      .boolean()
+      .optional()
+      .describe("Always start with a fresh profile, deleting any existing data (cookies, history, etc.). " +
+               "Default: true. Set to false to persist profile data between sessions."),
+  }),
+});

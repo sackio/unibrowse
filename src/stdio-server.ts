@@ -26,6 +26,7 @@ import * as userAction from "@/tools/user-action";
 import * as macros from "@/tools/macros";
 import * as realisticInput from "@/tools/realistic-input";
 import * as multiTabManagement from "@/tools/multi-tab-management";
+import * as chromeLauncher from "@/tools/chrome-launcher";
 import type { Tool } from "@/tools/tool";
 
 import packageJSON from "../package.json";
@@ -119,6 +120,7 @@ const systemTools: Tool[] = [
   system.getVersion,
   system.getSystemInfo,
   system.getBrowserInfo,
+  chromeLauncher.launchIsolatedChrome,
 ];
 
 const networkTools: Tool[] = [

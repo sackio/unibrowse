@@ -7,7 +7,6 @@ class PopupController {
     this.elements = {
       status: document.getElementById('status'),
       statusText: document.getElementById('status-text'),
-      connectionBtn: document.getElementById('connection-btn'),
       wsState: document.getElementById('ws-state'),
       debuggerState: document.getElementById('debugger-state'),
       attachedTabsSection: document.getElementById('attached-tabs-section'),
@@ -43,15 +42,6 @@ class PopupController {
    * Setup event listeners
    */
   setupEventListeners() {
-    this.elements.connectionBtn.addEventListener('click', () => {
-      // Check current state and toggle
-      if (this.elements.connectionBtn.textContent === 'Connect') {
-        this.connect();
-      } else {
-        this.disconnect();
-      }
-    });
-
     this.elements.refreshTabsBtn.addEventListener('click', () => {
       this.loadTabsAndWindows();
     });
@@ -390,52 +380,6 @@ class PopupController {
   }
 
   /**
-   * Connect to MCP server
-   */
-  async connect() {
-    this.hideError();
-    this.setButtonsEnabled(false);
-
-    try {
-      const response = await chrome.runtime.sendMessage({ type: 'connect' });
-
-      if (response.success) {
-        console.log('Connected:', response.data);
-      } else {
-        this.showError(response.error || 'Failed to connect');
-        this.setButtonsEnabled(true);
-      }
-    } catch (error) {
-      console.error('Connection error:', error);
-      this.showError(error.message);
-      this.setButtonsEnabled(true);
-    }
-  }
-
-  /**
-   * Disconnect from MCP server
-   */
-  async disconnect() {
-    this.hideError();
-    this.setButtonsEnabled(false);
-
-    try {
-      const response = await chrome.runtime.sendMessage({ type: 'disconnect' });
-
-      if (response.success) {
-        console.log('Disconnected');
-      } else {
-        this.showError(response.error || 'Failed to disconnect');
-      }
-    } catch (error) {
-      console.error('Disconnect error:', error);
-      this.showError(error.message);
-    } finally {
-      this.setButtonsEnabled(true);
-    }
-  }
-
-  /**
    * Update UI based on state
    */
   updateUI(state) {
@@ -464,17 +408,6 @@ class PopupController {
       this.elements.attachedTabsSection.style.display = 'none';
       this.elements.tabsSection.style.display = 'none';
     }
-
-    // Update connection button
-    if (state.connected) {
-      this.elements.connectionBtn.textContent = 'Disconnect';
-      this.elements.connectionBtn.classList.remove('primary');
-      this.elements.connectionBtn.classList.add('secondary');
-    } else {
-      this.elements.connectionBtn.textContent = 'Connect';
-      this.elements.connectionBtn.classList.remove('secondary');
-      this.elements.connectionBtn.classList.add('primary');
-    }
   }
 
   /**
@@ -498,17 +431,6 @@ class PopupController {
     };
 
     return stateMap[state] || state;
-  }
-
-  /**
-   * Enable/disable buttons
-   */
-  setButtonsEnabled(enabled) {
-    this.elements.connectionBtn.disabled = !enabled;
-    if (enabled) {
-      // Reload state to update button text
-      this.loadState();
-    }
   }
 
   /**
