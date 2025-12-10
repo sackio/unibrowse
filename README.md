@@ -164,4 +164,12 @@ This repo contains all the core MCP code for unibrowse, but currently cannot yet
 
 ## Credits
 
-unibrowse was adapted from the [Playwright MCP server](https://github.com/microsoft/playwright-mcp) in order to automate the user's browser rather than creating new browser instances. This allows using the user's existing browser profile to use logged-in sessions and avoid bot detection mechanisms that commonly block automated browser use.
+unibrowse is a fork of [browser-mcp](https://github.com/BrowserMCP/mcp), adapted and extended with:
+- 🤨 Plugin architecture for Claude Code with 5 specialized sub-agents
+- 57+ reusable automation macros stored in MongoDB
+- Intelligent delegation patterns for automatic routing
+- Comprehensive documentation and examples
+
+The original browser-mcp project was inspired by Microsoft's [Playwright MCP server](https://github.com/microsoft/playwright-mcp), but designed to automate the user's existing browser rather than creating new browser instances. This allows using the user's browser profile to maintain logged-in sessions and avoid bot detection mechanisms that commonly block automated browser use.
+
+**Thank you to the browser-mcp team for creating the foundation that made this plugin possible!**

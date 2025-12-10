@@ -527,6 +527,14 @@ MIT License - see [LICENSE](../LICENSE) for details.
 - **18 Test Categories** - Comprehensive test coverage
 - **100% Pass Rate** - All tests passing
 
+## 🙏 Credits
+
+Unibrowse is a fork of [browser-mcp](https://github.com/BrowserMCP/mcp), extended with plugin architecture, specialized sub-agents, and 57+ automation macros.
+
+**Thank you to the browser-mcp team for creating the foundation that made this plugin possible!**
+
+The original browser-mcp was inspired by Microsoft's [Playwright MCP server](https://github.com/microsoft/playwright-mcp), adapting it to automate the user's existing browser for better session management and stealth.
+
 ---
 
 **Built with ❤️ by the Unibrowse team**
