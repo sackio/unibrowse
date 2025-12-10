@@ -1,0 +1,346 @@
+{
+  "name": "unibrowse",
+  "version": "1.0.0",
+  "displayName": "Unibrowse Browser Automation",
+  "description": "Advanced browser automation plugin with 5 specialized sub-agents, 57+ macros, and intelligent delegation for web scraping, form filling, e-commerce automation, and QA testing",
+  "author": "unibrowse",
+  "repository": "https://github.com/sackio/unibrowse",
+  "bugs": "https://github.com/sackio/unibrowse/issues",
+  "license": "MIT",
+  "keywords": [
+    "browser",
+    "automation",
+    "web-scraping",
+    "form-filling",
+    "e-commerce",
+    "testing",
+    "qa",
+    "accessibility",
+    "macros",
+    "mcp"
+  ],
+  "claudeCode": {
+    "minVersion": "0.1.0",
+    "skills": [
+      {
+        "path": ".claude/skills/browser",
+        "name": "browser",
+        "description": "Browser automation guidance with intelligent delegation to specialized sub-agents. Provides token conservation patterns, macro-first strategies, and multi-tab context preservation.",
+        "triggers": [
+          "browser",
+          "web",
+          "scrape",
+          "automation",
+          "navigate",
+          "extract",
+          "form"
+        ]
+      }
+    ],
+    "agents": [
+      {
+        "path": ".claude/agents/browser.md",
+        "name": "browser",
+        "description": "Generic browser automation agent for tab management, macro-first execution, and direct MCP tool operations. Handles tab creation, labeling, and context preservation across browser operations.",
+        "triggers": [
+          "browser",
+          "screenshot",
+          "navigate",
+          "tab"
+        ]
+      },
+      {
+        "path": ".claude/agents/browser-ecommerce.md",
+        "name": "browser-ecommerce",
+        "description": "E-commerce specialist for Amazon, Google Shopping, and multi-site price comparison. Expertise in 17 Amazon-specific macros, product search, reviews analysis, Rufus AI integration, and cart operations.",
+        "triggers": [
+          "amazon",
+          "shopping",
+          "price",
+          "product",
+          "reviews",
+          "e-commerce",
+          "buy"
+        ]
+      },
+      {
+        "path": ".claude/agents/browser-forms.md",
+        "name": "browser-forms",
+        "description": "Form automation specialist for intelligent form discovery, field detection, validation handling, and multi-step form workflows. Includes safety checks and preview generation before submission.",
+        "triggers": [
+          "form",
+          "fill",
+          "submit",
+          "input",
+          "field",
+          "validation"
+        ]
+      },
+      {
+        "path": ".claude/agents/browser-scraper.md",
+        "name": "browser-scraper",
+        "description": "Web scraping specialist for structured data extraction, table parsing, pagination handling, infinite scroll, and multi-page aggregation. Exports data to JSON/CSV with token-optimized extraction.",
+        "triggers": [
+          "scrape",
+          "extract",
+          "data",
+          "table",
+          "pagination",
+          "export"
+        ]
+      },
+      {
+        "path": ".claude/agents/browser-qa.md",
+        "name": "browser-qa",
+        "description": "QA testing specialist for accessibility audits (WCAG 2.1), performance testing, visual regression, keyboard navigation, and functional testing. Generates comprehensive reports with actionable recommendations.",
+        "triggers": [
+          "test",
+          "qa",
+          "accessibility",
+          "performance",
+          "audit",
+          "wcag",
+          "a11y"
+        ]
+      }
+    ],
+    "hooks": [
+      {
+        "path": ".claude/hooks/browser-navigation.json",
+        "description": "Automatic macro context updates on navigation, tab switching, and click events"
+      }
+    ]
+  },
+  "dependencies": {
+    "mcp": {
+      "servers": {
+        "browser": {
+          "description": "Unibrowse MCP server for browser automation",
+          "transport": "websocket",
+          "url": "ws://localhost:9010/ws",
+          "requiredTools": [
+            "browser_navigate",
+            "browser_snapshot",
+            "browser_click",
+            "browser_type",
+            "browser_list_macros",
+            "browser_execute_macro",
+            "browser_list_attached_tabs",
+            "browser_attach_tab",
+            "browser_set_tab_label",
+            "browser_get_visible_text",
+            "browser_screenshot"
+          ]
+        }
+      }
+    },
+    "external": {
+      "mongodb": {
+        "description": "MongoDB database for macro storage and management",
+        "version": ">=4.4.0",
+        "required": true,
+        "installUrl": "https://www.mongodb.com/docs/manual/installation/",
+        "testCommand": "mongosh --eval 'db.version()'"
+      },
+      "chrome": {
+        "description": "Google Chrome browser with Unibrowse extension",
+        "version": ">=120.0.0",
+        "required": true,
+        "installUrl": "https://www.google.com/chrome/",
+        "extensionPath": "extension/",
+        "notes": "Load extension from chrome://extensions in Developer Mode"
+      },
+      "node": {
+        "description": "Node.js runtime",
+        "version": ">=18.0.0",
+        "required": true
+      }
+    }
+  },
+  "installation": {
+    "prerequisites": [
+      "Node.js >=18.0.0 installed",
+      "MongoDB running (locally or remote)",
+      "Google Chrome installed"
+    ],
+    "steps": [
+      {
+        "step": 1,
+        "title": "Clone Repository",
+        "command": "git clone https://github.com/sackio/unibrowse.git && cd unibrowse"
+      },
+      {
+        "step": 2,
+        "title": "Install Dependencies",
+        "command": "npm install"
+      },
+      {
+        "step": 3,
+        "title": "Configure Environment",
+        "command": "cp .env.example .env",
+        "notes": "Edit .env to set MONGODB_URI and other configuration"
+      },
+      {
+        "step": 4,
+        "title": "Build MCP Server",
+        "command": "npm run build"
+      },
+      {
+        "step": 5,
+        "title": "Load Chrome Extension",
+        "instructions": [
+          "Open Chrome and navigate to chrome://extensions",
+          "Enable 'Developer mode' toggle",
+          "Click 'Load unpacked'",
+          "Select the 'extension/' directory from this repository",
+          "Click the extension icon and connect to ws://localhost:9010/ws"
+        ]
+      },
+      {
+        "step": 6,
+        "title": "Store Macros",
+        "commands": [
+          "npm run store:macros",
+          "npm run store:advanced-macros"
+        ],
+        "notes": "Stores 57+ macros into MongoDB for use by sub-agents"
+      },
+      {
+        "step": 7,
+        "title": "Start MCP Server",
+        "command": "npm start",
+        "notes": "Server will run on http://localhost:9010"
+      },
+      {
+        "step": 8,
+        "title": "Configure Claude Code MCP",
+        "instructions": [
+          "Add to your Claude Code MCP configuration:",
+          "{",
+          "  \"mcpServers\": {",
+          "    \"browser\": {",
+          "      \"transport\": \"websocket\",",
+          "      \"url\": \"ws://localhost:9010/ws\"",
+          "    }",
+          "  }",
+          "}"
+        ]
+      },
+      {
+        "step": 9,
+        "title": "Verify Installation",
+        "command": "npm run test:prereq",
+        "notes": "Checks MCP server, extension connection, and tab attachment"
+      }
+    ]
+  },
+  "features": {
+    "agents": {
+      "count": 5,
+      "list": [
+        {
+          "name": "browser",
+          "description": "Generic browser automation with tab management"
+        },
+        {
+          "name": "browser-ecommerce",
+          "description": "Amazon and shopping automation with 17 specialized macros"
+        },
+        {
+          "name": "browser-forms",
+          "description": "Intelligent form discovery and filling with safety checks"
+        },
+        {
+          "name": "browser-scraper",
+          "description": "Web scraping with pagination and export capabilities"
+        },
+        {
+          "name": "browser-qa",
+          "description": "Accessibility and performance testing with WCAG 2.1 compliance"
+        }
+      ]
+    },
+    "macros": {
+      "count": "57+",
+      "categories": [
+        "extraction",
+        "form",
+        "navigation",
+        "util",
+        "interaction",
+        "exploration",
+        "cdn"
+      ],
+      "storage": "MongoDB",
+      "universal": "40+ macros work on any website",
+      "siteSpecific": "17 Amazon-specific macros"
+    },
+    "hooks": {
+      "count": 3,
+      "triggers": [
+        "browser_navigate",
+        "browser_switch_tab",
+        "browser_click"
+      ],
+      "purpose": "Automatic macro context updates"
+    },
+    "tools": {
+      "count": 76,
+      "categories": 18,
+      "coverage": "Complete browser automation API"
+    }
+  },
+  "documentation": {
+    "quickStart": "docs/PLUGIN_GUIDE.md",
+    "architecture": "docs/ARCHITECTURE.md",
+    "examples": "docs/EXAMPLES.md",
+    "macros": {
+      "index": "docs/macros/README.md",
+      "utility": "docs/macros/UTILITY_MACROS.md",
+      "advanced": "docs/macros/ADVANCED_MACROS.md",
+      "formControls": "docs/macros/FORM_CONTROLS_MACROS.md",
+      "formFilling": "docs/macros/FORM_FILLING_MACROS.md",
+      "cdn": "docs/macros/CDN_INJECTION_MACROS.md"
+    },
+    "skills": {
+      "browser": ".claude/skills/browser/SKILL.md",
+      "macros": ".claude/skills/browser/MACROS.md",
+      "multiTab": ".claude/skills/browser/MULTI_TAB.md",
+      "troubleshooting": ".claude/skills/browser/TROUBLESHOOTING.md",
+      "amazon": ".claude/skills/browser/AMAZON_MACROS.md"
+    },
+    "testing": {
+      "guide": "docs/TEST_EXECUTION_GUIDE.md",
+      "results": "docs/TEST_RESULTS.md",
+      "multiTab": "docs/MULTI_TAB_TESTING.md"
+    },
+    "api": "docs/TOOLS_REFERENCE.md"
+  },
+  "testing": {
+    "prerequisites": "npm run test:prereq",
+    "comprehensive": "npm test",
+    "multiTab": "npm run test:multi-tab",
+    "window": "npm run test:window",
+    "macros": {
+      "utility": "npm run test:utility-macros",
+      "advanced": "npm run test:advanced-macros"
+    },
+    "backupAndTest": "npm run backup:test"
+  },
+  "changelog": {
+    "1.0.0": {
+      "date": "2025-12-10",
+      "changes": [
+        "Initial plugin release",
+        "Refactored from slash commands to sub-agent architecture",
+        "Added 5 specialized sub-agents (browser, ecommerce, forms, scraper, qa)",
+        "Enhanced browser skill with delegation patterns",
+        "Created plugin manifest for community distribution",
+        "Added comprehensive documentation (4 plugin docs, 4 skill docs)",
+        "Preserved existing 57+ macros and hook system",
+        "Implemented tab ID preservation for multi-tab workflows",
+        "Removed /browse and /browse-amazon commands"
+      ]
+    }
+  }
+}
