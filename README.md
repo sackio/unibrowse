@@ -1,22 +1,14 @@
-<a href="https://browsermcp.io">
-  <img src="./.github/images/banner.png" alt="Browser MCP banner">
-</a>
-
-<h3 align="center">Browser MCP</h3>
+<h3 align="center">unibrowse</h3>
 
 <p align="center">
-  Automate your browser with AI.
+  Bridging the gap between AI agents and browser automation
   <br />
-  <a href="https://browsermcp.io"><strong>Website</strong></a>
-  •
-  <a href="https://docs.browsermcp.io"><strong>Docs</strong></a>
-  •
   <a href="docs/TOOLS_REFERENCE.md"><strong>Tools Reference</strong></a>
 </p>
 
 ## About
 
-Browser MCP is an MCP server + Chrome extension that allows you to automate your browser using AI applications like VS Code, Claude, Cursor, and Windsurf. With **72 comprehensive tools** including multi-tab management, it provides complete browser automation capabilities through the Model Context Protocol.
+**unibrowse** is an MCP server + Chrome extension that bridges the gap between AI agents and browser automation. With **72 comprehensive tools** including multi-tab management, it provides complete browser control through the Model Context Protocol, enabling AI applications like Claude, VS Code, Cursor, and Windsurf to automate your browser seamlessly.
 
 ## Features
 
@@ -31,7 +23,7 @@ Browser MCP is an MCP server + Chrome extension that allows you to automate your
 
 ## Tool Categories
 
-Browser MCP provides 72 tools organized into 17 categories:
+unibrowse provides 72 tools organized into 17 categories:
 
 | Category | Tools | Description |
 |----------|-------|-------------|
@@ -57,7 +49,7 @@ See [TOOLS_REFERENCE.md](docs/TOOLS_REFERENCE.md) for complete documentation of 
 
 ## Multi-Tab Management
 
-Browser MCP supports simultaneous automation of multiple browser tabs, allowing you to:
+unibrowse supports simultaneous automation of multiple browser tabs, allowing you to:
 
 - **Attach to multiple tabs**: Connect debuggers to multiple tabs and manage them with unique labels
 - **Label-based targeting**: Identify tabs using auto-generated domain-based labels (e.g., "amazon.com", "github.com-2")
@@ -168,8 +160,8 @@ pm2 start config/ecosystem.config.js
 
 ## Contributing
 
-This repo contains all the core MCP code for Browser MCP, but currently cannot yet be built on its own due to dependencies on utils and types from the monorepo where it's developed.
+This repo contains all the core MCP code for unibrowse, but currently cannot yet be built on its own due to dependencies on utils and types from the monorepo where it's developed.
 
 ## Credits
 
-Browser MCP was adapted from the [Playwright MCP server](https://github.com/microsoft/playwright-mcp) in order to automate the user's browser rather than creating new browser instances. This allows using the user's existing browser profile to use logged-in sessions and avoid bot detection mechanisms that commonly block automated browser use.
+unibrowse was adapted from the [Playwright MCP server](https://github.com/microsoft/playwright-mcp) in order to automate the user's browser rather than creating new browser instances. This allows using the user's existing browser profile to use logged-in sessions and avoid bot detection mechanisms that commonly block automated browser use.

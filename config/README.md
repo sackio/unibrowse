@@ -1,12 +1,12 @@
 # Configuration Files
 
-This directory contains configuration files for Browser MCP.
+This directory contains configuration files for unibrowse.
 
 ## Files
 
 ### ecosystem.config.js
 
-PM2 process manager configuration for running Browser MCP as a managed service.
+PM2 process manager configuration for running unibrowse as a managed service.
 
 ### nodemon.json
 
@@ -14,11 +14,11 @@ Nodemon configuration for development with auto-reload on file changes.
 
 ### browser-mcp.service
 
-Systemd service file for running Browser MCP as a system service (production).
+Systemd service file for running unibrowse as a system service (production).
 
 ### browser-mcp-dev.service
 
-Systemd service file for running Browser MCP in development mode.
+Systemd service file for running unibrowse in development mode.
 
 **Usage:**
 

@@ -1,6 +1,6 @@
 # MongoDB Macros Backups
 
-This directory contains backups of the Browser MCP macros stored in MongoDB.
+This directory contains backups of the unibrowse macros stored in MongoDB.
 
 ## Backup Scripts
 

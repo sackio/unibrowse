@@ -1,4 +1,4 @@
-# Browser MCP Task Automation
+# unibrowse Task Automation
 
 Execute browser automation tasks using the browser MCP with an intelligent macro-first strategy.
 

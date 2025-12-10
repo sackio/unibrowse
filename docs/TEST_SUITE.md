@@ -1,4 +1,4 @@
-# Browser MCP Test Suite
+# unibrowse Test Suite
 
 ## Prerequisites
 1. Extension loaded and reloaded in Chrome

@@ -7,8 +7,8 @@ set -e
 DOMAIN="${1:-*}"
 
 # Check if MongoDB container is running
-if ! docker ps | grep -q browser-mcp-mongodb; then
-    echo "ERROR: MongoDB container 'browser-mcp-mongodb' is not running"
+if ! docker ps | grep -q unibrowse-mongodb; then
+    echo "ERROR: MongoDB container 'unibrowse-mongodb' is not running"
     echo "Start it with: docker compose up -d mongodb"
     exit 1
 fi
@@ -16,7 +16,7 @@ fi
 echo "Querying macros for site: $DOMAIN"
 echo ""
 
-docker exec browser-mcp-mongodb mongosh browser_mcp --quiet --eval "
+docker exec unibrowse-mongodb mongosh browser_mcp --quiet --eval "
     const siteDomain = '$DOMAIN';
     const siteMacros = db.macros.find({site: siteDomain}).sort({category: 1, name: 1}).toArray();
     const universalMacros = db.macros.find({site: '*'}).sort({category: 1, name: 1}).toArray();

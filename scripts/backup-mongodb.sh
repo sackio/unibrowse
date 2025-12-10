@@ -1,5 +1,5 @@
 #!/bin/bash
-# MongoDB Backup Script for Browser MCP Macros
+# MongoDB Backup Script for unibrowse Macros
 # Exports macros collection to JSON for version control
 
 set -e
@@ -20,14 +20,14 @@ echo "Timestamp: $TIMESTAMP"
 echo ""
 
 # Check if MongoDB container is running
-if ! docker ps | grep -q browser-mcp-mongodb; then
-    echo "ERROR: MongoDB container 'browser-mcp-mongodb' is not running"
+if ! docker ps | grep -q unibrowse-mongodb; then
+    echo "ERROR: MongoDB container 'unibrowse-mongodb' is not running"
     echo "Start it with: docker compose up -d mongodb"
     exit 1
 fi
 
 echo "Exporting macros collection..."
-docker exec browser-mcp-mongodb mongosh browser_mcp --quiet --eval "
+docker exec unibrowse-mongodb mongosh unibrowse --quiet --eval "
     db.macros.find().toArray()
 " > "$BACKUP_FILE"
 
@@ -38,7 +38,7 @@ if [ ! -s "$BACKUP_FILE" ]; then
 fi
 
 # Count macros
-MACRO_COUNT=$(docker exec browser-mcp-mongodb mongosh browser_mcp --quiet --eval "db.macros.countDocuments()")
+MACRO_COUNT=$(docker exec unibrowse-mongodb mongosh unibrowse --quiet --eval "db.macros.countDocuments()")
 echo "✓ Exported $MACRO_COUNT macros to: $BACKUP_FILE"
 
 # Create/update symlink to latest backup

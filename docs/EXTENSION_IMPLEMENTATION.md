@@ -1,6 +1,6 @@
 # Browser Extension Implementation Guide
 
-This document details the implementation requirements for the Browser MCP Chrome extension to support the 11 new DOM exploration tools.
+This document details the implementation requirements for the unibrowse Chrome extension to support the 11 new DOM exploration tools.
 
 ## Overview
 
@@ -12,7 +12,7 @@ The extension communicates with the MCP server via WebSocket on port 9009. Each 
 
 ## Extension Blocker
 
-**Current Status**: The Browser MCP extension source code is not available in the public GitHub repository. Only the MCP server code is open source. The extension is distributed as minified code via the Chrome Web Store.
+**Current Status**: The unibrowse extension source code is not available in the public GitHub repository. Only the MCP server code is open source. The extension is distributed as minified code via the Chrome Web Store.
 
 **Location**: `/home/ben/.config/google-chrome/Profile 1/Extensions/bjfgambnhccakkhmkepdoekmckoijdlc/1.3.4_0/`
 

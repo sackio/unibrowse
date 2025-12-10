@@ -547,7 +547,18 @@ class TabManager {
     // Check label uniqueness
     for (const info of this.attachedTabs.values()) {
       if (info.label === newLabel && info.tabId !== tabId) {
-        throw new Error(`Label "${newLabel}" is already in use by tab ${info.tabId}`);
+        // If label is already in use, try to detach the old tab first
+        // (This can happen when extension reloads and Chrome keeps old debugger attachments)
+        console.warn(`[TabManager] Label "${newLabel}" already in use by tab ${info.tabId}, detaching old tab`);
+        try {
+          this.detachTab(info.tabId).catch(err => {
+            console.warn('[TabManager] Failed to detach old tab:', err);
+          });
+        } catch (err) {
+          console.warn('[TabManager] Error detaching old tab:', err);
+        }
+        // Don't throw - allow the label to be reassigned
+        break;
       }
     }
 
@@ -4297,6 +4308,9 @@ class BackgroundController {
 const controller = new BackgroundController();
 
 console.log('[Background] Browser MCP extension loaded');
+
+// Note: Debugger cleanup is now handled in CDP attach logic when conflicts are detected
+// No automatic cleanup on load to preserve existing attachments
 
 // Auto-connect functionality
 async function autoConnect() {

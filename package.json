@@ -1,13 +1,12 @@
 {
-  "name": "@browsermcp/mcp",
+  "name": "@unibrowse/mcp",
   "version": "0.1.3",
-  "description": "MCP server for browser automation using Browser MCP",
-  "author": "Browser MCP",
-  "homepage": "https://browsermcp.io",
-  "bugs": "https://github.com/browsermcp/mcp/issues",
+  "description": "MCP server bridging the gap between AI agents and browser automation",
+  "author": "unibrowse",
+  "bugs": "https://github.com/sackio/unibrowse/issues",
   "type": "module",
   "bin": {
-    "mcp-server-browsermcp": "dist/http-server.js"
+    "mcp-server-unibrowse": "dist/http-server.js"
   },
   "files": [
     "dist"
@@ -29,7 +28,8 @@
     "test:utility-macros": "node tests/test-utility-macros.js",
     "test:advanced-macros": "node tests/test-advanced-macros.js",
     "store:macros": "node tests/store-utility-macros.js",
-    "store:advanced-macros": "node tests/store-advanced-macros.js"
+    "store:advanced-macros": "node tests/store-advanced-macros.js",
+    "backup:test": "./scripts/backup-and-test.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

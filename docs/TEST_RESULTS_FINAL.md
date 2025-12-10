@@ -1,4 +1,4 @@
-# Browser MCP Test Results - FINAL
+# unibrowse Test Results - FINAL
 **Branch**: `refactor/recording-improvements`
 **Date**: 2025-10-09
 **Tester**: Claude Code (Automated)
@@ -146,7 +146,7 @@ At test completion:
 
 ## Test Environment
 
-- **Browser**: Chrome with Browser MCP extension (reloaded)
+- **Browser**: Chrome with unibrowse extension (reloaded)
 - **Test Pages**:
   - Wikipedia AI article (complex page for interactions)
   - example.com (simple page for snapshot tests)

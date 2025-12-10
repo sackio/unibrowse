@@ -1,6 +1,6 @@
-# Browser MCP Agents
+# unibrowse Agents
 
-This directory contains specialized agents for Browser MCP automation.
+This directory contains specialized agents for unibrowse automation.
 
 ## Available Agents
 

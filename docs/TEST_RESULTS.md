@@ -1,4 +1,4 @@
-# Browser MCP Test Results
+# unibrowse Test Results
 **Branch**: `refactor/recording-improvements`
 **Date**: 2025-10-09
 **Tester**: Claude Code (Automated)
@@ -212,7 +212,7 @@ At test completion:
 
 ## Test Environment
 
-- **Browser**: Chrome (with Browser MCP extension)
+- **Browser**: Chrome (with unibrowse extension)
 - **OS**: Linux 6.8.0-85-generic
 - **Node**: v20+ (assumed from package.json engines)
 - **Server**: HTTP/WebSocket on ports 3010/9009

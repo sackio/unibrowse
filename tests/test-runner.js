@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Browser MCP Test Runner
+ * unibrowse Test Runner
  * Automated test suite for all MCP tools
  *
  * Prerequisites:

@@ -3,17 +3,17 @@ version: '3.8'
 services:
   mongodb:
     image: mongo:latest
-    container_name: browser-mcp-mongodb
+    container_name: unibrowse-mongodb
     restart: unless-stopped
     environment:
-      MONGO_INITDB_DATABASE: browser_mcp
+      MONGO_INITDB_DATABASE: unibrowse
     ports:
-      - "127.0.0.1:27017:27017"  # Expose MongoDB on localhost
+      - "127.0.0.1:27018:27017"  # Expose MongoDB on localhost:27018 to avoid conflicts
     volumes:
       - mongodb_data:/data/db
       - mongodb_config:/data/configdb
     networks:
-      - browser-mcp-network
+      - unibrowse-network
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
@@ -24,26 +24,26 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: browser-mcp-server
+    container_name: unibrowse-mcp-server
     restart: unless-stopped
     ports:
       - "127.0.0.1:9010:9010"  # Only expose on localhost
     environment:
       PORT: 9010
       MONGODB_URI: mongodb://mongodb:27017
-      MONGODB_DB: browser_mcp
+      MONGODB_DB: unibrowse
       NODE_ENV: production
     depends_on:
       mongodb:
         condition: service_healthy
     networks:
-      - browser-mcp-network
+      - unibrowse-network
     volumes:
       # Mount for development (optional - remove in production)
       - ./dist:/app/dist:ro
 
 networks:
-  browser-mcp-network:
+  unibrowse-network:
     driver: bridge
 
 volumes:

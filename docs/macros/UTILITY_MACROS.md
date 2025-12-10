@@ -1,4 +1,4 @@
-# Browser MCP Utility Macros
+# unibrowse Utility Macros
 
 Comprehensive collection of 17 utility macros for efficient browser automation and page exploration.
 

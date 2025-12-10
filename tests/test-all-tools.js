@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Comprehensive Test Suite for Browser MCP
+ * Comprehensive Test Suite for unibrowse
  * Tests all 72 tools across 17 categories
  * Includes Multi-Tab Management testing (4 new tools)
  */
@@ -27,7 +27,7 @@ async function connectWebSocket() {
     ws = new WebSocket(WS_URL);
 
     ws.on('open', () => {
-      console.log('✓ Connected to Browser MCP WebSocket');
+      console.log('✓ Connected to unibrowse WebSocket');
       resolve();
     });
 
@@ -95,7 +95,7 @@ async function skipTool(category, toolName, reason) {
 
 async function runTests() {
   console.log('═══════════════════════════════════════════════════════');
-  console.log('  BROWSER MCP COMPREHENSIVE TEST SUITE');
+  console.log('  UNIBROWSE COMPREHENSIVE TEST SUITE');
   console.log('  Testing all 76 tools across 18 categories');
   console.log('═══════════════════════════════════════════════════════\n');
 
@@ -152,7 +152,7 @@ async function runTests() {
     console.log('╚═══════════════════════════════════════════════════════╝');
 
     await testTool('Clipboard', 'Set Clipboard', 'browser_set_clipboard', {
-      text: 'Browser MCP Test String'
+      text: 'unibrowse Test String'
     });
     const clipboardContent = await testTool('Clipboard', 'Get Clipboard', 'browser_get_clipboard', {});
 
@@ -217,7 +217,7 @@ async function runTests() {
     });
 
     const createdBookmark = await testTool('Bookmarks', 'Create Bookmark', 'browser_create_bookmark', {
-      title: 'Test Bookmark - Browser MCP',
+      title: 'Test Bookmark - unibrowse',
       url: 'https://example.com/test'
     });
 
@@ -244,9 +244,9 @@ async function runTests() {
     const extensions = await testTool('Extension Management', 'List Extensions', 'browser_list_extensions', {});
 
     if (extensions && extensions.extensions && extensions.extensions.length > 0) {
-      // Find a safe extension to test (not Browser MCP itself)
+      // Find a safe extension to test (not unibrowse itself)
       const testExtension = extensions.extensions.find(ext =>
-        ext.id !== extensions.extensions.find(e => e.name.includes('Browser MCP'))?.id
+        ext.id !== extensions.extensions.find(e => e.name.includes('unibrowse'))?.id
       );
 
       if (testExtension) {

@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# Browser MCP Test Suite Runner
+# unibrowse Test Suite Runner
 # This script runs through the test suite defined in TEST_SUITE.md
 # by asking Claude Code to execute each test
 
 cat << 'EOF'
 
-🧪 Browser MCP Test Suite Runner
+🧪 unibrowse Test Suite Runner
 ==================================================
 
 This script will prompt Claude Code to run through all MCP tools systematically.

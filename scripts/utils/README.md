@@ -1,6 +1,6 @@
-# Browser MCP Utility Scripts
+# unibrowse Utility Scripts
 
-This directory contains development utility scripts for working with Browser MCP.
+This directory contains development utility scripts for working with unibrowse.
 
 ## Available Utilities
 

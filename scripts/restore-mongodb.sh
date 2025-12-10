@@ -1,5 +1,5 @@
 #!/bin/bash
-# MongoDB Restore Script for Browser MCP Macros
+# MongoDB Restore Script for unibrowse Macros
 # Restores macros collection from JSON backup
 
 set -e
@@ -30,14 +30,14 @@ echo "Backup file: $BACKUP_FILE"
 echo ""
 
 # Check if MongoDB container is running
-if ! docker ps | grep -q browser-mcp-mongodb; then
-    echo "ERROR: MongoDB container 'browser-mcp-mongodb' is not running"
+if ! docker ps | grep -q unibrowse-mongodb; then
+    echo "ERROR: MongoDB container 'unibrowse-mongodb' is not running"
     echo "Start it with: docker compose up -d mongodb"
     exit 1
 fi
 
 # Show current macro count
-CURRENT_COUNT=$(docker exec browser-mcp-mongodb mongosh browser_mcp --quiet --eval "db.macros.countDocuments()")
+CURRENT_COUNT=$(docker exec unibrowse-mongodb mongosh unibrowse --quiet --eval "db.macros.countDocuments()")
 echo "Current macros in database: $CURRENT_COUNT"
 
 # Ask for confirmation
@@ -50,14 +50,14 @@ fi
 
 echo ""
 echo "Dropping existing macros collection..."
-docker exec browser-mcp-mongodb mongosh browser_mcp --quiet --eval "db.macros.drop()"
+docker exec unibrowse-mongodb mongosh unibrowse --quiet --eval "db.macros.drop()"
 
 echo "Restoring macros from backup..."
 # Copy backup file into container
-docker cp "$BACKUP_FILE" browser-mcp-mongodb:/tmp/restore.json
+docker cp "$BACKUP_FILE" unibrowse-mongodb:/tmp/restore.json
 
 # Import the data
-docker exec browser-mcp-mongodb mongosh browser_mcp --quiet --eval "
+docker exec unibrowse-mongodb mongosh unibrowse --quiet --eval "
     const data = JSON.parse(cat('/tmp/restore.json'));
     if (Array.isArray(data) && data.length > 0) {
         db.macros.insertMany(data);
@@ -68,10 +68,10 @@ docker exec browser-mcp-mongodb mongosh browser_mcp --quiet --eval "
 "
 
 # Clean up temp file
-docker exec browser-mcp-mongodb rm /tmp/restore.json
+docker exec unibrowse-mongodb rm /tmp/restore.json
 
 # Verify restoration
-NEW_COUNT=$(docker exec browser-mcp-mongodb mongosh browser_mcp --quiet --eval "db.macros.countDocuments()")
+NEW_COUNT=$(docker exec unibrowse-mongodb mongosh unibrowse --quiet --eval "db.macros.countDocuments()")
 echo ""
 echo "=== Restore Complete ==="
 echo "Macros in database: $NEW_COUNT"
@@ -79,7 +79,7 @@ echo "Macros in database: $NEW_COUNT"
 # Recreate indexes
 echo ""
 echo "Recreating indexes..."
-docker exec browser-mcp-mongodb mongosh browser_mcp --quiet --eval "
+docker exec unibrowse-mongodb mongosh unibrowse --quiet --eval "
     db.macros.createIndex({ id: 1 }, { unique: true });
     db.macros.createIndex({ site: 1, category: 1 });
     db.macros.createIndex({ site: 1, name: 1 }, { unique: true });

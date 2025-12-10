@@ -1,5 +1,5 @@
 #!/bin/bash
-# Launch Chrome in isolated mode with Browser MCP extension
+# Launch Chrome in isolated mode with unibrowse extension
 # This script launches a separate Chrome instance with the extension pre-loaded
 # Profile data is stored in .chrome-profiles/ directory
 
@@ -16,7 +16,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
 EXTENSION_DIR="$PROJECT_ROOT/extension"
 PROFILES_DIR="$PROJECT_ROOT/.chrome-profiles"
-PROFILE_NAME="${PROFILE_NAME:-browser-mcp-test}"
+PROFILE_NAME="${PROFILE_NAME:-unibrowse-test}"
 PROFILE_DIR="$PROFILES_DIR/$PROFILE_NAME"
 
 # Find Chrome executable
@@ -49,7 +49,7 @@ find_chrome() {
 }
 
 echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}  Browser MCP - Isolated Chrome Launcher${NC}"
+echo -e "${BLUE}  unibrowse - Isolated Chrome Launcher${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
 echo
 
@@ -118,8 +118,8 @@ echo -e "${GREEN}✓ Chrome launched successfully!${NC}"
 echo -e "  PID: ${GREEN}$CHROME_PID${NC}"
 echo
 echo -e "${YELLOW}IMPORTANT:${NC}"
-echo -e "  1. Chrome should open with the Browser MCP extension loaded"
-echo -e "  2. Click the ${BLUE}Browser MCP extension icon${NC} in the toolbar"
+echo -e "  1. Chrome should open with the unibrowse extension loaded"
+echo -e "  2. Click the ${BLUE}unibrowse extension icon${NC} in the toolbar"
 echo -e "  3. Click ${GREEN}\"Connect\"${NC} to connect to ws://localhost:9010/ws"
 echo -e "  4. The extension will auto-connect, but manual connection ensures stability"
 echo

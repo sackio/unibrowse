@@ -1,15 +1,15 @@
 #!/bin/bash
 
-# Browser MCP Service Management Script
+# unibrowse Service Management Script
 # Provides easy commands to manage the WebSocket/HTTP server
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVICE_NAME="browser-mcp"
-SERVICE_FILE="$SCRIPT_DIR/browser-mcp.service"
+SERVICE_NAME="unibrowse"
+SERVICE_FILE="$SCRIPT_DIR/unibrowse.service"
 
 show_usage() {
     cat << EOF
-Browser MCP Service Manager
+unibrowse Service Manager
 
 USAGE:
     ./service.sh <command>
@@ -50,7 +50,7 @@ case "$1" in
         ;;
 
     start)
-        echo "🚀 Starting Browser MCP with PM2..."
+        echo "🚀 Starting unibrowse with PM2..."
         if ! command -v pm2 &> /dev/null; then
             echo "❌ PM2 not installed. Install with: npm install -g pm2"
             exit 1
@@ -60,28 +60,28 @@ case "$1" in
         ;;
 
     stop)
-        echo "🛑 Stopping Browser MCP..."
-        pm2 stop browser-mcp
+        echo "🛑 Stopping unibrowse..."
+        pm2 stop unibrowse
         ;;
 
     restart)
-        echo "🔄 Restarting Browser MCP..."
-        pm2 restart browser-mcp
+        echo "🔄 Restarting unibrowse..."
+        pm2 restart unibrowse
         ;;
 
     logs)
         echo "📋 Showing logs (Ctrl+C to exit)..."
-        pm2 logs browser-mcp
+        pm2 logs unibrowse
         ;;
 
     status)
         if command -v pm2 &> /dev/null; then
             echo "📊 PM2 Status:"
-            pm2 list | grep browser-mcp || echo "Not running with PM2"
+            pm2 list | grep unibrowse || echo "Not running with PM2"
         fi
         echo ""
         echo "📊 Systemd Status:"
-        systemctl --user is-active browser-mcp.service 2>/dev/null || echo "Not running with systemd"
+        systemctl --user is-active unibrowse.service 2>/dev/null || echo "Not running with systemd"
         ;;
 
     systemd-install)
@@ -89,28 +89,28 @@ case "$1" in
         mkdir -p ~/.config/systemd/user
         cp "$SERVICE_FILE" ~/.config/systemd/user/
         systemctl --user daemon-reload
-        systemctl --user enable browser-mcp.service
+        systemctl --user enable unibrowse.service
         echo "✅ Systemd service installed"
         echo "   Start with: ./service.sh systemd-start"
         ;;
 
     systemd-start)
         echo "🚀 Starting systemd service..."
-        systemctl --user start browser-mcp.service
+        systemctl --user start unibrowse.service
         echo "✅ Service started"
         ;;
 
     systemd-stop)
         echo "🛑 Stopping systemd service..."
-        systemctl --user stop browser-mcp.service
+        systemctl --user stop unibrowse.service
         ;;
 
     systemd-status)
-        systemctl --user status browser-mcp.service
+        systemctl --user status unibrowse.service
         ;;
 
     systemd-logs)
-        journalctl --user -u browser-mcp.service -f
+        journalctl --user -u unibrowse.service -f
         ;;
 
     *)

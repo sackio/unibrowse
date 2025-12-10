@@ -71,7 +71,7 @@ async function checkExtensionConnection() {
 
 async function main() {
   console.log('═══════════════════════════════════════════════════════');
-  console.log('  BROWSER MCP TEST PREREQUISITES CHECK');
+  console.log('  UNIBROWSE TEST PREREQUISITES CHECK');
   console.log('═══════════════════════════════════════════════════════\n');
 
   // Check 1: MCP Server running
@@ -116,7 +116,7 @@ async function main() {
       console.log('     3. Enable "Developer mode"');
       console.log('     4. Click "Load unpacked"');
       console.log('     5. Select the "extension" folder in this project');
-      console.log('     6. Click the Browser MCP extension icon');
+      console.log('     6. Click the unibrowse extension icon');
       console.log('     7. Click "Connect" to connect to ws://localhost:9010/ws');
       console.log('  → Or use the isolated Chrome launcher:');
       console.log('     npm run chrome\n');

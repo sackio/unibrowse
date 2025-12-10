@@ -1,6 +1,5 @@
 [Unit]
-Description=Browser MCP WebSocket Server
-Documentation=https://browsermcp.io
+Description=unibrowse - Bridging AI agents and browser automation
 After=network.target
 
 [Service]
@@ -13,7 +12,7 @@ Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=browser-mcp
+SyslogIdentifier=unibrowse
 
 # Security
 NoNewPrivileges=true

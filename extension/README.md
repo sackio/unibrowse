@@ -1,6 +1,6 @@
-# Browser MCP Chrome Extension
+# unibrowse Chrome Extension
 
-Custom Chrome extension to connect to Browser MCP server via WebSocket and execute browser automation via Chrome DevTools Protocol.
+Custom Chrome extension to connect to unibrowse server via WebSocket and execute browser automation via Chrome DevTools Protocol.
 
 ## Status
 
@@ -16,7 +16,7 @@ Custom Chrome extension to connect to Browser MCP server via WebSocket and execu
 ## Usage
 
 1. Start the MCP server: `cd .. && node dist/index.js`
-2. Click the Browser MCP extension icon
+2. Click the unibrowse extension icon
 3. Click "Connect" to attach debugger and connect to WebSocket
 4. The extension is now ready to receive commands from the MCP server
 

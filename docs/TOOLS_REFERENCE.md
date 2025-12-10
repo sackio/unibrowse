@@ -1,6 +1,6 @@
-# Browser MCP Tools Reference
+# unibrowse Tools Reference
 
-Complete reference for all 72 MCP tools available in Browser MCP.
+Complete reference for all 72 MCP tools available in unibrowse.
 
 ## Table of Contents
 
@@ -389,7 +389,7 @@ Close a specific tab.
 
 ## Multi-Tab Management
 
-Browser MCP supports attaching to and managing multiple tabs simultaneously. All tools support an optional `tabTarget` parameter to specify which attached tab to operate on.
+unibrowse supports attaching to and managing multiple tabs simultaneously. All tools support an optional `tabTarget` parameter to specify which attached tab to operate on.
 
 ### `browser_list_attached_tabs`
 List all currently attached tabs with their labels and metadata.
@@ -419,7 +419,7 @@ List all currently attached tabs with their labels and metadata.
   {
     "tabId": 456,
     "label": "github.com",
-    "title": "GitHub - Browser MCP",
+    "title": "GitHub - unibrowse",
     "url": "https://github.com/modelcontextprotocol/browser-mcp",
     "lastUsedAt": 1704999500000,
     "isActive": false
@@ -1042,7 +1042,7 @@ Disable an enabled extension.
 }
 ```
 
-**Note:** Cannot disable or enable the Browser MCP extension itself.
+**Note:** Cannot disable or enable the unibrowse extension itself.
 
 ---
 
@@ -1075,7 +1075,7 @@ All tools return error messages if operations fail. Check response structure for
 
 Common error scenarios:
 
-- **No tab connected**: Browser MCP extension not connected to server
+- **No tab connected**: unibrowse extension not connected to server
 - **Element not found**: Invalid reference or element removed from DOM
 - **Permission denied**: Operation requires additional browser permissions
 - **Invalid parameter**: Missing required parameter or wrong type
@@ -1086,6 +1086,6 @@ Common error scenarios:
 
 ## Version
 
-This reference is for Browser MCP version 0.2.0 with 72 total tools including multi-tab management.
+This reference is for unibrowse version 0.2.0 with 72 total tools including multi-tab management.
 
 Last updated: 2025-01-22

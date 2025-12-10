@@ -1,4 +1,4 @@
-# Browser MCP - Comprehensive Test Results
+# unibrowse - Comprehensive Test Results
 
 **Test Date:** 2025-10-10
 **Test Suite Version:** Comprehensive (68 tools across 16 categories)
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-Successfully completed comprehensive testing of all 68 Browser MCP tools after fixing critical bugs discovered during the test process. The refactored HTTP + WebSocket server architecture is fully validated and production-ready.
+Successfully completed comprehensive testing of all 68 unibrowse tools after fixing critical bugs discovered during the test process. The refactored HTTP + WebSocket server architecture is fully validated and production-ready.
 
 ### Test Results
 
@@ -271,7 +271,7 @@ These tests are skipped to prevent modification of real user data during testing
 ## Test Environment
 
 - **Browser:** Chrome/Chromium
-- **Extension:** Browser MCP v0.1.0 (Manifest V3)
+- **Extension:** unibrowse v0.1.0 (Manifest V3)
 - **Server:** HTTP + WebSocket combined server (port 9010)
 - **Node.js:** v22.19.0
 - **Test Client:** Custom WebSocket test suite
@@ -329,7 +329,7 @@ All previously fixed issues remain resolved:
 
 ## Conclusion
 
-The Browser MCP system has been thoroughly tested and validated. All critical bugs discovered during testing have been fixed, and the system demonstrates:
+The unibrowse system has been thoroughly tested and validated. All critical bugs discovered during testing have been fixed, and the system demonstrates:
 
 - **Reliability:** 100% test pass rate
 - **Compatibility:** Works with strict CSP sites

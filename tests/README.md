@@ -1,6 +1,6 @@
-# Browser MCP Test Suite
+# unibrowse Test Suite
 
-This directory contains automated test suites for the Browser MCP server and extension.
+This directory contains automated test suites for the unibrowse server and extension.
 
 ## ⚠️ Prerequisites
 
@@ -17,7 +17,7 @@ This directory contains automated test suites for the Browser MCP server and ext
    - Enable "Developer mode" (toggle in top-right)
    - Click "Load unpacked"
    - Select the `extension/` folder in this project
-   - Click the Browser MCP extension icon in the toolbar
+   - Click the unibrowse extension icon in the toolbar
    - Click "Connect" to connect to `ws://localhost:9010/ws`
 
 3. **Verify Prerequisites**:

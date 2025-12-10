@@ -1,6 +1,6 @@
-# Browser MCP Service Management
+# unibrowse Service Management
 
-The Browser MCP WebSocket/HTTP server can run in several modes:
+The unibrowse WebSocket/HTTP server can run in several modes:
 
 ## Quick Start
 

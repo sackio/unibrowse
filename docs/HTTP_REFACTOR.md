@@ -2,7 +2,7 @@
 
 ## Overview
 
-Browser MCP has been refactored to use **persistent Streamable HTTP transport** as the primary MCP communication method, replacing stdio as the default mode.
+unibrowse has been refactored to use **persistent Streamable HTTP transport** as the primary MCP communication method, replacing stdio as the default mode.
 
 ## Changes Made
 
@@ -246,7 +246,7 @@ Expected output:
 ```
 [HTTP] WebSocket server ready on ws://localhost:9009
 [HTTP] MCP server initialized with Streamable HTTP transport
-[HTTP] Browser MCP server listening on http://localhost:9010
+[HTTP] unibrowse server listening on http://localhost:9010
 [HTTP] MCP endpoint: http://localhost:9010/mcp
 [HTTP] Health check: http://localhost:9010/health
 ```
@@ -267,7 +267,7 @@ Expected output:
                 port 9010 (combined)
                         │
          ┌──────────────▼──────────────┐
-         │  Browser MCP Server         │
+         │  unibrowse Server         │
          │  - Express HTTP Server      │
          │  - Streamable HTTP (/mcp)   │
          │  - WebSocket (/ws)          │
@@ -446,6 +446,6 @@ sudo journalctl -u browser-mcp-dev -f
 3. **Restart Claude Code** to load the new MCP configuration
 
 4. **Verify in Claude Code:**
-   - Browser MCP tools should be available
+   - unibrowse tools should be available
    - Check for all 40+ tools in the tool list
    - Connection should be persistent and stable

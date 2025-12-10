@@ -1,10 +1,10 @@
 # Multi-Tab Management Testing Guide
 
-This guide provides comprehensive testing procedures for the multi-tab management feature in Browser MCP.
+This guide provides comprehensive testing procedures for the multi-tab management feature in unibrowse.
 
 ## Prerequisites
 
-1. Browser MCP extension installed and loaded in Chrome
+1. unibrowse extension installed and loaded in Chrome
 2. MCP server running (stdio or HTTP mode)
 3. Client connected to the MCP server (Claude, VS Code, Cursor, etc.)
 
@@ -15,7 +15,7 @@ This guide provides comprehensive testing procedures for the multi-tab managemen
 **Objective:** Verify that multiple tabs can be attached simultaneously.
 
 **Steps:**
-1. Open the Browser MCP extension popup
+1. Open the unibrowse extension popup
 2. Click "Connect" to start the MCP server connection
 3. Open 3-4 different websites in separate tabs (e.g., amazon.com, github.com, google.com)
 4. In the popup, click on each tab in the "Browser Windows & Tabs" section to attach them
@@ -109,7 +109,7 @@ This guide provides comprehensive testing procedures for the multi-tab managemen
   {
     "tabId": 456,
     "label": "github.com",
-    "title": "GitHub - Browser MCP",
+    "title": "GitHub - unibrowse",
     "url": "https://github.com/...",
     "lastUsedAt": 1704999500000,
     "isActive": false
@@ -454,7 +454,7 @@ If you encounter issues during testing, please report them with this format:
 **Environment:**
 - Browser: Chrome version
 - OS: Operating system
-- Extension version: Browser MCP version
+- Extension version: unibrowse version
 - MCP mode: stdio or HTTP
 
 **Additional Context:** Screenshots, error messages, console logs, etc.

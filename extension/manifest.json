@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Browser MCP",
+  "name": "unibrowse",
   "version": "1.0.0",
-  "description": "Connect your browser to the Browser MCP server for AI-powered automation",
+  "description": "Bridge the gap between AI agents and browser automation",
   "permissions": [
     "debugger",
     "tabs",

@@ -1,8 +1,8 @@
-# Testing Guide for Browser MCP
+# Testing Guide for unibrowse
 
 ## Overview
 
-Browser MCP has a comprehensive test suite to validate all tools and features. Testing can be done manually or through automated execution.
+unibrowse has a comprehensive test suite to validate all tools and features. Testing can be done manually or through automated execution.
 
 ## Quick Start
 

@@ -1,10 +1,10 @@
-# Browser MCP Testing Guide
+# unibrowse Testing Guide
 
-This guide explains how to run the Browser MCP test suites to validate functionality.
+This guide explains how to run the unibrowse test suites to validate functionality.
 
 ## Prerequisites
 
-1. **Extension Loaded**: Browser MCP extension must be installed and loaded in Chrome
+1. **Extension Loaded**: unibrowse extension must be installed and loaded in Chrome
 2. **Server Running**: MCP server must be running (HTTP mode on port 9010)
 3. **Tab Attached**: At least one browser tab must be attached via the extension popup
 
@@ -391,7 +391,7 @@ For manual testing using the extension popup UI, see:
 **Problem**: Test suite reports no attached tabs.
 
 **Solution**:
-1. Open the Browser MCP extension popup
+1. Open the unibrowse extension popup
 2. Click "Connect" if not already connected
 3. Click on a tab in the "Browser Windows & Tabs" section to attach to it
 4. Verify the tab appears in "Attached Tabs" section

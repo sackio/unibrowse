@@ -1,6 +1,6 @@
 # Future Tools & Enhancements
 
-This document outlines tools that are planned or partially implemented in Browser MCP.
+This document outlines tools that are planned or partially implemented in unibrowse.
 
 ## Table of Contents
 - [Recording/Learning Tool](#recordinglearning-tool)

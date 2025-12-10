@@ -64,13 +64,13 @@ if [[ "${CLAUDE_SUBAGENT_NAME:-}" == "browser-agent" ]] || [[ "${CLAUDE_AGENT_AC
     echo ""
 
     # Check if MongoDB container is running
-    if ! docker ps | grep -q browser-mcp-mongodb; then
+    if ! docker ps | grep -q unibrowse-mongodb; then
         echo "⚠️  MongoDB container not running. Cannot fetch macros."
         exit 0
     fi
 
     # Query macros for the new site
-    MACRO_OUTPUT=$(docker exec browser-mcp-mongodb mongosh browser_mcp --quiet --eval "
+    MACRO_OUTPUT=$(docker exec unibrowse-mongodb mongosh browser_mcp --quiet --eval "
         const siteDomain = '$NEW_DOMAIN';
         const siteMacros = db.macros.find({site: siteDomain}).sort({category: 1, name: 1}).toArray();
         const universalMacros = db.macros.find({site: '*'}).sort({category: 1, name: 1}).toArray();

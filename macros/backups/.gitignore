@@ -1,0 +1,8 @@
+# Keep only the latest backup in git
+# Ignore all timestamped backups except the most recent
+macros_*.json
+!macros_latest.json
+
+# Don't ignore this README
+!README.md
+!.gitignore

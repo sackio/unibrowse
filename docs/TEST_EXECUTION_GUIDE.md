@@ -1,4 +1,4 @@
-# Browser MCP Test Execution Guide
+# unibrowse Test Execution Guide
 
 ## Current Status
 
@@ -7,7 +7,7 @@ The browser-mcp refactor branch has:
 - ✅ Three new MCP tools (get/prune/search interactions)
 - ✅ HTTP/WebSocket server running with hot reload
 - ✅ Service management infrastructure (PM2/systemd)
-- ⚠️  **Browser MCP tools not loaded in current Claude Code session**
+- ⚠️  **unibrowse tools not loaded in current Claude Code session**
 
 ## Why Tests Can't Run Yet
 
@@ -130,7 +130,7 @@ The test suite in `TEST_SUITE.md` contains 10 categories:
 
 1. **Chrome browser** with extension loaded
 2. **Extension connected** to WebSocket (ws://localhost:9009)
-3. **Browser MCP tools available** in Claude Code
+3. **unibrowse tools available** in Claude Code
 4. **Test page open** with interactive elements (Amazon, GitHub, etc.)
 
 ## Expected Workflow
@@ -176,7 +176,7 @@ Choose one:
 Currently running:
 ```
 [HTTP] WebSocket server ready on ws://localhost:9009
-[HTTP] Browser MCP server listening on http://localhost:3010
+[HTTP] unibrowse server listening on http://localhost:3010
 [nodemon] watching path(s): src/**/* extension/**/*
 ```
 

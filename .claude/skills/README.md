@@ -1,6 +1,6 @@
-# Browser MCP Skills
+# unibrowse Skills
 
-This directory contains Claude Code skills for Browser MCP automation.
+This directory contains Claude Code skills for unibrowse automation.
 
 ## Available Skills
 
@@ -67,4 +67,4 @@ After creating or modifying skills:
 ## References
 
 - [Claude Code Skills Documentation](https://docs.claude.com/en/docs/claude-code/skills.md)
-- Browser MCP: `/macros/UTILITY_MACROS.md` and `/macros/ADVANCED_MACROS.md`
+- unibrowse: `/macros/UTILITY_MACROS.md` and `/macros/ADVANCED_MACROS.md`

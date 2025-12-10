@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Multi-Tab Management Test Suite for Browser MCP
+ * Multi-Tab Management Test Suite for unibrowse
  * Comprehensive testing of multi-tab features based on MULTI_TAB_TESTING.md
  *
  * This test suite covers:
@@ -33,7 +33,7 @@ async function connectWebSocket() {
     ws = new WebSocket(WS_URL);
 
     ws.on('open', () => {
-      console.log('✓ Connected to Browser MCP WebSocket');
+      console.log('✓ Connected to unibrowse WebSocket');
       resolve();
     });
 
@@ -243,7 +243,7 @@ async function skipTest(testName, reason) {
 
 async function runMultiTabTests() {
   console.log('\n╔═══════════════════════════════════════════════════════════════╗');
-  console.log('║           BROWSER MCP MULTI-TAB MANAGEMENT TEST SUITE        ║');
+  console.log('║           UNIBROWSE MULTI-TAB MANAGEMENT TEST SUITE          ║');
   console.log('║                                                               ║');
   console.log('║  This test suite validates multi-tab management features:    ║');
   console.log('║  • Tab attachment and labeling                               ║');

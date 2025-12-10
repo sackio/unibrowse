@@ -4,7 +4,7 @@
  * Stores all macros and tests them on multiple websites
  *
  * PREREQUISITES:
- * 1. Browser MCP extension must be installed in Chrome
+ * 1. unibrowse extension must be installed in Chrome
  * 2. MCP server must be running (npm start)
  * 3. Extension must be connected to the server
  *

@@ -1,6 +1,5 @@
 [Unit]
-Description=Browser MCP Server (Development Mode with Hot Reload)
-Documentation=https://browsermcp.io
+Description=unibrowse Server (Development Mode with Hot Reload)
 After=network.target
 
 [Service]
@@ -14,7 +13,7 @@ Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=browser-mcp-dev
+SyslogIdentifier=unibrowse-dev
 
 # Less restrictive security for development
 NoNewPrivileges=true

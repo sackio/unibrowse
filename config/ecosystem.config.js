@@ -1,16 +1,16 @@
-// PM2 Configuration for Browser MCP
+// PM2 Configuration for unibrowse
 // Alternative to systemd for managing the server process
 //
 // Usage:
 //   pm2 start ecosystem.config.js
-//   pm2 logs browser-mcp
-//   pm2 restart browser-mcp
-//   pm2 stop browser-mcp
+//   pm2 logs unibrowse
+//   pm2 restart unibrowse
+//   pm2 stop unibrowse
 //   pm2 startup  # Auto-start on boot
 
 module.exports = {
   apps: [{
-    name: 'browser-mcp',
+    name: 'unibrowse',
     script: './dist/http-server.js',
     cwd: '/home/ben/code/forks/browser-mcp',
     instances: 1,

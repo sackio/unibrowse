@@ -1,8 +1,8 @@
-# Fix for Browser MCP Disconnection Issue
+# Fix for unibrowse Disconnection Issue
 
 ## Problem Summary
 
-The Browser MCP extension was experiencing unexpected disconnections during normal operations, even when tabs remained open. Users reported seeing "Debugger detached: target_closed" events in logs, but confirmed that their tabs were not actually being closed.
+The unibrowse extension was experiencing unexpected disconnections during normal operations, even when tabs remained open. Users reported seeing "Debugger detached: target_closed" events in logs, but confirmed that their tabs were not actually being closed.
 
 ## Root Cause
 
@@ -113,7 +113,7 @@ Typing operation interrupted: debugger detached (page navigation, frame update, 
 To verify the fix works correctly:
 
 1. **Navigate Between Pages**
-   - Connect to a tab with Browser MCP
+   - Connect to a tab with unibrowse
    - Navigate to different pages within the same tab
    - Verify the extension automatically reconnects after each navigation
    - Check browser console for "Successfully reattached" messages
@@ -212,10 +212,10 @@ async attemptReattachWithRetry(tabId, attemptNumber, maxAttempts = 5) {
 - Updated keepalive to skip reattachment if retry logic is already running
 - Proper cleanup of reattachment flag on all exit paths
 
-This allows the Browser MCP to **wait out temporary extension interference** while still properly disconnecting on actual tab closure or persistent failures.
+This allows the unibrowse to **wait out temporary extension interference** while still properly disconnecting on actual tab closure or persistent failures.
 
 ## Version
 
-Fixed in: Browser MCP v1.0.0 (2025-10-20)
+Fixed in: unibrowse v1.0.0 (2025-10-20)
 - Commit `50c3d4f`: Initial fix for false target_closed disconnections
 - Commit `b5eea53`: Added exponential backoff retry for extension interference

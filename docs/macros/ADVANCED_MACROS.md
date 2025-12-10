@@ -1,4 +1,4 @@
-# Browser MCP Advanced Macros
+# unibrowse Advanced Macros
 
 Comprehensive collection of 24 advanced macros for sophisticated browser automation, content analysis, and testing.
 

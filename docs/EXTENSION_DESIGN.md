@@ -1,8 +1,8 @@
-# Browser MCP Extension - Architecture Design
+# unibrowse Extension - Architecture Design
 
 ## Overview
 
-A barebones Chrome extension that connects to the Browser MCP server via WebSocket and executes browser automation commands using the Chrome Debugger API and Chrome DevTools Protocol (CDP).
+A barebones Chrome extension that connects to the unibrowse server via WebSocket and executes browser automation commands using the Chrome Debugger API and Chrome DevTools Protocol (CDP).
 
 ## Core Concept
 
@@ -20,7 +20,7 @@ Active Browser Tab
 ```json
 {
   "manifest_version": 3,
-  "name": "Browser MCP",
+  "name": "unibrowse",
   "version": "1.0.0",
   "permissions": [
     "debugger",
@@ -103,7 +103,7 @@ Simple UI to show connection status and control:
 <!DOCTYPE html>
 <html>
 <body style="width: 300px; padding: 20px;">
-  <h2>Browser MCP</h2>
+  <h2>unibrowse</h2>
   <div id="status">Disconnected</div>
   <button id="connect">Connect</button>
   <button id="disconnect" disabled>Disconnect</button>

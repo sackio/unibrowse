@@ -4,7 +4,7 @@ This command provides instructions and examples for automating Amazon.com using 
 
 ## Prerequisites
 
-1. **Browser MCP Connection**: Ensure you have the Browser MCP extension installed and connected to a tab
+1. **unibrowse Connection**: Ensure you have the unibrowse extension installed and connected to a tab
 2. **Amazon Tab**: Navigate to Amazon.com in your browser
 3. **Macro Storage**: All Amazon macros are stored in MongoDB and ready to use
 
@@ -245,5 +245,5 @@ mcp__browser__browser_execute_macro(
 ## Additional Resources
 
 - Full macro list: `/tmp/amazon_google_shopping_macros.md`
-- Browser MCP documentation: `tests/README.md`
+- unibrowse documentation: `tests/README.md`
 - Macro source code: `backups/macros_latest.json`

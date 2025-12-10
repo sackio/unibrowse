@@ -104,26 +104,45 @@ class CDPHelper {
       this.reattachAttempts = 0;
 
       console.log('[CDP] Calling chrome.debugger.attach...');
-      try {
-        await chrome.debugger.attach(this.target, '1.3');
-      } catch (attachError) {
-        // If another debugger is already attached, try to detach it first
-        if (attachError.message && attachError.message.includes('Another debugger is already attached')) {
-          console.warn('[CDP] Another debugger is attached, attempting to detach first...');
-          try {
-            await chrome.debugger.detach(this.target);
-            console.log('[CDP] Detached previous debugger, retrying attach...');
-            // Brief delay to ensure cleanup
-            await new Promise(resolve => setTimeout(resolve, 100));
-            await chrome.debugger.attach(this.target, '1.3');
-          } catch (detachError) {
-            console.error('[CDP] Failed to detach and reattach:', detachError);
-            throw attachError; // Throw original error
+
+      // Attempt to attach with conflict resolution
+      let attachSuccess = false;
+      let lastError = null;
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await chrome.debugger.attach(this.target, '1.3');
+          attachSuccess = true;
+          break;
+        } catch (attachError) {
+          lastError = attachError;
+          console.error(`[CDP] Attach error (attempt ${attempt}/3):`, attachError);
+
+          // If another debugger is already attached, force detach and retry
+          if (attachError.message && attachError.message.includes('Another debugger is already attached')) {
+            console.warn(`[CDP] Another debugger is attached, force detaching (attempt ${attempt}/3)...`);
+            try {
+              // Force detach - ignore errors
+              await chrome.debugger.detach(this.target).catch(() => {});
+              // Longer delay to ensure Chrome cleans up
+              await new Promise(resolve => setTimeout(resolve, 200 * attempt));
+              console.log(`[CDP] Waiting complete, retrying attach...`);
+            } catch (detachError) {
+              console.warn('[CDP] Detach error (continuing anyway):', detachError);
+              await new Promise(resolve => setTimeout(resolve, 200 * attempt));
+            }
+          } else {
+            // Different error, don't retry
+            throw attachError;
           }
-        } else {
-          throw attachError;
         }
       }
+
+      if (!attachSuccess) {
+        console.error('[CDP] Failed to attach after 3 attempts');
+        throw lastError;
+      }
+
       console.log('[CDP] Debugger attached to tab:', tabId);
 
       // Setup detach listener
