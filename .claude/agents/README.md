@@ -4,23 +4,9 @@ This directory contains specialized agents for Browser MCP automation.
 
 ## Available Agents
 
-### browser-agent
+*No agents configured. Browser automation is now handled via the browser skill in `.claude/skills/browser.md`*
 
-**Purpose:** Browser agent with macro awareness
-
-**Capabilities:**
-- Executes stored macros for common browser tasks
-- Falls back to direct browser control when needed
-- Automatically receives updated macro lists on navigation
-- Suggests new macros when discovering useful workflows
-
-**Tools:** All `mcp__browser__*` tools
-
-**Usage:**
-```bash
-# Invoke the agent in Claude Code
-# The agent will automatically query macros and handle browser tasks
-```
+**Note:** Agents spawned via the Task tool do not have access to MCP tools. For browser automation, use the browser skill or invoke MCP tools directly.
 
 ## How It Works
 
