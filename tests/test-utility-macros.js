@@ -20,6 +20,7 @@ let ws;
 let testCount = 0;
 let passCount = 0;
 let failCount = 0;
+let initialTabIds = []; // Track tabs that existed before the test
 let messageId = 0;
 
 // Define all macros inline (since we can't easily import from the utility-macros.js file)
@@ -289,6 +290,18 @@ async function runTests() {
     console.log('Waiting 2 seconds for extension connection...\n');
     await new Promise(resolve => setTimeout(resolve, 2000));
 
+    // Record initial tab IDs before testing
+    try {
+      const initialResult = await sendMessage('browser_list_attached_tabs', {});
+      const text = initialResult.content?.[0]?.text || '';
+      const idMatches = text.matchAll(/\(ID: (\d+)\)/g);
+      for (const match of idMatches) {
+        initialTabIds.push(parseInt(match[1]));
+      }
+    } catch (e) {
+      // Ignore if we can't get initial tabs
+    }
+
     // Check if any tabs are already attached, if not, attach to a new one
     const attachedTabs = await test('Check for attached tabs', async () => {
       const result = await sendMessage('browser_list_attached_tabs', {});
@@ -476,6 +489,40 @@ async function runTests() {
     console.error(error.stack);
     process.exit(1);
   } finally {
+    // Cleanup: Close only tabs that were created during this test
+    if (ws && ws.readyState === 1) {
+      try {
+        console.log('\n→ Cleaning up test tabs...');
+        const listResult = await sendMessage('browser_list_attached_tabs', {});
+        const text = listResult.content?.[0]?.text || '';
+
+        // Find all current tab IDs
+        const currentTabIds = [];
+        const idMatches = text.matchAll(/\(ID: (\d+)\)/g);
+        for (const match of idMatches) {
+          currentTabIds.push(parseInt(match[1]));
+        }
+
+        // Close tabs that didn't exist before the test
+        const newTabs = currentTabIds.filter(id => !initialTabIds.includes(id));
+
+        if (newTabs.length > 0) {
+          for (const tabId of newTabs) {
+            try {
+              await sendMessage('browser_close_tab', { tabId });
+            } catch (e) {
+              // Tab may already be closed
+            }
+          }
+          console.log(`  ✓ Closed ${newTabs.length} test tab(s)`);
+        } else {
+          console.log('  No test tabs to close');
+        }
+      } catch (e) {
+        console.log(`  ⚠ Cleanup failed: ${e.message}`);
+      }
+    }
+
     if (ws) {
       ws.close();
     }

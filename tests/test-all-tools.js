@@ -16,6 +16,7 @@ const TEST_RESULTS = {
 
 let ws;
 let messageId = 0;
+let createdWindowIds = []; // Track windows created during testing for cleanup
 
 function generateMessageId() {
   return `test-${++messageId}-${Date.now()}`;
@@ -361,6 +362,7 @@ async function runTests() {
 
     if (window1 && window1.windowId) {
       console.log(`  Created window ${window1.windowId} with ${window1.tabs?.length || 0} tab(s)`);
+      createdWindowIds.push(window1.windowId);
     }
 
     // Wait a moment
@@ -375,6 +377,7 @@ async function runTests() {
 
     if (window2 && window2.windowId) {
       console.log(`  Created window ${window2.windowId} with ${window2.tabs?.length || 0} tab(s)`);
+      createdWindowIds.push(window2.windowId);
     }
 
     // Wait a moment
@@ -385,6 +388,7 @@ async function runTests() {
 
     if (window3 && window3.windowId) {
       console.log(`  Created blank window ${window3.windowId}`);
+      createdWindowIds.push(window3.windowId);
     }
 
     // =====================================================================
@@ -441,6 +445,33 @@ async function runTests() {
   } catch (error) {
     console.error('\n✗ Fatal error during testing:', error);
   } finally {
+    // Cleanup: Close all windows created during testing
+    if (ws && createdWindowIds.length > 0) {
+      console.log('\n→ Cleaning up test windows...');
+      for (const windowId of createdWindowIds) {
+        try {
+          // Get all tabs in the window
+          const tabsResult = await sendMessage('browser_list_tabs', {});
+          const windowTabs = tabsResult.content?.[0]?.text?.match(/ID: (\d+)/g)
+            ?.map(m => parseInt(m.split(' ')[1]))
+            .filter(Boolean) || [];
+
+          // Close each tab in the window
+          for (const tabId of windowTabs) {
+            try {
+              await sendMessage('browser_close_tab', { tabId });
+            } catch (e) {
+              // Tab may already be closed
+            }
+          }
+          console.log(`  ✓ Closed window ${windowId}`);
+        } catch (error) {
+          console.log(`  ⚠ Failed to close window ${windowId}: ${error.message}`);
+        }
+      }
+      console.log('✓ Cleanup complete\n');
+    }
+
     if (ws) {
       ws.close();
     }

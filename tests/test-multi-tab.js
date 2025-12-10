@@ -22,6 +22,7 @@ const TEST_RESULTS = {
 
 let ws;
 let messageId = 0;
+let createdTabIds = []; // Track tabs created during testing for cleanup
 
 function generateMessageId() {
   return `test-${++messageId}-${Date.now()}`;
@@ -270,10 +271,16 @@ async function runMultiTabTests() {
       ];
 
       for (let i = 0; i < testUrls.length; i++) {
-        await sendMessage('browser_attach_tab', {
+        const result = await sendMessage('browser_attach_tab', {
           autoOpenUrl: testUrls[i]
         });
         console.log(`  ✓ Created and attached tab ${i + 1}: ${testUrls[i]}`);
+
+        // Store tab ID for cleanup if available
+        if (result.tabId) {
+          createdTabIds.push(result.tabId);
+        }
+
         // Small delay between tab creations
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
@@ -651,6 +658,20 @@ async function runMultiTabTests() {
     console.error('\n✗ Fatal error during testing:', error);
     console.error(error.stack);
   } finally {
+    // Cleanup: Close all tabs created during testing
+    if (ws && createdTabIds.length > 0) {
+      console.log('\n→ Cleaning up test tabs...');
+      for (const tabId of createdTabIds) {
+        try {
+          await sendMessage('browser_close_tab', { tabId });
+          console.log(`  ✓ Closed tab ${tabId}`);
+        } catch (error) {
+          console.log(`  ⚠ Failed to close tab ${tabId}: ${error.message}`);
+        }
+      }
+      console.log('✓ Cleanup complete\n');
+    }
+
     if (ws) {
       ws.close();
     }
