@@ -4,9 +4,34 @@ Complete reference for all 57+ macros available in the Unibrowse browser automat
 
 ## Overview
 
-- **40+ Universal Macros**: Work on any website
-- **17 Amazon Macros**: E-commerce specific automation
-- **7 Categories**: extraction, form, navigation, util, interaction, exploration, cdn
+- **40+ Universal Macros**: Work on any website (7 categories)
+- **51 Site-Specific Macros**: Specialized automation for specific websites
+  - **17 Amazon Macros**: E-commerce automation
+  - **12 Google Shopping Macros**: Product comparison across retailers
+  - **5 Walmart Macros**: Walmart e-commerce automation
+  - **14 Upwork Macros**: Freelance platform automation
+  - **14 Fidelity Macros**: Investment/financial automation
+  - **3 OpenGameArt Macros**: Game asset discovery
+  - **2 CoinTracker Macros**: Crypto portfolio tracking
+  - **1 Google Macro**: Web search automation
+
+**Total Macros**: 91+ (40+ universal + 51 site-specific)
+
+## Site-Specific Macros Documentation
+
+### E-Commerce Sites
+- **[Amazon Macros (17)](AMAZON_MACROS.md)** - Product search, reviews analysis, Rufus AI, cart operations
+- **[Google Shopping Macros (12)](GOOGLE_SHOPPING_MACROS.md)** - Multi-retailer comparison, price tracking, merchant filtering
+- **[Walmart Macros (5)](WALMART_MACROS.md)** - Product search, extraction, sorting, filtering
+
+### Professional & Financial
+- **[Upwork Macros (14)](UPWORK_MACROS.md)** - Job search, proposals, messaging, freelance automation
+- **[Fidelity Macros (14)](FIDELITY_MACROS.md)** - Portfolio analysis, positions, transactions, reporting
+
+### Other Specialized Sites
+- **[OpenGameArt Macros (3)](OPENGAMEART_MACROS.md)** - Asset search, license extraction
+- **[CoinTracker Macros (2)](COINTRACKER_MACROS.md)** - Crypto portfolio, tax summaries
+- **[Google Macros (1)](GOOGLE_MACROS.md)** - Web search with realistic typing
 
 ## Universal Macros (40+)
 
@@ -1234,6 +1259,16 @@ See `.claude/agents/browser-macro-trainer.md` (future feature) for macro creatio
 
 ## Further Reading
 
+### Workflow Patterns
 - [Multi-Tab Patterns](MULTI_TAB.md) - Multi-tab workflow patterns
-- [Amazon Macros](AMAZON_MACROS.md) - Detailed Amazon macro guide
 - [Troubleshooting](TROUBLESHOOTING.md) - Common macro issues and solutions
+
+### Site-Specific Macro Guides
+- [Amazon Macros (17)](AMAZON_MACROS.md) - E-commerce automation for Amazon
+- [Google Shopping Macros (12)](GOOGLE_SHOPPING_MACROS.md) - Multi-retailer price comparison
+- [Walmart Macros (5)](WALMART_MACROS.md) - Walmart product automation
+- [Upwork Macros (14)](UPWORK_MACROS.md) - Freelance platform automation
+- [Fidelity Macros (14)](FIDELITY_MACROS.md) - Investment portfolio management
+- [OpenGameArt Macros (3)](OPENGAMEART_MACROS.md) - Game asset discovery
+- [CoinTracker Macros (2)](COINTRACKER_MACROS.md) - Crypto portfolio tracking
+- [Google Macros (1)](GOOGLE_MACROS.md) - Web search automation

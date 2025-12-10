@@ -2,7 +2,7 @@
   "name": "unibrowse",
   "version": "1.0.0",
   "displayName": "Unibrowse Browser Automation",
-  "description": "Advanced browser automation plugin with 5 specialized sub-agents, 57+ macros, and intelligent delegation for web scraping, form filling, e-commerce automation, and QA testing",
+  "description": "Advanced browser automation plugin with 5 specialized sub-agents, 91+ macros (40+ universal + 51 site-specific), and intelligent delegation for web scraping, form filling, e-commerce automation, and QA testing",
   "author": "unibrowse",
   "repository": "https://github.com/sackio/unibrowse",
   "bugs": "https://github.com/sackio/unibrowse/issues",
@@ -52,7 +52,7 @@
       {
         "path": ".claude/agents/browser-ecommerce.md",
         "name": "browser-ecommerce",
-        "description": "E-commerce specialist for Amazon, Google Shopping, and multi-site price comparison. Expertise in 17 Amazon-specific macros, product search, reviews analysis, Rufus AI integration, and cart operations.",
+        "description": "E-commerce specialist for Amazon, Google Shopping, Walmart, and multi-site price comparison. Expertise in 34 site-specific e-commerce macros (17 Amazon + 12 Google Shopping + 5 Walmart), product search, reviews analysis, Rufus AI integration, and cart operations.",
         "triggers": [
           "amazon",
           "shopping",
@@ -203,7 +203,7 @@
           "npm run store:macros",
           "npm run store:advanced-macros"
         ],
-        "notes": "Stores 57+ macros into MongoDB for use by sub-agents"
+        "notes": "Stores 91+ macros into MongoDB for use by sub-agents"
       },
       {
         "step": 7,
@@ -244,7 +244,7 @@
         },
         {
           "name": "browser-ecommerce",
-          "description": "Amazon and shopping automation with 17 specialized macros"
+          "description": "Amazon, Google Shopping, and Walmart automation with 34 specialized macros"
         },
         {
           "name": "browser-forms",
@@ -261,7 +261,7 @@
       ]
     },
     "macros": {
-      "count": "57+",
+      "count": "91+",
       "categories": [
         "extraction",
         "form",
@@ -273,7 +273,7 @@
       ],
       "storage": "MongoDB",
       "universal": "40+ macros work on any website",
-      "siteSpecific": "17 Amazon-specific macros"
+      "siteSpecific": "51 site-specific macros across 7 websites (Amazon, Google Shopping, Walmart, Upwork, Fidelity, OpenGameArt, CoinTracker, Google)"
     },
     "hooks": {
       "count": 3,
@@ -307,7 +307,14 @@
       "macros": ".claude/skills/browser/MACROS.md",
       "multiTab": ".claude/skills/browser/MULTI_TAB.md",
       "troubleshooting": ".claude/skills/browser/TROUBLESHOOTING.md",
-      "amazon": ".claude/skills/browser/AMAZON_MACROS.md"
+      "amazon": ".claude/skills/browser/AMAZON_MACROS.md",
+      "googleShopping": ".claude/skills/browser/GOOGLE_SHOPPING_MACROS.md",
+      "walmart": ".claude/skills/browser/WALMART_MACROS.md",
+      "upwork": ".claude/skills/browser/UPWORK_MACROS.md",
+      "fidelity": ".claude/skills/browser/FIDELITY_MACROS.md",
+      "opengameart": ".claude/skills/browser/OPENGAMEART_MACROS.md",
+      "cointracker": ".claude/skills/browser/COINTRACKER_MACROS.md",
+      "google": ".claude/skills/browser/GOOGLE_MACROS.md"
     },
     "testing": {
       "guide": "docs/TEST_EXECUTION_GUIDE.md",
@@ -336,8 +343,11 @@
         "Added 5 specialized sub-agents (browser, ecommerce, forms, scraper, qa)",
         "Enhanced browser skill with delegation patterns",
         "Created plugin manifest for community distribution",
-        "Added comprehensive documentation (4 plugin docs, 4 skill docs)",
-        "Preserved existing 57+ macros and hook system",
+        "Added comprehensive documentation (4 plugin docs, 11 skill docs)",
+        "91+ macros across 7 websites (40+ universal + 51 site-specific)",
+        "Site-specific macro documentation: Amazon, Google Shopping, Walmart, Upwork, Fidelity, OpenGameArt, CoinTracker, Google",
+        "Enhanced browser-ecommerce agent with 34 e-commerce macros (Amazon, Google Shopping, Walmart)",
+        "Preserved existing hook system for automatic macro context updates",
         "Implemented tab ID preservation for multi-tab workflows",
         "Removed /browse and /browse-amazon commands"
       ]
