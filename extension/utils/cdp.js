@@ -245,7 +245,19 @@ class CDPHelper {
       this.lastKnownUrl = tab.url;
       return true;
     } catch (error) {
-      // Tab no longer exists or became inaccessible
+      // Check if this is a "tab not found" error (tab was closed)
+      const errorMessage = error.message || '';
+      if (errorMessage.includes('No tab with id:') ||
+          errorMessage.includes('Tab not found') ||
+          errorMessage.includes('tab was closed')) {
+        // Tab was closed - this is expected, handle gracefully
+        console.log(`[CDP] Tab ${this.target.tabId} no longer exists (closed)`);
+        this.target = null;
+        this.isDetaching = true;
+        throw new Error(`Tab ${this.target.tabId} was closed`);
+      }
+
+      // Other errors (restricted URLs, etc.) - log and throw
       console.error('[CDP] Tab validation failed during ensureAttached:', error);
       this.target = null;
       this.isDetaching = true;
@@ -340,10 +352,21 @@ class CDPHelper {
         throw new Error('Page navigation interrupted command execution. This is normal for actions that trigger navigation.');
       }
 
-      // Handle chrome-extension:// URL errors
+      // Handle chrome-extension:// URL errors - detach gracefully instead of throwing
       if (errorMessage.includes('Cannot access a chrome-extension://')) {
-        console.error(`[CDP] ${method} failed: Cannot access chrome-extension:// URL`);
-        throw new Error('Cannot operate on chrome-extension:// URLs. Tab may have navigated to extension page.');
+        console.warn(`[CDP] ${method} failed: Cannot access chrome-extension:// URL - detaching gracefully`);
+
+        // Mark as detached to prevent further operations
+        this.isDetaching = true;
+        this.target = null;
+        this.enabledDomains.clear();
+
+        // Return a special error object that indicates graceful detachment
+        // This allows the caller to distinguish between fatal errors and expected detachments
+        const gracefulError = new Error('Tab navigated to chrome-extension:// URL (graceful detachment)');
+        gracefulError.isGracefulDetachment = true;
+        gracefulError.reason = 'chrome-extension-navigation';
+        throw gracefulError;
       }
 
       // Handle about:blank#blocked and other restricted frame errors

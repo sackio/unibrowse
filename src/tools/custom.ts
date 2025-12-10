@@ -22,6 +22,7 @@ export const getConsoleLogs: Tool = {
     inputSchema: zodToJsonSchema(GetConsoleLogsTool.shape.arguments),
   },
   handle: async (context, _params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const consoleLogs = await context.sendSocketMessage(
@@ -31,9 +32,10 @@ export const getConsoleLogs: Tool = {
       const text: string = consoleLogs
         .map((log) => JSON.stringify(log))
         .join("\n");
-      return textResponse(text);
+      return textResponse(text, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get console logs: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get console logs: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -50,6 +52,7 @@ export const screenshot: Tool = {
     inputSchema: zodToJsonSchema(ScreenshotTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = ScreenshotTool.shape.arguments.parse(params);
@@ -57,9 +60,10 @@ export const screenshot: Tool = {
         "browser_screenshot",
         validatedParams,
       );
-      return imageResponse(screenshot, "image/png");
+      return imageResponse(screenshot, "image/png", max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to capture screenshot: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to capture screenshot: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -76,6 +80,7 @@ export const evaluate: Tool = {
     inputSchema: zodToJsonSchema(EvaluateTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = EvaluateTool.shape.arguments.parse(params);
@@ -83,9 +88,10 @@ export const evaluate: Tool = {
         "browser_evaluate",
         validatedParams,
       );
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to evaluate JavaScript: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to evaluate JavaScript: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -102,6 +108,7 @@ export const getNetworkLogs: Tool = {
     inputSchema: zodToJsonSchema(GetNetworkLogsTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetNetworkLogsTool.shape.arguments.parse(params);
@@ -109,9 +116,10 @@ export const getNetworkLogs: Tool = {
         "browser_get_network_logs",
         validatedParams,
       );
-      return jsonResponse(networkLogs);
+      return jsonResponse(networkLogs, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get network logs: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get network logs: ${error.message}`, false, error, max_tokens);
     }
   },
 };

@@ -68,6 +68,7 @@ export const launchIsolatedChrome: Tool = {
     inputSchema: zodToJsonSchema(LaunchIsolatedChromeTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       const validatedParams = LaunchIsolatedChromeTool.shape.arguments.parse(params);
 
@@ -76,27 +77,25 @@ export const launchIsolatedChrome: Tool = {
       if (!chromeBin) {
         return errorResponse(
           "Could not find Chrome or Chromium executable. " +
-          "Please install Chrome/Chromium or set the path manually.",
-          false
+          "Please install Chrome/Chromium or set the path manually.", false
         );
       }
 
       // Determine project root (go up from src/tools/)
-      const projectRoot = path.resolve(__dirname, "../..");
+      const projectRoot = path.resolve(__dirname, "../..", max_tokens);
       const extensionDir = path.join(projectRoot, "extension");
       const profilesDir = path.join(projectRoot, ".chrome-profiles");
 
       // Verify extension directory exists
       if (!fs.existsSync(extensionDir)) {
         return errorResponse(
-          `Extension directory not found at ${extensionDir}`,
-          false
+          `Extension directory not found at ${extensionDir}`, false
         );
       }
 
       // Create profiles directory if it doesn't exist
       if (!fs.existsSync(profilesDir)) {
-        fs.mkdirSync(profilesDir, { recursive: true });
+        fs.mkdirSync(profilesDir, { recursive: true }, max_tokens);
       }
 
       // Set up profile directory
@@ -176,13 +175,12 @@ export const launchIsolatedChrome: Tool = {
       }
       message += `\nThe extension will auto-connect to the MCP server at localhost:9010`;
 
-      return textResponse(message);
+      return textResponse(message, max_tokens);
     } catch (error) {
+      const { max_tokens } = params || {};
       return errorResponse(
-        `Failed to launch isolated Chrome: ${error.message}`,
-        false,
-        error
-      );
+        `Failed to launch isolated Chrome: ${error.message}`, false, error
+      , max_tokens);
     }
   },
 };

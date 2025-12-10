@@ -9,7 +9,7 @@ import {
 } from "@/types/tool-schemas";
 
 import type { Context } from "@/context";
-import { textResponse, errorResponse } from "@/utils/response-helpers";
+import { textResponse, jsonResponse, errorResponse } from "@/utils/response-helpers";
 
 import type { Tool } from "./tool";
 
@@ -25,13 +25,15 @@ export const listTabs: Tool = {
     description: ListTabsTool.shape.description.value,
     inputSchema: zodToJsonSchema(ListTabsTool.shape.arguments),
   },
-  handle: async (context: Context) => {
+  handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
     try {
       // Don't call ensureAttached() - browser_list_tabs uses chrome.tabs.query which works without attachment
       const tabs = await context.sendSocketMessage("browser_list_tabs", {});
-      return textResponse(`Open tabs:\n${JSON.stringify(tabs, null, 2)}`);
+      return textResponse(`Open tabs:\n${JSON.stringify(tabs, null, 2)}`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to list tabs: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to list tabs: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -49,13 +51,15 @@ export const switchTab: Tool = {
     inputSchema: zodToJsonSchema(SwitchTabTool.shape.arguments),
   },
   handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = SwitchTabTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_switch_tab", validatedParams);
-      return textResponse(`Switched to tab ${validatedParams.tabId}`);
+      return textResponse(`Switched to tab ${validatedParams.tabId}`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to switch tab: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to switch tab: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -73,6 +77,7 @@ export const createTab: Tool = {
     inputSchema: zodToJsonSchema(CreateTabTool.shape.arguments),
   },
   handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = CreateTabTool.shape.arguments.parse(params);
@@ -80,9 +85,10 @@ export const createTab: Tool = {
         "browser_create_tab",
         validatedParams
       );
-      return textResponse(`Created new tab ${result.tabId}${validatedParams.url ? ` at ${validatedParams.url}` : ""}`);
+      return textResponse(`Created new tab ${result.tabId}${validatedParams.url ? ` at ${validatedParams.url}` : ""}`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to create tab: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to create tab: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -100,13 +106,15 @@ export const closeTab: Tool = {
     inputSchema: zodToJsonSchema(CloseTabTool.shape.arguments),
   },
   handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = CloseTabTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_close_tab", validatedParams);
-      return textResponse(`Closed tab ${validatedParams.tabId}`);
+      return textResponse(`Closed tab ${validatedParams.tabId}`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to close tab: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to close tab: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -125,23 +133,17 @@ export const createWindow: Tool = {
     inputSchema: zodToJsonSchema(CreateWindowTool.shape.arguments),
   },
   handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
     try {
       // Don't call ensureAttached() - creating a window doesn't need an existing attachment
       const validatedParams = CreateWindowTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_create_window", validatedParams);
 
-      let message = `Created new window ${result.windowId}`;
-      if (result.tabs && result.tabs.length > 0) {
-        const tabInfo = result.tabs.map((t: any) => `Tab ${t.tabId}: ${t.url}`).join(", ");
-        message += ` with ${result.tabs.length} tab(s) (${tabInfo})`;
-      }
-      if (result.incognito) {
-        message += " [Incognito Mode]";
-      }
-
-      return textResponse(message);
+      // Return the full result object as JSON so tests can access windowId, tabs, etc.
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to create window: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to create window: ${error.message}`, false, error, max_tokens);
     }
   },
 };

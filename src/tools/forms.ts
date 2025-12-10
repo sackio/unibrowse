@@ -24,13 +24,15 @@ export const fillForm: Tool = {
     inputSchema: zodToJsonSchema(FillFormTool.shape.arguments),
   },
   handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = FillFormTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_fill_form", validatedParams);
-      return textResponse(`Filled ${validatedParams.fields.length} form fields`);
+      return textResponse(`Filled ${validatedParams.fields.length} form fields`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to fill form: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to fill form: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -48,13 +50,15 @@ export const submitForm: Tool = {
     inputSchema: zodToJsonSchema(SubmitFormTool.shape.arguments),
   },
   handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = SubmitFormTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_submit_form", validatedParams);
-      return textResponse(`Submitted form "${validatedParams.element}"`);
+      return textResponse(`Submitted form "${validatedParams.element}"`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to submit form: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to submit form: ${error.message}`, false, error, max_tokens);
     }
   },
 };

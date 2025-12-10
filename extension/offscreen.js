@@ -232,15 +232,55 @@ class OffscreenManager {
           // IMPORTANT: Send identification message to server
           // This tells the server that this connection is from the browser extension
           // (not from an external MCP client like the test suite)
-          try {
-            this.ws.send(JSON.stringify({
-              type: 'EXTENSION_REGISTER',
-              source: 'browser-extension'
-            }));
-            console.log('[Offscreen] Sent extension identification to server');
-          } catch (error) {
-            console.error('[Offscreen] Failed to send extension identification:', error);
-          }
+          // Check readyState before sending to avoid CONNECTING state race condition
+          const sendIdentification = () => {
+            try {
+              if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({
+                  type: 'EXTENSION_REGISTER',
+                  source: 'browser-extension'
+                }));
+                console.log('[Offscreen] Sent extension identification to server');
+              } else {
+                // WebSocket not yet in OPEN state, retry after a short delay
+                console.log('[Offscreen] WebSocket not yet OPEN (state:', this.ws?.readyState, '), retrying in 100ms');
+                setTimeout(() => {
+                  try {
+                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                      this.ws.send(JSON.stringify({
+                        type: 'EXTENSION_REGISTER',
+                        source: 'browser-extension'
+                      }));
+                      console.log('[Offscreen] Sent delayed extension identification to server');
+                    } else {
+                      console.warn('[Offscreen] WebSocket still not OPEN after retry. State:', this.ws?.readyState);
+                    }
+                  } catch (retryError) {
+                    console.error('[Offscreen] Retry failed:', retryError.message || retryError.toString());
+                  }
+                }, 100);
+              }
+            } catch (error) {
+              console.warn('[Offscreen] Initial send failed, retrying in 100ms:', error.message || error.toString());
+              setTimeout(() => {
+                try {
+                  if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify({
+                      type: 'EXTENSION_REGISTER',
+                      source: 'browser-extension'
+                    }));
+                    console.log('[Offscreen] Sent delayed extension identification to server');
+                  } else {
+                    console.warn('[Offscreen] WebSocket no longer open, identification not sent. State:', this.ws?.readyState);
+                  }
+                } catch (retryError) {
+                  console.error('[Offscreen] Retry failed:', retryError.message || retryError.toString());
+                }
+              }, 100);
+            }
+          };
+
+          sendIdentification();
 
           // Store connection info (only if Chrome APIs available)
           if (this.isChromeAvailable()) {

@@ -21,13 +21,15 @@ export const listExtensions: Tool = {
     inputSchema: zodToJsonSchema(ListExtensionsTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = ListExtensionsTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_list_extensions", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to list extensions: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to list extensions: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -45,13 +47,15 @@ export const getExtensionInfo: Tool = {
     inputSchema: zodToJsonSchema(GetExtensionInfoTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetExtensionInfoTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_extension_info", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get extension info: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get extension info: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -68,13 +72,15 @@ export const enableExtension: Tool = {
     inputSchema: zodToJsonSchema(EnableExtensionTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = EnableExtensionTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_enable_extension", validatedParams);
-      return textResponse(`Extension enabled successfully (ID: ${validatedParams.id})`);
+      return textResponse(`Extension enabled successfully (ID: ${validatedParams.id}, max_tokens)`);
     } catch (error) {
-      return errorResponse(`Failed to enable extension: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to enable extension: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -91,13 +97,15 @@ export const disableExtension: Tool = {
     inputSchema: zodToJsonSchema(DisableExtensionTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = DisableExtensionTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_disable_extension", validatedParams);
-      return textResponse(`Extension disabled successfully (ID: ${validatedParams.id})`);
+      return textResponse(`Extension disabled successfully (ID: ${validatedParams.id}, max_tokens)`);
     } catch (error) {
-      return errorResponse(`Failed to disable extension: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to disable extension: ${error.message}`, false, error, max_tokens);
     }
   },
 };

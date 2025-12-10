@@ -25,7 +25,8 @@ export const listAttachedTabs: Tool = {
     description: ListAttachedTabsTool.shape.description.value,
     inputSchema: zodToJsonSchema(ListAttachedTabsTool.shape.arguments),
   },
-  handle: async (context: Context) => {
+  handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
     try {
       // Don't call ensureAttached() - we want to list tabs even if none attached
       const result = await context.sendSocketMessage(
@@ -34,7 +35,7 @@ export const listAttachedTabs: Tool = {
       );
 
       if (!result.tabs || result.tabs.length === 0) {
-        return textResponse("No tabs currently attached");
+        return textResponse("No tabs currently attached", max_tokens);
       }
 
       const tabList = result.tabs
@@ -45,13 +46,16 @@ export const listAttachedTabs: Tool = {
         .join("\n");
 
       return textResponse(
-        `Attached tabs (${result.tabs.length}):\n${tabList}`
+        `Attached tabs (${result.tabs.length}):\n${tabList}`,
+        max_tokens
       );
     } catch (error) {
+      const { max_tokens } = params || {};
       return errorResponse(
         `Failed to list attached tabs: ${error.message}`,
         false,
-        error
+        error,
+        max_tokens
       );
     }
   },
@@ -69,6 +73,7 @@ export const setTabLabel: Tool = {
     inputSchema: zodToJsonSchema(SetTabLabelTool.shape.arguments),
   },
   handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
     try {
       // Multi-tab management doesn't need ensureAttached - just need WebSocket connection
       const validatedParams = SetTabLabelTool.shape.arguments.parse(params);
@@ -79,13 +84,12 @@ export const setTabLabel: Tool = {
 
       return textResponse(
         `Updated tab ${validatedParams.tabTarget} label to "${validatedParams.label}"`
-      );
+      , max_tokens);
     } catch (error) {
+      const { max_tokens } = params || {};
       return errorResponse(
-        `Failed to set tab label: ${error.message}`,
-        false,
-        error
-      );
+        `Failed to set tab label: ${error.message}`, false, error
+      , max_tokens);
     }
   },
 };
@@ -103,6 +107,7 @@ export const detachTab: Tool = {
     inputSchema: zodToJsonSchema(DetachTabTool.shape.arguments),
   },
   handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = DetachTabTool.shape.arguments.parse(params);
@@ -112,14 +117,13 @@ export const detachTab: Tool = {
       );
 
       return textResponse(
-        `Detached from tab ${validatedParams.tabId}${result.detachedLabel ? ` (${result.detachedLabel})` : ""}`
+        `Detached from tab ${validatedParams.tabId}${result.detachedLabel ? ` (${result.detachedLabel}, max_tokens)` : ""}`
       );
     } catch (error) {
+      const { max_tokens } = params || {};
       return errorResponse(
-        `Failed to detach tab: ${error.message}`,
-        false,
-        error
-      );
+        `Failed to detach tab: ${error.message}`, false, error
+      , max_tokens);
     }
   },
 };
@@ -135,7 +139,8 @@ export const getActiveTab: Tool = {
     description: GetActiveTabTool.shape.description.value,
     inputSchema: zodToJsonSchema(GetActiveTabTool.shape.arguments),
   },
-  handle: async (context: Context) => {
+  handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
     try {
       // Don't call ensureAttached() - we want to gracefully return no active tab
       const result = await context.sendSocketMessage(
@@ -144,20 +149,23 @@ export const getActiveTab: Tool = {
       );
 
       if (!result.hasActiveTab) {
-        return textResponse("No tabs currently attached");
+        return textResponse("No tabs currently attached", max_tokens);
       }
 
       return textResponse(
         `Active tab: ${result.tabId} (${result.label})\n` +
           `Title: ${result.title}\n` +
           `URL: ${result.url}\n` +
-          `Last used: ${new Date(result.lastUsedAt).toLocaleString()}`
+          `Last used: ${new Date(result.lastUsedAt).toLocaleString()}`,
+        max_tokens
       );
     } catch (error) {
+      const { max_tokens } = params || {};
       return errorResponse(
         `Failed to get active tab: ${error.message}`,
         false,
-        error
+        error,
+        max_tokens
       );
     }
   },
@@ -175,6 +183,7 @@ export const attachTab: Tool = {
     inputSchema: zodToJsonSchema(AttachTabTool.shape.arguments),
   },
   handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
     try {
       const validatedParams = AttachTabTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage(
@@ -183,15 +192,14 @@ export const attachTab: Tool = {
       );
 
       return textResponse(
-        `Attached to tab ${result.tabId}${result.label ? ` (${result.label})` : ""}\n` +
+        `Attached to tab ${result.tabId}${result.label ? ` (${result.label}, max_tokens)` : ""}\n` +
           `URL: ${result.url}`
       );
     } catch (error) {
+      const { max_tokens } = params || {};
       return errorResponse(
-        `Failed to attach to tab: ${error.message}`,
-        false,
-        error
-      );
+        `Failed to attach to tab: ${error.message}`, false, error
+      , max_tokens);
     }
   },
 };

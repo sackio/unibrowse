@@ -22,13 +22,15 @@ export const getCookies: Tool = {
     inputSchema: zodToJsonSchema(GetCookiesTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetCookiesTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_cookies", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get cookies: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get cookies: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -46,13 +48,15 @@ export const setCookie: Tool = {
     inputSchema: zodToJsonSchema(SetCookieTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = SetCookieTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_set_cookie", validatedParams);
-      return textResponse(`Cookie "${validatedParams.name}" set for ${validatedParams.url}`);
+      return textResponse(`Cookie "${validatedParams.name}" set for ${validatedParams.url}`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to set cookie: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to set cookie: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -70,13 +74,15 @@ export const deleteCookie: Tool = {
     inputSchema: zodToJsonSchema(DeleteCookieTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = DeleteCookieTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_delete_cookie", validatedParams);
-      return textResponse(`Cookie "${validatedParams.name}" deleted from ${validatedParams.url}`);
+      return textResponse(`Cookie "${validatedParams.name}" deleted from ${validatedParams.url}`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to delete cookie: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to delete cookie: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -94,13 +100,15 @@ export const clearCookies: Tool = {
     inputSchema: zodToJsonSchema(ClearCookiesTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = ClearCookiesTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_clear_cookies", validatedParams);
-      return textResponse(`Cleared ${result.count} cookie(s)`);
+      return textResponse(`Cleared ${result.count} cookie(s, max_tokens)`);
     } catch (error) {
-      return errorResponse(`Failed to clear cookies: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to clear cookies: ${error.message}`, false, error, max_tokens);
     }
   },
 };

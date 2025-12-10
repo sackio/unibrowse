@@ -23,13 +23,15 @@ export const downloadFile: Tool = {
     inputSchema: zodToJsonSchema(DownloadFileTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = DownloadFileTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_download_file", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to download file: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to download file: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -47,13 +49,15 @@ export const getDownloads: Tool = {
     inputSchema: zodToJsonSchema(GetDownloadsTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetDownloadsTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_downloads", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get downloads: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get downloads: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -70,13 +74,15 @@ export const cancelDownload: Tool = {
     inputSchema: zodToJsonSchema(CancelDownloadTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = CancelDownloadTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_cancel_download", validatedParams);
-      return textResponse(`Download ${validatedParams.downloadId} cancelled`);
+      return textResponse(`Download ${validatedParams.downloadId} cancelled`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to cancel download: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to cancel download: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -93,13 +99,15 @@ export const openDownload: Tool = {
     inputSchema: zodToJsonSchema(OpenDownloadTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = OpenDownloadTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_open_download", validatedParams);
-      return textResponse(`Opened download ${validatedParams.downloadId}`);
+      return textResponse(`Opened download ${validatedParams.downloadId}`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to open download: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to open download: ${error.message}`, false, error, max_tokens);
     }
   },
 };

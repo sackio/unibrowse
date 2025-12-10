@@ -20,13 +20,15 @@ export const getNetworkState: Tool = {
     inputSchema: zodToJsonSchema(GetNetworkStateTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetNetworkStateTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_network_state", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get network state: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get network state: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -44,13 +46,15 @@ export const setNetworkConditions: Tool = {
     inputSchema: zodToJsonSchema(SetNetworkConditionsTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = SetNetworkConditionsTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_set_network_conditions", validatedParams);
-      return textResponse("Network conditions updated successfully");
+      return textResponse("Network conditions updated successfully", max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to set network conditions: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to set network conditions: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -68,13 +72,15 @@ export const clearCache: Tool = {
     inputSchema: zodToJsonSchema(ClearCacheTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = ClearCacheTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_clear_cache", validatedParams);
-      return textResponse("Cache cleared successfully");
+      return textResponse("Cache cleared successfully", max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to clear cache: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to clear cache: ${error.message}`, false, error, max_tokens);
     }
   },
 };

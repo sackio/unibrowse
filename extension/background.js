@@ -395,32 +395,45 @@ class TabManager {
 
     console.log('[TabManager] Detaching from tab:', tabId, tabInfo.label);
 
-    // Remove [MCP] prefix from tab title before detaching
+    // Check if tab still exists before trying to restore title
+    let tabExists = false;
     try {
-      // Try CDP first if still attached
-      if (tabInfo.cdp.isAttached()) {
-        await tabInfo.cdp.evaluate(`
-          if (document.title.startsWith('🟢 [MCP] ')) {
-            document.title = document.title.replace('🟢 [MCP] ', '');
-          }
-        `, true);
-        console.log('[TabManager] Removed [MCP] prefix using CDP');
-      }
+      await chrome.tabs.get(tabId);
+      tabExists = true;
     } catch (error) {
-      // Fall back to chrome.scripting if CDP fails
-      console.warn('[TabManager] CDP title restoration failed, using chrome.scripting:', error);
+      // Tab was closed - this is expected, no need to restore title
+      console.log('[TabManager] Tab no longer exists (closed), skipping title restoration');
+    }
+
+    // Only restore title if tab still exists
+    if (tabExists) {
+      // Remove [MCP] prefix from tab title before detaching
       try {
-        await chrome.scripting.executeScript({
-          target: { tabId },
-          func: () => {
+        // Try CDP first if still attached
+        if (tabInfo.cdp.isAttached()) {
+          await tabInfo.cdp.evaluate(`
             if (document.title.startsWith('🟢 [MCP] ')) {
               document.title = document.title.replace('🟢 [MCP] ', '');
             }
-          }
-        });
-        console.log('[TabManager] Removed [MCP] prefix using chrome.scripting');
-      } catch (scriptError) {
-        console.error('[TabManager] Failed to restore tab title:', scriptError);
+          `, true);
+          console.log('[TabManager] Removed [MCP] prefix using CDP');
+        }
+      } catch (error) {
+        // Fall back to chrome.scripting if CDP fails
+        console.warn('[TabManager] CDP title restoration failed, using chrome.scripting:', error);
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => {
+              if (document.title.startsWith('🟢 [MCP] ')) {
+                document.title = document.title.replace('🟢 [MCP] ', '');
+              }
+            }
+          });
+          console.log('[TabManager] Removed [MCP] prefix using chrome.scripting');
+        } catch (scriptError) {
+          console.warn('[TabManager] Failed to restore tab title (tab may have closed):', scriptError.message);
+        }
       }
     }
 
@@ -675,7 +688,9 @@ class BackgroundController {
           } else {
             console.error('[Background] Max reattachment attempts reached while tab at restricted URL');
             this.isReattaching = false;
-            this.disconnect();
+            // Don't disconnect - keep WebSocket alive even without attached tabs
+            console.log('[Background] Keeping WebSocket connected despite tab detachment');
+            this.state.temporarilyDetached = true;
             return;
           }
         }
@@ -703,7 +718,9 @@ class BackgroundController {
           } else {
             console.error('[Background] Max reattachment attempts reached, giving up');
             this.isReattaching = false;
-            this.disconnect();
+            // Don't disconnect - keep WebSocket alive even without attached tabs
+            console.log('[Background] Keeping WebSocket connected despite tab detachment');
+            this.state.temporarilyDetached = true;
             return;
           }
         }
@@ -725,9 +742,10 @@ class BackgroundController {
         }
 
         // Either tab was closed or we've exhausted retries
-        console.log('[Background] Disconnecting after failed reattachment');
+        console.log('[Background] Tab closed or reattachment failed - keeping WebSocket connected');
         this.isReattaching = false;
-        this.disconnect();
+        // Don't disconnect - keep WebSocket alive even without attached tabs
+        this.state.temporarilyDetached = true;
       }
     }, delay);
   }
@@ -810,12 +828,12 @@ class BackgroundController {
               await this.injectBackgroundCapture();
             } catch (error) {
               console.error('[Background] Failed to re-attach debugger:', error);
-              // If re-attachment fails after multiple attempts, disconnect
+              // If re-attachment fails, stay in temporary detachment but keep WebSocket connected
               if (error.message && error.message.includes('restricted URL')) {
                 console.log('[Background] Cannot reattach to restricted URL, staying in temporary detachment');
               } else {
-                console.error('[Background] Reattachment failed permanently, disconnecting');
-                this.disconnect();
+                console.error('[Background] Reattachment failed - keeping WebSocket connected without attached tab');
+                this.state.temporarilyDetached = true;
               }
             }
           } else {
@@ -940,10 +958,17 @@ class BackgroundController {
         // Handle other permanent reasons or confirmed tab closure
         const permanentReasons = ['canceled_by_user'];
 
-        if (permanentReasons.includes(reason) || reason === 'target_closed') {
-          // Permanent detachment - fully disconnect
-          console.log('[Background] Permanent detachment, disconnecting completely');
+        if (permanentReasons.includes(reason)) {
+          // Only disconnect on explicit user cancellation
+          console.log('[Background] User canceled debugger, disconnecting completely');
           this.disconnect();
+        } else if (reason === 'target_closed') {
+          // Tab closed - keep WebSocket connected
+          console.log('[Background] Tab closed - keeping WebSocket connected without attached tab');
+          this.state.temporarilyDetached = true;
+          this.cdp.target = null;
+          this.cdp.isDetaching = false;
+          this.cdp.enabledDomains.clear();
         } else {
           // Temporary detachment (e.g., navigation to chrome-extension:// URL)
           console.log('[Background] Temporary detachment, keeping connection state');
@@ -1317,8 +1342,50 @@ class BackgroundController {
             console.log('[Background] Keepalive skipping reattachment - tab still on restricted URL:', tab?.url);
           }
         } catch (error) {
-          console.error('[Background] Keepalive reattachment failed:', error);
-          // Don't disconnect on keepalive failure - let the normal error handling deal with it
+          // Check if the error is due to tab not existing
+          const isTabNotFound = error.message && (
+            error.message.includes('No tab with id') ||
+            error.message.includes('tab not found')
+          );
+
+          if (isTabNotFound) {
+            console.log('[Background] Keepalive detected tab no longer exists:', this.state.tabId);
+            console.log('[Background] Cleaning up state and switching to another attached tab if available');
+
+            // Clear the temporarily detached state
+            this.state.temporarilyDetached = false;
+
+            // Try to switch to another attached tab, or clear state if none available
+            const lastUsedTabId = this.tabManager.getLastUsedTabId();
+            if (lastUsedTabId && lastUsedTabId !== this.state.tabId) {
+              const tabInfo = this.tabManager.attachedTabs.get(lastUsedTabId);
+              if (tabInfo) {
+                this.state.tabId = lastUsedTabId;
+                this.state.tabUrl = tabInfo.url;
+                this.state.tabTitle = tabInfo.title;
+                this.state.originalTabTitle = tabInfo.originalTitle;
+                console.log('[Background] Switched active tab to:', lastUsedTabId);
+              } else {
+                // Clear state - no valid tabs available
+                this.state.tabId = null;
+                this.state.tabUrl = null;
+                this.state.tabTitle = null;
+                this.state.originalTabTitle = null;
+                console.log('[Background] No attached tabs available, cleared tab state');
+              }
+            } else {
+              // Clear state - no other tabs available
+              this.state.tabId = null;
+              this.state.tabUrl = null;
+              this.state.tabTitle = null;
+              this.state.originalTabTitle = null;
+              console.log('[Background] No attached tabs available, cleared tab state');
+            }
+          } else {
+            // Other error - log but don't clear state
+            console.error('[Background] Keepalive reattachment failed:', error);
+            // Don't disconnect on keepalive failure - let the normal error handling deal with it
+          }
         }
       }
     }, 2000); // Check every 2 seconds
@@ -2250,15 +2317,38 @@ class BackgroundController {
       });
     } catch (error) {
       console.error('[Background] Handler error:', error);
-      this.ws.sendNoResponse({
-        type: 'messageResponse',
-        payload: {
-          requestId: id,
-          error: error.message
-        }
-      }).catch(err => {
-        console.error('[Background] Failed to send error response:', err);
-      });
+
+      // Check if this is a graceful detachment (tab navigated to restricted URL)
+      if (error.isGracefulDetachment) {
+        console.log('[Background] Graceful detachment detected - tab became inaccessible');
+
+        // Mark as temporarily detached to allow recovery
+        this.state.temporarilyDetached = true;
+
+        // Send informative error message
+        this.ws.sendNoResponse({
+          type: 'messageResponse',
+          payload: {
+            requestId: id,
+            error: `Tab is temporarily inaccessible (${error.reason || 'restricted URL'}). The connection remains active. You can attach to a different tab or wait for the current tab to navigate back.`,
+            errorType: 'graceful_detachment',
+            reason: error.reason
+          }
+        }).catch(err => {
+          console.error('[Background] Failed to send graceful detachment response:', err);
+        });
+      } else {
+        // Regular error handling
+        this.ws.sendNoResponse({
+          type: 'messageResponse',
+          payload: {
+            requestId: id,
+            error: error.message
+          }
+        }).catch(err => {
+          console.error('[Background] Failed to send error response:', err);
+        });
+      }
     }
   }
 

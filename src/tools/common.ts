@@ -28,15 +28,17 @@ export const navigate: ToolFactory = (snapshot) => ({
   },
   handle: async (context, params) => {
     try {
+      const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = NavigateTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_navigate", validatedParams);
       if (snapshot) {
-        return captureAriaSnapshot(context, "", validatedParams.tabTarget);
+        return captureAriaSnapshot(context, "", validatedParams.tabTarget, max_tokens);
       }
-      return textResponse(`Navigated to ${validatedParams.url}`);
+      return textResponse(`Navigated to ${validatedParams.url}`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to navigate: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to navigate: ${error.message}`, false, error, max_tokens);
     }
   },
 });
@@ -54,15 +56,17 @@ export const goBack: ToolFactory = (snapshot) => ({
   },
   handle: async (context, params) => {
     try {
+      const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = GoBackTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_go_back", validatedParams);
       if (snapshot) {
-        return captureAriaSnapshot(context, "", validatedParams.tabTarget);
+        return captureAriaSnapshot(context, "", validatedParams.tabTarget, max_tokens);
       }
-      return textResponse("Navigated back");
+      return textResponse("Navigated back", max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to go back: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to go back: ${error.message}`, false, error, max_tokens);
     }
   },
 });
@@ -80,15 +84,17 @@ export const goForward: ToolFactory = (snapshot) => ({
   },
   handle: async (context, params) => {
     try {
+      const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = GoForwardTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_go_forward", validatedParams);
       if (snapshot) {
-        return captureAriaSnapshot(context, "", validatedParams.tabTarget);
+        return captureAriaSnapshot(context, "", validatedParams.tabTarget, max_tokens);
       }
-      return textResponse("Navigated forward");
+      return textResponse("Navigated forward", max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to go forward: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to go forward: ${error.message}`, false, error, max_tokens);
     }
   },
 });
@@ -106,12 +112,14 @@ export const wait: Tool = {
   },
   handle: async (context, params) => {
     try {
+      const { max_tokens } = params || {};
       await context.ensureAttached();
       const { time } = WaitTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_wait", { time });
-      return textResponse(`Waited for ${time} seconds`);
+      return textResponse(`Waited for ${time} seconds`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to wait: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to wait: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -129,12 +137,14 @@ export const pressKey: Tool = {
   },
   handle: async (context, params) => {
     try {
+      const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = PressKeyTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_press_key", validatedParams);
-      return textResponse(`Pressed key ${validatedParams.key}`);
+      return textResponse(`Pressed key ${validatedParams.key}`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to press key: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to press key: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -152,14 +162,16 @@ export const scroll: Tool = {
   },
   handle: async (context, params) => {
     try {
+      const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = ScrollTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_scroll", validatedParams);
       const x = validatedParams.x ?? 0;
       const y = validatedParams.y;
-      return textResponse(`Scrolled by (${x}, ${y}) pixels`);
+      return textResponse(`Scrolled by (${x}, ${y}) pixels`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to scroll: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to scroll: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -177,12 +189,14 @@ export const scrollToElement: Tool = {
   },
   handle: async (context, params) => {
     try {
+      const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = ScrollToElementTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_scroll_to_element", validatedParams);
-      return textResponse(`Scrolled to "${validatedParams.element}"`);
+      return textResponse(`Scrolled to "${validatedParams.element}"`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to scroll to element: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to scroll to element: ${error.message}`, false, error, max_tokens);
     }
   },
 };

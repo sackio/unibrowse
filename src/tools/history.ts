@@ -23,13 +23,15 @@ export const searchHistory: Tool = {
     inputSchema: zodToJsonSchema(SearchHistoryTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = SearchHistoryTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_search_history", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to search history: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to search history: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -47,13 +49,15 @@ export const getHistoryVisits: Tool = {
     inputSchema: zodToJsonSchema(GetHistoryVisitsTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetHistoryVisitsTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_history_visits", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get history visits: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get history visits: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -71,13 +75,15 @@ export const deleteHistory: Tool = {
     inputSchema: zodToJsonSchema(DeleteHistoryTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = DeleteHistoryTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_delete_history", validatedParams);
-      return textResponse(`Deleted ${validatedParams.urls.length} URL(s) from history`);
+      return textResponse(`Deleted ${validatedParams.urls.length} URL(s, max_tokens) from history`);
     } catch (error) {
-      return errorResponse(`Failed to delete history: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to delete history: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -95,15 +101,17 @@ export const clearHistory: Tool = {
     inputSchema: zodToJsonSchema(ClearHistoryTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = ClearHistoryTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_clear_history", validatedParams);
       const startDate = new Date(validatedParams.startTime).toISOString();
       const endDate = new Date(validatedParams.endTime).toISOString();
-      return textResponse(`Cleared history from ${startDate} to ${endDate}`);
+      return textResponse(`Cleared history from ${startDate} to ${endDate}`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to clear history: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to clear history: ${error.message}`, false, error, max_tokens);
     }
   },
 };

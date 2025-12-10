@@ -19,13 +19,15 @@ export const getVersion: Tool = {
     inputSchema: zodToJsonSchema(GetVersionTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetVersionTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_version", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get version: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get version: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -43,13 +45,15 @@ export const getSystemInfo: Tool = {
     inputSchema: zodToJsonSchema(GetSystemInfoTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetSystemInfoTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_system_info", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get system info: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get system info: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -67,13 +71,15 @@ export const getBrowserInfo: Tool = {
     inputSchema: zodToJsonSchema(GetBrowserInfoTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetBrowserInfoTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_browser_info", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get browser info: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get browser info: ${error.message}`, false, error, max_tokens);
     }
   },
 };

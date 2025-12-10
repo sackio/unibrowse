@@ -30,13 +30,15 @@ export const queryDOM: Tool = {
     inputSchema: zodToJsonSchema(QueryDOMTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = QueryDOMTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_query_dom", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to query DOM: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to query DOM: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -54,13 +56,15 @@ export const getVisibleText: Tool = {
     inputSchema: zodToJsonSchema(GetVisibleTextTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetVisibleTextTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_visible_text", validatedParams);
-      return typeof result === "string" ? textResponse(result) : jsonResponse(result);
+      return typeof result === "string" ? textResponse(result, max_tokens) : jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get visible text: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get visible text: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -78,13 +82,15 @@ export const getComputedStyles: Tool = {
     inputSchema: zodToJsonSchema(GetComputedStylesTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetComputedStylesTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_computed_styles", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get computed styles: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get computed styles: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -102,13 +108,15 @@ export const checkVisibility: Tool = {
     inputSchema: zodToJsonSchema(CheckVisibilityTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = CheckVisibilityTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_check_visibility", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to check visibility: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to check visibility: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -126,13 +134,15 @@ export const getAttributes: Tool = {
     inputSchema: zodToJsonSchema(GetAttributesTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetAttributesTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_attributes", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get attributes: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get attributes: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -150,13 +160,15 @@ export const countElements: Tool = {
     inputSchema: zodToJsonSchema(CountElementsTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = CountElementsTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_count_elements", validatedParams);
-      return textResponse(`Found ${result} elements matching selector "${validatedParams.selector}"`);
+      return textResponse(`Found ${result} elements matching selector "${validatedParams.selector}"`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to count elements: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to count elements: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -174,13 +186,15 @@ export const getPageMetadata: Tool = {
     inputSchema: zodToJsonSchema(GetPageMetadataTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetPageMetadataTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_page_metadata", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get page metadata: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get page metadata: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -198,13 +212,15 @@ export const getFilteredAriaTree: Tool = {
     inputSchema: zodToJsonSchema(GetFilteredAriaTreeTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetFilteredAriaTreeTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_filtered_aria_tree", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get filtered ARIA tree: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get filtered ARIA tree: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -222,13 +238,15 @@ export const findByText: Tool = {
     inputSchema: zodToJsonSchema(FindByTextTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = FindByTextTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_find_by_text", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to find by text: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to find by text: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -246,13 +264,15 @@ export const getFormValues: Tool = {
     inputSchema: zodToJsonSchema(GetFormValuesTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetFormValuesTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_form_values", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get form values: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get form values: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -270,13 +290,15 @@ export const checkElementState: Tool = {
     inputSchema: zodToJsonSchema(CheckElementStateTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = CheckElementStateTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_check_element_state", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to check element state: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to check element state: ${error.message}`, false, error, max_tokens);
     }
   },
 };

@@ -57,24 +57,38 @@ const TabTargetSchema = z.object({
     ),
 });
 
+// Schema for optional token limiting (used across all tools to control response size)
+const MaxTokensSchema = z.object({
+  max_tokens: z
+    .number()
+    .positive()
+    .optional()
+    .describe(
+      "Optional maximum tokens for response output (default: 25000). " +
+      "Claude Code's default MCP tool response limit is 25,000 tokens. " +
+      "Use this to control response size for large outputs (snapshots, screenshots, logs, etc.). " +
+      "Set to a lower value to reduce response size or higher value if MAX_MCP_OUTPUT_TOKENS env var is increased."
+    ),
+});
+
 export const NavigateTool = z.object({
   name: z.literal("browser_navigate"),
   description: z.literal("Navigate to a URL"),
   arguments: z.object({
     url: z.string().describe("The URL to navigate to"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const GoBackTool = z.object({
   name: z.literal("browser_go_back"),
   description: z.literal("Go back to the previous page"),
-  arguments: TabTargetSchema,
+  arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
 
 export const GoForwardTool = z.object({
   name: z.literal("browser_go_forward"),
   description: z.literal("Go forward to the next page"),
-  arguments: TabTargetSchema,
+  arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
 
 export const WaitTool = z.object({
@@ -82,7 +96,7 @@ export const WaitTool = z.object({
   description: z.literal("Wait for a specified time in seconds"),
   arguments: z.object({
     time: z.number().describe("The time to wait in seconds"),
-  }),
+  }).merge(MaxTokensSchema),
 });
 
 export const PressKeyTool = z.object({
@@ -94,7 +108,7 @@ export const PressKeyTool = z.object({
       .describe(
         "Name of the key to press or a character to generate, such as `ArrowLeft` or `a`"
       ),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const ScrollTool = z.object({
@@ -103,19 +117,19 @@ export const ScrollTool = z.object({
   arguments: z.object({
     x: z.number().optional().describe("Horizontal scroll amount in pixels (positive = right, negative = left). Default: 0"),
     y: z.number().describe("Vertical scroll amount in pixels (positive = down, negative = up)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const ScrollToElementTool = z.object({
   name: z.literal("browser_scroll_to_element"),
   description: z.literal("Scroll to make a specific element visible in the viewport"),
-  arguments: ElementSchema.merge(TabTargetSchema),
+  arguments: ElementSchema.merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const ListTabsTool = z.object({
   name: z.literal("browser_list_tabs"),
   description: z.literal("List all open browser tabs"),
-  arguments: z.object({}),
+  arguments: z.object({}).merge(MaxTokensSchema),
 });
 
 export const SwitchTabTool = z.object({
@@ -123,7 +137,7 @@ export const SwitchTabTool = z.object({
   description: z.literal("Switch to a specific browser tab"),
   arguments: z.object({
     tabId: z.number().describe("The ID of the tab to switch to"),
-  }),
+  }).merge(MaxTokensSchema),
 });
 
 export const CreateTabTool = z.object({
@@ -131,7 +145,7 @@ export const CreateTabTool = z.object({
   description: z.literal("Create a new browser tab"),
   arguments: z.object({
     url: z.string().optional().describe("URL to open in the new tab (default: about:blank)"),
-  }),
+  }).merge(MaxTokensSchema),
 });
 
 export const CloseTabTool = z.object({
@@ -139,7 +153,7 @@ export const CloseTabTool = z.object({
   description: z.literal("Close a specific browser tab"),
   arguments: z.object({
     tabId: z.number().describe("The ID of the tab to close"),
-  }),
+  }).merge(MaxTokensSchema),
 });
 
 export const CreateWindowTool = z.object({
@@ -151,7 +165,7 @@ export const CreateWindowTool = z.object({
     incognito: z.boolean().optional().describe("Whether to open in incognito/private mode (default: false)"),
     width: z.number().optional().describe("Window width in pixels"),
     height: z.number().optional().describe("Window height in pixels"),
-  }),
+  }).merge(MaxTokensSchema),
 });
 
 export const FillFormTool = z.object({
@@ -171,13 +185,13 @@ export const FillFormTool = z.object({
           .describe("Value to fill in the field"),
       })
     ).describe("Array of fields to fill"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const SubmitFormTool = z.object({
   name: z.literal("browser_submit_form"),
   description: z.literal("Submit a form"),
-  arguments: ElementSchema.merge(TabTargetSchema),
+  arguments: ElementSchema.merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const GetNetworkLogsTool = z.object({
@@ -185,7 +199,7 @@ export const GetNetworkLogsTool = z.object({
   description: z.literal("Get network requests and responses captured since page load"),
   arguments: z.object({
     filter: z.string().optional().describe("Optional filter to match URLs (e.g., 'api', '.json')"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const SnapshotTool = z.object({
@@ -193,13 +207,13 @@ export const SnapshotTool = z.object({
   description: z.literal(
     "Capture accessibility snapshot of the current page. Use this for getting references to elements to interact with."
   ),
-  arguments: TabTargetSchema,
+  arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
 
 export const ClickTool = z.object({
   name: z.literal("browser_click"),
   description: z.literal("Perform click on a web page"),
-  arguments: ElementSchema.merge(TabTargetSchema),
+  arguments: ElementSchema.merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const DragTool = z.object({
@@ -222,13 +236,13 @@ export const DragTool = z.object({
     endRef: z
       .string()
       .describe("Exact target element reference from the page snapshot"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const HoverTool = z.object({
   name: z.literal("browser_hover"),
   description: z.literal("Hover over element on page"),
-  arguments: ElementSchema.merge(TabTargetSchema),
+  arguments: ElementSchema.merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const TypeTool = z.object({
@@ -239,7 +253,7 @@ export const TypeTool = z.object({
     submit: z
       .boolean()
       .describe("Whether to submit entered text (press Enter after)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const SelectOptionTool = z.object({
@@ -251,19 +265,19 @@ export const SelectOptionTool = z.object({
       .describe(
         "Array of values to select in the dropdown. This can be a single value or multiple values."
       ),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const ScreenshotTool = z.object({
   name: z.literal("browser_screenshot"),
   description: z.literal("Take a screenshot of the current page"),
-  arguments: TabTargetSchema,
+  arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
 
 export const GetConsoleLogsTool = z.object({
   name: z.literal("browser_get_console_logs"),
   description: z.literal("Get the console logs from the browser"),
-  arguments: TabTargetSchema,
+  arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
 
 export const EvaluateTool = z.object({
@@ -273,7 +287,7 @@ export const EvaluateTool = z.object({
     expression: z
       .string()
       .describe("JavaScript expression to evaluate in page context"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 // DOM Exploration Tools
@@ -289,7 +303,7 @@ export const QueryDOMTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of elements to return (default: 10)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const GetVisibleTextTool = z.object({
@@ -306,7 +320,7 @@ export const GetVisibleTextTool = z.object({
       .number()
       .optional()
       .describe("Maximum text length to return (default: 5000)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const GetComputedStylesTool = z.object({
@@ -320,7 +334,7 @@ export const GetComputedStylesTool = z.object({
       .describe(
         "Specific CSS properties to retrieve (e.g. ['display', 'color']). If not specified, returns common layout properties."
       ),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const CheckVisibilityTool = z.object({
@@ -330,7 +344,7 @@ export const CheckVisibilityTool = z.object({
   ),
   arguments: z.object({
     selector: z.string().describe("CSS selector for the target element"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const GetAttributesTool = z.object({
@@ -344,7 +358,7 @@ export const GetAttributesTool = z.object({
       .describe(
         "Specific attributes to retrieve (e.g. ['href', 'class']). If not specified, returns all attributes."
       ),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const CountElementsTool = z.object({
@@ -352,7 +366,7 @@ export const CountElementsTool = z.object({
   description: z.literal("Count number of elements matching a CSS selector"),
   arguments: z.object({
     selector: z.string().describe("CSS selector to count matching elements"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const GetPageMetadataTool = z.object({
@@ -360,7 +374,7 @@ export const GetPageMetadataTool = z.object({
   description: z.literal(
     "Get page metadata including title, description, Open Graph tags, schema.org data, etc."
   ),
-  arguments: TabTargetSchema,
+  arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
 
 export const GetFilteredAriaTreeTool = z.object({
@@ -383,7 +397,7 @@ export const GetFilteredAriaTreeTool = z.object({
       .boolean()
       .optional()
       .describe("Only include interactive elements (buttons, links, inputs, etc.)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const FindByTextTool = z.object({
@@ -405,7 +419,7 @@ export const FindByTextTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of results to return (default: 10)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const GetFormValuesTool = z.object({
@@ -418,7 +432,7 @@ export const GetFormValuesTool = z.object({
       .string()
       .optional()
       .describe("Optional CSS selector for a specific form. If not specified, gets all form fields on the page."),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const CheckElementStateTool = z.object({
@@ -428,7 +442,7 @@ export const CheckElementStateTool = z.object({
   ),
   arguments: z.object({
     selector: z.string().describe("CSS selector for the target element"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const RequestUserActionTool = z.object({
@@ -439,7 +453,7 @@ export const RequestUserActionTool = z.object({
   arguments: z.object({
     request: z.string().describe("Clear instructions for what you want the user to do (e.g., 'Please navigate to your shopping cart and add an item')"),
     timeout: z.number().optional().describe("Maximum time to wait for user response in seconds (default: 300s = 5 minutes). After timeout, request is automatically cancelled."),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 // Background Interaction Log Tools
@@ -482,7 +496,7 @@ export const GetInteractionsTool = z.object({
       .enum(["asc", "desc"])
       .optional()
       .describe("Sort order by timestamp (default: desc - newest first)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const PruneInteractionsTool = z.object({
@@ -531,7 +545,7 @@ export const PruneInteractionsTool = z.object({
       .string()
       .optional()
       .describe("Remove interactions matching this selector regex"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const SearchInteractionsTool = z.object({
@@ -559,7 +573,7 @@ export const SearchInteractionsTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of results (default: 50)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 // Cookie Management Tools
@@ -579,7 +593,7 @@ export const GetCookiesTool = z.object({
       .string()
       .optional()
       .describe("Filter by cookie domain"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const SetCookieTool = z.object({
@@ -601,7 +615,7 @@ export const SetCookieTool = z.object({
       .number()
       .optional()
       .describe("Expiration date in Unix timestamp (seconds since epoch)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const DeleteCookieTool = z.object({
@@ -610,7 +624,7 @@ export const DeleteCookieTool = z.object({
   arguments: z.object({
     url: z.string().describe("URL of the cookie to delete"),
     name: z.string().describe("Name of the cookie to delete"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const ClearCookiesTool = z.object({
@@ -625,7 +639,7 @@ export const ClearCookiesTool = z.object({
       .string()
       .optional()
       .describe("Only clear cookies for this domain"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 // Download Management Tools
@@ -642,7 +656,7 @@ export const DownloadFileTool = z.object({
       .boolean()
       .optional()
       .describe("Whether to prompt user for save location (default: false)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const GetDownloadsTool = z.object({
@@ -661,7 +675,7 @@ export const GetDownloadsTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of downloads to return"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const CancelDownloadTool = z.object({
@@ -669,7 +683,7 @@ export const CancelDownloadTool = z.object({
   description: z.literal("Cancel a download in progress"),
   arguments: z.object({
     downloadId: z.number().describe("ID of the download to cancel"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const OpenDownloadTool = z.object({
@@ -677,14 +691,14 @@ export const OpenDownloadTool = z.object({
   description: z.literal("Open a downloaded file"),
   arguments: z.object({
     downloadId: z.number().describe("ID of the download to open"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 // Clipboard Tools
 export const GetClipboardTool = z.object({
   name: z.literal("browser_get_clipboard"),
   description: z.literal("Read text from the clipboard"),
-  arguments: TabTargetSchema,
+  arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
 
 export const SetClipboardTool = z.object({
@@ -692,7 +706,7 @@ export const SetClipboardTool = z.object({
   description: z.literal("Write text to the clipboard"),
   arguments: z.object({
     text: z.string().describe("Text to write to the clipboard"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 // History Tools
@@ -713,7 +727,7 @@ export const SearchHistoryTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of results to return (default: 100)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const GetHistoryVisitsTool = z.object({
@@ -721,7 +735,7 @@ export const GetHistoryVisitsTool = z.object({
   description: z.literal("Get visit details for a URL"),
   arguments: z.object({
     url: z.string().describe("URL to get visit history for"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const DeleteHistoryTool = z.object({
@@ -729,7 +743,7 @@ export const DeleteHistoryTool = z.object({
   description: z.literal("Delete specific URLs from history"),
   arguments: z.object({
     urls: z.array(z.string()).describe("URLs to delete from history"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const ClearHistoryTool = z.object({
@@ -742,33 +756,33 @@ export const ClearHistoryTool = z.object({
     endTime: z
       .number()
       .describe("End time in milliseconds since epoch"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 // System Information Tools
 export const GetVersionTool = z.object({
   name: z.literal("browser_get_version"),
   description: z.literal("Get browser version information"),
-  arguments: TabTargetSchema,
+  arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
 
 export const GetSystemInfoTool = z.object({
   name: z.literal("browser_get_system_info"),
   description: z.literal("Get system information including OS, platform, and architecture"),
-  arguments: TabTargetSchema,
+  arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
 
 export const GetBrowserInfoTool = z.object({
   name: z.literal("browser_get_browser_info"),
   description: z.literal("Get browser capabilities and information"),
-  arguments: TabTargetSchema,
+  arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
 
 // Network Tools
 export const GetNetworkStateTool = z.object({
   name: z.literal("browser_get_network_state"),
   description: z.literal("Get current network connection state"),
-  arguments: TabTargetSchema,
+  arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
 
 export const SetNetworkConditionsTool = z.object({
@@ -791,7 +805,7 @@ export const SetNetworkConditionsTool = z.object({
       .number()
       .optional()
       .describe("Upload throughput in bytes/sec (default: -1 for unlimited)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const ClearCacheTool = z.object({
@@ -802,7 +816,7 @@ export const ClearCacheTool = z.object({
       .boolean()
       .optional()
       .describe("Clear cache storage (default: true)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 // Bookmark Tools
@@ -814,7 +828,7 @@ export const GetBookmarksTool = z.object({
       .string()
       .optional()
       .describe("Parent folder ID to get bookmarks from (default: root)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const CreateBookmarkTool = z.object({
@@ -827,7 +841,7 @@ export const CreateBookmarkTool = z.object({
       .string()
       .optional()
       .describe("Parent folder ID (default: root)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const DeleteBookmarkTool = z.object({
@@ -835,7 +849,7 @@ export const DeleteBookmarkTool = z.object({
   description: z.literal("Delete a bookmark by ID"),
   arguments: z.object({
     id: z.string().describe("Bookmark ID to delete"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const SearchBookmarksTool = z.object({
@@ -847,14 +861,14 @@ export const SearchBookmarksTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of results (default: 100)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 // Extension Management Tools
 export const ListExtensionsTool = z.object({
   name: z.literal("browser_list_extensions"),
   description: z.literal("List all installed browser extensions"),
-  arguments: TabTargetSchema,
+  arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
 
 export const GetExtensionInfoTool = z.object({
@@ -862,7 +876,7 @@ export const GetExtensionInfoTool = z.object({
   description: z.literal("Get detailed information about a specific extension"),
   arguments: z.object({
     id: z.string().describe("Extension ID"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const EnableExtensionTool = z.object({
@@ -870,7 +884,7 @@ export const EnableExtensionTool = z.object({
   description: z.literal("Enable a disabled extension"),
   arguments: z.object({
     id: z.string().describe("Extension ID to enable"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const DisableExtensionTool = z.object({
@@ -878,7 +892,7 @@ export const DisableExtensionTool = z.object({
   description: z.literal("Disable an enabled extension"),
   arguments: z.object({
     id: z.string().describe("Extension ID to disable"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 // Macro Management Tools
@@ -900,7 +914,7 @@ export const StoreMacroTool = z.object({
     returnType: z.string().describe("Description of what the macro returns"),
     reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Reliability rating (default: untested)"),
     tags: z.array(z.string()).optional().describe("Tags for filtering and search"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const ListMacrosTool = z.object({
@@ -913,7 +927,7 @@ export const ListMacrosTool = z.object({
     search: z.string().optional().describe("Search in name and description"),
     reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Filter by reliability rating"),
     limit: z.number().optional().describe("Maximum number of results (default: 50)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const ExecuteMacroTool = z.object({
@@ -922,7 +936,7 @@ export const ExecuteMacroTool = z.object({
   arguments: z.object({
     id: z.string().describe("Macro ID to execute"),
     params: z.record(z.any()).optional().describe("Parameters to pass to the macro function"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const UpdateMacroTool = z.object({
@@ -941,7 +955,7 @@ export const UpdateMacroTool = z.object({
     returnType: z.string().optional().describe("Updated return type description"),
     reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Updated reliability rating"),
     tags: z.array(z.string()).optional().describe("Updated tags"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const DeleteMacroTool = z.object({
@@ -949,7 +963,7 @@ export const DeleteMacroTool = z.object({
   description: z.literal("Delete a macro by ID. This action cannot be undone. Only the owner can delete macros."),
   arguments: z.object({
     id: z.string().describe("Macro ID to delete"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const RealisticMouseMoveTool = z.object({
@@ -961,7 +975,7 @@ export const RealisticMouseMoveTool = z.object({
     duration: z.number().optional().describe("Movement duration in milliseconds (default: 500)"),
     currentX: z.number().optional().describe("Current mouse X position (default: 0)"),
     currentY: z.number().optional().describe("Current mouse Y position (default: 0)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const RealisticClickTool = z.object({
@@ -976,7 +990,7 @@ export const RealisticClickTool = z.object({
     moveDuration: z.number().optional().describe("Duration of mouse movement in ms if moveFirst is true (default: 300)"),
     currentX: z.number().optional().describe("Current mouse X position for movement calculation (default: 0)"),
     currentY: z.number().optional().describe("Current mouse Y position for movement calculation (default: 0)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const RealisticTypeTool = z.object({
@@ -988,7 +1002,7 @@ export const RealisticTypeTool = z.object({
     maxDelay: z.number().optional().describe("Maximum delay between keystrokes in ms (default: 150)"),
     mistakeChance: z.number().optional().describe("Probability of making a typo that gets corrected, 0-1 (default: 0)"),
     pressEnter: z.boolean().optional().describe("Whether to press Enter after typing (default: false)"),
-  }).merge(TabTargetSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 // ==================== MULTI-TAB MANAGEMENT TOOLS ====================
@@ -999,7 +1013,7 @@ export const ListAttachedTabsTool = z.object({
     "List all tabs that have debugger attached with their labels. " +
     "Use this to see available tabs and their labels for targeting specific tabs."
   ),
-  arguments: z.object({}),
+  arguments: z.object({}).merge(MaxTokensSchema),
 });
 
 export const SetTabLabelTool = z.object({
@@ -1012,7 +1026,7 @@ export const SetTabLabelTool = z.object({
       .union([z.number(), z.string()])
       .describe("Tab identifier (tab ID or current label) of the tab to update"),
     label: z.string().describe("The new label for the tab"),
-  }),
+  }).merge(MaxTokensSchema),
 });
 
 export const DetachTabTool = z.object({
@@ -1022,7 +1036,7 @@ export const DetachTabTool = z.object({
   ),
   arguments: z.object({
     tabId: z.number().describe("The tab ID to detach from"),
-  }),
+  }).merge(MaxTokensSchema),
 });
 
 export const GetActiveTabTool = z.object({
@@ -1031,7 +1045,7 @@ export const GetActiveTabTool = z.object({
     "Get information about the currently active (last-used) tab. " +
     "Returns tab ID, label, URL, and last used timestamp."
   ),
-  arguments: z.object({}),
+  arguments: z.object({}).merge(MaxTokensSchema),
 });
 
 export const AttachTabTool = z.object({
@@ -1053,7 +1067,7 @@ export const AttachTabTool = z.object({
       .string()
       .optional()
       .describe("Optional label to assign to the tab after attaching"),
-  }),
+  }).merge(MaxTokensSchema),
 });
 
 // ==================== CHROME LAUNCHER TOOL ====================
@@ -1092,5 +1106,5 @@ export const LaunchIsolatedChromeTool = z.object({
       .optional()
       .describe("Always start with a fresh profile, deleting any existing data (cookies, history, etc.). " +
                "Default: true. Set to false to persist profile data between sessions."),
-  }),
+  }).merge(MaxTokensSchema),
 });

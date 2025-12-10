@@ -19,6 +19,7 @@ export const requestUserAction: ToolFactory = (snapshot) => ({
     inputSchema: zodToJsonSchema(RequestUserActionTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const { request, timeout } = RequestUserActionTool.shape.arguments.parse(params);
@@ -105,9 +106,10 @@ export const requestUserAction: ToolFactory = (snapshot) => ({
         }
       }
 
-      return textResponse(summary);
+      return textResponse(summary, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to request user action: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to request user action: ${error.message}`, false, error, max_tokens);
     }
   },
 });

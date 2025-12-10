@@ -23,6 +23,7 @@ export const storeMacro: Tool = {
     inputSchema: zodToJsonSchema(StoreMacroTool.shape.arguments),
   },
   handle: async (_context, params) => {
+    const { max_tokens } = params || {};
     try {
       // Ensure MongoDB is connected
       if (!mongodb.isConnected()) {
@@ -81,7 +82,8 @@ export const storeMacro: Tool = {
         },
       });
     } catch (error) {
-      return errorResponse(`Failed to store macro: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to store macro: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -96,6 +98,7 @@ export const listMacros: Tool = {
     inputSchema: zodToJsonSchema(ListMacrosTool.shape.arguments),
   },
   handle: async (_context, params) => {
+    const { max_tokens } = params || {};
     try {
       // Ensure MongoDB is connected
       if (!mongodb.isConnected()) {
@@ -150,7 +153,8 @@ export const listMacros: Tool = {
         macros: results,
       });
     } catch (error) {
-      return errorResponse(`Failed to list macros: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to list macros: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -165,6 +169,7 @@ export const executeMacro: Tool = {
     inputSchema: zodToJsonSchema(ExecuteMacroTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       // Ensure MongoDB is connected
       if (!mongodb.isConnected()) {
@@ -180,7 +185,7 @@ export const executeMacro: Tool = {
       const macro = await macros.findOne({ id: validatedParams.id });
 
       if (!macro) {
-        return errorResponse(`Macro with ID "${validatedParams.id}" not found`, true);
+        return errorResponse(`Macro with ID "${validatedParams.id}" not found`, true, undefined, max_tokens);
       }
 
       // Wrap the macro code in an async IIFE and pass params
@@ -235,13 +240,12 @@ export const executeMacro: Tool = {
         });
       } else {
         return errorResponse(
-          `Macro execution failed: ${result.error}`,
-          false,
-          result.stack
-        );
+          `Macro execution failed: ${result.error}`, false, result.stack
+        , max_tokens);
       }
     } catch (error) {
-      return errorResponse(`Failed to execute macro: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to execute macro: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -256,6 +260,7 @@ export const updateMacro: Tool = {
     inputSchema: zodToJsonSchema(UpdateMacroTool.shape.arguments),
   },
   handle: async (_context, params) => {
+    const { max_tokens } = params || {};
     try {
       // Ensure MongoDB is connected
       if (!mongodb.isConnected()) {
@@ -269,7 +274,7 @@ export const updateMacro: Tool = {
       const existing = await macros.findOne({ id: validatedParams.id });
 
       if (!existing) {
-        return errorResponse(`Macro with ID "${validatedParams.id}" not found`, true);
+        return errorResponse(`Macro with ID "${validatedParams.id}" not found`, true, undefined, max_tokens);
       }
 
       // Build update document
@@ -317,7 +322,8 @@ export const updateMacro: Tool = {
         version: updateDoc.version || existing.version,
       });
     } catch (error) {
-      return errorResponse(`Failed to update macro: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to update macro: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -332,6 +338,7 @@ export const deleteMacro: Tool = {
     inputSchema: zodToJsonSchema(DeleteMacroTool.shape.arguments),
   },
   handle: async (_context, params) => {
+    const { max_tokens } = params || {};
     try {
       // Ensure MongoDB is connected
       if (!mongodb.isConnected()) {
@@ -345,7 +352,7 @@ export const deleteMacro: Tool = {
       const existing = await macros.findOne({ id: validatedParams.id });
 
       if (!existing) {
-        return errorResponse(`Macro with ID "${validatedParams.id}" not found`, true);
+        return errorResponse(`Macro with ID "${validatedParams.id}" not found`, true, undefined, max_tokens);
       }
 
       // Delete macro
@@ -357,7 +364,8 @@ export const deleteMacro: Tool = {
         id: existing.id,
       });
     } catch (error) {
-      return errorResponse(`Failed to delete macro: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to delete macro: ${error.message}`, false, error, max_tokens);
     }
   },
 };

@@ -23,6 +23,7 @@ export const getInteractions: Tool = {
     inputSchema: zodToJsonSchema(GetInteractionsTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = GetInteractionsTool.shape.arguments.parse(params);
@@ -90,9 +91,10 @@ export const getInteractions: Tool = {
         summary += `No interactions found matching the specified criteria.\n`;
       }
 
-      return textResponse(summary);
+      return textResponse(summary, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get interactions: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get interactions: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -111,6 +113,7 @@ export const pruneInteractions: Tool = {
     inputSchema: zodToJsonSchema(PruneInteractionsTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = PruneInteractionsTool.shape.arguments.parse(params);
@@ -161,9 +164,10 @@ export const pruneInteractions: Tool = {
         summary += `**Criteria**: ${criteria.join(', ')}\n`;
       }
 
-      return textResponse(summary);
+      return textResponse(summary, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to prune interactions: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to prune interactions: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -182,6 +186,7 @@ export const searchInteractions: Tool = {
     inputSchema: zodToJsonSchema(SearchInteractionsTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = SearchInteractionsTool.shape.arguments.parse(params);
@@ -233,9 +238,10 @@ export const searchInteractions: Tool = {
         summary += `No interactions found matching "${validatedParams.query}".\n`;
       }
 
-      return textResponse(summary);
+      return textResponse(summary, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to search interactions: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to search interactions: ${error.message}`, false, error, max_tokens);
     }
   },
 };

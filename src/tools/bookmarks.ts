@@ -22,12 +22,14 @@ export const getBookmarks: Tool = {
   },
   handle: async (context, params) => {
     try {
+      const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = GetBookmarksTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_bookmarks", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get bookmarks: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get bookmarks: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -46,12 +48,14 @@ export const createBookmark: Tool = {
   },
   handle: async (context, params) => {
     try {
+      const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = CreateBookmarkTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_create_bookmark", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to create bookmark: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to create bookmark: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -69,12 +73,14 @@ export const deleteBookmark: Tool = {
   },
   handle: async (context, params) => {
     try {
+      const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = DeleteBookmarkTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_delete_bookmark", validatedParams);
-      return textResponse(`Bookmark deleted successfully (ID: ${validatedParams.id})`);
+      return textResponse(`Bookmark deleted successfully (ID: ${validatedParams.id})`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to delete bookmark: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to delete bookmark: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -93,12 +99,14 @@ export const searchBookmarks: Tool = {
   },
   handle: async (context, params) => {
     try {
+      const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = SearchBookmarksTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_search_bookmarks", validatedParams);
-      return jsonResponse(result);
+      return jsonResponse(result, true, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to search bookmarks: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to search bookmarks: ${error.message}`, false, error, max_tokens);
     }
   },
 };

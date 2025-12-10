@@ -21,12 +21,14 @@ export const getClipboard: Tool = {
   },
   handle: async (context, params) => {
     try {
+      const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = GetClipboardTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_clipboard", validatedParams);
-      return textResponse(result.text);
+      return textResponse(result.text, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get clipboard: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get clipboard: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -45,12 +47,14 @@ export const setClipboard: Tool = {
   },
   handle: async (context, params) => {
     try {
+      const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = SetClipboardTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_set_clipboard", validatedParams);
-      return textResponse(`Clipboard set to: ${validatedParams.text.substring(0, 50)}${validatedParams.text.length > 50 ? '...' : ''}`);
+      return textResponse(`Clipboard set to: ${validatedParams.text.substring(0, 50)}${validatedParams.text.length > 50 ? '...' : ''}`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to set clipboard: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to set clipboard: ${error.message}`, false, error, max_tokens);
     }
   },
 };

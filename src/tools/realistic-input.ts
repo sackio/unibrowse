@@ -21,15 +21,17 @@ export const realisticMouseMove: Tool = {
     inputSchema: zodToJsonSchema(RealisticMouseMoveTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = RealisticMouseMoveTool.shape.arguments.parse(params);
 
       const result = await context.sendSocketMessage("browser_realistic_mouse_move", validatedParams);
 
-      return textResponse(result.message || `Moved mouse to (${validatedParams.x}, ${validatedParams.y})`);
+      return textResponse(result.message || `Moved mouse to (${validatedParams.x}, ${validatedParams.y}, max_tokens)`);
     } catch (error) {
-      return errorResponse(`Failed to move mouse: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to move mouse: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -46,15 +48,17 @@ export const realisticClick: Tool = {
     inputSchema: zodToJsonSchema(RealisticClickTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = RealisticClickTool.shape.arguments.parse(params);
 
       const result = await context.sendSocketMessage("browser_realistic_click", validatedParams);
 
-      return textResponse(result.message || `Clicked at (${validatedParams.x}, ${validatedParams.y})`);
+      return textResponse(result.message || `Clicked at (${validatedParams.x}, ${validatedParams.y}, max_tokens)`);
     } catch (error) {
-      return errorResponse(`Failed to click: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to click: ${error.message}`, false, error, max_tokens);
     }
   },
 };
@@ -71,6 +75,7 @@ export const realisticType: Tool = {
     inputSchema: zodToJsonSchema(RealisticTypeTool.shape.arguments),
   },
   handle: async (context, params) => {
+    const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
       const validatedParams = RealisticTypeTool.shape.arguments.parse(params);
@@ -79,9 +84,10 @@ export const realisticType: Tool = {
 
       const preview = validatedParams.text.substring(0, 50);
       const suffix = validatedParams.text.length > 50 ? '...' : '';
-      return textResponse(result.message || `Typed: "${preview}${suffix}"`);
+      return textResponse(result.message || `Typed: "${preview}${suffix}"`, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to type: ${error.message}`, false, error);
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to type: ${error.message}`, false, error, max_tokens);
     }
   },
 };
