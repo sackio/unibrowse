@@ -258,7 +258,7 @@ class WebSocketManager {
       await this.sendToOffscreen('OFFSCREEN_SEND_MESSAGE_NO_RESPONSE', {
         data: message
       });
-      return true;
+      return { success: true };
     } catch (error) {
       // Check if this is due to extension reload vs actual send error
       if (error?.message?.includes('Chrome APIs not available') || !this.isChromeAvailable()) {
@@ -266,7 +266,9 @@ class WebSocketManager {
       } else {
         console.error('[WebSocketManager] Send failed:', error?.message || error || 'Unknown error');
       }
-      throw error;
+
+      // IMPORTANT: Return error status instead of throwing
+      return { success: false, error: error?.message || 'Unknown error' };
     }
   }
 

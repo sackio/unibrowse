@@ -274,6 +274,41 @@ export const ScreenshotTool = z.object({
   arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
 
+export const SegmentedScreenshotTool = z.object({
+  name: z.literal("browser_segmented_screenshot"),
+  description: z.literal(
+    "Capture multiple screenshots of specific page elements based on CSS selectors. " +
+    "Each selector will produce a separate PNG image file saved to disk. " +
+    "Elements are automatically scrolled into view before capture. " +
+    "Returns array of file paths (not base64) to minimize context usage."
+  ),
+  arguments: z.object({
+    selectors: z
+      .array(z.string())
+      .min(1)
+      .describe(
+        "Array of CSS selectors identifying elements to capture " +
+        "(e.g., ['.header', '.main', '.footer']). " +
+        "Each element will be captured as a separate image."
+      ),
+    outputDir: z
+      .string()
+      .optional()
+      .describe("Output directory for screenshots (default: /tmp)"),
+    prefix: z
+      .string()
+      .optional()
+      .describe("Filename prefix (default: 'segment')"),
+    includeLabels: z
+      .boolean()
+      .optional()
+      .describe(
+        "Include element ID or first class name in filename " +
+        "(default: false)"
+      ),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+});
+
 export const GetConsoleLogsTool = z.object({
   name: z.literal("browser_get_console_logs"),
   description: z.literal("Get the console logs from the browser"),

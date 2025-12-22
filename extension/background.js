@@ -1163,6 +1163,7 @@ class BackgroundController {
     // Information handlers
     this.handlers['browser_snapshot'] = this.handleSnapshot.bind(this);
     this.handlers['browser_screenshot'] = this.handleScreenshot.bind(this);
+    this.handlers['browser_segmented_screenshot'] = this.handleSegmentedScreenshot.bind(this);
     this.handlers['browser_get_console_logs'] = this.handleGetConsoleLogs.bind(this);
     this.handlers['browser_get_network_logs'] = this.handleGetNetworkLogs.bind(this);
     this.handlers['browser_evaluate'] = this.handleEvaluate.bind(this);
@@ -1396,6 +1397,32 @@ class BackgroundController {
             // Other error - log but don't clear state
             console.error('[Background] Keepalive reattachment failed:', error);
             // Don't disconnect on keepalive failure - let the normal error handling deal with it
+          }
+        }
+      }
+
+      // Retry failed responses periodically
+      if (this.failedResponses && this.failedResponses.size > 0) {
+        console.log(`[Background] Retrying ${this.failedResponses.size} failed responses...`);
+
+        for (const [requestId, responseData] of this.failedResponses.entries()) {
+          // Only retry if not too old (5 minutes)
+          const age = Date.now() - responseData.timestamp;
+          if (age > 300000) {
+            console.log(`[Background] Dropping old failed response: ${requestId}`);
+            this.failedResponses.delete(requestId);
+            continue;
+          }
+
+          // Attempt to resend with single retry
+          const result = await this.safeSendResponse(
+            requestId,
+            responseData.payload,
+            { maxAttempts: 1 }
+          );
+
+          if (result.success) {
+            console.log(`[Background] Successfully retried failed response: ${requestId}`);
           }
         }
       }
@@ -2291,76 +2318,278 @@ class BackgroundController {
   }
 
   /**
+   * Safely send response to MCP server with retry logic
+   * Prevents tab detachment on send failures
+   */
+  async safeSendResponse(requestId, payload, options = {}) {
+    const maxAttempts = options.maxAttempts || 3;
+    const baseDelay = options.baseDelay || 100;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.ws.sendNoResponse({
+          type: 'messageResponse',
+          payload: { requestId, ...payload }
+        });
+
+        // Success - clear failure tracking
+        if (this.failedResponses?.has(requestId)) {
+          this.failedResponses.delete(requestId);
+        }
+        return { success: true };
+
+      } catch (error) {
+        const isLastAttempt = attempt === maxAttempts;
+        const delay = baseDelay * Math.pow(2, attempt - 1);
+
+        console.warn(
+          `[Background] Response send attempt ${attempt}/${maxAttempts} failed:`,
+          error.message,
+          isLastAttempt ? '(final attempt)' : `(retrying in ${delay}ms)`
+        );
+
+        if (!isLastAttempt) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+
+        // Queue for background retry
+        if (!this.failedResponses) {
+          this.failedResponses = new Map();
+        }
+        this.failedResponses.set(requestId, {
+          payload,
+          timestamp: Date.now(),
+          attempts: maxAttempts
+        });
+
+        console.error(
+          '[Background] Failed to send response after all attempts:',
+          error.message,
+          '- response queued for background retry'
+        );
+
+        return { success: false, error: error.message, queued: true };
+      }
+    }
+  }
+
+  /**
    * Handle message from MCP server
+   * Implements comprehensive error containment to prevent detachment
    */
   async handleMCPMessage(message) {
     const { type, payload, id } = message;
     console.log('[Background] Handling MCP message:', type, payload);
 
-    // Check if handler exists
-    const handler = this.handlers[type];
-    if (!handler) {
-      console.warn('[Background] No handler for message type:', type);
-      this.ws.sendNoResponse({
-        type: 'messageResponse',
-        payload: {
-          requestId: id,
-          error: `Unknown message type: ${type}`
-        }
-      }).catch(err => {
-        console.error('[Background] Failed to send error response:', err);
-      });
-      return;
-    }
+    // Preserve state for recovery
+    const stateSnapshot = {
+      tabId: this.state.tabId,
+      connected: this.state.connected,
+      temporarilyDetached: this.state.temporarilyDetached,
+      isReattaching: this.isReattaching
+    };
 
-    // Execute handler
     try {
-      // Pass empty object if payload is undefined to avoid destructuring errors
-      const result = await handler(payload !== undefined ? payload : {});
-      this.ws.sendNoResponse({
-        type: 'messageResponse',
-        payload: {
-          requestId: id,
-          result
-        }
-      }).catch(err => {
-        console.error('[Background] Failed to send success response:', err);
-      });
+      // Check if handler exists
+      const handler = this.handlers[type];
+      if (!handler) {
+        console.warn('[Background] No handler for message type:', type);
+        await this.safeSendResponse(id, {
+          error: `Unknown message type: ${type}`,
+          errorType: 'handler_not_found'
+        });
+        return; // Explicitly return, don't continue
+      }
+
+      // Execute handler with timeout protection
+      const handlerTimeout = 30000; // 30 seconds
+      const handlerPromise = handler(payload !== undefined ? payload : {});
+
+      const result = await Promise.race([
+        handlerPromise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Handler timeout')), handlerTimeout)
+        )
+      ]);
+
+      // Send success response
+      await this.safeSendResponse(id, { result });
+
     } catch (error) {
+      // Classify and handle error appropriately
       console.error('[Background] Handler error:', error);
 
-      // Check if this is a graceful detachment (tab navigated to restricted URL)
-      if (error.isGracefulDetachment) {
-        console.log('[Background] Graceful detachment detected - tab became inaccessible');
+      const errorClassification = this.classifyError(error);
 
-        // Mark as temporarily detached to allow recovery
-        this.state.temporarilyDetached = true;
+      // Handle based on classification
+      switch (errorClassification.category) {
+        case 'graceful_detachment':
+          await this.handleGracefulDetachment(id, error, stateSnapshot);
+          break;
 
-        // Send informative error message
-        this.ws.sendNoResponse({
-          type: 'messageResponse',
-          payload: {
-            requestId: id,
-            error: `Tab is temporarily inaccessible (${error.reason || 'restricted URL'}). The connection remains active. You can attach to a different tab or wait for the current tab to navigate back.`,
-            errorType: 'graceful_detachment',
-            reason: error.reason
-          }
-        }).catch(err => {
-          console.error('[Background] Failed to send graceful detachment response:', err);
-        });
-      } else {
-        // Regular error handling
-        this.ws.sendNoResponse({
-          type: 'messageResponse',
-          payload: {
-            requestId: id,
-            error: error.message
-          }
-        }).catch(err => {
-          console.error('[Background] Failed to send error response:', err);
-        });
+        case 'temporary_failure':
+          await this.handleTemporaryFailure(id, error, stateSnapshot);
+          break;
+
+        case 'recoverable_error':
+          await this.handleRecoverableError(id, error, stateSnapshot);
+          break;
+
+        default:
+          await this.handleCriticalError(id, error, stateSnapshot);
       }
+
+      // CRITICAL: Never let errors propagate beyond this point
+      // This ensures errors are fully contained and don't cause detachment
     }
+
+    console.log('[Background] Message handling complete for:', type);
+  }
+
+  /**
+   * Classify error to determine appropriate handling
+   * All errors are marked as non-detachment to prevent tab disconnection
+   */
+  classifyError(error) {
+    // Graceful detachment - expected state change
+    if (error.isGracefulDetachment) {
+      return {
+        category: 'graceful_detachment',
+        severity: 'info',
+        recoverable: true,
+        requiresDetachment: false
+      };
+    }
+
+    // WebSocket communication errors
+    if (error.message?.includes('WebSocket') ||
+        error.message?.includes('send failed') ||
+        error.message?.includes('not connected')) {
+      return {
+        category: 'temporary_failure',
+        severity: 'warning',
+        recoverable: true,
+        requiresDetachment: false
+      };
+    }
+
+    // CDP/Debugger detachment errors
+    if (error.message?.includes('Detached') ||
+        error.message?.includes('detached') ||
+        error.message?.includes('debugger')) {
+      return {
+        category: 'recoverable_error',
+        severity: 'warning',
+        recoverable: true,
+        requiresDetachment: false
+      };
+    }
+
+    // Tab not found or closed
+    if (error.message?.includes('tab') &&
+        error.message?.includes('not found')) {
+      return {
+        category: 'recoverable_error',
+        severity: 'error',
+        recoverable: true,
+        requiresDetachment: false
+      };
+    }
+
+    // Timeout errors
+    if (error.message?.includes('timeout')) {
+      return {
+        category: 'temporary_failure',
+        severity: 'warning',
+        recoverable: true,
+        requiresDetachment: false
+      };
+    }
+
+    // Unknown/critical errors - still don't detach!
+    return {
+      category: 'critical_error',
+      severity: 'error',
+      recoverable: false,
+      requiresDetachment: false
+    };
+  }
+
+  /**
+   * Handle graceful detachment errors
+   * Marks tab as temporarily detached without disconnecting
+   */
+  async handleGracefulDetachment(requestId, error, stateSnapshot) {
+    console.log('[Background] Graceful detachment - tab became inaccessible');
+
+    if (!this.state.temporarilyDetached) {
+      this.state.temporarilyDetached = true;
+    }
+
+    await this.safeSendResponse(requestId, {
+      error: `Tab is temporarily inaccessible (${error.reason || 'restricted URL'}). The connection remains active.`,
+      errorType: 'graceful_detachment',
+      reason: error.reason,
+      recoverable: true
+    });
+  }
+
+  /**
+   * Handle temporary failures (WebSocket, network issues)
+   * Suggests retry without changing state
+   */
+  async handleTemporaryFailure(requestId, error, stateSnapshot) {
+    console.warn('[Background] Temporary failure:', error.message);
+
+    await this.safeSendResponse(requestId, {
+      error: error.message,
+      errorType: 'temporary_failure',
+      suggestion: 'This is a temporary issue. Please retry the operation.',
+      recoverable: true
+    });
+  }
+
+  /**
+   * Handle recoverable errors (CDP detachment, tab issues)
+   * Triggers automatic recovery mechanisms
+   */
+  async handleRecoverableError(requestId, error, stateSnapshot) {
+    console.warn('[Background] Recoverable error:', error.message);
+
+    // Trigger reattachment if needed
+    if (error.message?.includes('Detached') &&
+        !this.isReattaching &&
+        this.state.tabId) {
+      console.log('[Background] Triggering reattachment due to error');
+      this.attemptReattachWithRetry(this.state.tabId, 0);
+    }
+
+    await this.safeSendResponse(requestId, {
+      error: error.message,
+      errorType: 'recoverable_error',
+      suggestion: 'Automatic recovery in progress. The operation was not completed.',
+      recoverable: true
+    });
+  }
+
+  /**
+   * Handle critical errors
+   * Logs full details but preserves connection state
+   */
+  async handleCriticalError(requestId, error, stateSnapshot) {
+    console.error('[Background] Critical error:', error.message);
+    console.error('[Background] Error stack:', error.stack);
+    console.error('[Background] State at error:', stateSnapshot);
+
+    await this.safeSendResponse(requestId, {
+      error: error.message,
+      errorType: 'critical_error',
+      suggestion: 'This is an unexpected error. The extension state has been preserved.',
+      recoverable: false
+    });
+
+    // IMPORTANT: Even critical errors don't trigger detachment
   }
 
   /**
@@ -2932,6 +3161,31 @@ class BackgroundController {
     }
     const data = await cdp.captureScreenshot();
     return data; // Return base64 string directly
+  }
+
+  async handleSegmentedScreenshot({ selectors, includeLabels, tabTarget }) {
+    const cdp = await this.tabManager.getActiveCDP(tabTarget);
+    if (!cdp) {
+      throw new Error(
+        tabTarget
+          ? `Tab ${tabTarget} not found or not attached`
+          : 'No tabs currently attached. Please attach to a tab first.'
+      );
+    }
+
+    if (!Array.isArray(selectors) || selectors.length === 0) {
+      throw new Error('selectors must be a non-empty array');
+    }
+
+    const screenshots = await cdp.captureSegmentedScreenshots(selectors, { includeLabels });
+
+    const successful = screenshots.filter(s => s.base64Data !== null);
+    const failed = screenshots.filter(s => s.base64Data === null);
+
+    return {
+      screenshots: successful,
+      failedSelectors: failed.map(f => ({ selector: f.selector, error: f.error })),
+    };
   }
 
   async handleGetConsoleLogs() {

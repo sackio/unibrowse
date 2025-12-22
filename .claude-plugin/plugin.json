@@ -1,8 +1,8 @@
 {
   "name": "unibrowse",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": "Unibrowse Browser Automation",
-  "description": "Advanced browser automation plugin with 5 specialized sub-agents, 91+ macros (40+ universal + 51 site-specific), and intelligent delegation for web scraping, form filling, e-commerce automation, and QA testing",
+  "description": "Advanced browser automation plugin with 5 specialized skill modules, 91+ macros (40+ universal + 51 site-specific), and direct MCP tool execution for web scraping, form filling, e-commerce automation, QA testing, and screenshot analysis",
   "author": "unibrowse",
   "repository": "https://github.com/sackio/unibrowse",
   "bugs": "https://github.com/sackio/unibrowse/issues",
@@ -34,73 +34,6 @@
           "navigate",
           "extract",
           "form"
-        ]
-      }
-    ],
-    "agents": [
-      {
-        "path": ".claude/agents/browser.md",
-        "name": "browser",
-        "description": "Generic browser automation agent for tab management, macro-first execution, and direct MCP tool operations. Handles tab creation, labeling, and context preservation across browser operations.",
-        "triggers": [
-          "browser",
-          "screenshot",
-          "navigate",
-          "tab"
-        ]
-      },
-      {
-        "path": ".claude/agents/browser-ecommerce.md",
-        "name": "browser-ecommerce",
-        "description": "E-commerce specialist for Amazon, Google Shopping, Walmart, and multi-site price comparison. Expertise in 34 site-specific e-commerce macros (17 Amazon + 12 Google Shopping + 5 Walmart), product search, reviews analysis, Rufus AI integration, and cart operations.",
-        "triggers": [
-          "amazon",
-          "shopping",
-          "price",
-          "product",
-          "reviews",
-          "e-commerce",
-          "buy"
-        ]
-      },
-      {
-        "path": ".claude/agents/browser-forms.md",
-        "name": "browser-forms",
-        "description": "Form automation specialist for intelligent form discovery, field detection, validation handling, and multi-step form workflows. Includes safety checks and preview generation before submission.",
-        "triggers": [
-          "form",
-          "fill",
-          "submit",
-          "input",
-          "field",
-          "validation"
-        ]
-      },
-      {
-        "path": ".claude/agents/browser-scraper.md",
-        "name": "browser-scraper",
-        "description": "Web scraping specialist for structured data extraction, table parsing, pagination handling, infinite scroll, and multi-page aggregation. Exports data to JSON/CSV with token-optimized extraction.",
-        "triggers": [
-          "scrape",
-          "extract",
-          "data",
-          "table",
-          "pagination",
-          "export"
-        ]
-      },
-      {
-        "path": ".claude/agents/browser-qa.md",
-        "name": "browser-qa",
-        "description": "QA testing specialist for accessibility audits (WCAG 2.1), performance testing, visual regression, keyboard navigation, and functional testing. Generates comprehensive reports with actionable recommendations.",
-        "triggers": [
-          "test",
-          "qa",
-          "accessibility",
-          "performance",
-          "audit",
-          "wcag",
-          "a11y"
         ]
       }
     ],
@@ -235,28 +168,28 @@
     ]
   },
   "features": {
-    "agents": {
+    "skillModules": {
       "count": 5,
       "list": [
         {
-          "name": "browser",
-          "description": "Generic browser automation with tab management"
+          "name": "ECOMMERCE",
+          "description": "E-commerce automation for Amazon, Google Shopping, and Walmart with 34 specialized macros"
         },
         {
-          "name": "browser-ecommerce",
-          "description": "Amazon, Google Shopping, and Walmart automation with 34 specialized macros"
+          "name": "FORMS",
+          "description": "Intelligent form discovery and safe submission with preview generation"
         },
         {
-          "name": "browser-forms",
-          "description": "Intelligent form discovery and filling with safety checks"
+          "name": "SCRAPER",
+          "description": "Web scraping with pagination handling and JSON/CSV export"
         },
         {
-          "name": "browser-scraper",
-          "description": "Web scraping with pagination and export capabilities"
+          "name": "QA",
+          "description": "Accessibility audits (WCAG 2.1) and performance testing with comprehensive reports"
         },
         {
-          "name": "browser-qa",
-          "description": "Accessibility and performance testing with WCAG 2.1 compliance"
+          "name": "SCREENSHOT_ANALYSIS",
+          "description": "Screenshot analysis for visual/layout, accessibility (WCAG 2.1 AA/AAA), and design consistency"
         }
       ]
     },
@@ -305,6 +238,7 @@
     "skills": {
       "browser": ".claude/skills/browser/SKILL.md",
       "macros": ".claude/skills/browser/MACROS.md",
+      "macroLearning": ".claude/skills/browser/MACRO_LEARNING.md",
       "multiTab": ".claude/skills/browser/MULTI_TAB.md",
       "troubleshooting": ".claude/skills/browser/TROUBLESHOOTING.md",
       "amazon": ".claude/skills/browser/AMAZON_MACROS.md",
@@ -335,6 +269,21 @@
     "backupAndTest": "npm run backup:test"
   },
   "changelog": {
+    "1.1.0": {
+      "date": "2025-12-22",
+      "changes": [
+        "Converted 6 agents to 5 specialization skill modules (ECOMMERCE.md, FORMS.md, SCRAPER.md, QA.md, SCREENSHOT_ANALYSIS.md)",
+        "Rewrote SKILL.md as task router with direct MCP tool execution orchestration",
+        "Removed Task tool delegation pattern - skills now provide instructions for direct tool invocation",
+        "Fixed critical MCP connectivity issue (agents spawned via Task tool lost MCP access)",
+        "Preserved all 91+ macros and comprehensive documentation",
+        "Enhanced browser skill with task type detection and module routing",
+        "All workflows converted from JavaScript pseudocode to instructional format",
+        "Maintained tab context preservation and multi-turn workflow patterns",
+        "Kept token conservation rules and macro-first execution pattern",
+        "Removed agents directory - all functionality now in skill modules"
+      ]
+    },
     "1.0.0": {
       "date": "2025-12-10",
       "changes": [

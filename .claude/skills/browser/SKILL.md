@@ -5,7 +5,7 @@ description: Browser automation using the browser MCP for web scraping, form fil
 
 # Browser Automation Skill
 
-This skill provides guidance for browser automation tasks. **You should delegate actual execution to specialized sub-agents** rather than executing MCP tools directly.
+This skill provides browser automation capabilities through direct execution of MCP tools. **You will execute MCP tools directly** based on task-specific instructions from specialization modules.
 
 ## When to Use This Skill
 
@@ -13,335 +13,683 @@ Activate when the user requests:
 - Web browsing or navigation
 - Data extraction or web scraping
 - Form filling or automation
-- E-commerce operations (Amazon, shopping)
+- E-commerce operations (Amazon, Google Shopping, Walmart)
 - Testing or quality assurance
-- Screenshot capture
+- Screenshot capture and analysis
 - Multi-tab workflows
 
-## Delegation Strategy
+## How This Skill Works
 
-**IMPORTANT**: This skill provides guidance and delegation strategy. **Delegate execution to sub-agents** who have direct MCP access.
+1. **Detect task type** from user request (keywords, intent analysis)
+2. **Route to specialization module** (ECOMMERCE.md, FORMS.md, SCRAPER.md, QA.md, SCREENSHOT_ANALYSIS.md)
+3. **Follow module instructions** to invoke MCP tools directly
+4. **Preserve tab context** for multi-turn workflows
+5. **Return results** with tab metadata for future operations
 
-### Sub-Agent Selection
+## Task Type Detection
 
-Choose the appropriate sub-agent based on task type:
+Analyze user request to determine which specialization module to use:
 
-#### 🌐 Generic Browser (`browser`)
-**Use for:**
-- Simple navigation and screenshots
-- Tab creation and management
-- Generic page operations
-- When no specialized sub-agent applies
+### E-Commerce Tasks → ECOMMERCE.md
 
-**Triggers**: "browse", "navigate", "screenshot", "tab", "open website"
+**Trigger keywords**: "amazon", "shopping", "price", "product", "reviews", "buy", "purchase", "compare prices", "best deal", "rufus", "cart", "google shopping", "walmart"
 
-**Delegate with**:
+**Example requests**:
+- "Search Amazon for wireless headphones under $100"
+- "Compare prices for this product on Amazon and Walmart"
+- "Find the best value poly strapping kit"
+- "What are the reviews saying about this product?"
+- "Ask Rufus AI about laptop recommendations"
+
+**Action**: Follow `.claude/skills/browser/ECOMMERCE.md` for step-by-step tool invocation instructions
+
+### Form Automation → FORMS.md
+
+**Trigger keywords**: "form", "fill", "submit", "input", "field", "validation", "signup", "register", "contact form"
+
+**Example requests**:
+- "Fill out the contact form on example.com"
+- "Discover all forms on this page"
+- "Submit the registration form with test data"
+- "Analyze the form fields and validation rules"
+
+**Action**: Follow `.claude/skills/browser/FORMS.md` - **CRITICAL**: Never auto-submit without user approval
+
+### Web Scraping → SCRAPER.md
+
+**Trigger keywords**: "scrape", "extract", "data", "table", "pagination", "export", "collect", "gather", "crawl", "pages 1-10"
+
+**Example requests**:
+- "Extract all product data from this page"
+- "Scrape the table and export to CSV"
+- "Collect data from pages 1-5 with pagination"
+- "Get all article titles from this site"
+
+**Action**: Follow `.claude/skills/browser/SCRAPER.md` for extraction and export patterns
+
+### QA Testing → QA.md
+
+**Trigger keywords**: "test", "qa", "accessibility", "performance", "audit", "wcag", "a11y", "validate", "check", "analyze", "keyboard navigation"
+
+**Example requests**:
+- "Audit this page for accessibility issues"
+- "Run a performance test on example.com"
+- "Check WCAG 2.1 compliance"
+- "Test keyboard navigation"
+
+**Action**: Follow `.claude/skills/browser/QA.md` for testing workflows and report generation
+
+### Screenshot Analysis → SCREENSHOT_ANALYSIS.md
+
+**Trigger keywords**: "screenshot", "analyze screenshot", "visual", "layout", "design consistency", "contrast", "color analysis", "compare screenshots"
+
+**Example requests**:
+- "Analyze these screenshots for accessibility issues"
+- "Check the color contrast in this screenshot"
+- "Compare design consistency across these screenshots"
+- "Generate a visual audit report"
+
+**Action**: Follow `.claude/skills/browser/SCREENSHOT_ANALYSIS.md` for analysis workflows
+
+### Macro Learning → MACRO_LEARNING.md
+
+**Trigger keywords**: "learn", "automate this", "create macro", "record", "capture", "demonstrate", "teach you", "how to automate", "save this workflow", "reusable"
+
+**Example requests**:
+- "Can you learn how to do this workflow?"
+- "I want to automate this process"
+- "Let me show you how to search this site"
+- "Create a macro for adding items to cart"
+- "Learn how I navigate this form"
+
+**Action**: Follow `.claude/skills/browser/MACRO_LEARNING.md` for capturing user demonstrations and creating reusable macros
+
+### Generic Browser Operations → Direct Execution
+
+**Trigger keywords**: "navigate", "go to", "open", "screenshot", "tab", "browse", "visit"
+
+**Example requests**:
+- "Navigate to example.com"
+- "Take a screenshot of this page"
+- "Create a new tab"
+- "List all open tabs"
+
+**Action**: Use direct MCP tool invocation (see Quick Reference below)
+
+## Specialization Module Structure
+
+Each specialization module (ECOMMERCE.md, FORMS.md, etc.) provides:
+
+1. **When to use** - Trigger keywords and task types
+2. **Available macros** - Site-specific and universal macros for this domain
+3. **Execution workflows** - Step-by-step MCP tool invocation instructions
+4. **Safety protocols** - Critical rules (e.g., never auto-submit forms)
+5. **Token conservation** - Domain-specific tips
+6. **Troubleshooting** - Common errors and solutions
+
+**Your role**: Read the appropriate module and follow its instructions to invoke MCP tools.
+
+## Execution Patterns
+
+### Pattern 1: Macro-First Execution
+
+**ALWAYS follow this pattern** for browser automation tasks:
+
+1. **Check site-specific macros first**:
+   ```
+   Extract domain from URL (e.g., "amazon.com" from "https://www.amazon.com/...")
+
+   Call: mcp__browser__browser_list_macros({
+     site: "amazon.com",
+     category: "search"  // optional filter
+   })
+
+   If macro found → Use macro (go to step 3)
+   If not found → Check universal macros (go to step 2)
+   ```
+
+2. **Check universal macros**:
+   ```
+   Call: mcp__browser__browser_list_macros({
+     site: "*",
+     category: "extraction"  // or relevant category
+   })
+
+   If macro found → Use macro (go to step 3)
+   If not found → Use direct MCP tools (go to step 4)
+   ```
+
+3. **Execute macro**:
+   ```
+   Call: mcp__browser__browser_execute_macro({
+     id: "{macro_id}",
+     params: { /* macro-specific parameters */ },
+     tabTarget: tabId  // if operating on existing tab
+   })
+
+   Return result with tab metadata
+   ```
+
+4. **Fall back to direct MCP tools**:
+   ```
+   Use browser_click, browser_type, browser_get_visible_text, etc.
+   Follow token conservation rules (see below)
+   ```
+
+### Pattern 2: Tab Creation and Labeling
+
+**Always create and label tabs** for organized multi-turn workflows:
+
 ```
-Delegate to browser sub-agent to navigate to https://example.com and take a screenshot
+1. Create tab:
+   Call: mcp__browser__browser_create_tab({ url: "https://example.com" })
+   Store tabId from result.content.tabId
+
+2. Label tab:
+   Call: mcp__browser__browser_set_tab_label({
+     tabTarget: tabId,
+     label: "descriptive-name"  // e.g., "amazon-search", "form-filling", "scraping-products"
+   })
+
+3. Store tab context for future operations:
+   amazonTab = 123
+   walmartTab = 456
 ```
 
-#### 🛒 E-Commerce (`browser-ecommerce`)
-**Use for:**
-- Amazon product searches and comparisons
-- Price tracking and comparison
-- Reviews analysis
-- Rufus AI interactions
-- Shopping cart operations
-- Multi-site price comparisons
+### Pattern 3: Multi-Turn Workflow
 
-**Triggers**: "amazon", "shopping", "price", "product", "reviews", "buy", "purchase"
+**Preserve tab context** across conversation turns:
 
-**Delegate with**:
 ```
-Delegate to browser-ecommerce sub-agent to search Amazon for wireless headphones under $100 with good reviews
-```
+Turn 1 - User: "Search Amazon for headphones"
+You:
+  1. Create tab (tabId = 123), label "amazon-search"
+  2. Execute search macro or navigate + search
+  3. Return results with tab metadata: { tabId: 123, label: "amazon-search", ... }
+  4. STORE: amazonTab = 123
 
-#### 📝 Form Automation (`browser-forms`)
-**Use for:**
-- Form discovery and analysis
-- Field detection and validation
-- Form filling with test data
-- Multi-step form wizards
-- Submission with safety checks
-
-**Triggers**: "form", "fill", "submit", "input", "field", "validation"
-
-**Delegate with**:
-```
-Delegate to browser-forms sub-agent to discover and analyze all forms on example.com
+Turn 2 - User: "Get more details on the first result"
+You:
+  1. Use stored tab ID: tabTarget = 123
+  2. Execute detail macro or click + extract
+  3. Return results with same tab metadata
 ```
 
-#### 🔍 Web Scraper (`browser-scraper`)
-**Use for:**
-- Structured data extraction (tables, lists, products)
-- Pagination handling
-- Infinite scroll aggregation
-- Multi-page data collection
-- Export to JSON/CSV
+### Pattern 4: Cleanup Before Operations
 
-**Triggers**: "scrape", "extract", "data", "table", "pagination", "export"
+**Always clean interruptions first** (cookie consents, modals, popups):
 
-**Delegate with**:
 ```
-Delegate to browser-scraper sub-agent to extract all product data from this page and export to CSV
-```
+Before main operation:
+  1. Check for cleanup macros:
+     Call: mcp__browser__browser_list_macros({ site: "*", search: "cookie" })
 
-#### 🧪 QA Testing (`browser-qa`)
-**Use for:**
-- Accessibility audits (WCAG 2.1)
-- Performance testing and analysis
-- Visual regression testing
-- Keyboard navigation validation
-- Functional testing
+  2. Execute cleanup:
+     Call: mcp__browser__browser_execute_macro({
+       id: "smart_cookie_consent",
+       tabTarget: tabId
+     })
 
-**Triggers**: "test", "qa", "accessibility", "performance", "audit", "wcag", "a11y"
+     Call: mcp__browser__browser_execute_macro({
+       id: "dismiss_interruptions",
+       tabTarget: tabId
+     })
 
-**Delegate with**:
-```
-Delegate to browser-qa sub-agent to audit this page for accessibility issues and generate a report
+  3. Then proceed with main operation
 ```
 
-## Multi-Tab Workflow Patterns
+## Token Conservation Rules
 
-Sub-agents create tabs and return tab IDs, enabling multi-step workflows with preserved context.
+**CRITICAL**: Always minimize token usage when executing browser automation.
 
-### Pattern 1: Parallel Comparison
+### Rule 1: Avoid `browser_snapshot`
 
-**User Request**: "Compare prices on Amazon and Walmart"
+**Problem**: Returns massive ARIA tree (10,000+ tokens)
 
-**Strategy**:
+**Solution**: Use targeted alternatives
+
 ```
-1. Delegate to browser-ecommerce sub-agent
-2. Sub-agent creates 2 tabs: amazonTab=123, walmartTab=456
-3. Sub-agent searches both sites in parallel
-4. Returns results with tab IDs
-5. Store tab context: amazonTab=123, walmartTab=456
-6. Future requests can target specific tabs
-```
+❌ DON'T:
+Call: mcp__browser__browser_snapshot({ tabTarget: tabId })
 
-**Follow-up**: "Get more details on the Amazon result"
-```
-Delegate to browser-ecommerce with tabTarget=123 (preserved amazonTab ID)
-```
+✅ DO:
+Call: mcp__browser__browser_get_visible_text({
+  maxLength: 3000,
+  tabTarget: tabId
+})
 
-### Pattern 2: Sequential Scraping
-
-**User Request**: "Extract all products from pages 1-5"
-
-**Strategy**:
-```
-1. Delegate to browser-scraper sub-agent
-2. Sub-agent creates tab: scrapingTab=123
-3. Sub-agent iterates through pages sequentially
-4. Returns aggregated data with tab ID
-5. Store tab context: scrapingTab=123
+OR use specific queries:
+Call: mcp__browser__browser_query_dom({
+  selector: "button, a, input",
+  limit: 20,
+  tabTarget: tabId
+})
 ```
 
-**Follow-up**: "Continue to pages 6-10"
+### Rule 2: Use Specialized Macros
+
+**Problem**: Generic extraction returns too much data
+
+**Solution**: Use targeted macros
+
 ```
-Delegate to browser-scraper with tabTarget=123 (continues in same tab)
+❌ DON'T:
+Call: mcp__browser__browser_get_visible_text({ maxLength: 10000 })
+
+✅ DO:
+Call: mcp__browser__browser_execute_macro({
+  id: "get_interactive_elements",  // Returns only buttons, links, inputs
+  tabTarget: tabId
+})
+
+OR:
+Call: mcp__browser__browser_execute_macro({
+  id: "extract_table_data",  // Returns only table data
+  tabTarget: tabId
+})
 ```
 
-### Pattern 3: Form Preview and Submit
+### Rule 3: Always Truncate Text Extraction
 
-**User Request**: "Fill out the contact form"
+**Problem**: Full page text wastes tokens
 
-**Strategy**:
+**Solution**: Always set `maxLength`
+
 ```
-1. Delegate to browser-forms sub-agent
-2. Sub-agent creates tab: formTab=123
-3. Sub-agent discovers, analyzes, and fills form
-4. Returns preview with tab ID (NOT submitted)
-5. Store tab context: formTab=123
-6. User reviews preview
+❌ DON'T:
+Call: mcp__browser__browser_get_visible_text({ tabTarget: tabId })
+
+✅ DO:
+Call: mcp__browser__browser_get_visible_text({
+  maxLength: 3000,  // or 5000 for longer pages
+  tabTarget: tabId
+})
 ```
 
-**Follow-up**: "Submit the form"
+### Rule 4: Limit DOM Queries
+
+**Problem**: Returning 100+ elements wastes tokens
+
+**Solution**: Always set `limit`
+
 ```
-Delegate to browser-forms with tabTarget=123 to submit (after user approval)
+❌ DON'T:
+Call: mcp__browser__browser_query_dom({
+  selector: "div",
+  tabTarget: tabId
+})
+
+✅ DO:
+Call: mcp__browser__browser_query_dom({
+  selector: "button.primary, a.cta",  // Specific selector
+  limit: 10,  // Reasonable limit
+  tabTarget: tabId
+})
+```
+
+### Rule 5: Use Macros for Cleanup
+
+**Problem**: Manual popup dismissal requires multiple steps
+
+**Solution**: Use cleanup macros
+
+```
+✅ Efficient:
+Call: mcp__browser__browser_execute_macro({
+  id: "smart_cookie_consent",
+  tabTarget: tabId
+})
+
+Call: mcp__browser__browser_execute_macro({
+  id: "dismiss_interruptions",
+  tabTarget: tabId
+})
 ```
 
 ## Tab Context Preservation
 
-**Critical Pattern**: Sub-agents create tabs → return IDs → main conversation stores → future delegations specify `tabTarget`
+**Pattern**: Create tabs → store IDs → reuse in follow-ups
 
-### Sub-Agent Return Format
+### Tab Creation Workflow
 
-Sub-agents return tab metadata:
+```
+1. User requests browser operation
+2. Create tab with descriptive URL
+3. Label tab with meaningful name
+4. Execute operation
+5. Return result with tab metadata
+6. Store tab ID for future use
+```
+
+### Tab Metadata Format
+
+**Always return** tab metadata with results:
+
 ```json
 {
   "tabId": 123,
-  "label": "amazon-search",
-  "url": "https://amazon.com/s?k=headphones",
-  "data": { ... }
+  "tabLabel": "amazon-search",
+  "url": "https://www.amazon.com/s?k=headphones",
+  "timestamp": "2025-12-22T11:58:10Z",
+  "data": { /* operation results */ }
 }
 ```
 
-### Main Conversation Storage
+### Multi-Tab Scenarios
 
-Store tab IDs in context for future use:
+**Scenario 1: Parallel Comparison**
+
 ```
-Context: amazonTab=123, walmartTab=456, scrapingTab=789
+User: "Compare prices on Amazon and Walmart"
+
+You:
+1. Create Amazon tab (amazonTab = 123)
+2. Create Walmart tab (walmartTab = 456)
+3. Execute searches in both tabs (use tabTarget parameter)
+4. Return results: { amazonTab: 123, walmartTab: 456, comparison: [...] }
+5. Store both tab IDs
+
+Follow-up: "Get more details on the Amazon result"
+Use tabTarget = 123 (amazonTab)
 ```
 
-### Future Delegation with Tab Target
+**Scenario 2: Sequential Workflow**
 
-Specify `tabTarget` to operate on existing tab:
 ```
-Delegate to browser-ecommerce with tabTarget=123 to get product details
+User: "Fill out the contact form on example.com"
+
+You:
+1. Create tab (formTab = 123)
+2. Discover forms (following FORMS.md)
+3. Fill fields
+4. Generate preview (DO NOT submit)
+5. Return preview with tab metadata
+6. Store formTab = 123
+
+Follow-up: "Submit the form"
+Use tabTarget = 123 (formTab)
+Call: mcp__browser__browser_submit_form (ONLY after user approval)
 ```
 
-## Macro Discovery Pattern
+### Tab Management Commands
 
-**DO NOT execute macros directly**. Let sub-agents handle macro discovery and execution.
+**List attached tabs**:
+```
+Call: mcp__browser__browser_list_attached_tabs()
+Returns: Array of { tabId, label, url }
+```
 
-### How Sub-Agents Use Macros
+**Attach to existing tab**:
+```
+Call: mcp__browser__browser_attach_tab({ tabId: 123 })
+OR
+Call: mcp__browser__browser_attach_tab({ autoOpenUrl: "https://example.com" })
+```
 
-All sub-agents follow this pattern:
-1. Extract domain from URL
-2. Check site-specific macros: `browser_list_macros({ site: "domain.com" })`
-3. Check universal macros: `browser_list_macros({ site: "*" })`
-4. Execute macro if available
-5. Fall back to direct MCP tools if no macro exists
-6. Report which method was used
+**Close tab**:
+```
+Call: mcp__browser__browser_close_tab({ tabId: 123 })
+```
 
-### Available Macro Categories
+## Available Macro Categories
 
-- **40+ Universal Macros**: Work on any website
-- **17 Amazon Macros**: E-commerce specific
-- **Categories**: extraction, form, navigation, util, interaction, exploration, cdn
+**91+ macros** organized by category and site:
 
-**See**: `.claude/skills/browser/MACROS.md` for complete macro reference
+### Universal Macros (40+)
+- **extraction**: `get_interactive_elements`, `extract_table_data`, `extract_main_content`
+- **form**: `discover_forms`, `fill_form_fields`, `validate_form`
+- **navigation**: `smart_scroll`, `wait_for_element`, `check_page_loaded`
+- **util**: `smart_cookie_consent`, `dismiss_interruptions`, `close_modal`
+- **interaction**: `safe_click`, `type_with_validation`, `select_dropdown`
 
-## Token Conservation Rules
+### Site-Specific Macros (51)
+- **Amazon** (17 macros): Search, product details, reviews, Rufus AI, cart operations
+- **Google Shopping** (12 macros): Product search, comparison, price tracking
+- **Walmart** (5 macros): Search, product details, reviews
+- **Upwork** (4 macros): Job search, proposal submission
+- **Fidelity** (4 macros): Account navigation, portfolio analysis
+- **OpenGameArt** (3 macros): Asset search, license filtering
+- **CoinTracker** (3 macros): Portfolio tracking, transaction import
+- **Google** (3 macros): Search, results extraction
 
-Sub-agents follow these rules automatically, but you should be aware:
-
-### 1. Avoid `browser_snapshot`
-**Problem**: Wastes massive context with full ARIA tree
-
-**Solution**: Sub-agents use `browser_get_visible_text({ maxLength: 3000 })` by default
-
-### 2. Use Specialized Macros
-**Problem**: Generic extraction returns too much data
-
-**Solution**: Sub-agents use targeted macros:
-- `get_interactive_elements` - Find buttons, links, inputs
-- `discover_forms` - Analyze forms
-- `extract_table_data` - Get table data
-- `extract_main_content` - Article extraction
-
-### 3. Always Truncate Text
-**Problem**: Full page text consumes excessive tokens
-
-**Solution**: Sub-agents always use `maxLength` parameter on text extraction
-
-### 4. Clean Before Main Operations
-**Problem**: Interruptions (cookie consents, modals) interfere with automation
-
-**Solution**: Sub-agents use cleanup macros first:
-- `smart_cookie_consent` - Handle cookies
-- `dismiss_interruptions` - Auto-dismiss popups
-- `close_modal` - Close modals
+**See detailed documentation**:
+- `.claude/skills/browser/MACROS.md` - Universal macros
+- `.claude/skills/browser/AMAZON_MACROS.md` - Amazon-specific
+- `.claude/skills/browser/GOOGLE_SHOPPING_MACROS.md` - Google Shopping
+- `.claude/skills/browser/WALMART_MACROS.md` - Walmart
+- (+ 5 more site-specific docs)
 
 ## Error Handling
 
-### Common Issues and Solutions
+### Common Errors and Solutions
 
-**Issue**: "No attached tabs"
-**Solution**: Delegate to browser sub-agent to create and attach a tab first
-
-**Issue**: "Tab not found"
-**Solution**: Verify tab ID is still valid with `browser_list_attached_tabs` (via browser sub-agent)
-
-**Issue**: "Macro not found"
-**Solution**: Sub-agent will automatically fall back to direct MCP tools
-
-**Issue**: "Navigation timeout"
-**Solution**: Sub-agent will retry with increased timeout or report error
-
-**Issue**: "Element not found"
-**Solution**: Sub-agent will use alternative locators or report detailed error
-
-## Standard Delegation Workflow
-
+**Error**: "No attached tabs"
 ```
-1. User makes request
-2. Identify task type (navigation, scraping, forms, testing, shopping)
-3. Select appropriate sub-agent
-4. Delegate with clear instructions
-5. Sub-agent:
-   - Creates tab (if needed) and labels it
-   - Checks for macros (site-specific → universal)
-   - Executes macro OR uses direct MCP tools
-   - Returns results + tab metadata
-6. Store tab context in main conversation
-7. Present results to user
-8. Handle follow-up requests with tab context
+Solution:
+1. List attached tabs: mcp__browser__browser_list_attached_tabs()
+2. If none, create and attach: mcp__browser__browser_attach_tab({ autoOpenUrl: "https://example.com" })
+3. Retry operation with tabTarget
+```
+
+**Error**: "Tab not found (ID: 123)"
+```
+Solution:
+1. List attached tabs to verify tab still exists
+2. If tab closed, create new tab
+3. Update stored tab ID
+```
+
+**Error**: "Macro not found"
+```
+Solution:
+1. List available macros: mcp__browser__browser_list_macros({ site: "domain.com" })
+2. Check spelling of macro ID
+3. Fall back to direct MCP tools if macro doesn't exist
+```
+
+**Error**: "Navigation timeout"
+```
+Solution:
+1. Retry navigation with increased wait time
+2. Check if site is accessible
+3. Use browser_wait({ time: 5 }) before retrying
+```
+
+**Error**: "Element not found"
+```
+Solution:
+1. Use browser_query_dom to verify element exists
+2. Try alternative selectors (ID, class, text content)
+3. Check if element is in iframe or shadow DOM
+4. Wait for dynamic content: browser_wait({ time: 2 })
+```
+
+**Error**: "Cannot read property of undefined"
+```
+Solution:
+1. Verify return structure from MCP tool
+2. Check that result.content exists before accessing properties
+3. Add null checks: tabId = result?.content?.tabId || null
 ```
 
 ## Quick Reference
 
-### Delegation Templates
+### Generic Browser Operations
 
-**Generic browsing**:
+**Navigate to URL**:
 ```
-Delegate to browser sub-agent to navigate to URL and take a screenshot
-```
-
-**E-commerce**:
-```
-Delegate to browser-ecommerce sub-agent to search Amazon for PRODUCT with FILTERS
+Call: mcp__browser__browser_navigate({
+  url: "https://example.com",
+  tabTarget: tabId  // optional
+})
 ```
 
-**Form filling**:
+**Take screenshot**:
 ```
-Delegate to browser-forms sub-agent to discover forms on URL and fill FIELDS
-```
-
-**Web scraping**:
-```
-Delegate to browser-scraper sub-agent to extract DATA from URL with PAGINATION
+Call: mcp__browser__browser_screenshot({
+  tabTarget: tabId  // optional
+})
 ```
 
-**QA testing**:
+**Get visible text**:
 ```
-Delegate to browser-qa sub-agent to audit URL for ISSUE_TYPE and generate report
+Call: mcp__browser__browser_get_visible_text({
+  maxLength: 3000,
+  tabTarget: tabId  // optional
+})
+```
+
+**Click element**:
+```
+Call: mcp__browser__browser_click({
+  element: "Submit button",
+  ref: "element-reference-from-snapshot",
+  tabTarget: tabId  // optional
+})
+```
+
+**Type text**:
+```
+Call: mcp__browser__browser_type({
+  element: "Search input",
+  ref: "element-reference-from-snapshot",
+  text: "query text",
+  submit: false,  // or true to press Enter
+  tabTarget: tabId  // optional
+})
+```
+
+**Query DOM**:
+```
+Call: mcp__browser__browser_query_dom({
+  selector: "button.primary",
+  limit: 10,
+  tabTarget: tabId  // optional
+})
+```
+
+**Execute macro**:
+```
+Call: mcp__browser__browser_execute_macro({
+  id: "macro_id",
+  params: { /* macro-specific */ },
+  tabTarget: tabId  // optional
+})
 ```
 
 ### Tab Management
 
-**Create new tab**:
+**Create tab**:
 ```
-Delegate to browser sub-agent to create tab for URL with label "descriptive-name"
+Call: mcp__browser__browser_create_tab({
+  url: "https://example.com"  // optional
+})
+Store: tabId = result.content.tabId
 ```
 
-**Use existing tab**:
+**Label tab**:
 ```
-Delegate to SUB-AGENT with tabTarget=TAB_ID to perform ACTION
+Call: mcp__browser__browser_set_tab_label({
+  tabTarget: tabId,
+  label: "descriptive-name"
+})
 ```
 
 **List tabs**:
 ```
-Delegate to browser sub-agent to list all attached tabs
+Call: mcp__browser__browser_list_attached_tabs()
+```
+
+**Close tab**:
+```
+Call: mcp__browser__browser_close_tab({
+  tabId: tabId
+})
+```
+
+### Macro Discovery
+
+**List all macros for site**:
+```
+Call: mcp__browser__browser_list_macros({
+  site: "amazon.com"  // or "*" for universal
+})
+```
+
+**Search macros by category**:
+```
+Call: mcp__browser__browser_list_macros({
+  site: "amazon.com",
+  category: "search"  // or "extraction", "form", etc.
+})
+```
+
+**Search macros by keyword**:
+```
+Call: mcp__browser__browser_list_macros({
+  site: "*",
+  search: "cookie"  // finds "smart_cookie_consent"
+})
+```
+
+## Execution Workflow Summary
+
+```
+1. User makes browser automation request
+2. Detect task type (keywords, intent)
+3. Route to specialization module:
+   - E-commerce → ECOMMERCE.md
+   - Form automation → FORMS.md
+   - Web scraping → SCRAPER.md
+   - QA testing → QA.md
+   - Screenshot analysis → SCREENSHOT_ANALYSIS.md
+   - Generic → Direct execution
+4. Follow module instructions:
+   - Create/attach tab
+   - Clean interruptions (cookie consents, modals)
+   - Check macros (site-specific → universal → direct tools)
+   - Execute operation
+   - Extract/process results
+   - Apply token conservation
+5. Return results with tab metadata
+6. Store tab ID for future operations
+7. Handle follow-up requests using stored tab context
 ```
 
 ## Remember
 
-- ✅ **Delegate to sub-agents** - Don't execute MCP tools directly
-- ✅ **Choose the right specialist** - Match task type to sub-agent expertise
-- ✅ **Preserve tab context** - Store tab IDs for multi-step workflows
-- ✅ **Trust sub-agents** - They handle token conservation and macro discovery
-- ✅ **Provide clear instructions** - Specify URLs, filters, fields, etc.
-- ✅ **Handle follow-ups** - Use tabTarget for continued operations
+- ✅ **Execute tools directly** - You have MCP access, no delegation needed
+- ✅ **Follow specialization modules** - They provide step-by-step instructions
+- ✅ **Macro-first pattern** - Site-specific → universal → direct tools
+- ✅ **Preserve tab context** - Store tab IDs, reuse in follow-ups
+- ✅ **Conserve tokens** - Avoid snapshots, truncate text, limit queries
+- ✅ **Clean before operating** - Handle cookie consents and popups first
+- ✅ **Label tabs meaningfully** - Enables easy reference in multi-tab workflows
+- ✅ **Return tab metadata** - Include tabId, label, URL in all results
+- ✅ **Never auto-submit forms** - Always generate preview first, wait for approval
+- ✅ **Handle errors gracefully** - Verify tabs exist, fall back to alternatives
 
 ## Further Reading
 
-- **Macro Reference**: `.claude/skills/browser/MACROS.md` - Complete macro documentation
-- **Multi-Tab Patterns**: `.claude/skills/browser/MULTI_TAB.md` - Deep dive on multi-tab workflows
-- **Amazon Macros**: `.claude/skills/browser/AMAZON_MACROS.md` - Amazon-specific automation
-- **Troubleshooting**: `.claude/skills/browser/TROUBLESHOOTING.md` - Common issues and solutions
+**Specialization Modules**:
+- `.claude/skills/browser/ECOMMERCE.md` - E-commerce automation (Amazon, Google Shopping, Walmart)
+- `.claude/skills/browser/FORMS.md` - Form discovery and safe submission
+- `.claude/skills/browser/SCRAPER.md` - Web scraping and data export
+- `.claude/skills/browser/QA.md` - Accessibility and performance testing
+- `.claude/skills/browser/SCREENSHOT_ANALYSIS.md` - Screenshot analysis and WCAG compliance
+
+**Reference Documentation**:
+- `.claude/skills/browser/MACROS.md` - Universal macro documentation
+- `.claude/skills/browser/MACRO_LEARNING.md` - Learning new macros from user demonstrations
+- `.claude/skills/browser/MULTI_TAB.md` - Deep dive on multi-tab workflows
+- `.claude/skills/browser/TROUBLESHOOTING.md` - Common issues and solutions
+
+**Site-Specific Guides**:
+- `.claude/skills/browser/AMAZON_MACROS.md` - 17 Amazon-specific macros
+- `.claude/skills/browser/GOOGLE_SHOPPING_MACROS.md` - 12 Google Shopping macros
+- `.claude/skills/browser/WALMART_MACROS.md` - 5 Walmart macros
+- (+ 5 more site-specific guides for Upwork, Fidelity, OpenGameArt, CoinTracker, Google)
 
 ---
 
-**Start working immediately when user requests browser automation. No preamble needed. Delegate to appropriate sub-agent with clear instructions.**
+**Start working immediately when user requests browser automation. No preamble needed. Detect task type, route to appropriate module, and execute tools directly.**

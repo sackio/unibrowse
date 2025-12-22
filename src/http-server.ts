@@ -43,6 +43,7 @@ const customTools: Tool[] = [
   custom.getConsoleLogs,
   custom.getNetworkLogs,
   custom.screenshot,
+  custom.segmentedScreenshot,
 ];
 
 const explorationTools: Tool[] = [

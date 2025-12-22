@@ -43,6 +43,13 @@ export interface SocketMessageMap {
   // Information tools
   browser_get_console_logs: Record<string, never>;
   browser_screenshot: { tabTarget?: number | string };
+  browser_segmented_screenshot: {
+    selectors: string[];
+    outputDir?: string;
+    prefix?: string;
+    includeLabels?: boolean;
+    tabTarget?: number | string;
+  };
   browser_snapshot: { tabTarget?: number | string };
   getUrl: { tabTarget?: number | string } | undefined;
   getTitle: { tabTarget?: number | string } | undefined;

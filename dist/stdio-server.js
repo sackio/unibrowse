@@ -72,6 +72,7 @@ import {
   searchBookmarks,
   searchHistory,
   searchInteractions,
+  segmentedScreenshot,
   selectOption,
   setClipboard,
   setCookie,
@@ -84,7 +85,7 @@ import {
   type,
   updateMacro,
   wait
-} from "./chunk-WSFAP736.js";
+} from "./chunk-3TVRGRJN.js";
 import "./chunk-FT2ARCXD.js";
 
 // src/stdio-server.ts
@@ -107,7 +108,8 @@ var customTools = [
   evaluate,
   getConsoleLogs,
   getNetworkLogs,
-  screenshot
+  screenshot,
+  segmentedScreenshot
 ];
 var explorationTools = [
   queryDOM,

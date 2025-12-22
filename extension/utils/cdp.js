@@ -718,6 +718,97 @@ class CDPHelper {
   }
 
   /**
+   * Get element region for screenshot capture
+   * @param {string} selector - CSS selector for the element
+   * @returns {Object} Element region with {x, y, width, height, label, scrolled}
+   */
+  async getElementRegion(selector) {
+    const scrollResult = await this.evaluate(`
+      (function() {
+        const element = document.querySelector(${JSON.stringify(selector)});
+        if (!element) return { found: false };
+
+        const initialRect = element.getBoundingClientRect();
+        const initiallyInView = (
+          initialRect.top >= 0 &&
+          initialRect.left >= 0 &&
+          initialRect.bottom <= window.innerHeight &&
+          initialRect.right <= window.innerWidth
+        );
+
+        if (!initiallyInView) {
+          element.scrollIntoView({ behavior: "instant", block: "start", inline: "start" });
+        }
+
+        const rect = element.getBoundingClientRect();
+        let label = element.id || (element.className && element.className.split(" ")[0]) || "";
+
+        return {
+          found: true,
+          scrolled: !initiallyInView,
+          x: Math.max(0, rect.left),
+          y: Math.max(0, rect.top),
+          width: Math.min(rect.width, window.innerWidth - rect.left),
+          height: Math.min(rect.height, window.innerHeight - rect.top),
+          label: label
+        };
+      })()
+    `);
+
+    if (!scrollResult.found) {
+      throw new Error(`Element not found: ${selector}`);
+    }
+    return scrollResult;
+  }
+
+  /**
+   * Capture segmented screenshots based on CSS selectors
+   * @param {string[]} selectors - Array of CSS selectors
+   * @param {Object} options - Options {includeLabels}
+   * @returns {Array} Array of {selector, base64Data, label} or {selector, base64Data: null, label: '', error}
+   */
+  async captureSegmentedScreenshots(selectors, options = {}) {
+    const screenshots = [];
+    const { includeLabels = false } = options;
+
+    for (const selector of selectors) {
+      try {
+        const region = await this.getElementRegion(selector);
+
+        // Wait for animations to settle if we scrolled
+        if (region.scrolled) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+
+        const result = await this.sendCommand('Page.captureScreenshot', {
+          format: 'png',
+          clip: {
+            x: region.x,
+            y: region.y,
+            width: region.width,
+            height: region.height,
+            scale: 1,
+          },
+        });
+
+        screenshots.push({
+          selector: selector,
+          base64Data: result.data,
+          label: includeLabels ? region.label : '',
+        });
+      } catch (error) {
+        screenshots.push({
+          selector: selector,
+          base64Data: null,
+          label: '',
+          error: error.message,
+        });
+      }
+    }
+    return screenshots;
+  }
+
+  /**
    * Get accessibility tree
    */
   async getAccessibilityTree() {

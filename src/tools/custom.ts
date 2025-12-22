@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import * as path from "path";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
 import {
@@ -5,6 +7,7 @@ import {
   GetConsoleLogsTool,
   GetNetworkLogsTool,
   ScreenshotTool,
+  SegmentedScreenshotTool,
 } from "@/types/tool-schemas";
 import { textResponse, imageResponse, jsonResponse, errorResponse } from "@/utils/response-helpers";
 
@@ -64,6 +67,95 @@ export const screenshot: Tool = {
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to capture screenshot: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+/**
+ * Capture segmented screenshots of page elements
+ * Takes screenshots of specific page elements identified by CSS selectors.
+ * Each element is captured as a separate PNG file saved to disk.
+ * Returns array of file paths to minimize context usage.
+ */
+export const segmentedScreenshot: Tool = {
+  schema: {
+    name: SegmentedScreenshotTool.shape.name.value,
+    description: SegmentedScreenshotTool.shape.description.value,
+    inputSchema: zodToJsonSchema(SegmentedScreenshotTool.shape.arguments),
+  },
+  handle: async (context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      await context.ensureAttached();
+      const validatedParams = SegmentedScreenshotTool.shape.arguments.parse(params);
+
+      const result = await context.sendSocketMessage(
+        "browser_segmented_screenshot",
+        validatedParams,
+      );
+
+      const { screenshots, failedSelectors } = result;
+
+      // Generate timestamp for filename
+      const timestamp = new Date()
+        .toISOString()
+        .replace(/[-:]/g, "")
+        .replace(/\..+/, "")
+        .replace("T", "_");
+
+      const outputDir = validatedParams.outputDir || "/tmp";
+      const prefix = validatedParams.prefix || "segment";
+      const includeLabels = validatedParams.includeLabels || false;
+
+      // Ensure output directory exists
+      if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+      }
+
+      // Convert base64 to PNG files and collect file paths
+      const filePaths: Array<{
+        path: string;
+        selector: string;
+        label: string;
+        index: number;
+      }> = [];
+
+      for (let i = 0; i < screenshots.length; i++) {
+        const { selector, base64Data, label } = screenshots[i];
+        const sequenceNum = String(i + 1).padStart(3, "0");
+        const labelPart = includeLabels && label ? `_${label}` : "";
+        const filename = `${timestamp}_${prefix}_${sequenceNum}${labelPart}.png`;
+        const filepath = path.join(outputDir, filename);
+
+        const buffer = Buffer.from(base64Data, "base64");
+        fs.writeFileSync(filepath, buffer);
+
+        filePaths.push({
+          path: filepath,
+          selector: selector,
+          label: label,
+          index: i + 1,
+        });
+      }
+
+      return jsonResponse(
+        {
+          success: true,
+          count: filePaths.length,
+          files: filePaths,
+          failedSelectors: failedSelectors,
+          outputDir: outputDir,
+          timestamp: timestamp,
+        },
+        max_tokens,
+      );
+    } catch (error) {
+      return errorResponse(
+        `Failed to capture segmented screenshots: ${error.message}`,
+        false,
+        error,
+        max_tokens,
+      );
     }
   },
 };
