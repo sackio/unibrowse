@@ -25,7 +25,7 @@
       {
         "path": ".claude/skills/browser",
         "name": "browser",
-        "description": "Browser automation guidance with intelligent delegation to specialized sub-agents. Provides token conservation patterns, macro-first strategies, and multi-tab context preservation.",
+        "description": "Browser automation with direct MCP tool execution orchestration through 5 specialized skill modules. Provides macro-first strategies, token conservation patterns, and multi-tab context preservation.",
         "triggers": [
           "browser",
           "web",
@@ -136,7 +136,7 @@
           "npm run store:macros",
           "npm run store:advanced-macros"
         ],
-        "notes": "Stores 91+ macros into MongoDB for use by sub-agents"
+        "notes": "Stores 91+ macros into MongoDB for use by browser skill"
       },
       {
         "step": 7,
