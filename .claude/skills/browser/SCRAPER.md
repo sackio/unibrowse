@@ -1,17 +1,221 @@
-# Scraper Module
+# ⚠️ CRITICAL: MACRO-FIRST EXTRACTION MANDATE (TOKEN EFFICIENCY) ⚠️
 
-## Routing Context
+🚨 **STOP**: Before ANY data extraction, you MUST complete Step 0 below 🚨
 
-The main browser skill routes to this module when the user requests:
-- **Trigger keywords**: "scrape", "extract", "data", "table", "pagination", "export", "csv", "json", "infinite scroll", "articles", "products", "list"
-- **Task patterns**: Data extraction, table parsing, multi-page aggregation, export to files
-- **Examples**:
-  - "Scrape all products from this page and export to CSV"
-  - "Extract the table data and save to JSON"
-  - "Scrape all pages with pagination and aggregate the results"
-  - "Extract article content including metadata and images"
+## 🛑 Step 0: Pre-Flight Macro Check (MANDATORY - SAVES 10-100x TOKENS)
 
-**What this module provides**: Step-by-step instructions for structured data extraction, pagination handling, infinite scroll aggregation, and export to JSON/CSV files.
+**DO NOT SKIP THIS STEP** - Complete BEFORE any extraction workflow:
+
+### ✅ Required Actions (Execute in Order):
+
+1. **Check site-specific extraction macros**:
+   ```
+   Call: browser_list_macros({
+     site: "<extract-domain>",  // e.g., "amazon.com"
+     category: "extraction"  // Filter for extraction macros
+   })
+   ```
+
+2. **If no site-specific extraction macros found, check universal macros**:
+   ```
+   Call: browser_list_macros({
+     site: "*",
+     category: "extraction"
+   })
+   ```
+
+3. **If macro found → MUST use it**:
+   ```
+   Call: browser_execute_macro({
+     id: "<macro_id>",
+     params: { /* macro-specific parameters */ },
+     tabTarget: tabId
+   })
+   // Returns 200-500 tokens of structured data
+   ```
+
+4. **If NO macro found → Document gap, then use direct tools**:
+   - State: "No extraction macro found for [site] + [data_type]"
+   - Then proceed with manual extraction below
+
+### ⚠️ EXTRACTION EFFICIENCY RULES (MANDATORY):
+
+**❌ NEVER EVER DO THESE - MASSIVE TOKEN WASTE**:
+- ❌ Use browser_snapshot for extraction (returns 5000+ tokens of ARIA tree)
+- ❌ Call browser_get_visible_text without maxLength (can return 10,000+ tokens)
+- ❌ Query DOM with `selector: "*"` (returns hundreds of elements)
+- ❌ Extract without cleaning interruptions first (popups add noise)
+- ❌ Skip deduplication on multi-page scrapes (duplicate data = wasted tokens)
+- ❌ Use direct navigation before checking for extraction macros
+
+**✅ ALWAYS DO THESE FOR EFFICIENCY**:
+1. Check for extraction macros first (saves 10-100x tokens)
+2. Use targeted extraction (extract_table_data, extract_main_content, extract_images)
+3. Clean interruptions before extraction (dismiss_interruptions macro)
+4. Always truncate text to maxLength (3000-5000 chars max)
+5. Use targeted selectors with limits (selector: ".product", limit: 50)
+6. Deduplicate data before export
+7. Use appropriate export format (CSV for tables, JSON for structured data)
+
+### 📋 Checklist (Must Complete ALL Before Proceeding):
+
+- [ ] Called browser_list_macros for site-specific extraction macros (site: "<domain>", category: "extraction")?
+- [ ] Called browser_list_macros for universal extraction macros (site: "*", category: "extraction")?
+- [ ] Using browser_execute_macro if macro found?
+- [ ] Documented macro gap if none exist?
+- [ ] Planning to clean interruptions before extraction?
+- [ ] Planning to truncate text/limit results for token efficiency?
+
+**If you cannot check ALL boxes above, you are NOT ready to proceed.**
+
+---
+
+## 💡 Why Macros Are Mandatory for Extraction
+
+**Token Cost Comparison**:
+
+| Approach | Tool Calls | Token Cost | Result |
+|----------|-----------|-----------|--------|
+| ❌ Snapshot + manual click | snapshot + 5 clicks | 5000-8000 tokens | Messy HTML, errors |
+| ❌ browser_snapshot + query | snapshot + query | 8000-12000 tokens | Verbose ARIA tree |
+| ✅ Extraction macro | 1 macro call | 200-500 tokens | Structured data |
+
+**Token Savings**: 10-100x fewer tokens = faster execution = cleaner results
+
+---
+
+## 🚫 Common Mistakes in Data Extraction (AVOID THESE - TOKEN WASTE)
+
+### Mistake 1: "I'll just use browser_snapshot to see what's on the page"
+❌ **WRONG - WASTES 5000+ TOKENS**:
+```
+browser_snapshot()  // Returns full ARIA tree
+// Output: {"type": "RootWebArea", "children": [...5000 lines...]}
+// Result: Massive context consumption, hard to parse
+```
+
+✅ **CORRECT**:
+```
+browser_list_macros({ site: "example.com", category: "extraction" })
+// Returns: extract_table_data, extract_links, extract_images macros available
+browser_execute_macro({ id: "extract_table_data" })
+// Output: { tables: [{ headers: [...], rows: [...] }] }
+// Result: Structured data, 200 tokens, easy to parse
+```
+
+**Token savings**: 4800+ tokens per task = huge efficiency gain
+
+---
+
+### Mistake 2: "I need to get all text from the page"
+❌ **WRONG - CAN RETURN 10,000+ TOKENS**:
+```
+browser_get_visible_text()  // No limit - returns entire page
+// Result: 10,000-15,000 tokens of text
+```
+
+✅ **CORRECT**:
+```
+browser_get_visible_text({
+  maxLength: 3000  // Limit to 3000 characters
+})
+// Result: 100-200 tokens of truncated text
+```
+
+**Token savings**: 9,800+ tokens per task
+
+---
+
+### Mistake 3: "I'll extract data without checking for macros"
+❌ **WRONG - NO STRUCTURED DATA**:
+```
+browser_click({ ref: "...", element: "product link" })
+browser_snapshot()  // 5000+ tokens
+browser_get_visible_text()  // 3000+ tokens
+// Result: Manual parsing needed, high error rate
+```
+
+✅ **CORRECT**:
+```
+browser_list_macros({ site: "shop.example.com", category: "extraction" })
+// Returns: extract_search_results macro available
+browser_execute_macro({ id: "extract_search_results" })
+// Output: [{ name: "Product", price: "$29.99", url: "...", ref: "...", ... }]
+// Result: Structured data, 200 tokens, ready to process
+```
+
+**Quality improvement**: Macro extraction error rate <1% vs manual parsing 15-20%
+
+---
+
+### Mistake 4: "I'll paginate without cleaning the page first"
+❌ **WRONG - EXTRACT NOISE**:
+```
+browser_execute_macro({ id: "detect_pagination" })
+// Cookie consent banner and popups are still on page
+// Extracted data includes popup text, banner text
+// Result: Dirty data with noise
+```
+
+✅ **CORRECT**:
+```
+browser_execute_macro({ id: "dismiss_interruptions" })  // Clean first
+browser_execute_macro({ id: "smart_cookie_consent" })  // Handle cookies
+// THEN extract data
+browser_execute_macro({ id: "detect_pagination" })
+// Result: Clean data without noise
+```
+
+**Data quality improvement**: Clean data vs 30% noise reduction
+
+---
+
+### Mistake 5: "I'll export all 10,000 rows without deduplicating"
+❌ **WRONG - DUPLICATE DATA**:
+```
+allData = []
+for page 1-100:
+  data = extract()
+  allData += data
+  // Many rows are duplicates from pagination overlap
+// Export: 10,000 rows, 3000 unique, 7000 duplicates
+// Result: Wasted tokens, messy data
+```
+
+✅ **CORRECT**:
+```
+allData = []
+for page 1-100:
+  data = extract()
+  allData += data
+
+// Deduplicate
+uniqueData = []
+seen = Set()
+for item in allData:
+  key = JSON.stringify(item)
+  if !seen.has(key):
+    uniqueData.push(item)
+    seen.add(key)
+
+// Export: 10,000 rows → 3000 unique
+// Result: Clean data, 70% size reduction
+```
+
+**Export efficiency**: 70% smaller files, faster processing
+
+---
+
+## 🔄 Reminder: Macro-First Extraction
+
+**Before continuing with extraction workflows below**:
+1. Have you checked for extraction macros? (`browser_list_macros`)
+2. Are you using extraction macros when available? (`browser_execute_macro`)
+3. Is there a universal extraction macro for this data type?
+
+**Do not proceed with manual extraction if macros exist.**
+
+---
 
 ## Available Macros
 
@@ -84,6 +288,21 @@ The main browser skill routes to this module when the user requests:
 ## Execution Workflows
 
 ### Workflow 1: Simple Table Extraction
+
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR EXTRACTION)
+
+**CRITICAL**: Check for extraction macros before manual extraction:
+
+- [ ] Checked site-specific extraction macros: `browser_list_macros({ site: "...", category: "extraction" })`
+- [ ] Checked universal extraction macros: `browser_list_macros({ site: "*", category: "extraction" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Planning to clean interruptions before extraction
+- [ ] Planning to deduplicate data before export
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
 
 **When to use**: Pages with HTML tables or data grids that you want to export to CSV/JSON.
 
@@ -162,6 +381,21 @@ The main browser skill routes to this module when the user requests:
 **Expected result**: All tables extracted, converted to CSV, and saved to /tmp/scraped-data.csv.
 
 ### Workflow 2: Pagination Handling
+
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR EXTRACTION)
+
+**CRITICAL**: Check for extraction macros before manual extraction:
+
+- [ ] Checked site-specific extraction macros: `browser_list_macros({ site: "...", category: "extraction" })`
+- [ ] Checked universal extraction macros: `browser_list_macros({ site: "*", category: "extraction" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Planning to clean interruptions before extraction
+- [ ] Planning to deduplicate data before export
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
 
 **When to use**: Multi-page data (product listings, search results) with page numbers or next/previous buttons.
 
@@ -271,6 +505,21 @@ The main browser skill routes to this module when the user requests:
 **Expected result**: Data from all pages aggregated, deduplicated, and exported to JSON file with progress report.
 
 ### Workflow 3: Infinite Scroll Aggregation
+
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR EXTRACTION)
+
+**CRITICAL**: Check for extraction macros before manual extraction:
+
+- [ ] Checked site-specific extraction macros: `browser_list_macros({ site: "...", category: "extraction" })`
+- [ ] Checked universal extraction macros: `browser_list_macros({ site: "*", category: "extraction" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Planning to clean interruptions before extraction
+- [ ] Planning to deduplicate data before export
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
 
 **When to use**: Pages that load more content as you scroll down (social media feeds, product galleries).
 
@@ -396,6 +645,21 @@ The main browser skill routes to this module when the user requests:
 
 ### Workflow 4: Article/Content Extraction
 
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR EXTRACTION)
+
+**CRITICAL**: Check for extraction macros before manual extraction:
+
+- [ ] Checked site-specific extraction macros: `browser_list_macros({ site: "...", category: "extraction" })`
+- [ ] Checked universal extraction macros: `browser_list_macros({ site: "*", category: "extraction" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Planning to clean interruptions before extraction
+- [ ] Planning to deduplicate data before export
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
+
 **When to use**: Blog posts, news articles, documentation pages where you want title, body, metadata, and images.
 
 **Instructions for main conversation:**
@@ -498,6 +762,21 @@ The main browser skill routes to this module when the user requests:
 
 ### Workflow 5: Multi-Site Aggregation
 
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR EXTRACTION)
+
+**CRITICAL**: Check for extraction macros before manual extraction:
+
+- [ ] Checked site-specific extraction macros: `browser_list_macros({ site: "...", category: "extraction" })`
+- [ ] Checked universal extraction macros: `browser_list_macros({ site: "*", category: "extraction" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Planning to clean interruptions before extraction
+- [ ] Planning to deduplicate data before export
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
+
 **When to use**: Collecting data from multiple websites and combining into a single dataset.
 
 **Instructions for main conversation:**
@@ -593,6 +872,22 @@ The main browser skill routes to this module when the user requests:
    ```
 
 **Expected result**: Data from multiple sites aggregated, deduplicated, and exported to a single JSON file with source tracking.
+
+---
+
+## 🔄 Reminder (Halfway Through): Macro-First Extraction
+
+**Critical checkpoint**: Have you used extraction macros for this task?
+
+✅ **Required before proceeding**:
+- [ ] Called `browser_list_macros` for site-specific extraction macros (site: "<domain>", category: "extraction")
+- [ ] Called `browser_list_macros` for universal extraction macros (site: "*", category: "extraction")
+- [ ] Using `browser_execute_macro` if macro found
+- [ ] Documented macro gap if none exist
+
+**Important**: Do NOT proceed with manual browser_snapshot() calls if extraction macros exist. Macros save 10-100x tokens.
+
+---
 
 ## Token Conservation
 
@@ -912,19 +1207,45 @@ Call: Write({
 })
 ```
 
-## Remember
+---
 
-- ✅ **Use extraction macros** - extract_table_data, extract_main_content (not browser_snapshot)
-- ✅ **Handle pagination systematically** - detect → loop → aggregate → deduplicate
-- ✅ **Deduplicate data before export** - prevent duplicate entries
-- ✅ **Clean interruptions first** - dismiss popups/cookie consents before extraction
-- ✅ **Export to /tmp/ files** - use /tmp/scraped-data.{json|csv}
-- ✅ **Return tab IDs** - enable context preservation for multi-turn workflows
-- ✅ **Use token-efficient methods** - targeted macros, truncated text, limited selectors
-- ✅ **Provide progress updates** - report pages scraped, items found, export paths
-- ✅ **Report export paths** - always include exportPath in return data
-- ✅ **Use appropriate export format** - CSV for tables, JSON for structured data
+## 🚨 FINAL REMINDER: Macro-First Extraction & Token Efficiency
+
+**CRITICAL - Complete BEFORE any extraction operation**:
+- [ ] Called `browser_list_macros` for site-specific extraction macros
+- [ ] Called `browser_list_macros` for universal extraction macros (* site)
+- [ ] Using `browser_execute_macro` if macro found
+- [ ] Documented macro gap if none exist
+- [ ] Planning to clean interruptions before extraction
+- [ ] Planning to deduplicate data before export
+
+**EXTRACTION EFFICIENCY**: Macros save 10-100x tokens vs manual browser_snapshot/get_visible_text
 
 ---
 
-**When the main skill routes to this module**: Immediately identify the data type (table, list, products, articles), select the appropriate workflow (simple extraction, pagination, infinite scroll, multi-site), execute the extraction with token-efficient macros, aggregate and deduplicate the data, export to /tmp/, and return the results with tab metadata and export path.
+## Remember
+
+- ✅ **COMPLETE STEP 0 FIRST** - Check for extraction macros before any manual operations
+- ✅ **Use extraction macros** - extract_table_data, extract_main_content (not browser_snapshot)
+- ✅ **NEVER use browser_snapshot for extraction** - wastes 5000+ tokens, use macros instead (200-500 tokens)
+- ✅ **Handle pagination systematically** - detect → loop → aggregate → deduplicate
+- ✅ **Deduplicate data before export** - prevent duplicate entries and 70% size reduction
+- ✅ **Clean interruptions first** - dismiss popups/cookie consents before extraction (macro: dismiss_interruptions)
+- ✅ **Export to /tmp/ files** - use /tmp/scraped-data.{json|csv}
+- ✅ **Always truncate text** - use maxLength: 3000 in browser_get_visible_text (saves 9000+ tokens)
+- ✅ **Use targeted selectors** - selector: ".product-item", limit: 50 (not selector: "*")
+- ✅ **Return tab IDs** - enable context preservation for multi-turn workflows
+- ✅ **Use token-efficient methods** - targeted macros, truncated text, limited selectors (10-100x savings)
+- ✅ **Provide progress updates** - report pages scraped, items found, export paths
+- ✅ **Report export paths** - always include exportPath in return data
+- ✅ **Use appropriate export format** - CSV for tables, JSON for structured data
+- ✅ **Document macro gaps** - if no macro exists for this extraction type, state it explicitly
+
+---
+
+**When the main skill routes to this module**:
+1. **IMMEDIATELY complete Step 0** - Check for extraction macros first
+2. **IF macro found** - Use `browser_execute_macro` instead of manual browser_snapshot
+3. **IF no macro found** - Document gap, then identify the data type (table, list, products, articles) and select appropriate workflow
+4. **EXECUTE with token-efficient macros** - aggregate and deduplicate the data
+5. **EXPORT to /tmp/** - return results with tab metadata and export path

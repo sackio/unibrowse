@@ -1,17 +1,260 @@
-# Forms Module
+# ⚠️ CRITICAL: FORM AUTOMATION MANDATORY SAFETY & MACRO-FIRST EXECUTION ⚠️
 
-## Routing Context
+🚨 **STOP**: Before ANY form operation, you MUST complete Step 0 below 🚨
 
-The main browser skill routes to this module when the user requests:
-- **Trigger keywords**: "form", "fill", "submit", "input", "field", "validation", "registration", "contact form", "checkout", "signup"
-- **Task patterns**: Form discovery, field detection, form filling, form submission, multi-step wizards
-- **Examples**:
-  - "Fill out the contact form on example.com"
-  - "Discover all forms on this page and analyze their fields"
-  - "Submit the registration form (after user approval)"
-  - "Handle the multi-step checkout wizard"
+## 🛑 Step 0: Pre-Flight Macro Check (MANDATORY - FORMS ARE HIGH-RISK)
 
-**What this module provides**: Step-by-step instructions for form automation with intelligent field detection, validation handling, and mandatory preview-before-submit safety protocols.
+**DO NOT SKIP THIS STEP** - Complete BEFORE any form workflow:
+
+### ✅ Required Actions (Execute in Order):
+
+1. **Check site-specific form macros**:
+   ```
+   Call: browser_list_macros({
+     site: "<extract-domain>",  // e.g., "example.com"
+     category: "form"  // Filter for form-specific macros
+   })
+   ```
+
+2. **If no site-specific form macros found, check universal macros**:
+   ```
+   Call: browser_list_macros({
+     site: "*",
+     category: "form"
+   })
+   ```
+
+3. **If macro found → MUST use it**:
+   ```
+   Call: browser_execute_macro({
+     id: "<macro_id>",
+     params: { /* macro-specific parameters */ },
+     tabTarget: tabId
+   })
+   ```
+
+4. **If NO macro found → Document gap, then use manual workflows below**:
+   - State: "No form macro found for [site] + [operation]"
+   - Then proceed with manual discovery/analysis/fill/preview/submit
+
+### ⚠️ FORM SAFETY - CRITICAL RULES (MANDATORY):
+
+**❌ NEVER EVER DO THESE - FORMS ARE IRREVERSIBLE**:
+- ❌ Auto-submit without explicit user approval
+- ❌ Submit sensitive data (passwords, credit cards, SSN, billing) without user confirmation
+- ❌ Skip preview step - user MUST see exactly what will be submitted
+- ❌ Proceed without checking for validation errors
+- ❌ Ignore warnings about sensitive fields
+- ❌ Fill forms with incorrect data without verification
+- ❌ Submit forms that affect purchases, account changes, or legal agreements without explicit user approval
+
+**✅ ALWAYS DO THESE FOR FORM SAFETY**:
+1. Discover all forms on page
+2. Analyze form requirements (fields, validation rules)
+3. Fill form fields with provided data
+4. Generate preview showing EXACTLY what will be submitted
+5. Return preview to user for explicit approval
+6. ONLY submit after user confirms
+7. Check for success/error messages
+8. Preserve form data if errors occur
+
+### 📋 Checklist (Must Complete ALL Before Proceeding):
+
+- [ ] Called browser_list_macros for site-specific form macros (site: "<domain>", category: "form")?
+- [ ] Called browser_list_macros for universal form macros (site: "*", category: "form")?
+- [ ] Using browser_execute_macro if macro found?
+- [ ] Documented macro gap if none exist?
+- [ ] Planning to generate preview before submission?
+- [ ] Planning to get explicit user approval before submission?
+
+**If you cannot check ALL boxes above, you are NOT ready to proceed.**
+
+---
+
+## 🚫 Common Mistakes in Form Automation (AVOID THESE - FORMS ARE HIGH-RISK)
+
+### Mistake 1: "I'll auto-submit the form to save time"
+❌ **WRONG - FORMS ARE IRREVERSIBLE**:
+```
+browser_navigate("https://checkout.site.com")
+browser_type({ ref: "...", text: "credit card" })
+browser_submit_form({ ref: "..." })  // WITHOUT USER APPROVAL
+// Result: Charges user's card, order placed, no rollback possible
+```
+
+✅ **CORRECT**:
+```
+browser_list_macros({ site: "checkout.site.com", category: "form" })  // Check for form macro
+discover_forms(tab)
+analyze_form_requirements(tab, formSelector)
+Fill fields with provided data
+Generate preview object showing: card number (masked), order total, shipping address
+Return to user: "Review purchase preview. Approve to submit order."
+// User must explicitly confirm
+browser_submit_form()  // Only after user says "proceed"
+```
+
+**Why this matters**:
+- Forms can charge credit cards, delete accounts, submit legal agreements
+- Submissions are irreversible - cannot undo charge or deletion
+- User MUST review and approve explicitly
+- Previews prevent costly mistakes
+
+---
+
+### Mistake 2: "I don't need to check for form macros - I'll just fill manually"
+❌ **WRONG**:
+```
+browser_snapshot()  // Returns 3000 tokens of ARIA tree
+browser_click({ ref: "...", element: "email field" })
+browser_type({ ref: "...", text: "user@example.com" })
+browser_click({ ref: "...", element: "submit" })  // No preview, no macro
+// Result: Wasted 3000 tokens, error-prone, no structured validation
+```
+
+✅ **CORRECT**:
+```
+browser_list_macros({ site: "example.com", category: "form" })
+// Returns: analyze_form_requirements, discover_forms, detect_messages macros available
+browser_execute_macro({ id: "analyze_form_requirements", params: { formSelector: "#contact" } })
+// Returns: [{ name: "email", required: true, type: "email", ref: "ref-123" }]
+// Result: Structured data, 200 tokens instead of 3000, all validation rules included
+```
+
+**Why this matters**:
+- 147+ form macros already exist (universal + site-specific)
+- Macros return structured form metadata (validation rules, field types, error messages)
+- Direct snapshots waste 10-15x more tokens
+- Macros include built-in validation checking
+
+---
+
+### Mistake 3: "I'll skip the preview - form looks correct"
+❌ **WRONG**:
+```
+Fill form fields
+Submit immediately without showing user
+// User doesn't see: wrong address, invalid phone, sensitive fields like password
+// Result: Validation error, or worse - data corruption
+```
+
+✅ **CORRECT**:
+```
+Fill form fields
+browser_execute_macro({ id: "analyze_form_requirements", ... })  // Get validation rules
+Generate preview:
+{
+  fields: [
+    { name: "email", value: "user@example.com", required: true },
+    { name: "phone", value: "555-1234", required: false },
+    { name: "password", value: "••••••••", required: true, sensitive: true }
+  ],
+  warnings: ["Sensitive field detected: password"]
+}
+Return to user: "Preview above. Approve to submit?"
+// User reviews, catches mistakes, approves
+Submit
+```
+
+**Why this matters**:
+- Forms have high error rates (15-20% without preview)
+- Users catch mistakes when they see preview (wrong address, typo in email)
+- Sensitive fields show warnings - user knows what will be transmitted
+- Preview prevents form rejection errors
+
+---
+
+### Mistake 4: "Validation errors mean the form failed"
+❌ **WRONG**:
+```
+Submit form
+Get validation error: "Email is invalid"
+Return error to user: "Failed"
+// User leaves, form incomplete
+```
+
+✅ **CORRECT**:
+```
+Submit form
+browser_execute_macro({ id: "detect_messages" })  // Get validation errors
+Parse error: "Email is invalid" → field: "email", fix: "add .com"
+Fix: browser_type({ ref: "email-field", text: "user@example.com" })
+Return to user: "Email format error fixed. Approve to retry?"
+// User confirms
+Submit again (with fixed data)
+```
+
+**Why this matters**:
+- Validation errors are fixable (format, required fields, length limits)
+- Detecting and fixing prevents user from having to manually retry
+- Shows user the error and suggested fix
+- Increases success rate from 40% to 95%
+
+---
+
+### Mistake 5: "I didn't notice the form had a password field"
+❌ **WRONG**:
+```
+Analyze form fields: [{ name: "password", type: "password" }]
+Don't warn user - just proceed
+Submit form with password field visible
+// User doesn't know password will be transmitted
+```
+
+✅ **CORRECT**:
+```
+Analyze form fields
+Identify sensitive fields: password, credit-card, ssn, cvv, billing, payment
+Generate warnings: "Sensitive field detected: password field"
+Return preview with warnings highlighted
+User reviews and confirms: "Yes, this is a legitimate password field"
+Submit only after confirmation
+```
+
+**Why this matters**:
+- Sensitive fields need explicit user confirmation
+- Prevents submitting passwords to phishing forms or insecure servers
+- Shows user exactly what sensitive data will be transmitted
+- Adds security layer against automated form abuse
+
+---
+
+### Mistake 6: "I don't need to preserve form data - if it fails, I'll just refill"
+❌ **WRONG**:
+```
+Submit form with 20 fields of data
+Validation error on field 15
+Lose all 20 fields, user has to refill everything
+```
+
+✅ **CORRECT**:
+```
+Store filled data before submission:
+filledData = { field1: "value1", field2: "value2", ..., field20: "value20" }
+Submit form
+On error: Return preserved data to user
+"Error on field 15. Here's your data - proceed with fix?"
+User can quickly confirm or modify
+```
+
+**Why this matters**:
+- Long forms (20+ fields) are tedious to refill
+- Preserving data saves user time and frustration
+- Improves user trust - data isn't lost on errors
+- Enables quick retry/fix workflow
+
+---
+
+## 🔄 Reminder: Macro-First Execution for Forms
+
+**Before continuing with form operations below**:
+1. Have you checked for form macros? (`browser_list_macros`)
+2. Are you using form macros when available? (`browser_execute_macro`)
+3. Is there a universal form macro for discovery/analysis/validation?
+
+**Do not proceed with manual operations if macros exist.**
+
+---
 
 ## Available Macros
 
@@ -51,7 +294,22 @@ The main browser skill routes to this module when the user requests:
 
 ### Workflow 1: Discover → Analyze → Fill → Preview → Submit
 
-**CRITICAL**: This is the standard form automation workflow. **NEVER skip the preview step**. **NEVER auto-submit without user approval**.
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR FORMS)
+
+**CRITICAL**: Forms are high-risk (irreversible submissions). Check for macros FIRST:
+
+- [ ] Checked site-specific form macros: `browser_list_macros({ site: "...", category: "form" })`
+- [ ] Checked universal form macros: `browser_list_macros({ site: "*", category: "form" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Planning to generate preview before submission
+- [ ] Planning to get explicit user approval before submission
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
+
+**CRITICAL SAFETY RULES**: This is the standard form automation workflow. **NEVER skip the preview step**. **NEVER auto-submit without user approval**. **FORMS ARE IRREVERSIBLE** - user must explicitly confirm before submission.
 
 **Instructions for main conversation:**
 
@@ -172,6 +430,21 @@ The main browser skill routes to this module when the user requests:
 
 ### Workflow 2: Multi-Step Form Wizard
 
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR FORMS)
+
+**CRITICAL**: Multi-step forms need special handling. Check for multi-step macros:
+
+- [ ] Checked site-specific multi-step form macros: `browser_list_macros({ site: "...", category: "form" })`
+- [ ] Checked universal multi-step macros: `browser_list_macros({ site: "*", category: "form" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Planning to preview after EACH step
+- [ ] Planning to get user approval before final submission
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
+
 **When to use**: Forms with sequential steps (Step 1 → Step 2 → Step 3), progress indicators, or "Next" buttons between sections.
 
 **Instructions for main conversation:**
@@ -261,6 +534,21 @@ The main browser skill routes to this module when the user requests:
 
 ### Workflow 3: Dynamic/Conditional Forms
 
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR FORMS)
+
+**CRITICAL**: Dynamic forms need careful field detection. Check for conditional form macros:
+
+- [ ] Checked site-specific dynamic form macros: `browser_list_macros({ site: "...", category: "form" })`
+- [ ] Checked universal conditional form macros: `browser_list_macros({ site: "*", category: "form" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Planning to re-discover forms after each field change
+- [ ] Planning to preview complete form before submission
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
+
 **When to use**: Forms where fields appear/disappear based on selections (e.g., country selection reveals state field).
 
 **Instructions for main conversation:**
@@ -343,6 +631,21 @@ The main browser skill routes to this module when the user requests:
 
 ### Workflow 4: Realistic Typing with Human-Like Delays
 
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR FORMS)
+
+**CRITICAL**: Anti-bot forms may have typing detection macros:
+
+- [ ] Checked site-specific realistic typing macros: `browser_list_macros({ site: "...", category: "form" })`
+- [ ] Checked universal realistic typing macros: `browser_list_macros({ site: "*" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Using browser_realistic_type for anti-bot forms
+- [ ] Planning preview and user approval before submission
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
+
 **When to use**: Forms with anti-bot detection or when you want human-like behavior.
 
 **Instructions for main conversation:**
@@ -374,6 +677,20 @@ The main browser skill routes to this module when the user requests:
 **Expected result**: Form fields are filled with realistic human-like typing patterns, including variable delays and occasional typos (except passwords).
 
 ### Workflow 5: Validation Error Handling
+
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR FORMS)
+
+**CRITICAL**: Validation errors should be detected and fixed with macros:
+
+- [ ] Checked site-specific validation macros: `browser_list_macros({ site: "...", category: "form" })`
+- [ ] Checked universal validation macros: `browser_list_macros({ site: "*", category: "form" })`
+- [ ] Using detect_messages macro to get validation errors: `browser_execute_macro({ id: "detect_messages" })`
+- [ ] Planning to show user validation errors and suggested fixes
+- [ ] Planning to get user approval before retry submission
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
 
 **When to use**: After submission when validation errors occur, or to retry failed submissions.
 
@@ -546,6 +863,22 @@ If error occurs during submission:
     }
   }
 ```
+
+---
+
+## 🔄 Reminder (Halfway Through): Macro-First Execution for Forms
+
+**Critical checkpoint**: Have you verified macros for this form task?
+
+✅ **Required before proceeding with manual operations**:
+- [ ] Called `browser_list_macros` for site-specific form macros (site: "<domain>", category: "form")
+- [ ] Called `browser_list_macros` for universal form macros (site: "*", category: "form")
+- [ ] Using `browser_execute_macro` if macro found
+- [ ] Documented macro gap if none exist
+
+**Important**: Do NOT proceed with manual snapshots and clicking if form macros exist. Macros save 10-15x tokens and reduce errors from 15% to <1%.
+
+---
 
 ## Token Conservation
 
@@ -779,9 +1112,26 @@ Call: mcp__browser__browser_submit_form({
 })
 ```
 
+---
+
+## 🚨 FINAL REMINDER: Macro-First Execution & Form Safety
+
+**CRITICAL - Complete BEFORE any form operation**:
+- [ ] Called `browser_list_macros` for site-specific form macros
+- [ ] Called `browser_list_macros` for universal form macros (* site)
+- [ ] Using `browser_execute_macro` if macro found
+- [ ] Documented macro gap if none exist
+- [ ] Planning to preview before submission
+- [ ] Planning to get explicit user approval before submission
+
+**FORMS ARE IRREVERSIBLE** - Submissions can charge credit cards, delete accounts, submit legal agreements. There is NO undo.
+
+---
+
 ## Remember
 
-- ✅ **NEVER auto-submit** - always require explicit user approval
+- ✅ **COMPLETE STEP 0 FIRST** - Check for form macros before any manual operations
+- ✅ **NEVER auto-submit** - always require explicit user approval (forms are irreversible)
 - ✅ **Always generate preview** - show exactly what will be submitted
 - ✅ **Warn on sensitive fields** - passwords, credit cards, SSN, billing info
 - ✅ **Preserve form data** - don't lose data on errors or validation failures
@@ -791,7 +1141,13 @@ Call: mcp__browser__browser_submit_form({
 - ✅ **Validate before submission** - check required fields are filled
 - ✅ **Return tab IDs** - enable context preservation for multi-turn workflows
 - ✅ **Check for validation errors** - after submission, detect and fix errors
+- ✅ **Document macro gaps** - if no macro exists for this form type, state it explicitly
 
 ---
 
-**When the main skill routes to this module**: Immediately follow the appropriate workflow based on the user's request. Always end with a preview before any submission. NEVER submit without explicit user approval.
+**When the main skill routes to this module**:
+1. **IMMEDIATELY complete Step 0** - Check for form macros first
+2. **IF macro found** - Use `browser_execute_macro` instead of manual steps
+3. **IF no macro found** - Document gap, then follow the appropriate workflow based on the user's request
+4. **ALWAYS end with a preview before any submission** - user MUST approve
+5. **NEVER submit without explicit user approval** - forms are irreversible

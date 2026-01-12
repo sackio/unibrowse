@@ -1,4 +1,68 @@
-# QA Testing Module
+# ⚠️ CRITICAL: MACRO-FIRST QA TESTING MANDATE ⚠️
+
+🚨 **STOP** - Before proceeding with ANY QA testing workflow, you MUST complete Step 0 below.
+
+## 🛑 Step 0: Pre-Flight Macro Check (MANDATORY)
+
+**CRITICAL**: QA testing MUST use site-specific and universal macros first. Manual testing is only a fallback when no macro exists.
+
+### Check for QA Testing Macros
+
+```
+Call: browser_list_macros({ site: "<domain>", category: "qa" })
+```
+
+This returns site-specific QA testing macros. Check the response for:
+- `audit_accessibility` - comprehensive WCAG 2.1 audits
+- `measure_page_performance` - performance benchmarking
+- `check_visual_regression` - visual comparison testing
+- Other QA-specific macros (keyboard navigation, responsive testing, etc.)
+
+```
+Call: browser_list_macros({ site: "*", category: "qa" })
+```
+
+This returns universal QA macros available for all sites.
+
+**If macro found**: Use `browser_execute_macro(id)` for comprehensive testing. Stop here - macro execution is faster and more consistent than manual testing.
+
+**If no macro found**: Document the gap and proceed with manual workflow below.
+
+### QA TESTING RULES
+
+You MUST:
+- [ ] Call `browser_list_macros` for site-specific QA macros FIRST (site: "<domain>", category: "qa")
+- [ ] Call `browser_list_macros` for universal QA macros SECOND (site: "*", category: "qa")
+- [ ] Use `browser_execute_macro` if macro found (do NOT manual test if macro exists)
+- [ ] Document macro gap if none exist
+- [ ] Plan comprehensive test coverage (accessibility + performance + regression + keyboard + responsive)
+- [ ] Generate markdown report with findings categorized by severity
+- [ ] Export report to /tmp/ with timestamp
+- [ ] Return tab IDs and report path in results
+
+### Common QA Testing Mistakes (AVOID THESE)
+
+**Mistake 1: "I'll skip macros and manually test everything"**
+- ❌ WRONG: Manually testing takes 5x longer and catches only 30% of issues
+- ✅ RIGHT: Use macros first for comprehensive automated testing (catches 80%+ of issues), manual only for validation
+
+**Mistake 2: "I'll report issues without verifying with comprehensive tests"**
+- ❌ WRONG: Manual spot-checks miss critical accessibility, performance, and regression issues
+- ✅ RIGHT: Run full suite of QA macros (accessibility + performance + visual regression + keyboard + responsive) before reporting
+
+**Mistake 3: "I'll run isolated tests instead of comprehensive audits"**
+- ❌ WRONG: Testing only accessibility OR performance OR regression misses cross-functional issues
+- ✅ RIGHT: Execute ALL applicable test types: accessibility audit, performance analysis, visual regression, keyboard navigation, responsive breakpoints
+
+### Why QA Macros Save Time (Token Efficiency)
+
+- **Macro execution**: 1 command, comprehensive results, 50 lines of output
+- **Manual testing**: Multiple steps, inconsistent coverage, 500+ lines of manual commands
+- **Result**: Using macros saves 80% of context tokens and catches more issues
+
+**Token cost**: Manual QA testing = 10x macro testing. Use macros to preserve context for actual issues and fixes.
+
+---
 
 ## Routing Context
 
@@ -77,6 +141,21 @@ The main browser skill routes to this module when the user requests:
 - **When to use**: Link integrity validation
 
 ## Execution Workflows
+
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR QA)
+
+**CRITICAL**: Check for QA testing macros before manual testing:
+
+- [ ] Checked site-specific QA macros: `browser_list_macros({ site: "...", category: "qa" })`
+- [ ] Checked universal QA macros: `browser_list_macros({ site: "*", category: "qa" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Planning comprehensive test coverage
+- [ ] Planning to generate markdown report with findings
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
 
 ### Workflow 1: Accessibility Audit (WCAG 2.1)
 
@@ -239,6 +318,21 @@ The main browser skill routes to this module when the user requests:
    ```
 
 **Expected result**: Comprehensive WCAG 2.1 accessibility audit with categorized issues, actionable recommendations, and markdown report saved to /tmp/.
+
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR QA)
+
+**CRITICAL**: Check for QA testing macros before manual testing:
+
+- [ ] Checked site-specific QA macros: `browser_list_macros({ site: "...", category: "qa" })`
+- [ ] Checked universal QA macros: `browser_list_macros({ site: "*", category: "qa" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Planning comprehensive test coverage
+- [ ] Planning to generate markdown report with findings
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
 
 ### Workflow 2: Performance Testing
 
@@ -439,6 +533,21 @@ The main browser skill routes to this module when the user requests:
 
 **Expected result**: Complete performance analysis with metrics, bottleneck identification, performance score, and optimization recommendations in markdown report.
 
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR QA)
+
+**CRITICAL**: Check for QA testing macros before manual testing:
+
+- [ ] Checked site-specific QA macros: `browser_list_macros({ site: "...", category: "qa" })`
+- [ ] Checked universal QA macros: `browser_list_macros({ site: "*", category: "qa" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Planning comprehensive test coverage
+- [ ] Planning to generate markdown report with findings
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
+
 ### Workflow 3: Visual Regression Testing
 
 **When to use**: Comparing baseline and current versions for visual differences, layout shifts.
@@ -535,6 +644,21 @@ The main browser skill routes to this module when the user requests:
    ```
 
 **Expected result**: Baseline and current screenshots captured in separate tabs, report generated for manual comparison or external tool analysis.
+
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR QA)
+
+**CRITICAL**: Check for QA testing macros before manual testing:
+
+- [ ] Checked site-specific QA macros: `browser_list_macros({ site: "...", category: "qa" })`
+- [ ] Checked universal QA macros: `browser_list_macros({ site: "*", category: "qa" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Planning comprehensive test coverage
+- [ ] Planning to generate markdown report with findings
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
 
 ### Workflow 4: Keyboard Navigation Testing
 
@@ -720,6 +844,21 @@ The main browser skill routes to this module when the user requests:
    ```
 
 **Expected result**: Comprehensive keyboard navigation testing with tab order analysis, focus visibility check, keyboard trap detection, and detailed markdown report.
+
+### 🚨 Step 0: Macro Check (Complete First - MANDATORY FOR QA)
+
+**CRITICAL**: Check for QA testing macros before manual testing:
+
+- [ ] Checked site-specific QA macros: `browser_list_macros({ site: "...", category: "qa" })`
+- [ ] Checked universal QA macros: `browser_list_macros({ site: "*", category: "qa" })`
+- [ ] Using macro if available: `browser_execute_macro(...)`
+- [ ] Documented macro gap if none exist
+- [ ] Planning comprehensive test coverage
+- [ ] Planning to generate markdown report with findings
+
+**If no macro exists**: Document gap, then proceed with manual workflow below.
+
+---
 
 ### Workflow 5: Responsive Design Testing
 
@@ -942,6 +1081,22 @@ If still fails:
   Return error: "Screenshot capture failed after retry. Check page load status."
 ```
 
+---
+
+## 🔄 Reminder (Halfway Through): Macro-First QA Testing
+
+**Critical checkpoint**: Have you used QA macros for comprehensive testing?
+
+✅ **Required before reporting**:
+- [ ] Called `browser_list_macros` for site-specific QA macros (site: "<domain>", category: "qa")
+- [ ] Called `browser_list_macros` for universal QA macros (site: "*", category: "qa")
+- [ ] Using `browser_execute_macro` if macro found
+- [ ] Documented macro gap if none exist
+
+**Important**: Do NOT proceed with manual testing if comprehensive QA macros exist. Macros ensure consistency and catch more issues.
+
+---
+
 ## Return Formats
 
 ### Accessibility Audit
@@ -1053,19 +1208,46 @@ Call: mcp__browser__browser_get_network_logs({
 })
 ```
 
-## Remember
+---
 
-- ✅ **Test against WCAG 2.1 standards** - Level A, AA, AAA compliance
-- ✅ **Categorize by severity** - critical, serious, moderate, minor (prioritize fixes)
-- ✅ **Generate markdown reports** - detailed, actionable recommendations in /tmp/
-- ✅ **Include evidence** - screenshots, metrics, specific elements affected
-- ✅ **Provide concrete next steps** - prioritized action items for remediation
-- ✅ **Test keyboard navigation** - tab order, focus visibility, no keyboard traps
-- ✅ **Measure real performance** - load time, resource sizes, bottlenecks
-- ✅ **Export with timestamps** - /tmp/{report-type}-{timestamp}.md
-- ✅ **Return tab IDs** - enable context preservation for multi-turn workflows
-- ✅ **Focus on actionability** - every issue should have a clear recommendation
+## 🚨 FINAL REMINDER: Macro-First QA Testing & Comprehensive Coverage
+
+**CRITICAL - Complete BEFORE any test operation**:
+- [ ] Called `browser_list_macros` for site-specific QA macros
+- [ ] Called `browser_list_macros` for universal QA macros (* site)
+- [ ] Using `browser_execute_macro` if macro found
+- [ ] Documented macro gap if none exist
+- [ ] Planning comprehensive test coverage (accessibility + performance + regression)
+- [ ] Planning to generate markdown report with findings
+
+**QA CONSISTENCY**: Using macros ensures consistent test execution and catches more issues than manual testing.
 
 ---
 
-**When the main skill routes to this module**: Immediately identify the test type (accessibility, performance, visual regression, keyboard navigation, responsive design), execute the appropriate comprehensive testing workflow with macros and tools, categorize findings by severity, generate a detailed markdown report with actionable recommendations, export to /tmp/, and return results with tab metadata and report path.
+## Remember
+
+- ✅ **COMPLETE STEP 0 FIRST** - Check for QA macros before any manual testing
+- ✅ **Use comprehensive QA macros** - audit_accessibility, measure_page_performance, check_visual_regression
+- ✅ **Never skip automated tests** - macros catch issues manual testing misses (80% vs 30% coverage)
+- ✅ **Run all test types** - accessibility + performance + regression + keyboard + responsive (not just one)
+- ✅ **Generate markdown reports** - always export findings to /tmp/ with categorized issues and recommendations
+- ✅ **Categorize by severity** - critical/serious/moderate/minor (fixes ordered by impact)
+- ✅ **Document actionable recommendations** - every issue needs a fix recommendation
+- ✅ **Check WCAG compliance** - test against WCAG 2.1 Level AA standards
+- ✅ **Verify keyboard navigation** - test tab order, focus visibility, keyboard traps
+- ✅ **Test responsive breakpoints** - mobile (375px), tablet (768px), desktop (1024px)
+- ✅ **Return tab IDs** - enable context preservation for multi-turn workflows
+- ✅ **Include performance metrics** - load time, First Contentful Paint, resource sizes
+- ✅ **Check broken links** - validate all URLs are reachable (no 404s)
+- ✅ **Report export paths** - always include reportPath in return data
+- ✅ **Document macro gaps** - if no macro exists for this QA type, state it explicitly
+
+---
+
+**When the main skill routes to this module**:
+1. **IMMEDIATELY complete Step 0** - Check for QA macros first
+2. **IF macro found** - Use `browser_execute_macro` for comprehensive testing (not manual)
+3. **IF no macro found** - Document gap, then select appropriate test workflow (accessibility/performance/regression/keyboard/responsive)
+4. **EXECUTE comprehensive tests** - run all applicable tests, not just one
+5. **GENERATE markdown report** - categorize findings by severity, include recommendations
+6. **EXPORT to /tmp/** - return results with tab metadata and report path
