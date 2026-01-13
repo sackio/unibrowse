@@ -1,21 +1,23 @@
 # Browser Automation Macros Reference
 
-Complete reference for all 57+ macros available in the Unibrowse browser automation system.
+Complete reference for all 63 macros available in the Unibrowse browser automation system.
+
+**Note**: All macros are stored in MongoDB. Use `browser_list_macros` to query them dynamically instead of reading static documentation files.
 
 ## Overview
 
-- **40+ Universal Macros**: Work on any website (7 categories)
-- **51 Site-Specific Macros**: Specialized automation for specific websites
+- **63 Site-Specific Macros**: Specialized automation for specific websites
   - **17 Amazon Macros**: E-commerce automation
   - **12 Google Shopping Macros**: Product comparison across retailers
   - **5 Walmart Macros**: Walmart e-commerce automation
-  - **14 Upwork Macros**: Freelance platform automation
-  - **14 Fidelity Macros**: Investment/financial automation
+  - **12 Upwork Macros**: Freelance platform automation
+  - **11 Fidelity Macros**: Investment/financial automation
   - **3 OpenGameArt Macros**: Game asset discovery
   - **2 CoinTracker Macros**: Crypto portfolio tracking
   - **1 Google Macro**: Web search automation
 
-**Total Macros**: 91+ (40+ universal + 51 site-specific)
+**All macros are stored in MongoDB and accessed via MCP tools.**
+Query them dynamically with `browser_list_macros` instead of reading static documentation.
 
 ## ⚠️ Macro Management Tools
 
@@ -40,21 +42,43 @@ Complete reference for all 57+ macros available in the Unibrowse browser automat
 - ❌ Use scripts/update-*.cjs (removed)
 - ❌ Direct MongoDB access for macros
 
-## Site-Specific Macros Documentation
+## Site-Specific Macros
 
-### E-Commerce Sites
-- **[Amazon Macros (17)](AMAZON_MACROS.md)** - Product search, reviews analysis, Rufus AI, cart operations
-- **[Google Shopping Macros (12)](GOOGLE_SHOPPING_MACROS.md)** - Multi-retailer comparison, price tracking, merchant filtering
-- **[Walmart Macros (5)](WALMART_MACROS.md)** - Product search, extraction, sorting, filtering
+Instead of reading separate documentation files, use **`browser_list_macros`** to discover and query macros:
 
-### Professional & Financial
-- **[Upwork Macros (14)](UPWORK_MACROS.md)** - Job search, proposals, messaging, freelance automation
-- **[Fidelity Macros (14)](FIDELITY_MACROS.md)** - Portfolio analysis, positions, transactions, reporting
+```javascript
+// List all macros for a site
+await browser_list_macros({ site: "amazon.com", limit: 100 });
 
-### Other Specialized Sites
-- **[OpenGameArt Macros (3)](OPENGAMEART_MACROS.md)** - Asset search, license extraction
-- **[CoinTracker Macros (2)](COINTRACKER_MACROS.md)** - Crypto portfolio, tax summaries
-- **[Google Macros (1)](GOOGLE_MACROS.md)** - Web search with realistic typing
+// List by category
+await browser_list_macros({ category: "extraction", limit: 50 });
+
+// Search by tags
+await browser_list_macros({ tags: ["search", "amazon"] });
+
+// Get full metadata and parameters
+const macros = await browser_list_macros({ site: "upwork.com" });
+macros.forEach(macro => {
+  console.log(`${macro.name}: ${macro.description}`);
+  console.log(`Parameters:`, macro.parameters);
+  console.log(`Reliability:`, macro.reliability);
+});
+```
+
+### Available Sites (63 macros total)
+
+| Site | Count | Category |
+|------|-------|----------|
+| `amazon.com` | 17 | E-commerce - Product search, reviews, Rufus AI, cart |
+| `shopping.google.com` | 12 | E-commerce - Multi-retailer comparison, price tracking |
+| `walmart.com` | 5 | E-commerce - Product search, extraction, filtering |
+| `upwork.com` | 12 | Freelance - Job search, proposals, messaging |
+| `fidelity.com` | 11 | Financial - Portfolio analysis, transactions, reporting |
+| `opengameart.org` | 3 | Game Assets - Search, metadata extraction |
+| `cointracker.io` | 2 | Crypto - Portfolio tracking, tax reports |
+| `google.com` | 1 | Web Search - Realistic search automation |
+
+**All macro metadata is stored in MongoDB.** Use `browser_list_macros` to query them dynamically instead of static documentation.
 
 ## Universal Macros (40+)
 
