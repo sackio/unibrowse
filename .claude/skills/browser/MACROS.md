@@ -17,6 +17,29 @@ Complete reference for all 57+ macros available in the Unibrowse browser automat
 
 **Total Macros**: 91+ (40+ universal + 51 site-specific)
 
+## ⚠️ Macro Management Tools
+
+**Use MCP tools for all macro operations:**
+
+### Querying Macros
+- `browser_list_macros` - List/filter macros by site, category, tags, reliability
+  - Filter by site: `{ site: "amazon.com" }`
+  - Filter by category: `{ category: "extraction" }`
+  - Search: `{ search: "search products" }`
+  - Universal macros: `{ site: "*" }`
+
+### Managing Macros
+- `browser_store_macro` - Create new macro (see MACRO_LEARNING.md)
+- `browser_update_macro` - Update existing macro
+- `browser_delete_macro` - Remove macro
+- `browser_execute_macro` - Execute macro with parameters
+
+**NEVER**:
+- ❌ Use scripts/store-*.cjs (removed)
+- ❌ Use scripts/get-*.cjs (removed)
+- ❌ Use scripts/update-*.cjs (removed)
+- ❌ Direct MongoDB access for macros
+
 ## Site-Specific Macros Documentation
 
 ### E-Commerce Sites

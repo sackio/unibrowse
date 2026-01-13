@@ -1,59 +1,34 @@
-# unibrowse Scripts
+# Scripts Directory
 
-This directory contains operational scripts and utilities for unibrowse.
+## ⚠️ Macro Management
 
-## Structure
+**DO NOT create scripts for macro management**. Use MCP tools instead:
 
-- **/** - Operational scripts (shell scripts and MongoDB utilities)
-- **utils/** - Development utilities (list-macros.js, test-macro.js)
+### MCP Tools for Macros (REQUIRED)
+- `browser_store_macro` - Create new macros
+- `browser_list_macros` - Query/filter macros
+- `browser_execute_macro` - Execute macros
+- `browser_update_macro` - Update macros
+- `browser_delete_macro` - Remove macros
 
-## Shell Scripts
+See `.claude/skills/browser/MACRO_LEARNING.md` for complete workflow.
 
-### Service Management
+## Remaining Scripts
 
-- **service.sh** - Systemd service management script
-  ```bash
-  ./scripts/service.sh start|stop|restart|status
-  ```
+### Backup & Restore (Keep These)
+- `backup-macros.sh` - Main backup script (BSON + JSON to /mnt/backup/)
+- `backup-mongodb-scheduled.sh` - Automated backup for systemd timer
+- `restore-mongodb-from-backup.sh` - Restore from /mnt/backup/
 
-- **run-tests.sh** - Run test suites
-  ```bash
-  ./scripts/run-tests.sh
-  ```
+**Why these are kept**: Infrastructure operations (backups) are appropriate for scripts. Application operations (CRUD) must use MCP tools.
 
-### Database Management
+## Removed Scripts
 
-- **backup-mongodb.sh** - Backup MongoDB database to file
-  ```bash
-  ./scripts/backup-mongodb.sh
-  ```
+The following scripts were removed because they duplicate MCP tool functionality:
+- Store scripts: store-ebay-macros.cjs, store-ground-news-macros.cjs, etc.
+- Retrieve scripts: get-macro-code.cjs, get-macros-for-site.sh, etc.
+- Update scripts: update-product-info-macro.cjs, fix-related-products-macro.cjs, etc.
+- Utility scripts: utils/list-macros.js, utils/test-macro.js
+- Git hooks: hooks/update-macro-context.sh
 
-- **restore-mongodb.sh** - Restore MongoDB database from backup
-  ```bash
-  ./scripts/restore-mongodb.sh
-  ```
-
-- **get-macros-for-site.sh** - Get all macros for a specific site
-  ```bash
-  ./scripts/get-macros-for-site.sh <site_domain>
-  ```
-
-## MongoDB Utilities (.cjs)
-
-These CommonJS scripts interact directly with MongoDB for macro management:
-
-- **dump-product-info-macro.cjs** - Export product info macro
-- **get-macro-code.cjs** - Retrieve macro code by ID
-- **get-product-info-macro.cjs** - Get product info macro
-- **get-related-macro.cjs** - Get related products macro
-- **update-product-info-macro.cjs** - Update product info macro
-- **update-product-info-delivery-fix.cjs** - Fix delivery in product info macro
-- **update-related-products-macro.cjs** - Update related products macro
-- **update-search-results-macro.cjs** - Update search results macro
-- **fix-related-products-macro.cjs** - Fix related products macro
-
-## Development Utilities
-
-See [utils/README.md](./utils/README.md) for information about development utilities like:
-- list-macros.js
-- test-macro.js
+Use MCP tools instead.

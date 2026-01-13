@@ -2,6 +2,18 @@
 
 Comprehensive documentation for all unibrowse macro collections.
 
+## ⚠️ CRITICAL: Always Use MCP Tools
+
+**NEVER use scripts for macro management** - All macro operations MUST use MCP tools:
+
+- **Store macro**: `browser_store_macro` (NOT scripts/store-*.cjs)
+- **List/Find macros**: `browser_list_macros` (NOT scripts/get-*.cjs, scripts/utils/list-macros.js)
+- **Update macro**: `browser_update_macro` (NOT scripts/update-*.cjs)
+- **Delete macro**: `browser_delete_macro` (NOT direct MongoDB access)
+- **Execute macro**: `browser_execute_macro` (NOT scripts/utils/test-macro.js)
+
+All macro CRUD scripts have been removed. Use MCP tools only.
+
 ## 📚 Complete Macro Documentation
 
 ### Core Macro Collections
@@ -100,6 +112,43 @@ Storage scripts in `/macros/storage/`:
 - `store-advanced-macros.js`
 - `store-form-macros.js`
 - `store-cdn-macros.js`
+
+## 💾 Backup Strategy
+
+Macros are backed up at three levels:
+
+1. **Source Definitions** (Git-tracked)
+   - Location: `/macros/*.js`
+   - Version controlled in the repository
+   - Defines macro code, parameters, and metadata
+
+2. **Local Rotating Backups**
+   - Location: `/backups/`
+   - Format: `macros_backup_YYYYMMDD_HHMMSS.json`
+   - Keeps last 10 backups automatically
+   - MongoDB exports for quick restoration
+   - Symlink: `macros_latest.json` points to most recent
+
+3. **NAS Offsite Backups**
+   - Location: `/mnt/backup/unibrowse-macros/`
+   - Format: Compressed tar.gz archives
+   - Disaster recovery and long-term storage
+
+### Backup Commands
+
+```bash
+# Create local backup (automatic during tests)
+./scripts/backup-mongodb.sh
+
+# Create NAS backup
+./scripts/backup-macros.sh
+
+# Restore from latest
+./scripts/restore-mongodb.sh
+
+# Restore from specific backup
+./scripts/restore-mongodb.sh backups/macros_backup_20251214_143103.json
+```
 
 ## 🎯 Macro Categories
 

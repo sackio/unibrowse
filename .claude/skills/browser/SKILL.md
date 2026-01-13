@@ -99,7 +99,17 @@ TOTAL: ~200 tokens, 2 tool calls
 - Universal search macros (site search patterns)
 - Site-specific macros (Amazon 17, eBay 18, Google Shopping 12, Walmart 5, +more)
 
-### Mistake 3: "Step 0 is too much overhead"
+### Mistake 3: "I'll use a script to manage macros"
+❌ **Wrong**: Using scripts/store-ebay-macros.cjs or scripts/get-macro-code.cjs
+✅ **Right**: Use MCP tools (browser_store_macro, browser_list_macros, etc.)
+
+**All macro management scripts have been removed**. The ONLY way to manage macros is via MCP tools:
+- browser_store_macro, browser_list_macros, browser_execute_macro
+- browser_update_macro, browser_delete_macro
+
+Direct MongoDB access or custom scripts are NOT supported.
+
+### Mistake 4: "Step 0 is too much overhead"
 ❌ **Wrong**: Skipping Step 0 to "save time"
 ✅ **Right**: Step 0 takes 5 seconds, saves 5+ minutes and 10,000 tokens
 
