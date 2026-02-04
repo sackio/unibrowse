@@ -40,10 +40,42 @@ export const storeMacro: Tool = {
       });
 
       if (existing) {
-        return errorResponse(
-          `Macro "${validatedParams.name}" already exists for site "${validatedParams.site}". Use browser_update_macro to update it.`,
-          true
+        // Update existing macro instead of erroring
+        const now = new Date();
+        const updateDoc: any = {
+          category: validatedParams.category,
+          description: validatedParams.description,
+          parameters: validatedParams.parameters,
+          code: validatedParams.code,
+          returnType: validatedParams.returnType,
+          updatedAt: now,
+          reliability: validatedParams.reliability || existing.reliability,
+          tags: validatedParams.tags || existing.tags,
+        };
+
+        // Increment version if code changed
+        if (validatedParams.code !== existing.code) {
+          const [major, minor, patch] = existing.version.split(".").map(Number);
+          updateDoc.version = `${major}.${minor}.${patch + 1}`;
+        }
+
+        await macros.updateOne(
+          { id: existing.id },
+          { $set: updateDoc }
         );
+
+        return jsonResponse({
+          success: true,
+          id: existing.id,
+          message: `Macro "${validatedParams.name}" updated successfully`,
+          macro: {
+            id: existing.id,
+            site: existing.site,
+            category: updateDoc.category,
+            name: existing.name,
+            description: updateDoc.description,
+          },
+        });
       }
 
       // Create new macro document
