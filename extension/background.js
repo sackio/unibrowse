@@ -498,7 +498,14 @@ class TabManager {
       return this.attachedTabs.get(tabIdOrLabel) || null;
     }
 
-    // If string, lookup by label
+    // If string that looks like a number, also try numeric lookup (agents often pass IDs as strings)
+    if (typeof tabIdOrLabel === 'string' && /^\d+$/.test(tabIdOrLabel)) {
+      const numericId = parseInt(tabIdOrLabel, 10);
+      const byId = this.attachedTabs.get(numericId);
+      if (byId) return byId;
+    }
+
+    // Lookup by label
     for (const tabInfo of this.attachedTabs.values()) {
       if (tabInfo.label === tabIdOrLabel) {
         return tabInfo;
@@ -530,6 +537,22 @@ class TabManager {
     }
 
     return tabInfo?.cdp || null;
+  }
+
+  /**
+   * Get active CDP or throw a descriptive error if not found.
+   * Use this in handlers instead of getActiveCDP() to avoid null-dereference crashes.
+   */
+  requireCDP(tabTarget) {
+    const cdp = this.getActiveCDP(tabTarget);
+    if (!cdp) {
+      throw new Error(
+        tabTarget
+          ? `Tab ${tabTarget} not found or not attached. Use browser_list_attached_tabs to see available tabs.`
+          : 'No tabs currently attached. Use browser_attach_tab or browser_create_tab first.'
+      );
+    }
+    return cdp;
   }
 
   /**
@@ -2702,7 +2725,7 @@ class BackgroundController {
   //
   // TODO: Multi-tab refactoring - The following handlers need to be updated:
   // - Add 'tabTarget' parameter to function signature
-  // - Call: const cdp = await this.tabManager.getActiveCDP(tabTarget);
+  // - Call: const cdp = await this.tabManager.requireCDP(tabTarget);
   // - Replace all 'this.cdp' with 'cdp' within the handler
   //
   // Updated handlers: handleNavigate, handleGoBack, handleGoForward, handleClick,
@@ -2719,40 +2742,19 @@ class BackgroundController {
   //   handleSetNetworkConditions, handleClearCache
 
   async handleNavigate({ url, tabTarget }) {
-    const cdp = await this.tabManager.getActiveCDP(tabTarget);
-    if (!cdp) {
-      throw new Error(
-        tabTarget
-          ? `Tab ${tabTarget} not found or not attached`
-          : 'No tabs currently attached. Please attach to a tab first.'
-      );
-    }
+    const cdp = await this.tabManager.requireCDP(tabTarget);
     await cdp.navigate(url);
     return { success: true, url };
   }
 
   async handleGoBack({ tabTarget }) {
-    const cdp = await this.tabManager.getActiveCDP(tabTarget);
-    if (!cdp) {
-      throw new Error(
-        tabTarget
-          ? `Tab ${tabTarget} not found or not attached`
-          : 'No tabs currently attached. Please attach to a tab first.'
-      );
-    }
+    const cdp = await this.tabManager.requireCDP(tabTarget);
     await cdp.goBack();
     return { success: true };
   }
 
   async handleGoForward({ tabTarget }) {
-    const cdp = await this.tabManager.getActiveCDP(tabTarget);
-    if (!cdp) {
-      throw new Error(
-        tabTarget
-          ? `Tab ${tabTarget} not found or not attached`
-          : 'No tabs currently attached. Please attach to a tab first.'
-      );
-    }
+    const cdp = await this.tabManager.requireCDP(tabTarget);
     await cdp.goForward();
     return { success: true };
   }
@@ -2763,7 +2765,7 @@ class BackgroundController {
   }
 
   async handleClick({ element, ref, tabTarget }) {
-    const cdp = await this.tabManager.getActiveCDP(tabTarget);
+    const cdp = await this.tabManager.requireCDP(tabTarget);
 
     // Get element position
     const elemInfo = await cdp.querySelector(ref);
@@ -2781,7 +2783,7 @@ class BackgroundController {
 
   async handleType({ element, ref, text, submit, tabTarget }) {
     try {
-      const cdp = await this.tabManager.getActiveCDP(tabTarget);
+      const cdp = await this.tabManager.requireCDP(tabTarget);
 
       // Focus the element first by clicking it
       const elemInfo = await cdp.querySelector(ref);
@@ -2826,7 +2828,7 @@ class BackgroundController {
   }
 
   async handleHover({ element, ref, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
 
     // Get element position
     const elemInfo = await cdp.querySelector(ref);
@@ -2848,7 +2850,7 @@ class BackgroundController {
   }
 
   async handleDrag({ startElement, startRef, endElement, endRef, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
 
     // Get start element position
     const startElemInfo = await cdp.querySelector(startRef);
@@ -2875,25 +2877,25 @@ class BackgroundController {
   }
 
   async handleSelectOption({ element, ref, values, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     // TODO: Select dropdown options
     return { success: true, values };
   }
 
   async handlePressKey({ key, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     await cdp.pressKey(key);
     return { success: true, key };
   }
 
   async handleScroll({ x, y, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     await cdp.scroll(x, y);
     return { success: true, x: x ?? 0, y };
   }
 
   async handleScrollToElement({ element, ref, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     const result = await cdp.scrollToElement(ref);
     if (!result.success) {
       throw new Error(result.error || 'Failed to scroll to element');
@@ -2902,7 +2904,7 @@ class BackgroundController {
   }
 
   async handleRealisticMouseMove({ x, y, duration, currentX, currentY, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     const result = await cdp.moveMouseRealistic(x, y, {
       duration,
       currentX,
@@ -2916,7 +2918,7 @@ class BackgroundController {
   }
 
   async handleRealisticClick({ x, y, button, clickCount, moveFirst, moveDuration, currentX, currentY, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     await cdp.clickRealistic(x, y, {
       button,
       clickCount,
@@ -2935,7 +2937,7 @@ class BackgroundController {
   }
 
   async handleRealisticType({ text, minDelay, maxDelay, mistakeChance, pressEnter, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     try {
       if (!cdp.isAttached() || cdp.isDetaching) {
         throw new Error('Debugger detached before typing could start');
@@ -3067,7 +3069,7 @@ class BackgroundController {
   }
 
   async handleFillForm({ fields, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     // Use JavaScript to fill all fields at once (more reliable than keyboard simulation)
     const result = await cdp.evaluate(`
       (function() {
@@ -3099,7 +3101,7 @@ class BackgroundController {
   }
 
   async handleSubmitForm({ element, ref, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     // Find the form element
     const elemInfo = await cdp.querySelector(ref);
     if (!elemInfo) {
@@ -3134,14 +3136,7 @@ class BackgroundController {
   async handleSnapshot(data) {
     try {
       const { tabTarget, interactiveOnly = true, maxDepth = 5 } = data || {};
-      const cdp = await this.tabManager.getActiveCDP(tabTarget);
-      if (!cdp) {
-        throw new Error(
-          tabTarget
-            ? `Tab ${tabTarget} not found or not attached`
-            : 'No tabs currently attached. Please attach to a tab first.'
-        );
-      }
+      const cdp = await this.tabManager.requireCDP(tabTarget);
       const tree = await cdp.getPartialAccessibilityTree(maxDepth);
 
       // Check if tree is empty due to restricted frames
@@ -3196,7 +3191,7 @@ class BackgroundController {
   }
 
   async handleScreenshot({ tabTarget }) {
-    const cdp = await this.tabManager.getActiveCDP(tabTarget);
+    const cdp = await this.tabManager.requireCDP(tabTarget);
     if (!cdp) {
       throw new Error(
         tabTarget
@@ -3209,7 +3204,7 @@ class BackgroundController {
   }
 
   async handleSegmentedScreenshot({ selectors, includeLabels, tabTarget }) {
-    const cdp = await this.tabManager.getActiveCDP(tabTarget);
+    const cdp = await this.tabManager.requireCDP(tabTarget);
     if (!cdp) {
       throw new Error(
         tabTarget
@@ -3246,7 +3241,7 @@ class BackgroundController {
   }
 
   async handleEvaluate({ expression, tabTarget }) {
-    const cdp = await this.tabManager.getActiveCDP(tabTarget);
+    const cdp = await this.tabManager.requireCDP(tabTarget);
     // Execute JavaScript in page context
     const result = await cdp.evaluate(expression, true);
     return result;
@@ -3275,7 +3270,7 @@ class BackgroundController {
   }
 
   async handleQueryDOM({ selector, limit = 10, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     return cdp.evaluate(`
       Array.from(document.querySelectorAll('${selector.replace(/'/g, "\\'")}'))
         .slice(0, ${limit})
@@ -3290,7 +3285,7 @@ class BackgroundController {
   }
 
   async handleGetVisibleText({ selector, maxLength = 5000, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     const script = selector
       ? `document.querySelector('${selector.replace(/'/g, "\\'")}')?.innerText || ''`
       : 'document.body.innerText || ""';
@@ -3300,7 +3295,7 @@ class BackgroundController {
   }
 
   async handleGetComputedStyles({ selector, properties, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     const defaultProperties = ['display', 'visibility', 'position', 'width', 'height', 'top', 'left', 'opacity', 'z-index'];
     const propsToGet = properties && properties.length > 0 ? properties : defaultProperties;
 
@@ -3319,7 +3314,7 @@ class BackgroundController {
   }
 
   async handleCheckVisibility({ selector, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     return await cdp.evaluate(`
       (() => {
         const el = document.querySelector('${selector.replace(/'/g, "\\'")}');
@@ -3349,7 +3344,7 @@ class BackgroundController {
   }
 
   async handleGetAttributes({ selector, attributes, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     const specificAttrs = attributes && attributes.length > 0;
 
     return await cdp.evaluate(`
@@ -3376,12 +3371,12 @@ class BackgroundController {
   }
 
   async handleCountElements({ selector, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     return cdp.evaluate(`document.querySelectorAll('${selector.replace(/'/g, "\\'")}').length`);
   }
 
   async handleGetPageMetadata({ tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     return await cdp.evaluate(`
       (() => {
         const metadata = {
@@ -3437,7 +3432,7 @@ class BackgroundController {
   }
 
   async handleGetFilteredAriaTree({ roles, maxDepth = 5, interactiveOnly, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     // Get full ARIA tree from CDP
     const fullTree = await cdp.getPartialAccessibilityTree(maxDepth);
 
@@ -3480,7 +3475,7 @@ class BackgroundController {
   }
 
   async handleFindByText({ text, selector, exact, limit = 10, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     const searchText = text.toLowerCase();
 
     return await cdp.evaluate(`
@@ -3530,7 +3525,7 @@ class BackgroundController {
   }
 
   async handleGetFormValues({ formSelector, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     return await cdp.evaluate(`
       (() => {
         const scope = ${formSelector ? `document.querySelector('${formSelector.replace(/'/g, "\\'")}')` : 'document'};
@@ -3560,7 +3555,7 @@ class BackgroundController {
   }
 
   async handleCheckElementState({ selector, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     return await cdp.evaluate(`
       (() => {
         const el = document.querySelector('${selector.replace(/'/g, "\\'")}');
@@ -4422,7 +4417,7 @@ class BackgroundController {
    * Get current network connection state
    */
   async handleGetNetworkState({ tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     console.log('[Background] Getting network state');
 
     // Evaluate navigator.connection in the page context
@@ -4453,7 +4448,7 @@ class BackgroundController {
    * Set network throttling conditions
    */
   async handleSetNetworkConditions({ offline, latency, downloadThroughput, uploadThroughput, tabTarget }) {
-    const cdp = this.tabManager.getActiveCDP(tabTarget);
+    const cdp = this.tabManager.requireCDP(tabTarget);
     console.log('[Background] Setting network conditions:', { offline, latency, downloadThroughput, uploadThroughput });
 
     // Use CDP to emulate network conditions

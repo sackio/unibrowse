@@ -192,8 +192,10 @@ export const attachTab: Tool = {
       );
 
       return textResponse(
-        `Attached to tab ${result.tabId}${result.label ? ` (${result.label}, max_tokens)` : ""}\n` +
-          `URL: ${result.url}`
+        `Attached to tab ${result.tabId} (label: "${result.label}")\n` +
+          `URL: ${result.url}\n` +
+          `Use tabTarget: "${result.label}" or tabTarget: ${result.tabId} to target this tab.`,
+        max_tokens
       );
     } catch (error) {
       const { max_tokens } = params || {};
