@@ -85,7 +85,11 @@ export const createTab: Tool = {
         "browser_create_tab",
         validatedParams
       );
-      return textResponse(`Created new tab ${result.tabId}${validatedParams.url ? ` at ${validatedParams.url}` : ""}`, max_tokens);
+      return textResponse(
+        `Created and attached tab ${result.tabId} (label: "${result.label}")${validatedParams.url ? ` at ${validatedParams.url}` : ""}\n` +
+        `Use tabTarget: "${result.label}" or tabTarget: ${result.tabId} to target this tab.`,
+        max_tokens
+      );
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to create tab: ${error.message}`, false, error, max_tokens);

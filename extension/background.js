@@ -3003,8 +3003,29 @@ class BackgroundController {
   }
 
   async handleCreateTab({ url }) {
-    const tab = await chrome.tabs.create({ url: url || 'about:blank' });
-    return { success: true, tabId: tab.id, url: tab.url };
+    const newTab = await chrome.tabs.create({ url: url || 'about:blank', active: true });
+    let targetTabId = newTab.id;
+
+    // Wait for the tab to finish loading before attaching
+    await new Promise((resolve) => {
+      const listener = (tabId, changeInfo) => {
+        if (tabId === targetTabId && changeInfo.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+      // Timeout after 15 seconds
+      setTimeout(() => { chrome.tabs.onUpdated.removeListener(listener); resolve(); }, 15000);
+    });
+
+    // Get final tab info and attach
+    const tab = await chrome.tabs.get(targetTabId);
+    const tabInfo = await this.tabManager.attachTab(targetTabId, tab.url, tab.title);
+    await this.injectTabIndicator(targetTabId);
+    await this.injectBackgroundCapture(targetTabId);
+
+    return { success: true, tabId: tab.id, label: tabInfo.label, url: tab.url };
   }
 
   async handleCloseTab({ tabId }) {
@@ -3112,7 +3133,7 @@ class BackgroundController {
 
   async handleSnapshot(data) {
     try {
-      const { tabTarget } = data || {};
+      const { tabTarget, interactiveOnly = true, maxDepth = 5 } = data || {};
       const cdp = await this.tabManager.getActiveCDP(tabTarget);
       if (!cdp) {
         throw new Error(
@@ -3121,7 +3142,7 @@ class BackgroundController {
             : 'No tabs currently attached. Please attach to a tab first.'
         );
       }
-      const tree = await cdp.getPartialAccessibilityTree(10);
+      const tree = await cdp.getPartialAccessibilityTree(maxDepth);
 
       // Check if tree is empty due to restricted frames
       if (!tree.nodes || tree.nodes.length === 0) {
@@ -3133,8 +3154,32 @@ class BackgroundController {
         }, null, 2);
       }
 
-      // Return YAML-formatted string
-      return JSON.stringify(tree, null, 2);
+      // Apply filtering to reduce response size
+      const interactiveRoles = ['button', 'link', 'textbox', 'searchbox', 'checkbox', 'radio', 'combobox', 'listbox', 'menuitem', 'tab', 'switch', 'slider', 'spinbutton', 'option'];
+
+      const filterNode = (node, depth = 0) => {
+        if (depth > maxDepth) return null;
+
+        const filteredChildren = (node.children || [])
+          .map(child => filterNode(child, depth + 1))
+          .filter(Boolean);
+
+        if (interactiveOnly) {
+          const isInteractive = interactiveRoles.includes(node.role?.value);
+          if (isInteractive) {
+            return { ...node, children: filteredChildren.length > 0 ? filteredChildren : undefined };
+          }
+          // Non-interactive node: only keep if it has interactive descendants
+          return filteredChildren.length > 0 ? { ...node, children: filteredChildren } : null;
+        }
+
+        return { ...node, children: filteredChildren.length > 0 ? filteredChildren : undefined };
+      };
+
+      const filtered = filterNode(tree);
+
+      // Return JSON string
+      return JSON.stringify(filtered, null, 2);
     } catch (error) {
       // If we get a restricted frame error, return a helpful message
       if (error.message && error.message.includes('restricted content')) {

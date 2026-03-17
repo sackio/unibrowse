@@ -52,8 +52,9 @@ const TabTargetSchema = z.object({
     .union([z.number(), z.string()])
     .optional()
     .describe(
-      "Optional tab identifier (tab ID or label) to target a specific attached tab. " +
-      "If not provided, uses the last-used tab. Use browser_list_attached_tabs to see available tabs."
+      "Optional tab identifier — must be a tab ID or label from browser_list_attached_tabs (NOT a Chrome tab ID from browser_list_tabs). " +
+      "If not provided, uses the last-used attached tab. " +
+      "Use browser_create_tab or browser_attach_tab to attach a tab before targeting it."
     ),
 });
 
@@ -95,7 +96,7 @@ export const WaitTool = z.object({
   name: z.literal("browser_wait"),
   description: z.literal("Wait for a specified time in seconds"),
   arguments: z.object({
-    time: z.number().describe("The time to wait in seconds"),
+    time: z.number().default(1).describe("The time to wait in seconds (default: 1)"),
   }).merge(MaxTokensSchema),
 });
 
@@ -128,7 +129,7 @@ export const ScrollToElementTool = z.object({
 
 export const ListTabsTool = z.object({
   name: z.literal("browser_list_tabs"),
-  description: z.literal("List all open browser tabs"),
+  description: z.literal("List all open Chrome browser tabs. NOTE: The tabIds returned here are Chrome tab IDs, only usable with browser_switch_tab and browser_close_tab. For targeting tabs in operations like browser_navigate/browser_snapshot, use browser_list_attached_tabs instead."),
   arguments: z.object({}).merge(MaxTokensSchema),
 });
 
@@ -142,7 +143,7 @@ export const SwitchTabTool = z.object({
 
 export const CreateTabTool = z.object({
   name: z.literal("browser_create_tab"),
-  description: z.literal("Create a new browser tab"),
+  description: z.literal("Create a new browser tab and automatically attach it for control. Returns tabId and label that can be used as tabTarget in subsequent operations."),
   arguments: z.object({
     url: z.string().optional().describe("URL to open in the new tab (default: about:blank)"),
   }).merge(MaxTokensSchema),
@@ -205,9 +206,12 @@ export const GetNetworkLogsTool = z.object({
 export const SnapshotTool = z.object({
   name: z.literal("browser_snapshot"),
   description: z.literal(
-    "Capture accessibility snapshot of the current page. Use this for getting references to elements to interact with."
+    "Capture accessibility snapshot of the current page. Use this for getting references to elements to interact with. Defaults to interactive elements only (buttons, links, inputs, etc.) to minimize context usage. Set interactiveOnly: false for the full tree."
   ),
-  arguments: TabTargetSchema.merge(MaxTokensSchema),
+  arguments: z.object({
+    interactiveOnly: z.boolean().default(true).describe("Only include interactive elements (buttons, links, inputs, etc.). Default: true. Set to false for the full accessibility tree."),
+    maxDepth: z.number().default(5).describe("Maximum depth to traverse in the accessibility tree. Default: 5."),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const ClickTool = z.object({
@@ -1045,8 +1049,9 @@ export const RealisticTypeTool = z.object({
 export const ListAttachedTabsTool = z.object({
   name: z.literal("browser_list_attached_tabs"),
   description: z.literal(
-    "List all tabs that have debugger attached with their labels. " +
-    "Use this to see available tabs and their labels for targeting specific tabs."
+    "List all tabs that have debugger attached with their labels and IDs. " +
+    "Use this to find valid tabTarget values for browser_navigate, browser_snapshot, browser_click, and all other tab-targeting operations. " +
+    "Only attached tabs can be targeted — use browser_attach_tab or browser_create_tab to attach new tabs."
   ),
   arguments: z.object({}).merge(MaxTokensSchema),
 });
@@ -1118,7 +1123,7 @@ export const LaunchIsolatedChromeTool = z.object({
     profileName: z
       .string()
       .optional()
-      .describe("Name for the isolated profile (default: 'browser-mcp-test'). " +
+      .describe("Name for the isolated profile (default: 'unibrowse-test'). " +
                "Each profile is stored separately in .chrome-profiles/"),
     url: z
       .union([z.string(), z.array(z.string())])

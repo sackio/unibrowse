@@ -31,7 +31,7 @@ export const snapshot: Tool = {
       const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = SnapshotTool.shape.arguments.parse(params);
-      return await captureAriaSnapshot(context, "", validatedParams.tabTarget, max_tokens);
+      return await captureAriaSnapshot(context, "", validatedParams.tabTarget, max_tokens, validatedParams.interactiveOnly, validatedParams.maxDepth);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to capture snapshot: ${error.message}`, false, error, max_tokens);
