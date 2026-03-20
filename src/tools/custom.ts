@@ -24,7 +24,7 @@ export const getConsoleLogs: Tool = {
     description: GetConsoleLogsTool.shape.description.value,
     inputSchema: zodToJsonSchema(GetConsoleLogsTool.shape.arguments),
   },
-  handle: async (context, _params) => {
+  handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
       await context.ensureAttached();
