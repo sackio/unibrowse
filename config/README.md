@@ -12,11 +12,11 @@ PM2 process manager configuration for running unibrowse as a managed service.
 
 Nodemon configuration for development with auto-reload on file changes.
 
-### browser-mcp.service
+### unibrowse.service
 
 Systemd service file for running unibrowse as a system service (production).
 
-### browser-mcp-dev.service
+### unibrowse-dev.service
 
 Systemd service file for running unibrowse in development mode.
 
@@ -28,13 +28,13 @@ From repository root:
 pm2 start config/ecosystem.config.js
 
 # Monitor logs
-pm2 logs browser-mcp
+pm2 logs unibrowse-dev
 
 # Restart service
-pm2 restart browser-mcp
+pm2 restart unibrowse-dev
 
 # Stop service
-pm2 stop browser-mcp
+pm2 stop unibrowse-dev
 
 # Enable auto-start on boot
 pm2 startup

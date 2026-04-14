@@ -20,6 +20,7 @@ class RecordingOverlay {
     this.container = null;
     this.shadowRoot = null;
     this.position = { x: null, y: null }; // For draggable minimized button
+    this.captureMode = false;
 
     this.create();
     this.setupHotkeys();
@@ -149,6 +150,19 @@ class RecordingOverlay {
           background: rgba(255, 255, 255, 0.25);
           transform: scale(1.05);
         }
+
+        .btn-capture {
+          background: rgba(255,255,255,0.12);
+          border: 1px solid rgba(255,255,255,0.25);
+          color: white; cursor: pointer;
+          padding: 4px 8px; border-radius: 5px;
+          font-size: 13px; margin-left: 6px;
+          display: flex; flex-direction: column; align-items: center;
+          transition: all 0.2s;
+        }
+        .btn-capture:hover { background: rgba(255,255,255,0.22); transform: scale(1.05); }
+        .btn-capture.capturing { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
+        .capture-label { font-size: 8px; text-transform: uppercase; letter-spacing: 0.3px; margin-top: 1px; }
 
         .overlay-content {
           margin-bottom: 12px;
@@ -337,6 +351,9 @@ class RecordingOverlay {
       <button class="floating-btn hidden" data-state="minimized-waiting">
         <span class="icon">🎬</span>
         <span class="text">Start</span>
+        <button class="btn-capture hidden" title="Capture selector (Alt+Shift+C)">
+          🎯<span class="capture-label">Capture</span>
+        </button>
         <div class="tooltip">${this.escapeHTML(this.request)}</div>
       </button>
     `;
@@ -388,7 +405,30 @@ class RecordingOverlay {
 
       // Make floating button draggable
       this.makeDraggable(floatingBtn);
+
+      // Capture button
+      const btnCapture = this.shadowRoot.querySelector('.btn-capture');
+      if (btnCapture) {
+        btnCapture.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (!this.captureMode) this.startCapture();
+        });
+      }
     }
+
+    // Listen for capture done/cancelled from background
+    this.captureMessageListener = (msg) => {
+      if (!msg.sessionId || msg.sessionId !== this.sessionId) return;
+      if (msg.type === 'SELECTOR_CAPTURE_DONE') {
+        this.captureMode = false;
+        this._updateCaptureUI();
+        this.incrementActionCount();
+      } else if (msg.type === 'SELECTOR_CAPTURE_CANCELLED') {
+        this.captureMode = false;
+        this._updateCaptureUI();
+      }
+    };
+    chrome.runtime.onMessage.addListener(this.captureMessageListener);
 
     // Stop propagation to prevent interference with page
     [overlay, floatingBtn].forEach(el => {
@@ -466,6 +506,11 @@ class RecordingOverlay {
       else if (e.altKey && e.shiftKey && e.key === 'M') {
         e.preventDefault();
         this.toggleMinimize();
+      }
+      // Alt+Shift+C - Capture selector
+      else if (e.altKey && e.shiftKey && e.key === 'C') {
+        e.preventDefault();
+        if (this.state === 'minimized-recording' && !this.captureMode) this.startCapture();
       }
       // Escape - Cancel
       else if (e.key === 'Escape' && this.state.includes('waiting')) {
@@ -664,7 +709,15 @@ class RecordingOverlay {
           badge.className = 'badge';
           floatingBtn.appendChild(badge);
         }
+
+        // Show capture button during recording
+        const btnCapture = this.shadowRoot.querySelector('.btn-capture');
+        if (btnCapture) btnCapture.classList.remove('hidden');
       }
+    } else {
+      // Hide capture button when not recording
+      const btnCapture = this.shadowRoot.querySelector('.btn-capture');
+      if (btnCapture) btnCapture.classList.add('hidden');
     }
 
     // Update action count
@@ -730,9 +783,39 @@ class RecordingOverlay {
   }
 
   /**
+   * Start selector capture mode
+   */
+  startCapture() {
+    this.captureMode = true;
+    this._updateCaptureUI();
+    chrome.runtime.sendMessage({ type: 'SELECTOR_CAPTURE_REQUEST', sessionId: this.sessionId });
+  }
+
+  /**
+   * Update capture button appearance
+   */
+  _updateCaptureUI() {
+    const btn = this.shadowRoot.querySelector('.btn-capture');
+    if (!btn) return;
+    const label = btn.querySelector('.capture-label');
+    if (this.captureMode) {
+      btn.classList.add('capturing');
+      if (label) label.textContent = '…';
+    } else {
+      btn.classList.remove('capturing');
+      if (label) label.textContent = 'Capture';
+    }
+  }
+
+  /**
    * Destroy overlay
    */
   destroy() {
+    // Remove capture message listener
+    if (this.captureMessageListener) {
+      chrome.runtime.onMessage.removeListener(this.captureMessageListener);
+    }
+
     // Clear timer
     if (this.timerInterval) {
       clearInterval(this.timerInterval);

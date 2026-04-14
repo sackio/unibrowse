@@ -54,10 +54,10 @@ NODE_ENV=development
 
 ### 4. **Service Configurations Updated**
 
-**`browser-mcp.service`** (systemd):
+**`unibrowse.service`** (systemd):
 ```ini
 Environment="PORT=9010"  # Changed from 3010
-ExecStart=/usr/bin/node /home/ben/code/forks/browser-mcp/dist/http-server.js
+ExecStart=/usr/bin/node /mnt/nas/data/code/unibrowse/dist/http-server.js
 ```
 
 **`ecosystem.config.js`** (PM2):
@@ -97,7 +97,7 @@ pm2 start ecosystem.config.js
 
 **With systemd:**
 ```bash
-sudo systemctl start browser-mcp
+sudo systemctl start unibrowse
 ```
 
 ### MCP Client Connection
@@ -285,7 +285,7 @@ Expected output:
 ```json
 {
   "mcpServers": {
-    "browser-mcp": {
+    "unibrowse": {
       "command": "node",
       "args": ["/path/to/dist/index.js"]
     }
@@ -297,7 +297,7 @@ Expected output:
 ```json
 {
   "mcpServers": {
-    "browser-mcp": {
+    "unibrowse": {
       "type": "http",
       "url": "http://localhost:9010/mcp"
     }
@@ -328,7 +328,7 @@ Expected output:
 - ✅ `.env` - New config file
 - ✅ `.gitignore` - Added .env
 - ✅ `package.json` - Updated bin, scripts, MCP SDK to 1.20.0
-- ✅ `browser-mcp.service` - Updated port
+- ✅ `unibrowse.service` - Updated port
 - ✅ `ecosystem.config.js` - Updated port
 
 ## Next Steps
@@ -407,13 +407,13 @@ A development mode systemd service has been created with hot reloading enabled.
 **Installation (already completed):**
 ```bash
 # Service is already installed and running
-sudo systemctl status browser-mcp-dev
+sudo systemctl status unibrowse-dev
 
 # To restart the service
-sudo systemctl restart browser-mcp-dev
+sudo systemctl restart unibrowse-dev
 
 # To view logs
-sudo journalctl -u browser-mcp-dev -f
+sudo journalctl -u unibrowse-dev -f
 ```
 
 **Features:**
@@ -422,13 +422,13 @@ sudo journalctl -u browser-mcp-dev -f
 - ✅ Auto-restarts on crashes (RestartSec=10)
 - ✅ Watches src/, extension/, and .env files
 - ✅ Rebuilds TypeScript on changes
-- ✅ Logs to systemd journal (syslog identifier: browser-mcp-dev)
+- ✅ Logs to systemd journal (syslog identifier: unibrowse-dev)
 - ✅ NODE_ENV=development
 - ✅ Uses NVM node path
 
 **Location:**
-- Service file: `/etc/systemd/system/browser-mcp-dev.service`
-- Source: `/home/ben/code/forks/browser-mcp/browser-mcp-dev.service`
+- Service file: `/etc/systemd/system/unibrowse-dev.service`
+- Source: `/mnt/nas/data/code/unibrowse/unibrowse-dev.service`
 
 ## Connection Verification
 

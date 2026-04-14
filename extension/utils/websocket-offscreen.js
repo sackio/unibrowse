@@ -33,8 +33,9 @@ class WebSocketManager {
           console.log('[WebSocketManager] Offscreen WebSocket disconnected');
           this.emitStateChange('disconnected');
         } else if (message.type === 'WS_ERROR') {
-          console.error('[WebSocketManager] Offscreen WebSocket error:', message.error);
-          this.emitStateChange('error', message.error);
+          console.warn('[WebSocketManager] WebSocket error (non-critical):', message.error);
+          // Don't emit state change for errors - they're followed by disconnect/reconnect
+          // this.emitStateChange('error', message.error);
         } else if (message.type === 'WS_MESSAGE') {
           console.log('[WebSocketManager] Offscreen message:', message.message);
           // Don't emit state change - message is already handled by WS_MESSAGE handler in background.js
@@ -91,8 +92,8 @@ class WebSocketManager {
       console.log('[WebSocketManager] Creating offscreen document');
       await chrome.offscreen.createDocument({
         url: 'offscreen.html',
-        reasons: ['WORKERS'],
-        justification: 'Maintain WebSocket connection without service worker timeout'
+        reasons: ['WORKERS', 'USER_MEDIA'],
+        justification: 'Maintain WebSocket connection and perform tab capture for recording replay'
       });
 
       // Give the offscreen document a moment to initialize

@@ -20,15 +20,15 @@ class MongoDB {
 
   /**
    * Connect to MongoDB
-   * Default: mongodb://localhost:27017/browser_mcp
+   * Default: mongodb://localhost:27018/unibrowse
    */
   public async connect(uri?: string): Promise<void> {
     if (this.connected && this.client) {
       return;
     }
 
-    const connectionUri = uri || process.env.MONGODB_URI || "mongodb://localhost:27017";
-    const dbName = process.env.MONGODB_DB || "browser_mcp";
+    const connectionUri = uri || process.env.MONGODB_URI || "mongodb://localhost:27018";
+    const dbName = process.env.MONGODB_DB || "unibrowse";
 
     try {
       this.client = new MongoClient(connectionUri, {
@@ -69,6 +69,12 @@ class MongoDB {
     await macros.createIndex({ createdAt: 1 });
     await macros.createIndex({ reliability: 1 });
 
+    const recordings = this.db.collection("recordings");
+    await recordings.createIndex({ id: 1 }, { unique: true });
+    await recordings.createIndex({ createdAt: -1 });
+    await recordings.createIndex({ tags: 1 });
+    await recordings.createIndex({ title: "text", description: "text" });
+
     console.log("[MongoDB] Indexes created successfully");
   }
 
@@ -80,6 +86,16 @@ class MongoDB {
       throw new Error("MongoDB not connected. Call connect() first.");
     }
     return this.db.collection("macros");
+  }
+
+  /**
+   * Get recordings collection
+   */
+  public getRecordingsCollection(): Collection {
+    if (!this.db) {
+      throw new Error("MongoDB not connected. Call connect() first.");
+    }
+    return this.db.collection("recordings");
   }
 
   /**

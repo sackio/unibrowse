@@ -320,8 +320,18 @@ class TabManager {
     try {
       // Check if already attached
       if (this.attachedTabs.has(tabId)) {
-        console.log('[TabManager] Tab already attached:', tabId);
-        return this.attachedTabs.get(tabId);
+        const existing = this.attachedTabs.get(tabId);
+        if (existing.cdp && existing.cdp.isAttached()) {
+          console.log('[TabManager] Tab already attached and CDP alive:', tabId);
+          return existing;
+        }
+        // CDP is dead (debugger detached behind our back) — remove stale entry and re-attach
+        console.log('[TabManager] Tab in map but CDP is dead, removing stale entry and re-attaching:', tabId);
+        if (existing.cdp?.detachListener) {
+          chrome.debugger.onDetach.removeListener(existing.cdp.detachListener);
+          existing.cdp.detachListener = null;
+        }
+        this.attachedTabs.delete(tabId);
       }
 
       console.log('[TabManager] Attaching to tab:', tabId, url);
@@ -632,6 +642,11 @@ class BackgroundController {
     this.badgeBlinkInterval = null;
     this.recordingSessions = new Map(); // Track active recording sessions
     this.backgroundRecorder = new BackgroundRecorder(500); // Background interaction log
+    this.currentUserRecording = null; // { sessionId, startTime, recordingStartTime, tabId, startUrl }
+    this.pendingRecording = null; // Recording awaiting review/save in review tab
+    this.reviewTabId = null; // Tab ID of open review tab
+    this.pendingVideoData = null; // { arrayBuffer, mimeType } — temp video replay, cleared on save/discard
+    this.videoStopPromise = null; // Promise that resolves with video data when recording stops
     this.state = {
       connected: false,
       tabId: null, // DEPRECATED: Use tabManager.lastUsedTabId instead
@@ -649,6 +664,9 @@ class BackgroundController {
 
     // Initialize badge to disconnected state
     this.updateBadge(false);
+
+    // Restore recording state if service worker was killed mid-recording
+    this._restoreRecordingState();
   }
 
   /**
@@ -785,6 +803,56 @@ class BackgroundController {
   }
 
   /**
+   * Attempt to reattach a TabManager-tracked tab's debugger with exponential backoff.
+   * Mirrors attemptReattachWithRetry but operates on TabManager multi-tab entries.
+   */
+  async _attemptTabManagerReattach(tabId, tabInfo, attempt, maxAttempts = 5) {
+    const delay = 500 * Math.pow(2, attempt);
+    setTimeout(async () => {
+      try {
+        // If the tab was explicitly detached while we were waiting, abort
+        if (!this.tabManager.attachedTabs.has(tabId)) {
+          console.log(`[Background] TabManager tab ${tabId} removed from map, aborting reattach`);
+          return;
+        }
+
+        const currentTab = await chrome.tabs.get(tabId).catch(() => null);
+        if (!currentTab) {
+          console.log(`[Background] TabManager tab ${tabId} closed, removing from map`);
+          this.tabManager.attachedTabs.delete(tabId);
+          if (this.tabManager.lastUsedTabId === tabId) this.tabManager.lastUsedTabId = null;
+          return;
+        }
+
+        if (this.isRestrictedUrl(currentTab.url)) {
+          if (attempt < maxAttempts - 1) {
+            console.log(`[Background] TabManager tab ${tabId} on restricted URL, retrying...`);
+            this._attemptTabManagerReattach(tabId, tabInfo, attempt + 1, maxAttempts);
+          } else {
+            console.warn(`[Background] TabManager tab ${tabId} reattach gave up (restricted URL)`);
+          }
+          return;
+        }
+
+        console.log(`[Background] TabManager reattaching tab ${tabId} (attempt ${attempt + 1}/${maxAttempts})`);
+        await tabInfo.cdp.attach(tabId);
+        tabInfo.url = currentTab.url;
+        tabInfo.title = currentTab.title;
+        tabInfo.lastUsedAt = Date.now();
+        console.log(`[Background] TabManager tab ${tabId} reattached successfully`);
+        await this.injectBackgroundCapture(tabId).catch(() => {});
+      } catch (error) {
+        console.error(`[Background] TabManager reattach attempt ${attempt + 1} failed for tab ${tabId}:`, error.message);
+        if (attempt < maxAttempts - 1 && this.tabManager.attachedTabs.has(tabId)) {
+          this._attemptTabManagerReattach(tabId, tabInfo, attempt + 1, maxAttempts);
+        } else {
+          console.warn(`[Background] TabManager tab ${tabId} reattach exhausted all attempts`);
+        }
+      }
+    }, delay);
+  }
+
+  /**
    * Setup event listeners
    */
   setupListeners() {
@@ -815,6 +883,22 @@ class BackgroundController {
 
     // Tab closed/removed - enhanced detection with recording cleanup
     chrome.tabs.onRemoved.addListener((tabId) => {
+      // Clean up user recording if the recording tab is closed
+      if (this.currentUserRecording && this.currentUserRecording.tabId === tabId) {
+        console.log('[Background] User recording tab closed, cancelling recording');
+        this.currentUserRecording = null;
+        chrome.action.setBadgeText({ text: '' });
+        this._saveRecordingState();
+      }
+
+      // Clean up pending recording if the review tab is closed before saving
+      if (this.reviewTabId === tabId) {
+        console.log('[Background] Review tab closed');
+        this.pendingRecording = null;
+        this.reviewTabId = null;
+        this._saveRecordingState();
+      }
+
       if (this.state.tabId === tabId) {
         console.log('[Background] Active tab closed');
         this.handleTabClosed(tabId);
@@ -889,6 +973,11 @@ class BackgroundController {
           this.injectTabIndicator();
           this.injectBackgroundCapture(); // Always re-inject background capture on navigation
 
+          // Re-inject overlay if there's an active user recording on this tab
+          if (this.currentUserRecording && this.currentUserRecording.tabId === tabId) {
+            this._reinjectUserRecordingOverlay(tabId);
+          }
+
           // Re-inject overlay and content script if there's an active recording
           if (this.currentRecordingRequest) {
             const sessionId = this.currentRecordingRequest.sessionId;
@@ -946,6 +1035,36 @@ class BackgroundController {
                 });
               }
             }
+          }
+        }
+      }
+
+      // Re-inject user recording overlay for the recording tab on any page load
+      // (handles the case where the recording tab is NOT the CDP-attached tab)
+      if (changeInfo.status === 'complete' &&
+          this.currentUserRecording?.tabId === tabId &&
+          this.state.tabId !== tabId) {
+        this._reinjectUserRecordingOverlay(tabId);
+        this.injectBackgroundCapture(tabId).catch(() => {});
+      }
+
+      // Reattach dead TabManager CDPs when the page finishes loading
+      // Handles navigation/reload detachments for multi-tab sessions
+      if (changeInfo.status === 'complete' && tabId !== this.state.tabId) {
+        const tmInfo = this.tabManager.attachedTabs.get(tabId);
+        if (tmInfo && tmInfo.cdp && !tmInfo.cdp.isAttached()) {
+          const url = tab.url;
+          if (url && !this.isRestrictedUrl(url)) {
+            console.log(`[Background] TabManager tab ${tabId} page loaded, reattaching CDP...`);
+            tmInfo.cdp.attach(tabId).then(() => {
+              tmInfo.url = url;
+              tmInfo.title = tab.title;
+              tmInfo.lastUsedAt = Date.now();
+              console.log(`[Background] TabManager tab ${tabId} reattached after navigation`);
+              this.injectBackgroundCapture(tabId).catch(() => {});
+            }).catch(err => {
+              console.error(`[Background] TabManager tab ${tabId} reattach failed on page load:`, err.message);
+            });
           }
         }
       }
@@ -1017,6 +1136,18 @@ class BackgroundController {
           console.log('[Background] Waiting for tab to navigate back to re-attach...');
         }
       }
+
+      // Handle detach for TabManager multi-tab attachments (separate from legacy single-tab above)
+      const tmInfo = this.tabManager.attachedTabs.get(source.tabId);
+      if (tmInfo && tmInfo.cdp && source.tabId !== this.state.tabId) {
+        console.log(`[Background] TabManager tab ${source.tabId} detached (${reason}), scheduling reattach...`);
+        tmInfo.cdp.target = null;
+        tmInfo.cdp.isDetaching = false;
+        tmInfo.cdp.enabledDomains.clear();
+        if (reason !== 'canceled_by_user') {
+          this._attemptTabManagerReattach(source.tabId, tmInfo, 0);
+        }
+      }
     });
 
     // Messages from popup
@@ -1039,11 +1170,67 @@ class BackgroundController {
       // Always accept interactions, even when not connected, so we don't lose data
       if (message.type === 'BACKGROUND_INTERACTION') {
         this.backgroundRecorder.addAction(message.interaction);
+        // Notify overlay if user recording is active
+        if (this.currentUserRecording && this.currentUserRecording.recordingStartTime) {
+          const tabId = this.currentUserRecording.tabId;
+          if (tabId) {
+            chrome.tabs.sendMessage(tabId, { type: 'ACTION_RECORDED' }).catch(() => {});
+          }
+        }
         return false; // Synchronous response - no need to keep channel open
       }
 
+      // Handle tab-originated recording messages (from overlay/review tab)
+      if (message.type === 'RECORDING_COMPLETE' && message.sessionId) {
+        // Check if this is a user-initiated recording (not agent-initiated)
+        if (this.currentUserRecording && this.currentUserRecording.sessionId === message.sessionId) {
+          this.handleUserRecordingComplete(message.sessionId);
+          return false;
+        }
+      }
+
+      if (message.type === 'SELECTOR_CAPTURE_REQUEST' && message.sessionId) {
+        if (this.currentUserRecording?.sessionId === message.sessionId) {
+          const tabId = this.currentUserRecording.tabId;
+          chrome.scripting.executeScript({
+            target: { tabId },
+            func: (sid) => { window._mcpCaptureSid = sid; },
+            args: [message.sessionId]
+          }).then(() =>
+            chrome.scripting.executeScript({ target: { tabId }, files: ['selector-capture.js'] })
+          ).catch(err => {
+            console.error('[Background] Failed to inject selector-capture:', err);
+            chrome.tabs.sendMessage(tabId, { type: 'SELECTOR_CAPTURE_CANCELLED', sessionId: message.sessionId }).catch(() => {});
+          });
+        }
+        return false;
+      }
+
+      if (message.type === 'SELECTOR_CAPTURE_COMPLETE' && message.sessionId) {
+        if (this.currentUserRecording?.sessionId === message.sessionId) {
+          this.currentUserRecording.capturedSelectors.push({
+            ...message.capture,
+            _absoluteTimestamp: message.capture.timestamp
+          });
+          this._saveRecordingState();
+          chrome.tabs.sendMessage(this.currentUserRecording.tabId,
+            { type: 'SELECTOR_CAPTURE_DONE', sessionId: message.sessionId }
+          ).catch(() => {});
+        }
+        return false;
+      }
+
+      if (message.type === 'SELECTOR_CAPTURE_CANCELLED' && message.sessionId) {
+        if (this.currentUserRecording?.sessionId === message.sessionId) {
+          chrome.tabs.sendMessage(this.currentUserRecording.tabId,
+            { type: 'SELECTOR_CAPTURE_CANCELLED', sessionId: message.sessionId }
+          ).catch(() => {});
+        }
+        return false;
+      }
+
       // Only handle popup-specific messages here
-      const popupMessages = ['connect', 'disconnect', 'get_state', 'ensure_attached', 'list_attached_tabs', 'set_tab_label', 'detach_tab'];
+      const popupMessages = ['connect', 'disconnect', 'get_state', 'ensure_attached', 'list_attached_tabs', 'set_tab_label', 'detach_tab', 'start_user_recording', 'get_pending_recording', 'save_recording', 'discard_recording', 'get_recording_video'];
       if (popupMessages.includes(message.type)) {
         this.handlePopupMessage(message, sendResponse);
         return true; // Keep channel open for async response
@@ -1165,6 +1352,10 @@ class BackgroundController {
     this.handlers['browser_realistic_mouse_move'] = this.handleRealisticMouseMove.bind(this);
     this.handlers['browser_realistic_click'] = this.handleRealisticClick.bind(this);
     this.handlers['browser_realistic_type'] = this.handleRealisticType.bind(this);
+
+    // Video recording handlers (agent-driven tab capture)
+    this.handlers['browser_start_video_recording'] = this.handleStartVideoRecording.bind(this);
+    this.handlers['browser_stop_video_recording'] = this.handleStopVideoRecording.bind(this);
 
     // Tab management handlers
     this.handlers['browser_list_tabs'] = this.handleListTabs.bind(this);
@@ -2652,7 +2843,8 @@ class BackgroundController {
               tabId: this.state.tabId,
               tabUrl: this.state.tabUrl,
               tabTitle: this.state.tabTitle,
-              recordingRequest: this.currentRecordingRequest || null
+              recordingRequest: this.currentRecordingRequest || null,
+              isRecording: !!this.currentUserRecording
             }
           });
         } catch (error) {
@@ -2665,7 +2857,8 @@ class BackgroundController {
               tabId: this.state.tabId,
               tabUrl: this.state.tabUrl,
               tabTitle: this.state.tabTitle,
-              recordingRequest: this.currentRecordingRequest || null
+              recordingRequest: this.currentRecordingRequest || null,
+              isRecording: !!this.currentUserRecording
             }
           });
         }
@@ -2714,9 +2907,332 @@ class BackgroundController {
         }
         break;
 
+      case 'start_user_recording':
+        try {
+          await this.handleStartUserRecording(sendResponse);
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+        break;
+
+      case 'get_pending_recording':
+        sendResponse({ success: true, recording: this.pendingRecording });
+        break;
+
+      case 'save_recording':
+        try {
+          await this.handleSaveRecording(message.recording, sendResponse);
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+        break;
+
+      case 'discard_recording':
+        this.pendingRecording = null;
+        this.pendingVideoData = null;
+        this.videoStopPromise = null;
+        this._saveRecordingState();
+        sendResponse({ success: true });
+        break;
+
+      case 'get_recording_video':
+        if (this.pendingVideoData) {
+          sendResponse({ success: true, arrayBuffer: this.pendingVideoData.arrayBuffer, mimeType: this.pendingVideoData.mimeType });
+        } else if (this.videoStopPromise) {
+          // Video is still being finalized — wait for it (channel kept open by return true above)
+          this.videoStopPromise
+            .then(data => data
+              ? sendResponse({ success: true, arrayBuffer: data.arrayBuffer, mimeType: data.mimeType })
+              : sendResponse({ success: false, error: 'No video data' })
+            )
+            .catch(() => sendResponse({ success: false, error: 'Video unavailable' }));
+          return; // async — don't fall through to break
+        } else {
+          sendResponse({ success: false, error: 'No video data' });
+        }
+        break;
+
       default:
         // Let other listeners handle non-popup messages
         sendResponse({ success: false, error: 'Unknown message type' });
+    }
+  }
+
+  /**
+   * Handle user clicking Record in the popup — inject overlay into current active tab
+   */
+  /**
+   * Persist current recording state to chrome.storage.session so it survives
+   * service worker restarts (MV3 workers can be killed after ~30s idle).
+   */
+  _saveRecordingState() {
+    chrome.storage.session.set({
+      currentUserRecording: this.currentUserRecording || null,
+      pendingRecording: this.pendingRecording || null,
+      reviewTabId: this.reviewTabId || null,
+    }).catch(err => console.warn('[Background] Failed to save recording state:', err));
+  }
+
+  /**
+   * Restore recording state after a service worker restart.
+   * If a recording was in progress, the page will already have the overlay
+   * (sessionStorage restores it), so we just need to restore our in-memory state.
+   */
+  async _restoreRecordingState() {
+    try {
+      const data = await chrome.storage.session.get([
+        'currentUserRecording', 'pendingRecording', 'reviewTabId'
+      ]);
+      if (data.currentUserRecording) {
+        this.currentUserRecording = data.currentUserRecording;
+        // Re-set the badge
+        chrome.action.setBadgeText({ text: 'REC' });
+        chrome.action.setBadgeBackgroundColor({ color: '#dc3545' });
+        console.log('[Background] Restored currentUserRecording:', this.currentUserRecording.sessionId);
+      }
+      if (data.pendingRecording) {
+        this.pendingRecording = data.pendingRecording;
+        console.log('[Background] Restored pendingRecording:', this.pendingRecording.sessionId);
+      }
+      if (data.reviewTabId) {
+        this.reviewTabId = data.reviewTabId;
+      }
+    } catch (err) {
+      console.warn('[Background] Failed to restore recording state:', err);
+    }
+  }
+
+  /**
+   * Re-inject the recording overlay into the recording tab after navigation
+   */
+  _reinjectUserRecordingOverlay(tabId) {
+    const rec = this.currentUserRecording;
+    if (!rec) return;
+    const sid = rec.sessionId;
+    const isRecording = !!rec.recordingStartTime;
+    chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['recording-overlay.js']
+    }).then(() => {
+      const overlayState = isRecording
+        ? { state: 'minimized-recording', actionCount: 0, startTime: rec.recordingStartTime, position: { x: null, y: null } }
+        : null;
+      return chrome.scripting.executeScript({
+        target: { tabId },
+        func: (sid, state) => {
+          if (window.RecordingOverlay) {
+            window.mcpUserRecordingOverlay = new window.RecordingOverlay(sid, 'User Recording', state);
+          }
+        },
+        args: [sid, overlayState]
+      });
+    }).catch(err => {
+      console.error('[Background] Failed to re-inject user recording overlay:', err);
+    });
+  }
+
+  async handleStartUserRecording(sendResponse) {
+    if (this.currentUserRecording) {
+      sendResponse({ success: false, error: 'A recording is already in progress' });
+      return;
+    }
+
+    // Get the currently active tab
+    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!activeTab || !activeTab.id) {
+      sendResponse({ success: false, error: 'No active tab found' });
+      return;
+    }
+
+    const tabId = activeTab.id;
+    const sessionId = `user-recording-${Date.now()}`;
+
+    this.currentUserRecording = {
+      sessionId,
+      startTime: Date.now(),
+      recordingStartTime: null,
+      tabId,
+      startUrl: activeTab.url || '',
+      capturedSelectors: []
+    };
+
+    // Inject background capture (idempotent)
+    this.injectBackgroundCapture().catch(err => {
+      console.warn('[Background] Could not inject background capture:', err.message);
+    });
+
+    // Inject overlay
+    chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['recording-overlay.js']
+    }).then(() => {
+      return chrome.scripting.executeScript({
+        target: { tabId },
+        func: (sid) => {
+          if (window.RecordingOverlay) {
+            window.mcpUserRecordingOverlay = new window.RecordingOverlay(sid, 'User Recording', null);
+          }
+        },
+        args: [sessionId]
+      });
+    }).catch(err => {
+      console.error('[Background] Failed to inject recording overlay:', err);
+      this.currentUserRecording = null;
+      this._saveRecordingState();
+    });
+
+    // Set badge
+    chrome.action.setBadgeText({ text: 'REC' });
+    chrome.action.setBadgeBackgroundColor({ color: '#dc3545' });
+
+    // Start tab video capture for replay (optional — recording works without it)
+    this.pendingVideoData = null;
+    this.videoStopPromise = null;
+    chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (streamId) => {
+      if (chrome.runtime.lastError || !streamId) {
+        console.warn('[Background] tabCapture unavailable:', chrome.runtime.lastError?.message);
+        return;
+      }
+      chrome.runtime.sendMessage({ type: 'OFFSCREEN_START_TAB_RECORDING', streamId }).catch(err => {
+        console.warn('[Background] Could not start tab video recording:', err.message);
+      });
+    });
+
+    // Persist initial recording state
+    this._saveRecordingState();
+
+    // Listen for START_RECORDING_NOW from the overlay
+    const startListener = (msg, sender) => {
+      if (msg.type === 'START_RECORDING_NOW' && msg.sessionId === sessionId) {
+        if (this.currentUserRecording && this.currentUserRecording.sessionId === sessionId) {
+          this.currentUserRecording.recordingStartTime = Date.now();
+          console.log('[Background] User recording started:', sessionId);
+          this._saveRecordingState();
+        }
+        chrome.runtime.onMessage.removeListener(startListener);
+      }
+    };
+    chrome.runtime.onMessage.addListener(startListener);
+
+    sendResponse({ success: true, sessionId });
+  }
+
+  /**
+   * Handle user clicking Stop in the overlay — collect steps and open review tab
+   */
+  async handleUserRecordingComplete(sessionId) {
+    if (!this.currentUserRecording || this.currentUserRecording.sessionId !== sessionId) {
+      return;
+    }
+
+    const endTime = Date.now();
+    const startTime = this.currentUserRecording.recordingStartTime || this.currentUserRecording.startTime;
+    const startUrl = this.currentUserRecording.startUrl;
+
+    // Slice interactions from the buffer
+    const { interactions } = this.backgroundRecorder.get({
+      startTime,
+      endTime,
+      sortOrder: 'asc',
+      limit: 2000
+    });
+
+    // Interaction steps (from backgroundRecorder buffer)
+    const interactionSteps = interactions.map(action => ({
+      type: action.type,
+      _abs: action.timestamp,
+      timestamp: action.timestamp - startTime,
+      url: action.url,
+      element: action.element,
+      value: action.value,
+      key: action.key,
+      x: action.x,
+      y: action.y,
+      scrollX: action.scrollX,
+      scrollY: action.scrollY,
+      note: ''
+    }));
+
+    // Selector capture steps
+    const captureSteps = (this.currentUserRecording.capturedSelectors || []).map(cap => ({
+      type: 'selector_capture',
+      _abs: cap._absoluteTimestamp,
+      timestamp: cap._absoluteTimestamp - startTime,
+      url: cap.url,
+      name: cap.name,
+      description: cap.description || '',
+      selector: cap.selector,
+      matchCount: cap.matchCount,
+      selectorOptions: cap.selectorOptions || [],
+      elements: cap.elements || [],
+      region: cap.region || null,
+      note: ''
+    }));
+
+    // Merge, sort by absolute timestamp, assign IDs, strip temp field
+    const steps = [...interactionSteps, ...captureSteps]
+      .sort((a, b) => a._abs - b._abs)
+      .map((step, i) => { const { _abs, ...s } = step; return { id: i + 1, ...s }; });
+
+    this.pendingRecording = {
+      sessionId,
+      startUrl,
+      startTime,
+      endTime,
+      duration: endTime - startTime,
+      steps
+    };
+
+    // Clear recording state
+    this.currentUserRecording = null;
+    chrome.action.setBadgeText({ text: '' });
+
+    // Stop tab video recording — store a promise so review tab can await it
+    this.videoStopPromise = chrome.runtime.sendMessage({ type: 'OFFSCREEN_STOP_TAB_RECORDING' })
+      .then(response => {
+        if (response?.success && response.arrayBuffer) {
+          this.pendingVideoData = { arrayBuffer: response.arrayBuffer, mimeType: response.mimeType || 'video/webm' };
+          console.log('[Background] Video replay ready:', response.arrayBuffer.byteLength, 'bytes');
+          return this.pendingVideoData;
+        }
+        return null;
+      })
+      .catch(err => {
+        console.warn('[Background] Tab video stop failed:', err.message);
+        return null;
+      });
+
+    // Open review tab
+    try {
+      const reviewTab = await chrome.tabs.create({
+        url: chrome.runtime.getURL(`review.html?sessionId=${sessionId}`)
+      });
+      this.reviewTabId = reviewTab.id;
+    } catch (err) {
+      console.error('[Background] Failed to open review tab:', err);
+    }
+
+    this._saveRecordingState();
+  }
+
+  /**
+   * Forward recording save request to MCP server via WebSocket
+   */
+  async handleSaveRecording(recording, sendResponse) {
+    try {
+      // Use sendNoResponse to avoid creating a pending request in the offscreen
+      await this.ws.sendNoResponse({
+        id: `save-recording-${Date.now()}`,
+        type: 'browser_save_recording',
+        payload: recording
+      });
+      this.pendingRecording = null;
+      this.pendingVideoData = null;
+      this.videoStopPromise = null;
+      this._saveRecordingState();
+      sendResponse({ success: true });
+    } catch (error) {
+      sendResponse({ success: false, error: error.message });
     }
   }
 
@@ -2964,6 +3480,52 @@ class BackgroundController {
     }
   }
 
+  async handleStartVideoRecording({ tabTarget }) {
+    const tabInfo = tabTarget
+      ? this.tabManager.resolveTab(tabTarget)
+      : this.tabManager.attachedTabs.get(this.tabManager.lastUsedTabId);
+    const tabId = tabInfo?.tabId;
+    if (!tabId) {
+      throw new Error('No tab available for video recording. Use browser_attach_tab or browser_create_tab first.');
+    }
+    return new Promise((resolve, reject) => {
+      chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, async (streamId) => {
+        if (chrome.runtime.lastError || !streamId) {
+          reject(new Error(chrome.runtime.lastError?.message || 'tabCapture.getMediaStreamId failed — tab may not be visible'));
+          return;
+        }
+        try {
+          await chrome.runtime.sendMessage({ type: 'OFFSCREEN_START_TAB_RECORDING', streamId });
+          resolve({ success: true, tabId, message: `Video recording started for tab ${tabId}` });
+        } catch (err) {
+          reject(new Error(`Failed to start offscreen recording: ${err.message}`));
+        }
+      });
+    });
+  }
+
+  async handleStopVideoRecording() {
+    const response = await chrome.runtime.sendMessage({ type: 'OFFSCREEN_STOP_TAB_RECORDING' });
+    if (!response?.success) {
+      throw new Error(response?.error || 'No active video recording to stop');
+    }
+    // Convert ArrayBuffer to base64 for WebSocket transfer
+    const bytes = new Uint8Array(response.arrayBuffer);
+    const chunkSize = 8192;
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i += chunkSize) {
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode.apply(null, chunk);
+    }
+    const base64 = btoa(binary);
+    return {
+      success: true,
+      videoBase64: base64,
+      mimeType: response.mimeType || 'video/webm',
+      byteLength: response.arrayBuffer.byteLength
+    };
+  }
+
   async handleListTabs() {
     const tabs = await chrome.tabs.query({});
     return tabs.map(tab => ({
@@ -3149,31 +3711,49 @@ class BackgroundController {
         }, null, 2);
       }
 
-      // Apply filtering to reduce response size
+      // CDP returns a flat node list with childIds references — build a nested tree.
+      // filterNode(tree) on the raw { nodes: [] } object was the prior bug: role/children
+      // don't exist on the wrapper object, so interactiveOnly: true always returned null.
+      const nodeMap = new Map();
+      for (const node of tree.nodes) {
+        nodeMap.set(node.nodeId, node);
+      }
+
+      // Find the root: the node whose nodeId doesn't appear in any other node's childIds
+      const allChildIds = new Set(tree.nodes.flatMap(n => n.childIds || []));
+      const rootNode = tree.nodes.find(n => !allChildIds.has(n.nodeId));
+
+      if (!interactiveOnly) {
+        // Return the flat list as-is (same as before — no filtering needed)
+        return JSON.stringify(tree, null, 2);
+      }
+
       const interactiveRoles = ['button', 'link', 'textbox', 'searchbox', 'checkbox', 'radio', 'combobox', 'listbox', 'menuitem', 'tab', 'switch', 'slider', 'spinbutton', 'option'];
 
-      const filterNode = (node, depth = 0) => {
+      // Walk the tree via childIds, pruning non-interactive branches
+      const filterNode = (nodeId, depth = 0) => {
         if (depth > maxDepth) return null;
+        const node = nodeMap.get(nodeId);
+        if (!node || node.ignored) return null;
 
-        const filteredChildren = (node.children || [])
-          .map(child => filterNode(child, depth + 1))
+        const filteredChildren = (node.childIds || [])
+          .map(id => filterNode(id, depth + 1))
           .filter(Boolean);
 
-        if (interactiveOnly) {
-          const isInteractive = interactiveRoles.includes(node.role?.value);
-          if (isInteractive) {
-            return { ...node, children: filteredChildren.length > 0 ? filteredChildren : undefined };
-          }
-          // Non-interactive node: only keep if it has interactive descendants
-          return filteredChildren.length > 0 ? { ...node, children: filteredChildren } : null;
+        const isInteractive = interactiveRoles.includes(node.role?.value);
+        if (isInteractive) {
+          const { childIds, ...rest } = node;
+          return { ...rest, children: filteredChildren.length > 0 ? filteredChildren : undefined };
         }
-
-        return { ...node, children: filteredChildren.length > 0 ? filteredChildren : undefined };
+        // Non-interactive: keep only if it has interactive descendants
+        if (filteredChildren.length > 0) {
+          const { childIds, ...rest } = node;
+          return { ...rest, children: filteredChildren };
+        }
+        return null;
       };
 
-      const filtered = filterNode(tree);
-
-      // Return JSON string
+      const filtered = rootNode ? filterNode(rootNode.nodeId) : null;
       return JSON.stringify(filtered, null, 2);
     } catch (error) {
       // If we get a restricted frame error, return a helpful message
@@ -3433,45 +4013,50 @@ class BackgroundController {
 
   async handleGetFilteredAriaTree({ roles, maxDepth = 5, interactiveOnly, tabTarget }) {
     const cdp = this.tabManager.requireCDP(tabTarget);
-    // Get full ARIA tree from CDP
     const fullTree = await cdp.getPartialAccessibilityTree(maxDepth);
 
-    // Filter tree based on parameters
-    const filterNode = (node, depth = 0) => {
+    if (!fullTree.nodes || fullTree.nodes.length === 0) {
+      return null;
+    }
+
+    // Build a lookup map and find the root node (same fix as handleSnapshot)
+    const nodeMap = new Map();
+    for (const node of fullTree.nodes) {
+      nodeMap.set(node.nodeId, node);
+    }
+    const allChildIds = new Set(fullTree.nodes.flatMap(n => n.childIds || []));
+    const rootNode = fullTree.nodes.find(n => !allChildIds.has(n.nodeId));
+
+    const interactiveRoles = ['button', 'link', 'textbox', 'searchbox', 'checkbox', 'radio', 'combobox', 'listbox', 'menuitem', 'tab', 'switch', 'slider'];
+
+    const filterNode = (nodeId, depth = 0) => {
       if (depth > maxDepth) return null;
+      const node = nodeMap.get(nodeId);
+      if (!node || node.ignored) return null;
+
+      const filteredChildren = (node.childIds || [])
+        .map(id => filterNode(id, depth + 1))
+        .filter(Boolean);
+
+      const { childIds, ...rest } = node;
 
       // Check role filter
       if (roles && roles.length > 0 && !roles.includes(node.role?.value)) {
-        // Still process children even if parent doesn't match
-        const children = node.children
-          ?.map(child => filterNode(child, depth + 1))
-          .filter(Boolean);
-        return children && children.length > 0 ? { ...node, children } : null;
+        return filteredChildren.length > 0 ? { ...rest, children: filteredChildren } : null;
       }
 
       // Check interactive filter
-      if (interactiveOnly) {
-        const interactiveRoles = ['button', 'link', 'textbox', 'searchbox', 'checkbox', 'radio', 'combobox', 'listbox', 'menuitem', 'tab', 'switch', 'slider'];
-        if (!interactiveRoles.includes(node.role?.value)) {
-          const children = node.children
-            ?.map(child => filterNode(child, depth + 1))
-            .filter(Boolean);
-          return children && children.length > 0 ? { ...node, children } : null;
-        }
+      if (interactiveOnly && !interactiveRoles.includes(node.role?.value)) {
+        return filteredChildren.length > 0 ? { ...rest, children: filteredChildren } : null;
       }
 
-      // Include node and filter its children
-      const filteredChildren = node.children
-        ?.map(child => filterNode(child, depth + 1))
-        .filter(Boolean);
-
       return {
-        ...node,
-        children: filteredChildren && filteredChildren.length > 0 ? filteredChildren : undefined
+        ...rest,
+        children: filteredChildren.length > 0 ? filteredChildren : undefined
       };
     };
 
-    return filterNode(fullTree);
+    return rootNode ? filterNode(rootNode.nodeId) : null;
   }
 
   async handleFindByText({ text, selector, exact, limit = 10, tabTarget }) {

@@ -24,9 +24,11 @@ import * as system from "@/tools/system";
 import * as tabs from "@/tools/tabs";
 import * as userAction from "@/tools/user-action";
 import * as macros from "@/tools/macros";
+import * as recordings from "@/tools/recordings";
 import * as realisticInput from "@/tools/realistic-input";
 import * as multiTabManagement from "@/tools/multi-tab-management";
 import * as chromeLauncher from "@/tools/chrome-launcher";
+import * as videoRecording from "@/tools/video-recording";
 import type { Tool } from "@/tools/tool";
 
 import packageJSON from "../package.json";
@@ -83,6 +85,10 @@ const formTools: Tool[] = [
 
 const recordingTools: Tool[] = [
   userAction.requestUserAction(false),
+  recordings.saveRecording,
+  recordings.listRecordings,
+  recordings.getRecording,
+  recordings.deleteRecording,
 ];
 
 const interactionTools: Tool[] = [
@@ -158,6 +164,11 @@ const realisticInputTools: Tool[] = [
   realisticInput.realisticType,
 ];
 
+const videoRecordingTools: Tool[] = [
+  videoRecording.startVideoRecording,
+  videoRecording.stopVideoRecording,
+];
+
 const multiTabTools: Tool[] = [
   multiTabManagement.listAttachedTabs,
   multiTabManagement.setTabLabel,
@@ -194,6 +205,7 @@ const snapshotTools: Tool[] = [
   ...macroTools,
   ...realisticInputTools,
   ...multiTabTools,
+  ...videoRecordingTools,
 ];
 
 const resources: Resource[] = [];

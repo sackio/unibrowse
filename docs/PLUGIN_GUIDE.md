@@ -82,8 +82,8 @@ docs/
 ### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/browser-mcp.git
-cd browser-mcp
+git clone https://github.com/sackio/unibrowse.git
+cd unibrowse
 ```
 
 ### Step 2: Install Dependencies
@@ -174,7 +174,7 @@ services:
     ports:
       - "9010:9010"  # MCP server port
     environment:
-      - MONGODB_URI=mongodb://mongodb:27017/browser-mcp
+      - MONGODB_URI=mongodb://mongodb:27017/unibrowse
       - PORT=9010
 ```
 
@@ -214,14 +214,14 @@ Add MCP server configuration:
 
 ### MongoDB Configuration
 
-**Connection String**: `mongodb://localhost:27017/browser-mcp`
+**Connection String**: `mongodb://localhost:27018/unibrowse`
 
 **To seed macros**:
 
 ```bash
 # Import macros from backup
 docker compose exec mongodb mongoimport \
-  --db browser-mcp \
+  --db unibrowse \
   --collection macros \
   --file /data/macros-backup.json
 
@@ -691,7 +691,7 @@ docker compose logs -f
 docker compose ps mongodb
 
 # List macros
-docker compose exec mongodb mongosh browser-mcp --eval "db.macros.find().limit(5)"
+docker compose exec mongodb mongosh unibrowse --eval "db.macros.find().limit(5)"
 
 # Seed macros if empty
 npm run seed:macros
@@ -731,9 +731,9 @@ const tab = await mcp__browser__browser_create_tab({ url: url });
 
 ### GitHub
 
-- **Repository**: https://github.com/yourusername/browser-mcp
-- **Issues**: https://github.com/yourusername/browser-mcp/issues
-- **Discussions**: https://github.com/yourusername/browser-mcp/discussions
+- **Repository**: https://github.com/sackio/unibrowse
+- **Issues**: https://github.com/sackio/unibrowse/issues
+- **Discussions**: https://github.com/sackio/unibrowse/discussions
 
 ### Community
 

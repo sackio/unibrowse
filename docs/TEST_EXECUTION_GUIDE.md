@@ -2,7 +2,7 @@
 
 ## Current Status
 
-The browser-mcp refactor branch has:
+The unibrowse migration branch has:
 - ✅ Background recording system implemented
 - ✅ Three new MCP tools (get/prune/search interactions)
 - ✅ HTTP/WebSocket server running with hot reload
@@ -24,7 +24,7 @@ The browser MCP server is configured in `~/.claude/mcp/browser.json` and points 
 
 2. **Ensure the HTTP/WebSocket server is running**:
    ```bash
-   cd /mnt/nas/data/code/forks/browser-mcp
+   cd /mnt/nas/data/code/unibrowse
    ./scripts/service.sh status
    ```
 
@@ -156,7 +156,7 @@ Choose one:
 - `docs/SERVICE.md` - Service management documentation
 - `scripts/service.sh` - Service management script
 - `config/ecosystem.config.js` - PM2 configuration
-- `config/browser-mcp.service` - systemd service file
+- `config/unibrowse.service` - systemd service file
 - `docs/TEST_SUITE.md` - Comprehensive test suite
 - `docs/TESTING.md` - Testing guide
 - `tests/test-runner.js` - Automated test framework (skeleton)

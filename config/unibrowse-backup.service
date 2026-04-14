@@ -1,0 +1,15 @@
+[Unit]
+Description=Unibrowse MongoDB Backup
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ben
+ExecStart=/mnt/nas/data/code/unibrowse/scripts/backup-mongodb-scheduled.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=unibrowse-backup
+
+[Install]
+WantedBy=multi-user.target

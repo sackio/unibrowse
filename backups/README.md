@@ -1,6 +1,14 @@
 # MongoDB Macros Backups
 
-This directory contains backups of the unibrowse macros stored in MongoDB.
+This directory is the **PRIMARY** backup location for unibrowse macros stored in MongoDB.
+
+## Backup Architecture
+
+Macros are backed up at three levels:
+
+1. **Source Definitions** (Git-tracked): `/macros/*.js` - Version-controlled source code
+2. **Local Rotating Backups** (This directory): `/backups/` - Last 10 MongoDB exports
+3. **NAS Offsite Backups**: `/mnt/backup/unibrowse-macros/` - Compressed archives for disaster recovery
 
 ## Backup Scripts
 
@@ -42,9 +50,9 @@ If you need to manually export/import:
 
 ```bash
 # Export
-docker exec browser-mcp-mongodb mongosh browser_mcp --eval "db.macros.find().toArray()" > backup.json
+docker exec unibrowse-mongodb mongosh unibrowse --eval "db.macros.find().toArray()" > backup.json
 
 # Import (warning: this will replace all macros)
-docker exec browser-mcp-mongodb mongosh browser_mcp --eval "db.macros.drop()"
+docker exec unibrowse-mongodb mongosh unibrowse --eval "db.macros.drop()"
 # ... then use mongoimport or insertMany
 ```

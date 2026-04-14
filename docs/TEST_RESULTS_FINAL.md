@@ -161,7 +161,7 @@ At test completion:
 
 ### First Commit (44c9e15):
 **Service Management & Test Infrastructure**
-- Added service.sh, ecosystem.config.js, browser-mcp.service
+- Added service.sh, ecosystem.config.js, unibrowse.service
 - Added SERVICE.md documentation
 - Added TEST_SUITE.md (33 tests)
 - Added TEST_EXECUTION_GUIDE.md
@@ -220,7 +220,7 @@ At test completion:
 - `SERVICE.md` - Service management docs
 - `service.sh` - Service management script
 - `ecosystem.config.js` - PM2 config
-- `browser-mcp.service` - systemd config
+- `unibrowse.service` - systemd config
 - `TEST_SUITE.md` - 33 test cases
 - `TEST_EXECUTION_GUIDE.md` - Setup instructions
 - `TEST_RESULTS.md` - Initial test results

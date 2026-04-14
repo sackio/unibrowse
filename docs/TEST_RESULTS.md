@@ -143,7 +143,7 @@ The core refactor features are working perfectly:
 - ⚠️ Not tested (requires PM2 installation)
 
 ### System Service (systemd)
-- ✅ Service file created (`browser-mcp.service`)
+- ✅ Service file created (`unibrowse.service`)
 - ✅ User service configuration
 - ✅ Auto-restart on failure
 - ⚠️ Not tested (requires systemd install)
@@ -192,7 +192,7 @@ At test completion:
 - `SERVICE.md` - Service management documentation
 - `service.sh` - Service management script (executable)
 - `ecosystem.config.js` - PM2 configuration
-- `browser-mcp.service` - systemd service file
+- `unibrowse.service` - systemd service file
 - `TEST_SUITE.md` - Comprehensive test plan (33 tests)
 - `TESTING.md` - Testing guide
 - `TEST_EXECUTION_GUIDE.md` - Execution instructions

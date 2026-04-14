@@ -1044,6 +1044,34 @@ export const RealisticTypeTool = z.object({
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
+// ==================== VIDEO RECORDING TOOLS ====================
+
+export const StartVideoRecordingTool = z.object({
+  name: z.literal("browser_start_video_recording"),
+  description: z.literal(
+    "Start recording video of the current tab using Chrome's tab capture API. " +
+    "Records a WebM video of exactly what is visible in the tab. " +
+    "After starting, use any browser interaction tools (scroll, click, mouse move, type, navigate) to create scripted page interactions — all will be captured in the video. " +
+    "Call browser_stop_video_recording when done to save the video to a file."
+  ),
+  arguments: z.object({}).merge(TabTargetSchema).merge(MaxTokensSchema),
+});
+
+export const StopVideoRecordingTool = z.object({
+  name: z.literal("browser_stop_video_recording"),
+  description: z.literal(
+    "Stop the active tab video recording and save it to a file. " +
+    "Returns the path to the saved WebM video file. " +
+    "The video captures everything that happened in the tab since browser_start_video_recording was called."
+  ),
+  arguments: z.object({
+    output_path: z
+      .string()
+      .optional()
+      .describe("File path to save the video. Defaults to /tmp/unibrowse_video_<timestamp>.webm"),
+  }).merge(MaxTokensSchema),
+});
+
 // ==================== MULTI-TAB MANAGEMENT TOOLS ====================
 
 export const ListAttachedTabsTool = z.object({
@@ -1107,6 +1135,99 @@ export const AttachTabTool = z.object({
       .string()
       .optional()
       .describe("Optional label to assign to the tab after attaching"),
+  }).merge(MaxTokensSchema),
+});
+
+// ==================== RECORDINGS TOOLS ====================
+
+const RecordingStepSchema = z.object({
+  id: z.number().describe("1-based sequential step ID"),
+  type: z.string().describe("Interaction type: click, input, keydown, scroll, etc."),
+  timestamp: z.number().describe("Milliseconds offset from recording startTime"),
+  url: z.string().optional().describe("Page URL when this step occurred"),
+  element: z.object({
+    selector: z.string().optional(),
+    tagName: z.string().optional(),
+    text: z.string().optional(),
+    value: z.string().optional(),
+  }).optional().describe("Element context"),
+  note: z.string().optional().describe("User annotation for this step"),
+  value: z.string().optional().describe("Input value (for input/change events)"),
+  key: z.string().optional().describe("Key name (for keydown events)"),
+  x: z.number().optional().describe("Click X coordinate"),
+  y: z.number().optional().describe("Click Y coordinate"),
+  scrollX: z.number().optional(),
+  scrollY: z.number().optional(),
+  // Selector capture step fields (type === 'selector_capture')
+  name: z.string().optional().describe("User-assigned name for the captured data point"),
+  description: z.string().optional().describe("What this selector captures"),
+  selector: z.string().optional().describe("The chosen CSS selector"),
+  matchCount: z.number().optional().describe("Number of page elements matched"),
+  selectorOptions: z.array(z.object({
+    strategy: z.string(),
+    selector: z.string(),
+    count: z.number(),
+  })).optional(),
+  elements: z.array(z.object({
+    tagName: z.string(),
+    text: z.string().optional(),
+  })).optional(),
+  region: z.object({
+    x: z.number(), y: z.number(), width: z.number(), height: z.number()
+  }).optional(),
+});
+
+export const SaveRecordingTool = z.object({
+  name: z.literal("browser_save_recording"),
+  description: z.literal(
+    "Save a user interaction recording to MongoDB for later retrieval by agents. " +
+    "Called internally by the extension after the user reviews and confirms a recording."
+  ),
+  arguments: z.object({
+    sessionId: z.string().describe("Session ID from the recording session"),
+    title: z.string().describe("User-provided title for the recording"),
+    description: z.string().optional().describe("Optional description of what the recording demonstrates"),
+    tags: z.array(z.string()).optional().describe("Tags for categorization and search"),
+    startUrl: z.string().optional().describe("URL where the recording started"),
+    startTime: z.number().describe("Unix timestamp (ms) when recording started"),
+    endTime: z.number().describe("Unix timestamp (ms) when recording ended"),
+    duration: z.number().describe("Recording duration in milliseconds"),
+    steps: z.array(RecordingStepSchema).describe("Array of recorded interaction steps"),
+  }),
+});
+
+export const ListRecordingsTool = z.object({
+  name: z.literal("browser_list_recordings"),
+  description: z.literal(
+    "List saved user interaction recordings from MongoDB. Supports filtering by search text, " +
+    "tags, and starting URL. Returns recordings without steps (use browser_get_recording for full steps)."
+  ),
+  arguments: z.object({
+    search: z.string().optional().describe("Search term to match against title and description"),
+    tags: z.array(z.string()).optional().describe("Filter by tags (returns recordings matching any tag)"),
+    startUrl: z.string().optional().describe("Filter by starting URL (partial match)"),
+    limit: z.number().optional().describe("Maximum number of results to return (default: 50)"),
+  }).merge(MaxTokensSchema),
+});
+
+export const GetRecordingTool = z.object({
+  name: z.literal("browser_get_recording"),
+  description: z.literal(
+    "Get a saved user interaction recording by ID, including all steps with their annotations. " +
+    "Use browser_list_recordings to find recording IDs."
+  ),
+  arguments: z.object({
+    id: z.string().describe("The recording ID to retrieve"),
+  }).merge(MaxTokensSchema),
+});
+
+export const DeleteRecordingTool = z.object({
+  name: z.literal("browser_delete_recording"),
+  description: z.literal(
+    "Delete a saved user interaction recording by ID."
+  ),
+  arguments: z.object({
+    id: z.string().describe("The recording ID to delete"),
   }).merge(MaxTokensSchema),
 });
 

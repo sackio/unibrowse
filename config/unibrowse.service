@@ -5,9 +5,9 @@ After=network.target
 [Service]
 Type=simple
 User=ben
-WorkingDirectory=/home/ben/code/forks/browser-mcp
+WorkingDirectory=/mnt/nas/data/code/unibrowse
 Environment="NODE_ENV=production"
-ExecStart=/usr/bin/node --env-file=/home/ben/code/forks/browser-mcp/.env /home/ben/code/forks/browser-mcp/dist/http-server.js
+ExecStart=/usr/bin/node --env-file=/mnt/nas/data/code/unibrowse/.env /mnt/nas/data/code/unibrowse/dist/http-server.js
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -19,7 +19,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/ben/code/forks/browser-mcp
+ReadWritePaths=/mnt/nas/data/code/unibrowse
 
 [Install]
 WantedBy=multi-user.target

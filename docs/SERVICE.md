@@ -89,18 +89,18 @@ Edit `config/ecosystem.config.js` to customize:
 ```bash
 pm2 list                    # List all processes
 pm2 monit                   # Monitor CPU/memory
-pm2 restart browser-mcp     # Restart service
-pm2 reload browser-mcp      # Zero-downtime reload
-pm2 stop browser-mcp        # Stop service
-pm2 delete browser-mcp      # Remove from PM2
+pm2 restart unibrowse-dev     # Restart service
+pm2 reload unibrowse-dev      # Zero-downtime reload
+pm2 stop unibrowse-dev        # Stop service
+pm2 delete unibrowse-dev      # Remove from PM2
 
 # Auto-start on boot
 pm2 startup                 # Generate startup script
 pm2 save                    # Save current process list
 
 # Logs
-pm2 logs browser-mcp        # Live tail
-pm2 logs browser-mcp --lines 100  # Last 100 lines
+pm2 logs unibrowse-dev        # Live tail
+pm2 logs unibrowse-dev --lines 100  # Last 100 lines
 pm2 flush                   # Clear logs
 ```
 
@@ -111,25 +111,25 @@ pm2 flush                   # Clear logs
 ./scripts/service.sh systemd-install
 ```
 
-This copies `config/browser-mcp.service` to `~/.config/systemd/user/`
+This copies `config/unibrowse.service` to `~/.config/systemd/user/`
 
 ### Service File Location
-- User service: `~/.config/systemd/user/browser-mcp.service`
-- System service (requires sudo): `/etc/systemd/system/browser-mcp.service`
+- User service: `~/.config/systemd/user/unibrowse.service`
+- System service (requires sudo): `/etc/systemd/system/unibrowse.service`
 
 ### Manual systemd Commands
 ```bash
 # User service (no sudo needed)
-systemctl --user start browser-mcp.service
-systemctl --user stop browser-mcp.service
-systemctl --user restart browser-mcp.service
-systemctl --user status browser-mcp.service
-systemctl --user enable browser-mcp.service   # Auto-start on login
-systemctl --user disable browser-mcp.service
+systemctl --user start unibrowse.service
+systemctl --user stop unibrowse.service
+systemctl --user restart unibrowse.service
+systemctl --user status unibrowse.service
+systemctl --user enable unibrowse.service   # Auto-start on login
+systemctl --user disable unibrowse.service
 
 # Logs
-journalctl --user -u browser-mcp.service -f   # Live tail
-journalctl --user -u browser-mcp.service -n 100  # Last 100 lines
+journalctl --user -u unibrowse.service -f   # Live tail
+journalctl --user -u unibrowse.service -n 100  # Last 100 lines
 ```
 
 ## Configuration
@@ -141,7 +141,7 @@ journalctl --user -u browser-mcp.service -n 100  # Last 100 lines
 Change ports by editing:
 - `package.json` scripts
 - `config/ecosystem.config.js` (PM2)
-- `config/browser-mcp.service` (systemd)
+- `config/unibrowse.service` (systemd)
 
 ### Environment Variables
 - `NODE_ENV`: `development` or `production`
@@ -154,11 +154,11 @@ Console output
 
 ### PM2
 - Location: `./logs/out.log` and `./logs/error.log`
-- View: `./service.sh logs` or `pm2 logs browser-mcp`
+- View: `./service.sh logs` or `pm2 logs unibrowse-dev`
 
 ### Systemd
 - Location: System journal
-- View: `./service.sh systemd-logs` or `journalctl --user -u browser-mcp.service -f`
+- View: `./service.sh systemd-logs` or `journalctl --user -u unibrowse.service -f`
 
 ## Troubleshooting
 

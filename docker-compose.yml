@@ -27,7 +27,8 @@ services:
     container_name: unibrowse-mcp-server
     restart: unless-stopped
     ports:
-      - "127.0.0.1:9010:9010"  # Only expose on localhost
+      - "127.0.0.1:9010:9010"  # localhost
+      - "192.168.1.199:9010:9010"  # LAN access from server4/server5
     environment:
       PORT: 9010
       MONGODB_URI: mongodb://mongodb:27017

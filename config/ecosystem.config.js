@@ -12,7 +12,7 @@ module.exports = {
   apps: [{
     name: 'unibrowse',
     script: './dist/http-server.js',
-    cwd: '/home/ben/code/forks/browser-mcp',
+    cwd: '/mnt/nas/data/code/unibrowse',
     instances: 1,
     autorestart: true,
     watch: false,
@@ -24,8 +24,8 @@ module.exports = {
     env_development: {
       NODE_ENV: 'development'
     },
-    error_file: '/home/ben/code/forks/browser-mcp/logs/error.log',
-    out_file: '/home/ben/code/forks/browser-mcp/logs/out.log',
+    error_file: '/mnt/nas/data/code/unibrowse/logs/error.log',
+    out_file: '/mnt/nas/data/code/unibrowse/logs/out.log',
     log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
     merge_logs: true,
     min_uptime: '10s',

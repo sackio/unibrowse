@@ -19,6 +19,7 @@ import {
   deleteCookie,
   deleteHistory,
   deleteMacro,
+  deleteRecording,
   detachTab,
   disableExtension,
   downloadFile,
@@ -45,6 +46,7 @@ import {
   getNetworkLogs,
   getNetworkState,
   getPageMetadata,
+  getRecording,
   getSystemInfo,
   getVersion,
   getVisibleText,
@@ -55,6 +57,7 @@ import {
   listAttachedTabs,
   listExtensions,
   listMacros,
+  listRecordings,
   listTabs,
   navigate,
   openDownload,
@@ -66,6 +69,7 @@ import {
   realisticMouseMove,
   realisticType,
   requestUserAction,
+  saveRecording,
   screenshot,
   scroll,
   scrollToElement,
@@ -79,13 +83,15 @@ import {
   setNetworkConditions,
   setTabLabel,
   snapshot,
+  startVideoRecording,
+  stopVideoRecording,
   storeMacro,
   submitForm,
   switchTab,
   type,
   updateMacro,
   wait
-} from "./chunk-E7NVNPBW.js";
+} from "./chunk-XZ4W7ASK.js";
 import "./chunk-FT2ARCXD.js";
 
 // src/stdio-server.ts
@@ -136,7 +142,11 @@ var formTools = [
   submitForm
 ];
 var recordingTools = [
-  requestUserAction(false)
+  requestUserAction(false),
+  saveRecording,
+  listRecordings,
+  getRecording,
+  deleteRecording
 ];
 var interactionTools = [
   getInteractions,
@@ -200,6 +210,10 @@ var realisticInputTools = [
   realisticClick,
   realisticType
 ];
+var videoRecordingTools = [
+  startVideoRecording,
+  stopVideoRecording
+];
 var multiTabTools = [
   listAttachedTabs,
   setTabLabel,
@@ -234,7 +248,8 @@ var snapshotTools = [
   ...extensionTools,
   ...macroTools,
   ...realisticInputTools,
-  ...multiTabTools
+  ...multiTabTools,
+  ...videoRecordingTools
 ];
 var resources = [];
 async function createServer() {

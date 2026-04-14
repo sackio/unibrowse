@@ -119,7 +119,7 @@ Tests parse the JSON from `content[0].text` to get the actual result.
 1. Ensure Chrome is running with the extension loaded
 2. Click the extension icon and click "Connect"
 3. Run `npm run test:prereq` to verify connection
-4. If still failing, check Docker logs: `docker logs browser-mcp-server`
+4. If still failing, check Docker logs: `docker logs unibrowse-mcp-server`
 
 ### "Request timeout"
 

@@ -420,7 +420,7 @@ List all currently attached tabs with their labels and metadata.
     "tabId": 456,
     "label": "github.com",
     "title": "GitHub - unibrowse",
-    "url": "https://github.com/modelcontextprotocol/browser-mcp",
+    "url": "https://github.com/sackio/unibrowse",
     "lastUsedAt": 1704999500000,
     "isActive": false
   }

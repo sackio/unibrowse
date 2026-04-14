@@ -13,6 +13,10 @@ class OffscreenManager {
     this.pendingRequests = new Map();
     this.messageId = 0;
 
+    // Tab capture recording state
+    this.mediaRecorder = null;
+    this.videoChunks = [];
+
     // Auto-reconnect configuration
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = Infinity; // Always try to reconnect
@@ -194,6 +198,17 @@ class OffscreenManager {
           });
           break;
 
+        case 'OFFSCREEN_START_TAB_RECORDING':
+          await this.startTabRecording(message.streamId);
+          sendResponse({ success: true });
+          break;
+
+        case 'OFFSCREEN_STOP_TAB_RECORDING': {
+          const videoData = await this.stopTabRecording();
+          sendResponse({ success: true, arrayBuffer: videoData.arrayBuffer, mimeType: videoData.mimeType });
+          break;
+        }
+
         default:
           console.warn('[Offscreen] Unknown OFFSCREEN_ message type:', message.type);
           sendResponse({ success: false, error: 'Unknown message type' });
@@ -342,24 +357,32 @@ class OffscreenManager {
         };
 
         this.ws.onerror = (error) => {
-          console.error('[Offscreen] WebSocket error:', error);
-          this.connectionState = 'error';
+          // WebSocket errors are followed by onclose, which handles reconnection
+          // Log as warning instead of error since this is not critical
+          console.warn('[Offscreen] WebSocket error event (non-critical, will reconnect)');
 
-          // Notify service worker (only if Chrome APIs available)
+          // Don't change state to 'error' - let onclose handle state changes
+          // Don't reject promise - onclose will handle cleanup and reconnection
+          // The error event object doesn't contain useful info, so we just log that it occurred
+
+          // Notify service worker for logging purposes only (only if Chrome APIs available)
           if (this.isChromeAvailable()) {
             try {
               chrome.runtime.sendMessage({
                 type: 'WS_ERROR',
-                error: error.message || 'WebSocket error'
+                error: 'WebSocket error event (connection will be retried automatically)'
               }).catch(err => {
-                console.log('[Offscreen] Could not notify service worker (may be sleeping):', err.message);
+                // Service worker might be sleeping, this is fine
+                console.log('[Offscreen] Could not notify service worker:', err.message);
               });
             } catch (err) {
+              // Extension might be reloading, this is fine
               console.log('[Offscreen] Error in onerror handler:', err.message);
             }
           }
 
-          reject(new Error('WebSocket connection failed'));
+          // Don't reject the promise - let onclose handle the cleanup
+          // The onclose handler will fire after this and handle reconnection
         };
 
         this.ws.onmessage = (event) => {
@@ -443,6 +466,59 @@ class OffscreenManager {
     } catch (error) {
       console.error('[Offscreen] Error parsing WebSocket message:', error);
     }
+  }
+
+  async startTabRecording(streamId) {
+    // Stop any leftover recording
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+      this.mediaRecorder.stop();
+      this.mediaRecorder.stream?.getTracks().forEach(t => t.stop());
+    }
+    this.videoChunks = [];
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId }
+      },
+      video: {
+        mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId }
+      }
+    });
+
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+      ? 'video/webm;codecs=vp9'
+      : 'video/webm';
+
+    this.mediaRecorder = new MediaRecorder(stream, { mimeType });
+    this.mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) this.videoChunks.push(e.data);
+    };
+    this.mediaRecorder.start(1000); // 1-second chunks
+    console.log('[Offscreen] Tab recording started, mimeType:', mimeType);
+  }
+
+  stopTabRecording() {
+    return new Promise((resolve, reject) => {
+      if (!this.mediaRecorder || this.mediaRecorder.state === 'inactive') {
+        reject(new Error('No active tab recording'));
+        return;
+      }
+      const mimeType = 'video/webm';
+      this.mediaRecorder.onstop = async () => {
+        try {
+          const blob = new Blob(this.videoChunks, { type: mimeType });
+          const arrayBuffer = await blob.arrayBuffer();
+          this.videoChunks = [];
+          this.mediaRecorder = null;
+          console.log('[Offscreen] Tab recording stopped,', arrayBuffer.byteLength, 'bytes');
+          resolve({ arrayBuffer, mimeType });
+        } catch (err) {
+          reject(err);
+        }
+      };
+      this.mediaRecorder.stream?.getTracks().forEach(t => t.stop());
+      this.mediaRecorder.stop();
+    });
   }
 
   sendMessage(messageType, data, options = {}) {

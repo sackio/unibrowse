@@ -50,13 +50,16 @@ browser_execute_macro({ id: "amazon_get_listing_products" })  // ← Clean JSON
 
 ---
 
-### ❌ Mistake 3: Forgetting you have 52 site-specific macros available
+### ❌ Mistake 3: Forgetting you have 100+ site-specific macros available
 **Reality Check**:
 - **Amazon**: 17 macros (search, filters, product details, Rufus AI, cart)
 - **Google Shopping**: 12 macros (search, filters, merchants, shipping)
 - **Walmart**: 5 macros (search, extract, details, sorting, filtering)
-- **eBay**: 18 macros (search, filters, seller info, auction handling, Best Offer)
-- **Total**: 52 macros for immediate use
+- **eBay**: 22 macros (search, filters, seller info, auction handling, Best Offer, **sniper bidding**)
+- **GovDeals**: 13 macros (location search, extraction, filters, government surplus)
+- **AliExpress**: 19 macros (international shopping, search, filters, reviews, seller ratings) ✨ NEW
+- **Temu**: 16 macros (flash sales, budget shopping, search, filters, reviews) ✨ NEW
+- **Total**: 104 macros for immediate use
 
 ❌ **NEVER** do manual clicking/typing/snapshot for these sites when macros exist
 
@@ -120,13 +123,13 @@ If you can't check all boxes, STOP and investigate what macros are available fir
 
 ## Purpose
 
-This module provides specialized guidance for e-commerce operations on Amazon, Google Shopping, Walmart, eBay, and multi-site price comparison. It leverages 52 site-specific e-commerce macros (17 Amazon + 12 Google Shopping + 5 Walmart + 18 eBay) plus universal macros for other e-commerce sites.
+This module provides specialized guidance for e-commerce operations on Amazon, Google Shopping, Walmart, eBay, GovDeals, and multi-site price comparison. It leverages 69 site-specific e-commerce macros (17 Amazon + 12 Google Shopping + 5 Walmart + 22 eBay + 13 GovDeals) plus universal macros for other e-commerce sites.
 
 ## When Main Skill Routes Here
 
 The main browser skill routes requests to this module when detecting:
 
-**Keywords**: "amazon", "shopping", "price", "product", "reviews", "buy", "purchase", "walmart", "best buy", "google shopping", "ebay", "auction", "cart", "rufus"
+**Keywords**: "amazon", "shopping", "price", "product", "reviews", "buy", "purchase", "walmart", "best buy", "google shopping", "ebay", "auction", "cart", "rufus", "govdeals", "government surplus", "government auctions"
 
 **Patterns**:
 - Product searches and filtering
@@ -175,7 +178,7 @@ The main browser skill routes requests to this module when detecting:
 - Feature comparison across sites
 - Best deal identification
 
-## Available E-Commerce Macros (52 Total)
+## Available E-Commerce Macros (69 Total)
 
 ### Amazon Macros (17 Total)
 
@@ -285,6 +288,36 @@ The main browser skill routes requests to this module when detecting:
 - **`ebay_view_seller_profile`** - Navigate to seller profile
 - **`ebay_switch_item_tabs`** - Switch product detail tabs (description/shipping/returns)
 - **`ebay_multi_page_extraction`** - Extract from current page with pagination info (call multiple times with manual navigation for multi-page extraction)
+
+### GovDeals Macros (13 Total)
+
+**Site**: `govdeals.com`
+**Full Documentation**: See `docs/macros/GOVDEALS_MACROS.md`
+
+#### Navigation Macros (3)
+
+- **`govdeals_location_search`** - Search by zip code + radius with optional category filter
+- **`govdeals_advanced_search`** - Multi-filter search (query, price, category, status, date range)
+- **`govdeals_navigate_page`** - Navigate to specific page number (returns URL metadata)
+
+#### Extraction Macros (6)
+
+- **`govdeals_extract_search_results`** - Extract auction listings from search results with pricing/timing/location
+- **`govdeals_extract_listing_details`** - Complete item details (description, specs, pricing, timing, images, bid history)
+- **`govdeals_extract_seller_info`** - Seller information from listing/seller page
+- **`govdeals_extract_pagination_info`** - Pagination metadata (current page, total pages, results count, URLs)
+- **`govdeals_extract_available_filters`** - Available filter options (categories, price ranges, statuses)
+- **`govdeals_extract_category_tree`** - Complete category hierarchy (focus on Electronics)
+
+#### Interaction Macros (3)
+
+- **`govdeals_apply_category_filter`** - Apply category filter (handles type-ahead autocomplete)
+- **`govdeals_apply_price_filter`** - Apply price range filter (min/max)
+- **`govdeals_apply_sort`** - Apply sort order (ending_soon, price_low, price_high, newest, distance)
+
+#### Utility Macros (1)
+
+- **`govdeals_detect_page_type`** - Detect current page type (search_results, listing_detail, advanced_search, home)
 
 ---
 
@@ -1765,6 +1798,552 @@ The main browser skill routes requests to this module when detecting:
 
 ---
 
+### Workflow 6: eBay Auction Sniping (Safe Testing)
+
+**User Request**: "Practice bidding on eBay auction 297961478320 with $142 max bid"
+
+#### 🚨 Step 0: Macro Check + Safety Warning
+- [ ] Checked ebay.com macros (sniper macros: ebay_sniper_*)
+- [ ] Using: ebay_sniper_analyze_page, ebay_sniper_initiate_bid, ebay_sniper_fill_bid
+- [ ] **SAFETY**: Macros will NOT submit final bid automatically
+- [ ] User must manually click "Confirm Bid" (for practice only)
+- [ ] Best tested on ended auctions first
+
+**Instructions for Main Conversation**:
+
+1. **Navigate to auction page**:
+   ```
+   Call: mcp__browser__browser_navigate({
+     url: "https://www.ebay.com/itm/297961478320"
+   })
+   ```
+
+2. **Verify page and extract auction state**:
+   ```
+   Call: mcp__browser__browser_execute_macro({
+     id: "ebay_sniper_analyze_page",
+     params: {}
+   })
+
+   Expected: pageType = "product_page"
+   Extract: currentBid, timeLeft, bidCount, title
+   ```
+
+3. **Click Place Bid button**:
+   ```
+   Call: mcp__browser__browser_execute_macro({
+     id: "ebay_sniper_initiate_bid",
+     params: { verifyAuction: true }
+   })
+
+   Returns: preClickState (itemId, currentBid, timeLeft)
+   ```
+
+4. **Wait for navigation**:
+   ```
+   Call: mcp__browser__browser_wait({ time: 2 })
+   ```
+
+5. **Verify bid entry page**:
+   ```
+   Call: mcp__browser__browser_execute_macro({
+     id: "ebay_sniper_analyze_page",
+     params: {}
+   })
+
+   Expected: pageType = "bid_entry_page"
+   Extract: minimumBid, bidInput, submitButton
+   ```
+
+6. **Fill bid amount (DO NOT SUBMIT)**:
+   ```
+   Call: mcp__browser__browser_execute_macro({
+     id: "ebay_sniper_fill_bid",
+     params: {
+       bidAmount: 142.00,
+       verifyMinimum: true
+     }
+   })
+
+   Returns:
+   - success: true
+   - bidAmount: 142.00
+   - minimumBid: (extracted)
+   - submitButton: { text, disabled, selector }
+   - warning: "BID NOT SUBMITTED - Review page before manual submission"
+   ```
+
+7. **CRITICAL SAFETY POINT**:
+   ```
+   ⚠️  Workflow stops here - form filled but NOT submitted
+   Options:
+   1. Review page manually
+   2. Click submit manually (for practice on ended auctions)
+   3. Stop here (safest)
+   ```
+
+8. **OPTIONAL: If user manually clicks submit, extract confirmation**:
+   ```
+   Wait 5-10 seconds for manual action
+
+   Call: mcp__browser__browser_execute_macro({
+     id: "ebay_sniper_analyze_page",
+     params: {}
+   })
+
+   If pageType = "bid_confirmation_page":
+
+   Call: mcp__browser__browser_execute_macro({
+     id: "ebay_sniper_review_bid",
+     params: {}
+   })
+
+   Returns:
+   - item: { title, imageUrl, itemNumber }
+   - bid: { yourBid, shippingCost, totalCost }
+   - confirmButton: { text, warning: "DO NOT CLICK IN PRODUCTION" }
+   - safetyWarning: "DO NOT CLICK CONFIRM BUTTON"
+   - readOnly: true
+   ```
+
+9. **Return workflow result**:
+   ```json
+   {
+     "tabId": ebayTab,
+     "macrosUsed": [
+       "ebay_sniper_analyze_page (×2)",
+       "ebay_sniper_initiate_bid",
+       "ebay_sniper_fill_bid",
+       "ebay_sniper_review_bid (if reached)"
+     ],
+     "data": {
+       "itemId": "297961478320",
+       "title": "HP ProDesk 600 G4",
+       "yourBid": 142.00,
+       "minimumBid": 120.00,
+       "formFilled": true,
+       "submitted": false,
+       "safetyMessage": "BID NOT SUBMITTED - User must manually confirm"
+     },
+     "safetyWarning": "⚠️  Bid form filled but NOT submitted. Review page before manual action."
+   }
+   ```
+
+**Testing Protocol**:
+1. **Phase 1**: Test on ended auctions (safest, eBay will block)
+2. **Phase 2**: Test on low-value active auctions (<$5, stop at confirmation)
+3. **Phase 3**: Production dry-run (5 min before end, review confirmation)
+
+**Error Handling**:
+- "Not on product page" → Verify URL, check if logged in
+- "Place Bid button not found" → Verify it's an auction (not Buy It Now)
+- "Bid below minimum" → Extract minBid first, adjust your bid
+- "Navigation timeout" → Increase wait time to 5 seconds
+
+**Documentation**: See `/docs/macros/EBAY_SNIPER_MACROS.md` for complete API reference, safety checklist, and troubleshooting.
+
+---
+
+### Workflow 7: GovDeals Government Surplus Search
+
+**User Request**: "Find electronics on GovDeals", "Search government auctions for IT equipment", "Look for servers on GovDeals near me"
+
+**Purpose**: Search GovDeals.com for government surplus auctions, focusing on Electronics & IT equipment within a specified radius.
+
+**Scope**: Search and extraction only (no bidding automation)
+
+#### 🚨 Step 0: Macro Check (Complete First)
+- [ ] Checked govdeals.com macros
+- [ ] Available: 13 macros (3 navigation, 6 extraction, 3 interaction, 1 utility)
+- [ ] Using these macros for token-efficient extraction
+- [ ] NOT using snapshots (90% token savings)
+- [ ] Returning structured data with tab metadata
+
+**Available GovDeals Macros (13 Total)**:
+- **Navigation**: `govdeals_location_search`, `govdeals_advanced_search`, `govdeals_navigate_page`
+- **Extraction**: `govdeals_extract_search_results`, `govdeals_extract_listing_details`, `govdeals_extract_seller_info`, `govdeals_extract_pagination_info`, `govdeals_extract_available_filters`, `govdeals_extract_category_tree`
+- **Interaction**: `govdeals_apply_category_filter`, `govdeals_apply_price_filter`, `govdeals_apply_sort`
+- **Utility**: `govdeals_detect_page_type`
+
+#### Instructions for Main Conversation
+
+**Example 1: Basic Electronics Search (Near Groton, MA)**
+
+```
+1. Create tab and search:
+   Call: mcp__unibrowse__browser_create_tab({ url: "https://www.govdeals.com" })
+   Store govdealsTab = result.content.tabId
+
+   Call: mcp__unibrowse__browser_attach_tab({ tabId: govdealsTab, label: "govdeals-electronics" })
+
+   Call: mcp__unibrowse__browser_execute_macro({
+     id: "<govdeals_location_search_uuid>",
+     params: {
+       zipCode: "01450",
+       distance: 50,
+       category: "Electronics"
+     },
+     tabTarget: govdealsTab
+   })
+
+   Wait for results:
+   Call: mcp__unibrowse__browser_wait({ time: 3 })
+
+2. Extract search results:
+   Call: mcp__unibrowse__browser_execute_macro({
+     id: "<govdeals_extract_search_results_uuid>",
+     params: {
+       limit: 50,
+       includeImages: true
+     },
+     tabTarget: govdealsTab
+   })
+   Store results = result.content
+
+   // Result structure:
+   {
+     success: true,
+     results: [
+       {
+         id: "12345",
+         title: "Dell PowerEdge R740 Server",
+         currentBid: 450.00,
+         timeRemaining: "2 days 4 hours",
+         location: "Boston, MA",
+         distance: "15 miles",
+         seller: "State of Massachusetts",
+         imageUrl: "...",
+         itemUrl: "...",
+         category: "Electronics"
+       },
+       // ... more results
+     ],
+     totalExtracted: 24,
+     hasMore: true
+   }
+
+3. Apply filters (optional):
+   // Price filter
+   Call: mcp__unibrowse__browser_execute_macro({
+     id: "<govdeals_apply_price_filter_uuid>",
+     params: {
+       maxPrice: 1000
+     },
+     tabTarget: govdealsTab
+   })
+
+   Wait: mcp__unibrowse__browser_wait({ time: 2 })
+
+   // Sort by ending soon
+   Call: mcp__unibrowse__browser_execute_macro({
+     id: "<govdeals_apply_sort_uuid>",
+     params: {
+       sortBy: "ending_soon"
+     },
+     tabTarget: govdealsTab
+   })
+
+   Wait: mcp__unibrowse__browser_wait({ time: 2 })
+
+   // Re-extract filtered results
+   Call: mcp__unibrowse__browser_execute_macro({
+     id: "<govdeals_extract_search_results_uuid>",
+     params: { limit: 50 },
+     tabTarget: govdealsTab
+   })
+
+4. Get detailed information for interesting items:
+   For each interesting item in results.results:
+     Call: mcp__unibrowse__browser_navigate({
+       url: item.itemUrl,
+       tabTarget: govdealsTab
+     })
+
+     Wait: mcp__unibrowse__browser_wait({ time: 2 })
+
+     Call: mcp__unibrowse__browser_execute_macro({
+       id: "<govdeals_extract_listing_details_uuid>",
+       params: {
+         extractSpecs: true,
+         extractImages: true,
+         extractBidHistory: false
+       },
+       tabTarget: govdealsTab
+     })
+
+     // Result structure:
+     {
+       success: true,
+       listing: {
+         id: "12345",
+         title: "Dell PowerEdge R740 Server",
+         description: "Full HTML description",
+         specifications: {
+           manufacturer: "Dell",
+           model: "PowerEdge R740",
+           processor: "Intel Xeon",
+           memory: "64GB DDR4",
+           storage: "2TB SSD"
+         },
+         pricing: {
+           currentBid: 450.00,
+           minimumBid: 500.00,
+           nextMinimumBid: 550.00,
+           reserveMet: false
+         },
+         timing: {
+           endDate: "2026-02-10T15:30:00Z",
+           timeRemaining: "2 days 4 hours",
+           auctionStatus: "active"
+         },
+         seller: {
+           name: "State of Massachusetts",
+           location: "Boston, MA"
+         },
+         images: [...]
+       }
+     }
+
+5. Return comprehensive results:
+   {
+     "tabId": govdealsTab,
+     "label": "govdeals-electronics",
+     "site": "govdeals",
+     "search": {
+       "zipCode": "01450",
+       "distance": 50,
+       "category": "Electronics"
+     },
+     "results": [
+       {
+         "title": "Dell PowerEdge R740 Server",
+         "currentBid": 450.00,
+         "location": "Boston, MA (15 miles)",
+         "timeRemaining": "2 days 4 hours",
+         "specifications": {
+           "processor": "Intel Xeon",
+           "memory": "64GB DDR4",
+           "storage": "2TB SSD"
+         },
+         "url": "https://www.govdeals.com/..."
+       },
+       // ... more detailed results
+     ],
+     "totalFound": 24,
+     "hasMorePages": true,
+     "macrosUsed": [
+       "govdeals_location_search",
+       "govdeals_extract_search_results",
+       "govdeals_extract_listing_details"
+     ]
+   }
+```
+
+**Example 2: Multi-Page Extraction**
+
+```
+1. Search and extract first page (as above)
+
+2. Check pagination:
+   Call: mcp__unibrowse__browser_execute_macro({
+     id: "<govdeals_extract_pagination_info_uuid>",
+     tabTarget: govdealsTab
+   })
+
+   // Result:
+   {
+     success: true,
+     pagination: {
+       currentPage: 1,
+       totalPages: 12,
+       hasNextPage: true,
+       nextPageUrl: "https://www.govdeals.com/...?page=2"
+     }
+   }
+
+3. Loop through pages:
+   let allResults = []
+   let page = 1
+
+   while (page <= 5 && hasNextPage):  // Limit to 5 pages
+     // Extract current page
+     results = browser_execute_macro(govdeals_extract_search_results)
+     allResults.extend(results.results)
+
+     // Get pagination
+     pagination = browser_execute_macro(govdeals_extract_pagination_info)
+
+     if !pagination.hasNextPage:
+       break
+
+     // Navigate to next page
+     browser_navigate({ url: pagination.nextPageUrl })
+     browser_wait({ time: 2 })
+     page++
+
+4. Return aggregated results with analysis:
+   {
+     "tabId": govdealsTab,
+     "totalListings": allResults.length,
+     "pagesScanned": page,
+     "priceRange": {
+       "min": min(allResults.map(r => r.currentBid)),
+       "max": max(allResults.map(r => r.currentBid)),
+       "avg": avg(allResults.map(r => r.currentBid))
+     },
+     "byLocation": {
+       "Boston, MA": count,
+       "Worcester, MA": count,
+       // ... location breakdown
+     },
+     "endingSoon": allResults.filter(r => r.timeRemaining includes "hour"),
+     "macrosUsed": [
+       "govdeals_location_search",
+       "govdeals_extract_search_results",
+       "govdeals_extract_pagination_info",
+       "govdeals_navigate_page"
+     ]
+   }
+```
+
+**Example 3: Advanced Search with Specifications**
+
+```
+1. Navigate and search:
+   browser_create_tab({ url: "https://www.govdeals.com/advanced-search" })
+
+   browser_execute_macro({
+     id: "govdeals_advanced_search",
+     params: {
+       query: "Dell server",
+       priceMin: 200,
+       priceMax: 1500,
+       category: "Electronics",
+       status: "active"
+     }
+   })
+
+2. Extract and filter by specifications:
+   results = browser_execute_macro(govdeals_extract_search_results, { limit: 30 })
+
+   // Check top 10 for detailed specs
+   serversWithSpecs = []
+   for item in results.results[0:10]:
+     browser_navigate({ url: item.itemUrl })
+     browser_wait({ time: 2 })
+
+     details = browser_execute_macro(govdeals_extract_listing_details, {
+       extractSpecs: true,
+       extractImages: false
+     })
+
+     // Filter by specifications
+     if details.listing.specifications.memory includes "64GB":
+       serversWithSpecs.append({
+         title: details.listing.title,
+         price: details.listing.pricing.currentBid,
+         memory: details.listing.specifications.memory,
+         processor: details.listing.specifications.processor,
+         url: item.itemUrl
+       })
+
+3. Return filtered results:
+   {
+     "tabId": govdealsTab,
+     "query": "Dell server with 64GB+ RAM",
+     "matchingServers": serversWithSpecs,
+     "totalChecked": 10,
+     "matchesFound": serversWithSpecs.length,
+     "macrosUsed": [
+       "govdeals_advanced_search",
+       "govdeals_extract_search_results",
+       "govdeals_extract_listing_details"
+     ]
+   }
+```
+
+#### Key Features
+
+1. **Location-based search**: Filter by zip code with configurable radius
+2. **Category filtering**: Focus on Electronics & IT equipment
+3. **Multi-page extraction**: Navigate across result pages efficiently
+4. **Detailed specs**: Extract IT equipment specifications (CPU, RAM, storage)
+5. **Price & sort filters**: Refine searches by price range and ending time
+6. **Token efficiency**: 90% token savings vs snapshots
+
+#### Common Patterns
+
+**Pattern 1: Find deals ending soon**
+```
+1. Search by location + category
+2. Sort by "ending_soon"
+3. Extract results
+4. Filter items ending within 24 hours
+5. Get details for top candidates
+```
+
+**Pattern 2: Price-based filtering**
+```
+1. Search by location + category
+2. Apply price filter (e.g., maxPrice: 1000)
+3. Extract filtered results
+4. Analyze price distribution
+```
+
+**Pattern 3: Specification matching**
+```
+1. Search for category (e.g., "Electronics")
+2. Extract search results (titles only, no images)
+3. For interesting items:
+   - Get detailed specs
+   - Filter by requirements (RAM, CPU, etc.)
+   - Collect matches
+```
+
+#### Error Handling
+
+**Common Issues**:
+- "Could not find zip code input field" → Wait longer after page load
+- "No auction items found" → Verify search executed, check if results exist
+- "Category filter not applied" → Allow 1 second for autocomplete after macro
+- "Listing details incomplete" → Item may have minimal information
+
+**Solutions**:
+```
+// Wait longer for page load
+browser_wait({ time: 5 })
+
+// Check page type to verify navigation
+pageType = browser_execute_macro(govdeals_detect_page_type)
+if pageType.pageType != "search_results":
+  // Handle error
+
+// For autocomplete filters, wait after macro
+browser_execute_macro(govdeals_apply_category_filter, {...})
+browser_wait({ time: 1 })  // Important!
+```
+
+#### Performance Tips
+
+1. **Skip images for bulk extraction**: `includeImages: false` saves tokens
+2. **Batch results**: Extract 50-60 items per call
+3. **Filter before details**: Only get specs for interesting items
+4. **Use pagination metadata**: Check page info without loading pages
+
+**Token Comparison**:
+- Snapshot-based extraction: ~8,000 tokens/page
+- Macro-based extraction: ~800 tokens/page
+- **Savings**: 90%
+
+#### Notes
+
+- **Scope**: Search and extraction only (no bidding)
+- **Best for**: IT equipment, electronics, government surplus
+- **Default location**: Zip 01450 (Groton, MA), 50-mile radius
+- **Documentation**: See `/docs/macros/GOVDEALS_MACROS.md` for complete API reference
+
+---
+
 ## 🔄 Reminder: Macro-First Execution (Final)
 
 **STATUS CHECK - COMPLETE THIS BEFORE ANY E-COMMERCE WORKFLOW:**
@@ -1957,18 +2536,207 @@ mcp__browser__browser_execute_macro({ id: "amazon_get_product_info", tabTarget: 
 mcp__browser__browser_execute_macro({ id: "amazon_ask_rufus", params: { question: "..." }, tabTarget: ... })
 ```
 
+---
+
+## 🌍 International Shopping: AliExpress & Temu (NEW)
+
+### AliExpress (19 macros)
+
+**Site**: `aliexpress.com` | **Specialty**: International marketplace, Chinese sellers
+
+**Core Macros** (8 - stored & tested ✅):
+1. `aliexpress_search_products` - Search with sort options
+2. `aliexpress_extract_search_results` - Extract product listings
+3. `aliexpress_extract_product_details` - Full product info, specs, variants
+4. `aliexpress_extract_reviews` - Reviews with photos
+5. `aliexpress_extract_seller_info` - Seller ratings (diamond system)
+6. `aliexpress_apply_price_filter` - Price range filtering
+7. `aliexpress_apply_shipping_filter` - Free shipping, ship from location
+8. `aliexpress_apply_sort` - Sort by price/orders/newest
+
+**Advanced Macros** (11 - ready to store ⏳):
+- Navigation: `aliexpress_navigate_page`, `aliexpress_extract_pagination_info`
+- Filtering: `aliexpress_apply_rating_filter`, `aliexpress_apply_category_filter`, `aliexpress_apply_review_filter`
+- Extraction: `aliexpress_extract_product_images`, `aliexpress_extract_variants`, `aliexpress_extract_product_specs`, `aliexpress_extract_rating_summary`
+- Utilities: `aliexpress_parse_price`, `aliexpress_advanced_search`
+
+**Example Workflow - Budget SSD Shopping**:
+```javascript
+// 1. Search for SSDs
+await browser_execute_macro({
+  name: "aliexpress_search_products",
+  params: { query: "NVMe SSD 256GB", sortBy: "price_asc" }
+});
+
+// 2. Apply filters
+await browser_execute_macro({
+  name: "aliexpress_apply_price_filter",
+  params: { minPrice: 20, maxPrice: 50 }
+});
+
+await browser_execute_macro({
+  name: "aliexpress_apply_shipping_filter",
+  params: { freeShipping: true, shipFrom: "US" }
+});
+
+// 3. Extract results
+const results = await browser_execute_macro({
+  name: "aliexpress_extract_search_results",
+  params: { limit: 20 }
+});
+
+// Results include: id, title, price, sold count, rating, shipping info
+console.log(`Found ${results.totalExtracted} products from $${results.results[0].price.amount}`);
+```
+
+**AliExpress-Specific Features**:
+- ✅ International shipping options (ship from: US, CN, RU, etc.)
+- ✅ Seller diamond ratings + percentage ratings
+- ✅ Complex product variants (size, color, capacity) with individual pricing
+- ✅ Dynamic pricing (new user specials may hide prices)
+- ✅ Multiple currencies supported (USD, EUR, GBP, CNY)
+
+---
+
+### Temu (16 macros)
+
+**Site**: `temu.com` | **Specialty**: "Shop Like a Billionaire", flash sales, aggressive pricing
+
+**All Macros** (16 - ready to store ⏳):
+
+**Core Macros** (7):
+1. `temu_search_products` - Search with sort
+2. `temu_extract_search_results` - Extract with flash sale info
+3. `temu_extract_product_details` - Full product details
+4. `temu_extract_reviews` - Product reviews
+5. `temu_extract_seller_info` - Seller info (usually "Temu Official")
+6. `temu_apply_price_filter` - Price range
+7. `temu_apply_sort` - Sort order
+
+**Advanced Macros** (9):
+- Navigation: `temu_navigate_page`, `temu_extract_pagination_info`
+- Filtering: `temu_apply_category_filter`, `temu_apply_rating_filter`, `temu_apply_review_filter`
+- Extraction: `temu_extract_variants`, `temu_extract_product_specs`, `temu_extract_rating_summary`
+- Utilities: `temu_parse_price`
+
+**Example Workflow - Flash Deal Hunting**:
+```javascript
+// 1. Search for deals
+await browser_execute_macro({
+  name: "temu_search_products",
+  params: { query: "wireless earbuds", sortBy: "price_asc" }
+});
+
+// 2. Extract with flash sale detection
+const results = await browser_execute_macro({
+  name: "temu_extract_search_results",
+  params: { limit: 20, includeFlashSales: true }
+});
+
+// 3. Filter for active flash sales
+const flashDeals = results.results.filter(p => p.flashSale && p.flashSale.active);
+console.log(`${flashDeals.length} flash deals found!`);
+
+// 4. Get product details
+await browser_navigate({ url: flashDeals[0].productUrl });
+const details = await browser_execute_macro({
+  name: "temu_extract_product_details",
+  params: { extractSpecs: true }
+});
+
+// Details include flashSale.text with countdown
+if (details.product.flashSale) {
+  console.log(`Sale ends: ${details.product.flashSale.text}`);
+}
+```
+
+**Temu-Specific Features**:
+- ✅ Flash sale detection with countdown timers
+- ✅ Aggressive discounts ("72% off" common)
+- ✅ Simplified seller model (mostly "Temu Official")
+- ✅ Badge-heavy UI ("Lightning Deal", "Limited Stock")
+- ✅ Gamification elements (ignore wheel spins, coins)
+
+---
+
+### 🔄 AliExpress vs Temu Comparison
+
+| Feature | AliExpress | Temu |
+|---------|-----------|------|
+| **Macros** | 19 | 16 |
+| **Seller Model** | Many sellers, detailed ratings | Mostly "Temu Official" |
+| **Pricing** | Varied, new user specials | Aggressive discounts, flash sales |
+| **Product IDs** | Numeric (e.g., `3256806943253333`) | Alphanumeric (e.g., `abc123xyz`) |
+| **Shipping** | Detailed (country, methods, costs) | Simplified |
+| **Flash Sales** | Occasional | Constant, prominent |
+| **Best For** | International variety, seller choice | Budget deals, fast shopping |
+
+**When to Use AliExpress**:
+- Need specific seller/brand
+- Want detailed shipping options
+- Comparing international prices
+- Looking for unique items
+
+**When to Use Temu**:
+- Flash deal hunting
+- Budget shopping
+- Quick comparisons
+- Don't care about specific sellers
+
+---
+
+### 💡 International Shopping Tips
+
+1. **Price Comparison Across Sites**:
+   ```javascript
+   // Search same item on both sites
+   const aliResults = await browser_execute_macro({
+     name: "aliexpress_extract_search_results",
+     params: { query: "item name", limit: 10 }
+   });
+
+   const temuResults = await browser_execute_macro({
+     name: "temu_extract_search_results",
+     params: { query: "item name", limit: 10 }
+   });
+
+   // Compare prices
+   const aliAvg = aliResults.results.reduce((sum, p) => sum + (p.price?.amount || 0), 0) / aliResults.results.length;
+   const temuAvg = temuResults.results.reduce((sum, p) => sum + (p.price?.current || 0), 0) / temuResults.results.length;
+
+   console.log(`AliExpress avg: $${aliAvg.toFixed(2)} | Temu avg: $${temuAvg.toFixed(2)}`);
+   ```
+
+2. **Check Seller Ratings** (AliExpress):
+   - Use `aliexpress_extract_seller_info` before purchasing
+   - Look for 95%+ positive ratings
+   - Check "years in business" stat
+
+3. **Shipping Filters**:
+   - AliExpress: Use `shipFrom: "US"` for faster delivery
+   - Both: Enable `freeShipping: true` to avoid surprises
+
+4. **Review Analysis**:
+   - Use `withPhotos: true` parameter for visual verification
+   - Extract reviews to check for repeated complaints
+   - Compare review counts (high count = popular item)
+
+---
+
 ## Remember
 
 - ✅ **COMPLETE STEP 0 FIRST**: Check available macros before starting ANY workflow
-- ✅ Use site-specific macros: Amazon (17), Google Shopping (12), Walmart (5), eBay (18)
+- ✅ Use site-specific macros: Amazon (17), Google Shopping (12), Walmart (5), eBay (22), GovDeals (13), **AliExpress (19)**, **Temu (16)**
 - ✅ Create separate tabs for multi-site comparison (preserve tab IDs!)
 - ✅ Always return tab metadata for context preservation
 - ✅ Clean interruptions before main operations
 - ✅ Use Rufus AI for Amazon recommendations when available
 - ✅ Consider seller reputation and total price (price + shipping) on eBay
+- ✅ For AliExpress: Check seller ratings, ship-from location, variants
+- ✅ For Temu: Look for flash sales, expect aggressive discounts
 - ✅ Distinguish between auction and Buy It Now listings on eBay
 - ✅ Analyze reviews by topic for deeper insights
-- ✅ Compare prices across sites when requested
+- ✅ Compare prices across sites when requested (now includes international!)
 - ✅ Apply site-specific sorting/filtering using appropriate macros
 - ✅ Report all macros used in response
 - ✅ For other e-commerce sites, use universal macros or direct tools

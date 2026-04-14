@@ -99,7 +99,7 @@ export const launchIsolatedChrome: Tool = {
       }
 
       // Set up profile directory
-      const profileName = validatedParams.profileName || "browser-mcp-test";
+      const profileName = validatedParams.profileName || "unibrowse-test";
       const profileDir = path.join(profilesDir, profileName);
 
       // Default to fresh profile (delete existing data)

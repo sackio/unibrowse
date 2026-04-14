@@ -397,6 +397,30 @@
       color: white;
       margin-left: 6px;
     }
+
+    .record-section {
+      margin-top: 12px;
+    }
+
+    .record-btn {
+      background: linear-gradient(135deg, #dc3545, #c82333);
+      color: white;
+      border: none;
+      margin-bottom: 0;
+    }
+
+    .record-btn:hover:not(:disabled) {
+      background: linear-gradient(135deg, #c82333, #a71d2a);
+    }
+
+    .record-btn.recording {
+      animation: rec-pulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes rec-pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.4); }
+      50% { opacity: 0.9; box-shadow: 0 0 0 6px rgba(220, 53, 69, 0); }
+    }
   </style>
 </head>
 <body>
@@ -419,6 +443,9 @@
     <div class="info-row">
       <span class="info-label">Debugger:</span>
       <span class="info-value" id="debugger-state">Not attached</span>
+    </div>
+    <div class="record-section" id="record-section" style="display:none;">
+      <button class="record-btn" id="record-btn">⏺ Record Interactions</button>
     </div>
   </div>
 

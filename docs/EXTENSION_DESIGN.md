@@ -348,7 +348,7 @@ try {
 ## File Structure
 
 ```
-browser-mcp-extension/
+unibrowse-extension/
 ├── manifest.json
 ├── background.js          # Main service worker
 ├── popup.html            # Extension popup UI
