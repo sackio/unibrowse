@@ -89,6 +89,8 @@ const recordingTools: Tool[] = [
   recordings.listRecordings,
   recordings.getRecording,
   recordings.deleteRecording,
+  recordings.startSessionRecording,
+  recordings.stopSessionRecording,
 ];
 
 const interactionTools: Tool[] = [

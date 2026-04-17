@@ -649,6 +649,7 @@ class BackgroundController {
     this.reviewTabId = null; // Tab ID of open review tab
     this.pendingVideoData = null; // { arrayBuffer, mimeType } — temp video replay, cleared on save/discard
     this.videoStopPromise = null; // Promise that resolves with video data when recording stops
+    this.sessionRecording = null; // { sessionId, tabId, startTime, startUrl, rrwebEvents[], networkEntries[], pages[], videoStarted }
     this.state = {
       connected: false,
       tabId: null, // DEPRECATED: Use tabManager.lastUsedTabId instead
@@ -1050,6 +1051,17 @@ class BackgroundController {
         this.injectBackgroundCapture(tabId).catch(() => {});
       }
 
+      // Re-inject session recorder scripts on navigation for the recording tab
+      if (changeInfo.status === 'complete' && this.sessionRecording?.tabId === tabId) {
+        console.log('[Background] Re-injecting session recorder after navigation:', tab.url);
+        chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['lib/rrweb-record.min.js', 'session-recorder.js']
+        }).catch(err => {
+          console.warn('[Background] Could not re-inject session recorder:', err.message);
+        });
+      }
+
       // Reattach dead TabManager CDPs when the page finishes loading
       // Handles navigation/reload detachments for multi-tab sessions
       if (changeInfo.status === 'complete' && tabId !== this.state.tabId) {
@@ -1232,8 +1244,29 @@ class BackgroundController {
         return false;
       }
 
+      // Session recording event accumulation (from session-recorder.js content script)
+      if (this.sessionRecording && sender?.tab?.id === this.sessionRecording.tabId) {
+        if (message.type === 'SR_RRWEB') {
+          this.sessionRecording.rrwebEvents.push(message.event);
+          return false;
+        }
+        if (message.type === 'SR_NETWORK') {
+          this.sessionRecording.networkEntries.push(message.entry);
+          return false;
+        }
+        if (message.type === 'SR_PAGE_START') {
+          this.sessionRecording.pages.push({ url: message.url, title: message.title, startTime: message.timestamp });
+          return false;
+        }
+        if (message.type === 'SR_PAGE_END') {
+          const lastPage = this.sessionRecording.pages[this.sessionRecording.pages.length - 1];
+          if (lastPage && !lastPage.endTime) lastPage.endTime = message.timestamp;
+          return false;
+        }
+      }
+
       // Only handle popup-specific messages here
-      const popupMessages = ['connect', 'disconnect', 'get_state', 'ensure_attached', 'list_attached_tabs', 'set_tab_label', 'detach_tab', 'start_user_recording', 'get_pending_recording', 'save_recording', 'discard_recording', 'get_recording_video'];
+      const popupMessages = ['connect', 'disconnect', 'get_state', 'ensure_attached', 'list_attached_tabs', 'set_tab_label', 'detach_tab', 'start_user_recording', 'get_pending_recording', 'save_recording', 'discard_recording', 'get_recording_video', 'start_session_recording', 'stop_session_recording', 'get_session_recording_state'];
       if (popupMessages.includes(message.type)) {
         this.handlePopupMessage(message, sendResponse);
         return true; // Keep channel open for async response
@@ -1359,6 +1392,14 @@ class BackgroundController {
     // Video recording handlers (agent-driven tab capture)
     this.handlers['browser_start_video_recording'] = this.handleStartVideoRecording.bind(this);
     this.handlers['browser_stop_video_recording'] = this.handleStopVideoRecording.bind(this);
+
+    // Session recording handlers (rrweb + network + video)
+    this.handlers['browser_start_session_recording'] = async (params) => {
+      return new Promise((resolve) => this.handleStartSessionRecording(resolve));
+    };
+    this.handlers['browser_stop_session_recording'] = async (params) => {
+      return new Promise((resolve) => this.handleStopSessionRecording(resolve));
+    };
 
     // Tab management handlers
     this.handlers['browser_list_tabs'] = this.handleListTabs.bind(this);
@@ -2871,7 +2912,8 @@ class BackgroundController {
               tabUrl: this.state.tabUrl,
               tabTitle: this.state.tabTitle,
               recordingRequest: this.currentRecordingRequest || null,
-              isRecording: !!this.currentUserRecording
+              isRecording: !!this.currentUserRecording,
+              sessionRecording: this.sessionRecording ? { startTime: this.sessionRecording.startTime } : null,
             }
           });
         } catch (error) {
@@ -2885,7 +2927,8 @@ class BackgroundController {
               tabUrl: this.state.tabUrl,
               tabTitle: this.state.tabTitle,
               recordingRequest: this.currentRecordingRequest || null,
-              isRecording: !!this.currentUserRecording
+              isRecording: !!this.currentUserRecording,
+              sessionRecording: this.sessionRecording ? { startTime: this.sessionRecording.startTime } : null,
             }
           });
         }
@@ -2977,6 +3020,37 @@ class BackgroundController {
         } else {
           sendResponse({ success: false, error: 'No video data' });
         }
+        break;
+
+      case 'start_session_recording':
+        try {
+          await this.handleStartSessionRecording(sendResponse);
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+        break;
+
+      case 'stop_session_recording':
+        try {
+          await this.handleStopSessionRecording(sendResponse);
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+        break;
+
+      case 'get_session_recording_state':
+        sendResponse({
+          success: true,
+          sessionRecording: this.sessionRecording ? {
+            sessionId: this.sessionRecording.sessionId,
+            tabId: this.sessionRecording.tabId,
+            startTime: this.sessionRecording.startTime,
+            startUrl: this.sessionRecording.startUrl,
+            rrwebEventCount: this.sessionRecording.rrwebEvents.length,
+            networkEntryCount: this.sessionRecording.networkEntries.length,
+            pageCount: this.sessionRecording.pages.length,
+          } : null,
+        });
         break;
 
       default:
@@ -3260,6 +3334,176 @@ class BackgroundController {
       sendResponse({ success: true });
     } catch (error) {
       sendResponse({ success: false, error: error.message });
+    }
+  }
+
+  /**
+   * Start a session recording: rrweb DOM capture + network interceptor + video
+   * Survives cross-domain navigation via chrome.storage.session.
+   */
+  async handleStartSessionRecording(sendResponse) {
+    if (this.sessionRecording) {
+      sendResponse({ success: false, error: 'A session recording is already in progress' });
+      return;
+    }
+
+    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!activeTab || !activeTab.id) {
+      sendResponse({ success: false, error: 'No active tab found' });
+      return;
+    }
+
+    const tabId = activeTab.id;
+    const sessionId = `sr-${Date.now()}`;
+    const startTime = Date.now();
+
+    this.sessionRecording = {
+      sessionId,
+      tabId,
+      startTime,
+      startUrl: activeTab.url || '',
+      rrwebEvents: [],
+      networkEntries: [],
+      pages: [],
+      videoStarted: false,
+    };
+
+    // Inject rrweb + session-recorder content scripts
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['lib/rrweb-record.min.js', 'session-recorder.js']
+      });
+    } catch (err) {
+      console.warn('[Background] Could not inject session recorder:', err.message);
+    }
+
+    // Start tab capture video
+    chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (streamId) => {
+      if (chrome.runtime.lastError || !streamId) {
+        console.warn('[Background] Session record: tabCapture unavailable:', chrome.runtime.lastError?.message);
+        return;
+      }
+      chrome.runtime.sendMessage({ type: 'OFFSCREEN_START_TAB_RECORDING', streamId }).then(() => {
+        this.sessionRecording.videoStarted = true;
+        this.sessionRecording.videoStartTime = Date.now();
+        console.log('[Background] Session recording video started');
+      }).catch(err => {
+        console.warn('[Background] Session record: could not start video:', err.message);
+      });
+    });
+
+    // Set badge
+    chrome.action.setBadgeText({ text: 'SR' });
+    chrome.action.setBadgeBackgroundColor({ color: '#6f42c1' });
+
+    // Persist
+    chrome.storage.session.set({ sessionRecording: this.sessionRecording }).catch(() => {});
+
+    sendResponse({ success: true, sessionId, startTime });
+  }
+
+  /**
+   * Stop a session recording: finalize video, upload everything to server, open review.
+   */
+  async handleStopSessionRecording(sendResponse) {
+    if (!this.sessionRecording) {
+      sendResponse({ success: false, error: 'No session recording in progress' });
+      return;
+    }
+
+    const recording = this.sessionRecording;
+    this.sessionRecording = null;
+
+    // Clear badge
+    chrome.action.setBadgeText({ text: '' });
+    chrome.storage.session.remove('sessionRecording').catch(() => {});
+
+    // Close last page entry
+    const endTime = Date.now();
+    const lastPage = recording.pages[recording.pages.length - 1];
+    if (lastPage && !lastPage.endTime) lastPage.endTime = endTime;
+
+    // Stop video if it was started
+    let videoBuffer = null;
+    let videoMimeType = 'video/webm';
+    if (recording.videoStarted) {
+      try {
+        const videoResponse = await chrome.runtime.sendMessage({ type: 'OFFSCREEN_STOP_TAB_RECORDING' });
+        if (videoResponse?.success && videoResponse.arrayBuffer) {
+          videoBuffer = videoResponse.arrayBuffer;
+          videoMimeType = videoResponse.mimeType || 'video/webm';
+          console.log('[Background] Session recording video stopped:', videoBuffer.byteLength, 'bytes');
+        }
+      } catch (err) {
+        console.warn('[Background] Session record: video stop failed:', err.message);
+      }
+    }
+
+    // Build metadata for the server
+    const metadata = {
+      sessionId: recording.sessionId,
+      title: `Session: ${new URL(recording.startUrl).hostname} @ ${new Date(recording.startTime).toLocaleTimeString()}`,
+      description: '',
+      tags: ['session-recording'],
+      startUrl: recording.startUrl,
+      startTime: recording.startTime,
+      endTime,
+      duration: endTime - recording.startTime,
+      pages: recording.pages,
+      rrwebEventCount: recording.rrwebEvents.length,
+      networkEntryCount: recording.networkEntries.length,
+      status: 'complete',
+    };
+
+    const SERVER_BASE = 'http://localhost:9010';
+
+    try {
+      // 1. Create recording metadata
+      const createResp = await fetch(`${SERVER_BASE}/api/v1/recordings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(metadata),
+      });
+      const createData = await createResp.json();
+      if (!createData.id) throw new Error('Server did not return recording id');
+      const recordingId = createData.id;
+
+      // 2. Upload video (fire and forget — review page can still load without it)
+      if (videoBuffer) {
+        const videoBlob = new Blob([videoBuffer], { type: videoMimeType });
+        fetch(`${SERVER_BASE}/api/v1/recordings/${recordingId}/video`, {
+          method: 'POST',
+          headers: { 'Content-Type': videoMimeType },
+          body: videoBlob,
+        }).then(r => r.json()).then(d => {
+          console.log('[Background] Session video uploaded:', d);
+        }).catch(err => {
+          console.warn('[Background] Session video upload failed:', err.message);
+        });
+      }
+
+      // 3. Upload rrweb events + network entries
+      if (recording.rrwebEvents.length > 0 || recording.networkEntries.length > 0) {
+        fetch(`${SERVER_BASE}/api/v1/recordings/${recordingId}/events`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            rrwebEvents: recording.rrwebEvents,
+            networkEntries: recording.networkEntries,
+          }),
+        }).then(r => r.json()).then(d => {
+          console.log('[Background] Session events uploaded:', d);
+        }).catch(err => {
+          console.warn('[Background] Session events upload failed:', err.message);
+        });
+      }
+
+      const reviewUrl = `${SERVER_BASE}/review/${recordingId}`;
+      sendResponse({ success: true, recordingId, reviewUrl });
+    } catch (err) {
+      console.error('[Background] Failed to save session recording:', err);
+      sendResponse({ success: false, error: err.message });
     }
   }
 

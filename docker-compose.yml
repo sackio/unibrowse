@@ -34,6 +34,7 @@ services:
       MONGODB_URI: mongodb://mongodb:27017
       MONGODB_DB: unibrowse
       NODE_ENV: production
+      RECORDINGS_DIR: /app/recordings
     depends_on:
       mongodb:
         condition: service_healthy
@@ -42,6 +43,8 @@ services:
     volumes:
       # Mount for development (optional - remove in production)
       - ./dist:/app/dist:ro
+      # Persistent video recordings storage
+      - ./recordings:/app/recordings
 
 networks:
   unibrowse-network:

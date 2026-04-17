@@ -17,13 +17,17 @@ class PopupController {
       refreshTabsBtn: document.getElementById('refresh-tabs-btn'),
       error: document.getElementById('error'),
       recordSection: document.getElementById('record-section'),
-      recordBtn: document.getElementById('record-btn')
+      recordBtn: document.getElementById('record-btn'),
+      sessionRecordSection: document.getElementById('session-record-section'),
+      sessionRecordBtn: document.getElementById('session-record-btn'),
+      sessionRecordStats: document.getElementById('session-record-stats'),
     };
 
     this.currentState = null;
     this.attachedTabs = [];
     this.windows = [];
     this.tabs = [];
+    this.sessionTimerInterval = null;
 
     this.setupEventListeners();
     this.loadState();
@@ -55,6 +59,78 @@ class PopupController {
     this.elements.recordBtn.addEventListener('click', () => {
       this.handleRecordClick();
     });
+
+    this.elements.sessionRecordBtn.addEventListener('click', () => {
+      this.handleSessionRecordClick();
+    });
+  }
+
+  /**
+   * Handle Session Record button click — starts/stops rich session recording
+   * (rrweb DOM + network interceptor + video, survives cross-domain navigation)
+   */
+  async handleSessionRecordClick() {
+    const btn = this.elements.sessionRecordBtn;
+    const isRecording = btn.classList.contains('recording');
+
+    try {
+      btn.disabled = true;
+
+      if (!isRecording) {
+        btn.textContent = '⏳ Starting session...';
+        const response = await chrome.runtime.sendMessage({ type: 'start_session_recording' });
+        if (response && response.success) {
+          btn.textContent = '⏹ Stop Session';
+          btn.classList.add('recording');
+          btn.disabled = false;
+          this._startSessionTimer(response.startTime || Date.now(), 0, 0);
+        } else {
+          btn.textContent = '⏺ Session Record';
+          btn.disabled = false;
+          this.showError(response?.error || 'Failed to start session recording');
+        }
+      } else {
+        btn.textContent = '⏳ Saving...';
+        const response = await chrome.runtime.sendMessage({ type: 'stop_session_recording' });
+        this._stopSessionTimer();
+        btn.textContent = '⏺ Session Record';
+        btn.classList.remove('recording');
+        btn.disabled = false;
+        this.elements.sessionRecordStats.classList.remove('visible');
+        if (response && response.success && response.reviewUrl) {
+          chrome.tabs.create({ url: response.reviewUrl });
+        } else if (response && response.error) {
+          this.showError(response.error);
+        }
+      }
+    } catch (error) {
+      console.error('Session record click failed:', error);
+      btn.textContent = '⏺ Session Record';
+      btn.classList.remove('recording');
+      btn.disabled = false;
+      this._stopSessionTimer();
+      this.showError(error.message);
+    }
+  }
+
+  _startSessionTimer(startTime, rrwebCount, networkCount) {
+    const stats = this.elements.sessionRecordStats;
+    stats.classList.add('visible');
+    const update = () => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
+      const s = (elapsed % 60).toString().padStart(2, '0');
+      stats.textContent = `${m}:${s} recording`;
+    };
+    update();
+    this.sessionTimerInterval = setInterval(update, 1000);
+  }
+
+  _stopSessionTimer() {
+    if (this.sessionTimerInterval) {
+      clearInterval(this.sessionTimerInterval);
+      this.sessionTimerInterval = null;
+    }
   }
 
   /**
@@ -439,10 +515,12 @@ class PopupController {
       this.elements.attachedTabsSection.style.display = 'block';
       this.elements.tabsSection.style.display = 'block';
       this.elements.recordSection.style.display = 'block';
+      this.elements.sessionRecordSection.style.display = 'block';
     } else {
       this.elements.attachedTabsSection.style.display = 'none';
       this.elements.tabsSection.style.display = 'none';
       this.elements.recordSection.style.display = 'none';
+      this.elements.sessionRecordSection.style.display = 'none';
     }
 
     // Update record button state
@@ -454,6 +532,25 @@ class PopupController {
       this.elements.recordBtn.textContent = '⏺ Record Interactions';
       this.elements.recordBtn.classList.remove('recording');
       this.elements.recordBtn.disabled = false;
+    }
+
+    // Update session record button state
+    const btn = this.elements.sessionRecordBtn;
+    if (state.sessionRecording) {
+      if (!btn.classList.contains('recording')) {
+        btn.textContent = '⏹ Stop Session';
+        btn.classList.add('recording');
+        btn.disabled = false;
+        this._startSessionTimer(state.sessionRecording.startTime || Date.now(), 0, 0);
+      }
+    } else {
+      if (btn.classList.contains('recording')) {
+        btn.textContent = '⏺ Session Record';
+        btn.classList.remove('recording');
+        btn.disabled = false;
+        this._stopSessionTimer();
+        this.elements.sessionRecordStats.classList.remove('visible');
+      }
     }
   }
 

@@ -75,6 +75,9 @@ class MongoDB {
     await recordings.createIndex({ tags: 1 });
     await recordings.createIndex({ title: "text", description: "text" });
 
+    const recordingEvents = this.db.collection("recording_events");
+    await recordingEvents.createIndex({ recordingId: 1 }, { unique: true });
+
     console.log("[MongoDB] Indexes created successfully");
   }
 
@@ -96,6 +99,16 @@ class MongoDB {
       throw new Error("MongoDB not connected. Call connect() first.");
     }
     return this.db.collection("recordings");
+  }
+
+  /**
+   * Get recording_events collection (rrweb events + network entries, separate to avoid 16MB doc limit)
+   */
+  public getRecordingEventsCollection(): Collection {
+    if (!this.db) {
+      throw new Error("MongoDB not connected. Call connect() first.");
+    }
+    return this.db.collection("recording_events");
   }
 
   /**

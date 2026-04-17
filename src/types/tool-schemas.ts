@@ -1240,6 +1240,28 @@ export const DeleteRecordingTool = z.object({
   }).merge(MaxTokensSchema),
 });
 
+// ==================== SESSION RECORDING TOOLS ====================
+
+export const StartSessionRecordingTool = z.object({
+  name: z.literal("browser_start_session_recording"),
+  description: z.literal(
+    "Start a rich session recording on the active browser tab. Captures: full DOM mutations (rrweb), " +
+    "all XHR/fetch network traffic with request/response bodies, and tab video. " +
+    "Survives cross-domain navigation. Returns a sessionId. " +
+    "Use browser_stop_session_recording when done — the review URL will be returned."
+  ),
+  arguments: z.object({}).merge(MaxTokensSchema),
+});
+
+export const StopSessionRecordingTool = z.object({
+  name: z.literal("browser_stop_session_recording"),
+  description: z.literal(
+    "Stop the active session recording, save all captured data (DOM events, network traffic, video) " +
+    "to the server, and return the review URL. Opens the review page at http://localhost:9010/review/:id."
+  ),
+  arguments: z.object({}).merge(MaxTokensSchema),
+});
+
 // ==================== CHROME LAUNCHER TOOL ====================
 
 export const LaunchIsolatedChromeTool = z.object({

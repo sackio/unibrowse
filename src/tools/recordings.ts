@@ -6,6 +6,8 @@ import {
   ListRecordingsTool,
   GetRecordingTool,
   DeleteRecordingTool,
+  StartSessionRecordingTool,
+  StopSessionRecordingTool,
 } from "@/types/tool-schemas";
 import { jsonResponse, errorResponse } from "@/utils/response-helpers";
 import { mongodb } from "@/utils/mongodb";
@@ -146,6 +148,46 @@ export const getRecording: Tool = {
       return jsonResponse({ recording }, max_tokens);
     } catch (error) {
       return errorResponse(`Failed to get recording: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+/**
+ * Start a rich session recording (rrweb + network + video) — delegates to extension
+ */
+export const startSessionRecording: Tool = {
+  schema: {
+    name: StartSessionRecordingTool.shape.name.value,
+    description: StartSessionRecordingTool.shape.description.value,
+    inputSchema: zodToJsonSchema(StartSessionRecordingTool.shape.arguments),
+  },
+  handle: async (context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      const result = await context.sendSocketMessage("browser_start_session_recording", {});
+      return jsonResponse(result, max_tokens);
+    } catch (error) {
+      return errorResponse(`Failed to start session recording: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+/**
+ * Stop the active session recording and save to server
+ */
+export const stopSessionRecording: Tool = {
+  schema: {
+    name: StopSessionRecordingTool.shape.name.value,
+    description: StopSessionRecordingTool.shape.description.value,
+    inputSchema: zodToJsonSchema(StopSessionRecordingTool.shape.arguments),
+  },
+  handle: async (context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      const result = await context.sendSocketMessage("browser_stop_session_recording", {});
+      return jsonResponse(result, max_tokens);
+    } catch (error) {
+      return errorResponse(`Failed to stop session recording: ${error.message}`, false, error, max_tokens);
     }
   },
 };

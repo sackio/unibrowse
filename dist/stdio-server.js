@@ -83,7 +83,9 @@ import {
   setNetworkConditions,
   setTabLabel,
   snapshot,
+  startSessionRecording,
   startVideoRecording,
+  stopSessionRecording,
   stopVideoRecording,
   storeMacro,
   submitForm,
@@ -91,7 +93,7 @@ import {
   type,
   updateMacro,
   wait
-} from "./chunk-M626Y5RM.js";
+} from "./chunk-RF24MMFJ.js";
 import "./chunk-FT2ARCXD.js";
 
 // src/stdio-server.ts
@@ -146,7 +148,9 @@ var recordingTools = [
   saveRecording,
   listRecordings,
   getRecording,
-  deleteRecording
+  deleteRecording,
+  startSessionRecording,
+  stopSessionRecording
 ];
 var interactionTools = [
   getInteractions,
