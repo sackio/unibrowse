@@ -94,6 +94,10 @@ class CDPHelper {
    * Attach debugger to target tab
    */
   async attach(tabId) {
+    // Guard against non-integer tabIds which cause "No matching signature" in chrome.debugger.attach
+    if (typeof tabId !== 'number' || !Number.isInteger(tabId) || tabId <= 0) {
+      throw new Error(`Invalid tabId: ${JSON.stringify(tabId)} (must be a positive integer)`);
+    }
     this.isAttaching = true;
     try {
       // Validate tab before attempting attach
@@ -273,14 +277,15 @@ class CDPHelper {
     } catch (error) {
       // Check if this is a "tab not found" error (tab was closed)
       const errorMessage = error.message || '';
-      if (errorMessage.includes('No tab with id:') ||
+      if (errorMessage.includes('No tab with id') ||  // covers 'No tab with id: X' and 'No tab with given id X'
           errorMessage.includes('Tab not found') ||
           errorMessage.includes('tab was closed')) {
         // Tab was closed - this is expected, handle gracefully
-        console.log(`[CDP] Tab ${this.target.tabId} no longer exists (closed)`);
+        const closedTabId = this.target.tabId;  // capture before nulling this.target
+        console.log(`[CDP] Tab ${closedTabId} no longer exists (closed)`);
         this.target = null;
         this.isDetaching = true;
-        throw new Error(`Tab ${this.target.tabId} was closed`);
+        throw new Error(`Tab ${closedTabId} was closed`);
       }
 
       // Other errors (restricted URLs, etc.) - log and throw
@@ -434,6 +439,22 @@ class CDPHelper {
 
       return result.result.value;
     } catch (error) {
+      // Auto-retry wrapped in an async IIFE when the expression contains a bare return statement.
+      // Runtime.evaluate expects an expression, not a statement — return outside a function is invalid.
+      if (error.message && error.message.includes('Illegal return statement')) {
+        console.warn('[CDP] Expression has bare return statement, retrying wrapped in async IIFE...');
+        const wrapped = `(async function() {\n${expression}\n})()`;
+        const wrappedResult = await this.sendCommand('Runtime.evaluate', {
+          expression: wrapped,
+          returnByValue,
+          awaitPromise: true,
+          userGesture: true
+        });
+        if (wrappedResult.exceptionDetails) {
+          throw new Error(`Evaluation error: ${wrappedResult.exceptionDetails.exception?.description || 'unknown error'}`);
+        }
+        return wrappedResult.result.value;
+      }
       // Check if this is a navigation interruption
       if (error.message && error.message.includes('Page navigation interrupted command execution')) {
         // Return a special value indicating navigation occurred

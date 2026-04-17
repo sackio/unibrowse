@@ -1573,7 +1573,8 @@ class BackgroundController {
         } catch (error) {
           // Check if the error is due to tab not existing
           const isTabNotFound = error.message && (
-            error.message.includes('No tab with id') ||
+            error.message.includes('No tab with id') ||    // 'No tab with id: X' (chrome.tabs.get)
+            error.message.includes('No tab with given id') || // 'No tab with given id X' (chrome.debugger.attach)
             error.message.includes('tab not found')
           );
 
@@ -1610,6 +1611,10 @@ class BackgroundController {
               this.state.originalTabTitle = null;
               console.log('[Background] No attached tabs available, cleared tab state');
             }
+          } else if (error.message && (error.message.includes('Cannot access a chrome-extension://') || error.message.includes('chrome-extension://'))) {
+            // Transient: another extension's popup/overlay is active on the tab.
+            // State stays temporarilyDetached so the next keepalive tick will retry.
+            console.warn('[Background] Keepalive reattach blocked by chrome-extension:// page (transient, will retry)');
           } else {
             // Other error - log but don't clear state
             console.error('[Background] Keepalive reattachment failed:', error);
