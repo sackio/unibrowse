@@ -139,9 +139,9 @@ export const SwitchTabTool = z.object({
   arguments: z.object({
     tabId: z.number().optional().describe("Numeric Chrome tab ID to switch to"),
     tabTarget: z.union([z.string(), z.number()]).optional().describe("Tab label or ID (resolves via attached tab registry)"),
-  }).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
+  }).merge(MaxTokensSchema).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
     message: "Provide either tabId (number) or tabTarget (label/id)",
-  }).merge(MaxTokensSchema),
+  }),
 });
 
 export const CreateTabTool = z.object({
@@ -158,9 +158,9 @@ export const CloseTabTool = z.object({
   arguments: z.object({
     tabId: z.number().optional().describe("Numeric Chrome tab ID to close"),
     tabTarget: z.union([z.string(), z.number()]).optional().describe("Tab label or ID (resolves via attached tab registry)"),
-  }).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
+  }).merge(MaxTokensSchema).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
     message: "Provide either tabId (number) or tabTarget (label/id)",
-  }).merge(MaxTokensSchema),
+  }),
 });
 
 export const CreateWindowTool = z.object({
@@ -1111,9 +1111,9 @@ export const DetachTabTool = z.object({
   arguments: z.object({
     tabId: z.number().optional().describe("Numeric Chrome tab ID to detach"),
     tabTarget: z.union([z.string(), z.number()]).optional().describe("Tab label or ID (resolves via attached tab registry)"),
-  }).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
+  }).merge(MaxTokensSchema).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
     message: "Provide either tabId (number) or tabTarget (label/id)",
-  }).merge(MaxTokensSchema),
+  }),
 });
 
 export const GetActiveTabTool = z.object({
