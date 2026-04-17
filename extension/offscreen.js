@@ -371,9 +371,9 @@ class OffscreenManager {
         };
 
         this.ws.onerror = (error) => {
-          // WebSocket errors are followed by onclose, which handles reconnection
-          // Log as warning instead of error since this is not critical
-          console.warn('[Offscreen] WebSocket error event (non-critical, will reconnect)');
+          // WebSocket errors are always followed by onclose, which handles reconnection.
+          // This is expected behaviour on reload / server restart — not an actionable error.
+          console.log('[Offscreen] WebSocket error event (non-critical, will reconnect)');
 
           // Don't change state to 'error' - let onclose handle state changes
           // Don't reject promise - onclose will handle cleanup and reconnection
