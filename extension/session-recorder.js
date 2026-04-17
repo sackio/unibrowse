@@ -12,44 +12,72 @@ if (window.__unibrowse_recording__) {
 } else {
   window.__unibrowse_recording__ = true;
 
+  // ─── Context validity helpers ────────────────────────────────────────────
+
+  let _contextValid = true;
+  let rrwebStop = null;
+
+  /**
+   * Check whether the extension context is still live.
+   * Accessing chrome.runtime.id throws or returns undefined when the
+   * service worker has been reloaded and this content script is orphaned.
+   */
+  function isContextValid() {
+    try {
+      return _contextValid && !!chrome.runtime?.id;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Safe sendMessage — silently drops the message if the context is gone,
+   * and stops the rrweb recorder so it stops generating events.
+   */
+  function safeSend(message) {
+    if (!isContextValid()) return;
+    try {
+      chrome.runtime.sendMessage(message).catch(() => {});
+    } catch (err) {
+      if (err.message?.includes('Extension context invalidated') ||
+          err.message?.includes('context invalidated')) {
+        _contextValid = false;
+        if (rrwebStop) { try { rrwebStop(); } catch {} rrwebStop = null; }
+      }
+    }
+  }
+
   // ─── Page Lifecycle Markers ────────────────────────────────────────────────
 
-  // Notify background that a new page has loaded in the recording tab
-  chrome.runtime.sendMessage({
+  safeSend({
     type: 'SR_PAGE_START',
     url: location.href,
     title: document.title,
     timestamp: Date.now(),
-  }).catch(() => {});
+  });
 
   window.addEventListener('beforeunload', () => {
-    chrome.runtime.sendMessage({
+    safeSend({
       type: 'SR_PAGE_END',
       url: location.href,
       timestamp: Date.now(),
-    }).catch(() => {});
+    });
   });
 
   // ─── rrweb DOM Recording ──────────────────────────────────────────────────
-
-  let rrwebStop = null;
 
   if (typeof rrwebRecord === 'function') {
     try {
       rrwebStop = rrwebRecord({
         emit(event) {
-          chrome.runtime.sendMessage({
-            type: 'SR_RRWEB',
-            event,
-          }).catch(() => {});
+          safeSend({ type: 'SR_RRWEB', event });
         },
-        // Capture all inputs including passwords (agents may need them for replay)
         maskAllInputs: false,
         blockClass: '__unibrowse_blocked__',
         sampling: {
-          scroll: 150,   // ms throttle on scroll events
+          scroll: 150,
           media: 800,
-          input: 'last', // only record final value, not every keystroke
+          input: 'last',
         },
       });
       console.log('[SessionRecorder] rrweb recording started');
@@ -65,16 +93,11 @@ if (window.__unibrowse_recording__) {
   // (world: 'MAIN') which bypasses CSP. It dispatches CustomEvents that we pick
   // up here in the ISOLATED world and forward to background.
 
-  // Bridge CustomEvents from page context → background
   window.addEventListener('__unibrowse_network__', (e) => {
-    const entry = e.detail;
-    chrome.runtime.sendMessage({
+    safeSend({
       type: 'SR_NETWORK',
-      entry: {
-        ...entry,
-        timestamp: Date.now(),
-      },
-    }).catch(() => {});
+      entry: { ...e.detail, timestamp: Date.now() },
+    });
   });
 
   console.log('[SessionRecorder] Active on', location.href);
