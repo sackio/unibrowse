@@ -135,9 +135,12 @@ export const ListTabsTool = z.object({
 
 export const SwitchTabTool = z.object({
   name: z.literal("browser_switch_tab"),
-  description: z.literal("Switch to a specific browser tab"),
+  description: z.literal("Switch to a specific browser tab. Accepts either a numeric tabId or a tabTarget label (from browser_list_attached_tabs)."),
   arguments: z.object({
-    tabId: z.number().describe("The ID of the tab to switch to"),
+    tabId: z.number().optional().describe("Numeric Chrome tab ID to switch to"),
+    tabTarget: z.union([z.string(), z.number()]).optional().describe("Tab label or ID (resolves via attached tab registry)"),
+  }).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
+    message: "Provide either tabId (number) or tabTarget (label/id)",
   }).merge(MaxTokensSchema),
 });
 
@@ -151,9 +154,12 @@ export const CreateTabTool = z.object({
 
 export const CloseTabTool = z.object({
   name: z.literal("browser_close_tab"),
-  description: z.literal("Close a specific browser tab"),
+  description: z.literal("Close a specific browser tab. Accepts either a numeric tabId (from browser_list_tabs / browser_create_tab) or a tabTarget label (from browser_list_attached_tabs). Prefer tabTarget when you have a label."),
   arguments: z.object({
-    tabId: z.number().describe("The ID of the tab to close"),
+    tabId: z.number().optional().describe("Numeric Chrome tab ID to close"),
+    tabTarget: z.union([z.string(), z.number()]).optional().describe("Tab label or ID (resolves via attached tab registry)"),
+  }).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
+    message: "Provide either tabId (number) or tabTarget (label/id)",
   }).merge(MaxTokensSchema),
 });
 
@@ -1100,10 +1106,13 @@ export const SetTabLabelTool = z.object({
 export const DetachTabTool = z.object({
   name: z.literal("browser_detach_tab"),
   description: z.literal(
-    "Detach debugger from a specific tab. This removes the tab from the list of attached tabs."
+    "Detach debugger from a specific tab. This removes the tab from the list of attached tabs. Accepts either a numeric tabId or a tabTarget label."
   ),
   arguments: z.object({
-    tabId: z.number().describe("The tab ID to detach from"),
+    tabId: z.number().optional().describe("Numeric Chrome tab ID to detach"),
+    tabTarget: z.union([z.string(), z.number()]).optional().describe("Tab label or ID (resolves via attached tab registry)"),
+  }).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
+    message: "Provide either tabId (number) or tabTarget (label/id)",
   }).merge(MaxTokensSchema),
 });
 

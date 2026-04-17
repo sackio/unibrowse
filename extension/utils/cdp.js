@@ -8,6 +8,7 @@ class CDPHelper {
     this.target = null;
     this.enabledDomains = new Set();
     this.isDetaching = false; // Flag to prevent operations during detachment
+    this.isAttaching = false; // Flag set during attach() to suppress spurious onDetach events
     this.reattachAttempts = 0;
     this.maxReattachAttempts = 3;
     this.reattachDelay = 1000; // Start with 1 second
@@ -93,6 +94,7 @@ class CDPHelper {
    * Attach debugger to target tab
    */
   async attach(tabId) {
+    this.isAttaching = true;
     try {
       // Validate tab before attempting attach
       console.log('[CDP] Validating tab:', tabId);
@@ -160,9 +162,11 @@ class CDPHelper {
       console.log('[CDP] All domains enabled');
 
       console.log('[CDP] attach() complete, returning true');
+      this.isAttaching = false;
       return true;
     } catch (error) {
       console.error('[CDP] Failed to attach debugger:', error);
+      this.isAttaching = false;
       this.target = null;
       throw error;
     }

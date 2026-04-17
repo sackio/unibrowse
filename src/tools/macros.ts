@@ -221,13 +221,19 @@ export const executeMacro: Tool = {
       }
 
       // Wrap the macro code in an async IIFE and pass params
-      // This handles both sync and async macros correctly
+      // Supports both function expressions (async (params) => {...}) and
+      // self-invoking IIFEs ((async function() {...}())), where the latter
+      // evaluates to a Promise rather than a callable function.
       const wrappedCode = `
         (async function() {
           const macroFunction = ${macro.code};
           const params = ${JSON.stringify(validatedParams.params || {})};
           try {
-            const result = await macroFunction(params);
+            // If code evaluated to a function, call it with params.
+            // If it evaluated to a Promise (IIFE format), just await it.
+            const result = typeof macroFunction === 'function'
+              ? await macroFunction(params)
+              : await macroFunction;
             return { success: true, result: result };
           } catch (error) {
             return { success: false, error: error.message, stack: error.stack };

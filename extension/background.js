@@ -319,6 +319,7 @@ class TabManager {
   async attachTab(tabId, url, title) {
     try {
       // Check if already attached
+      let preservedLabel = null;
       if (this.attachedTabs.has(tabId)) {
         const existing = this.attachedTabs.get(tabId);
         if (existing.cdp && existing.cdp.isAttached()) {
@@ -327,6 +328,7 @@ class TabManager {
         }
         // CDP is dead (debugger detached behind our back) — remove stale entry and re-attach
         console.log('[TabManager] Tab in map but CDP is dead, removing stale entry and re-attaching:', tabId);
+        preservedLabel = existing.label; // preserve custom label (e.g. "efast2")
         if (existing.cdp?.detachListener) {
           chrome.debugger.onDetach.removeListener(existing.cdp.detachListener);
           existing.cdp.detachListener = null;
@@ -336,8 +338,8 @@ class TabManager {
 
       console.log('[TabManager] Attaching to tab:', tabId, url);
 
-      // Generate label
-      const label = this.generateLabel(url);
+      // Reuse preserved label if available, otherwise generate from URL
+      const label = preservedLabel || this.generateLabel(url);
 
       // Store original title (remove [MCP] prefix if it exists)
       const originalTitle = title.startsWith('🟢 [MCP] ')
@@ -1137,9 +1139,10 @@ class BackgroundController {
         }
       }
 
-      // Handle detach for TabManager multi-tab attachments (separate from legacy single-tab above)
+      // Handle detach for TabManager multi-tab attachments
+      // Guard: skip if the CDPHelper is mid-attach (pre-emptive detach fires a spurious onDetach)
       const tmInfo = this.tabManager.attachedTabs.get(source.tabId);
-      if (tmInfo && tmInfo.cdp && source.tabId !== this.state.tabId) {
+      if (tmInfo && tmInfo.cdp && !tmInfo.cdp.isAttaching) {
         console.log(`[Background] TabManager tab ${source.tabId} detached (${reason}), scheduling reattach...`);
         tmInfo.cdp.target = null;
         tmInfo.cdp.isDetaching = false;
@@ -1952,37 +1955,52 @@ class BackgroundController {
   /**
    * Detach debugger from a specific tab
    */
-  async handleDetachTab({ tabId }) {
+  async handleDetachTab({ tabId, tabTarget }) {
     try {
-      if (!tabId) {
-        throw new Error('tabId is required');
+      // Resolve tabTarget to numeric tabId if needed
+      let resolvedTabId = tabId;
+      if (!resolvedTabId && tabTarget !== undefined) {
+        const tabInfo = this.tabManager.resolveTab(tabTarget);
+        if (tabInfo) {
+          resolvedTabId = tabInfo.tabId;
+        } else if (typeof tabTarget === 'string' && /^\d+$/.test(tabTarget)) {
+          resolvedTabId = parseInt(tabTarget, 10);
+        } else if (typeof tabTarget === 'number') {
+          resolvedTabId = tabTarget;
+        } else {
+          throw new Error(`browser_detach_tab: no tab found with label "${tabTarget}"`);
+        }
+      }
+
+      if (!resolvedTabId) {
+        throw new Error('Provide either tabId (number) or tabTarget (label/id)');
       }
 
       // Check if tab is attached
-      const tabInfo = this.tabManager.attachedTabs.get(tabId);
+      const tabInfo = this.tabManager.attachedTabs.get(resolvedTabId);
       if (!tabInfo) {
-        console.warn('[Background] Tab not attached:', tabId);
+        console.warn('[Background] Tab not attached:', resolvedTabId);
         return { success: true, message: 'Tab was not attached' };
       }
 
-      console.log('[Background] Detaching from tab:', tabId, 'label:', tabInfo.label);
+      console.log('[Background] Detaching from tab:', resolvedTabId, 'label:', tabInfo.label);
 
       // Detach using TabManager
-      await this.tabManager.detachTab(tabId);
+      await this.tabManager.detachTab(resolvedTabId);
 
       // If this was the active tab, clear backwards-compatible state
-      if (this.state.tabId === tabId) {
+      if (this.state.tabId === resolvedTabId) {
         this.state.tabId = null;
         this.state.tabUrl = null;
         this.state.tabTitle = null;
         this.state.originalTabTitle = null;
       }
 
-      console.log('[Background] Successfully detached from tab:', tabId);
+      console.log('[Background] Successfully detached from tab:', resolvedTabId);
 
       return {
         success: true,
-        tabId,
+        tabId: resolvedTabId,
         detachedLabel: tabInfo.label
       };
     } catch (error) {
@@ -3536,9 +3554,24 @@ class BackgroundController {
     }));
   }
 
-  async handleSwitchTab({ tabId }) {
+  async handleSwitchTab({ tabId, tabTarget }) {
     let targetTabId = tabId;
-    let tab = await chrome.tabs.get(tabId);
+
+    // Resolve tabTarget (label or string ID) if no numeric tabId given
+    if (!targetTabId && tabTarget !== undefined) {
+      const tabInfo = this.tabManager.resolveTab(tabTarget);
+      if (tabInfo) {
+        targetTabId = tabInfo.tabId;
+      } else if (typeof tabTarget === 'string' && /^\d+$/.test(tabTarget)) {
+        targetTabId = parseInt(tabTarget, 10);
+      } else if (typeof tabTarget === 'number') {
+        targetTabId = tabTarget;
+      } else {
+        throw new Error(`browser_switch_tab: no tab found with label "${tabTarget}"`);
+      }
+    }
+
+    let tab = await chrome.tabs.get(targetTabId);
 
     // Check if the requested tab has a restricted URL
     if (this.isRestrictedUrl(tab.url)) {
@@ -3592,9 +3625,32 @@ class BackgroundController {
     return { success: true, tabId: tab.id, label: tabInfo.label, url: tab.url };
   }
 
-  async handleCloseTab({ tabId }) {
-    await chrome.tabs.remove(tabId);
-    return { success: true, tabId };
+  async handleCloseTab({ tabId, tabTarget }) {
+    let resolvedTabId = tabId;
+
+    // Resolve tabTarget (label or string ID) if no numeric tabId given
+    if (!resolvedTabId && tabTarget !== undefined) {
+      const tabInfo = this.tabManager.resolveTab(tabTarget);
+      if (tabInfo) {
+        resolvedTabId = tabInfo.tabId;
+      } else if (typeof tabTarget === 'string' && /^\d+$/.test(tabTarget)) {
+        resolvedTabId = parseInt(tabTarget, 10);
+      } else if (typeof tabTarget === 'number') {
+        resolvedTabId = tabTarget;
+      }
+    }
+
+    if (!resolvedTabId) {
+      throw new Error(`browser_close_tab: could not resolve tab — provide tabId (number) or a valid tabTarget label`);
+    }
+
+    // Also remove from TabManager if it's an attached tab
+    if (this.tabManager.attachedTabs.has(resolvedTabId)) {
+      await this.tabManager.detachTab(resolvedTabId).catch(() => {});
+    }
+
+    await chrome.tabs.remove(resolvedTabId);
+    return { success: true, tabId: resolvedTabId };
   }
 
   async handleCreateWindow({ url, focused, incognito, width, height }) {
