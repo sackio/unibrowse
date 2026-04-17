@@ -1054,6 +1054,14 @@ class BackgroundController {
       // Re-inject session recorder scripts on navigation for the recording tab
       if (changeInfo.status === 'complete' && this.sessionRecording?.tabId === tabId) {
         console.log('[Background] Re-injecting session recorder after navigation:', tab.url);
+        // MAIN world first (bypasses CSP, must precede isolated world injection)
+        chrome.scripting.executeScript({
+          target: { tabId },
+          world: 'MAIN',
+          files: ['lib/network-interceptor.js']
+        }).catch(err => {
+          console.warn('[Background] Could not re-inject network interceptor:', err.message);
+        });
         chrome.scripting.executeScript({
           target: { tabId },
           files: ['lib/rrweb-record.min.js', 'session-recorder.js']
@@ -3368,7 +3376,16 @@ class BackgroundController {
       videoStarted: false,
     };
 
-    // Inject rrweb + session-recorder content scripts
+    // Inject network interceptor into page's MAIN world (bypasses CSP)
+    chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      files: ['lib/network-interceptor.js']
+    }).catch(err => {
+      console.warn('[Background] Could not inject network interceptor:', err.message);
+    });
+
+    // Inject rrweb + session-recorder into ISOLATED world
     try {
       await chrome.scripting.executeScript({
         target: { tabId },

@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Session Review</title>
+  <link rel="stylesheet" href="/public/rrweb.min.css">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      background: #f5f5f5;
+      color: #333;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: #1a1a2e;
+      color: #fff;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    .header a.back { color: #aaa; text-decoration: none; font-size: 18px; }
+    .header a.back:hover { color: #fff; }
+    .header h1 { font-size: 16px; font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .header .meta { font-size: 12px; color: #999; white-space: nowrap; }
+    .header button {
+      padding: 6px 14px; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px;
+      background: transparent; color: #fff; cursor: pointer; font-size: 13px; white-space: nowrap;
+    }
+    .header button:hover { background: rgba(255,255,255,0.1); }
+    .header button.analyze { background: #6f42c1; border-color: #6f42c1; }
+    .header button.analyze:hover { background: #5a32a3; }
+
+    /* ── Main Layout ── */
+    .main {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      grid-template-rows: 1fr;
+      flex: 1;
+      overflow: hidden;
+      gap: 0;
+    }
+
+    /* ── Left Panel ── */
+    .left-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: #1a1a1a;
+    }
+
+    .video-container {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      min-height: 0;
+      position: relative;
+    }
+
+    video {
+      max-width: 100%;
+      max-height: 100%;
+      outline: none;
+    }
+
+    .no-video {
+      color: #555;
+      text-align: center;
+      padding: 40px;
+    }
+    .no-video p { font-size: 14px; }
+
+    .rrweb-container {
+      height: 220px;
+      background: #fff;
+      border-top: 1px solid #333;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .rrweb-container .label {
+      position: absolute;
+      top: 6px;
+      left: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #666;
+      background: rgba(255,255,255,0.9);
+      padding: 2px 6px;
+      border-radius: 3px;
+      z-index: 10;
+    }
+
+    #rrweb-player { width: 100%; height: 100%; }
+
+    /* ── Right Panel — Timeline ── */
+    .right-panel {
+      display: flex;
+      flex-direction: column;
+      background: #fff;
+      border-left: 1px solid #ddd;
+      overflow: hidden;
+    }
+
+    .timeline-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid #eee;
+      font-weight: 600;
+      font-size: 13px;
+      color: #555;
+      background: #fafafa;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .timeline-filter {
+      display: flex;
+      gap: 4px;
+    }
+
+    .filter-btn {
+      padding: 3px 8px;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      background: #fff;
+      font-size: 11px;
+      cursor: pointer;
+      color: #666;
+    }
+    .filter-btn.active { background: #6f42c1; border-color: #6f42c1; color: #fff; }
+
+    .timeline {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0;
+    }
+
+    .timeline-event {
+      padding: 6px 16px;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      transition: background 0.1s;
+      position: relative;
+    }
+    .timeline-event:hover { background: #f5f0ff; }
+    .timeline-event.active { background: #f0ebff; border-left-color: #6f42c1; }
+    .timeline-event.page-start { border-left-color: #28a745; }
+    .timeline-event.network { color: #0066cc; }
+    .timeline-event.selected { background: #e8dfff; }
+
+    .event-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .event-icon { font-size: 14px; flex-shrink: 0; width: 18px; text-align: center; }
+    .event-time { font-size: 11px; color: #999; flex-shrink: 0; width: 38px; }
+    .event-label {
+      font-size: 12px;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .event-status {
+      font-size: 11px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+    .event-status.ok { background: #d4edda; color: #155724; }
+    .event-status.err { background: #f8d7da; color: #721c24; }
+
+    /* Network detail expansion */
+    .event-detail {
+      display: none;
+      margin-top: 6px;
+      padding: 8px 10px;
+      background: #f8f8ff;
+      border-radius: 4px;
+      font-size: 11px;
+      font-family: monospace;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .event-detail.visible { display: block; }
+
+    /* Annotation area */
+    .annotation-panel {
+      border-top: 1px solid #eee;
+      padding: 12px 16px;
+      flex-shrink: 0;
+      background: #fafafa;
+    }
+    .annotation-panel label { font-size: 11px; font-weight: 600; color: #666; display: block; margin-bottom: 4px; }
+    .annotation-panel textarea {
+      width: 100%;
+      height: 60px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 12px;
+      resize: none;
+      font-family: inherit;
+    }
+    .annotation-panel textarea:focus { outline: none; border-color: #6f42c1; }
+    .save-annotation-btn {
+      margin-top: 6px;
+      padding: 4px 12px;
+      background: #6f42c1;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .save-annotation-btn:hover { background: #5a32a3; }
+    .save-ok { color: #28a745; font-size: 11px; display: none; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <a href="/review" class="back">←</a>
+    <h1 id="recording-title">Loading...</h1>
+    <span class="meta" id="recording-meta"></span>
+    <button class="analyze" onclick="analyzeRecording()">Analyze with AI</button>
+  </div>
+
+  <div class="main">
+    <div class="left-panel">
+      <div class="video-container" id="video-container">
+        <div class="no-video" id="no-video"><p>No video recorded</p></div>
+        <video id="video" controls style="display:none"></video>
+      </div>
+      <div class="rrweb-container" id="rrweb-container" style="display:none">
+        <div class="label">DOM Replay (rrweb)</div>
+        <div id="rrweb-player"></div>
+      </div>
+    </div>
+
+    <div class="right-panel">
+      <div class="timeline-header">
+        <span>Timeline</span>
+        <div class="timeline-filter">
+          <button class="filter-btn active" data-filter="all" onclick="setFilter('all',this)">All</button>
+          <button class="filter-btn" data-filter="page" onclick="setFilter('page',this)">Pages</button>
+          <button class="filter-btn" data-filter="network" onclick="setFilter('network',this)">Network</button>
+          <button class="filter-btn" data-filter="dom" onclick="setFilter('dom',this)">DOM</button>
+        </div>
+      </div>
+      <div class="timeline" id="timeline"></div>
+      <div class="annotation-panel" id="annotation-panel" style="display:none">
+        <label>Annotation for selected event</label>
+        <textarea id="annotation-text" placeholder="Add a note about this event..."></textarea>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+          <button class="save-annotation-btn" onclick="saveAnnotation()">Save</button>
+          <span class="save-ok" id="save-ok">Saved!</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/public/rrweb.min.js"></script>
+  <script>
+    const recordingId = location.pathname.split('/').pop();
+    let recording = null;
+    let rrwebEvents = [];
+    let networkEntries = [];
+    let rrwebPlayer = null;
+    let allTimelineItems = [];
+    let selectedEventIndex = null;
+    let annotations = {};
+    let currentFilter = 'all';
+
+    // ── Bootstrap ─────────────────────────────────────────────────────────────
+
+    async function init() {
+      try {
+        // Load recording metadata
+        const metaResp = await fetch(`/api/v1/recordings/${recordingId}`);
+        const metaData = await metaResp.json();
+        recording = metaData.recording;
+        if (!recording) { document.getElementById('recording-title').textContent = 'Recording not found'; return; }
+
+        document.title = recording.title || 'Session Review';
+        document.getElementById('recording-title').textContent = recording.title || 'Untitled Session';
+        const dur = Math.round((recording.duration || 0) / 1000);
+        const m = Math.floor(dur / 60), s = dur % 60;
+        document.getElementById('recording-meta').textContent =
+          `${new Date(recording.startTime).toLocaleString()} · ${m}:${s.toString().padStart(2,'0')} · ${recording.pages?.length || 0} pages`;
+
+        // Restore annotations
+        if (recording.annotations) {
+          recording.annotations.forEach(a => { annotations[a.eventTimestamp] = a.text; });
+        }
+
+        // Load events (rrweb + network)
+        const eventsResp = await fetch(`/api/v1/recordings/${recordingId}/events`);
+        const eventsData = await eventsResp.json();
+        rrwebEvents = eventsData.rrwebEvents || [];
+        networkEntries = eventsData.networkEntries || [];
+
+        // Set up video
+        setupVideo();
+
+        // Set up rrweb player
+        setupRrweb();
+
+        // Build timeline
+        buildTimeline();
+      } catch (err) {
+        console.error('Failed to load recording:', err);
+        document.getElementById('recording-title').textContent = 'Error loading recording: ' + err.message;
+      }
+    }
+
+    // ── Video ─────────────────────────────────────────────────────────────────
+
+    function setupVideo() {
+      const video = document.getElementById('video');
+      const noVideo = document.getElementById('no-video');
+
+      // Check if video exists
+      fetch(`/api/v1/recordings/${recordingId}/video`, { method: 'HEAD' })
+        .then(r => {
+          if (r.ok) {
+            video.src = `/api/v1/recordings/${recordingId}/video`;
+            video.style.display = 'block';
+            noVideo.style.display = 'none';
+            video.addEventListener('timeupdate', onVideoTimeUpdate);
+          }
+        })
+        .catch(() => {});
+    }
+
+    function onVideoTimeUpdate() {
+      const video = document.getElementById('video');
+      if (!recording) return;
+      const videoOffsetMs = video.currentTime * 1000;
+      const absMs = (recording.videoStartTime || recording.startTime) + videoOffsetMs;
+
+      // Highlight the closest timeline item
+      let bestIdx = -1, bestDiff = Infinity;
+      allTimelineItems.forEach((item, i) => {
+        const diff = Math.abs(item.absTimestamp - absMs);
+        if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+      });
+
+      document.querySelectorAll('.timeline-event').forEach(el => el.classList.remove('active'));
+      if (bestIdx >= 0 && bestDiff < 5000) {
+        const el = document.getElementById(`te-${bestIdx}`);
+        if (el) { el.classList.add('active'); el.scrollIntoView({ block: 'nearest' }); }
+      }
+    }
+
+    function seekVideo(absTimestamp) {
+      const video = document.getElementById('video');
+      if (!video.src || !recording) return;
+      const offsetSec = (absTimestamp - (recording.videoStartTime || recording.startTime)) / 1000;
+      if (offsetSec >= 0) video.currentTime = offsetSec;
+    }
+
+    function seekRrweb(absTimestamp) {
+      if (!rrwebPlayer) return;
+      try {
+        rrwebPlayer.goto(absTimestamp - recording.startTime);
+      } catch(e) {}
+    }
+
+    // ── rrweb Player ──────────────────────────────────────────────────────────
+
+    function setupRrweb() {
+      if (rrwebEvents.length === 0 || !window.rrweb?.Replayer) return;
+      const container = document.getElementById('rrweb-container');
+      container.style.display = 'block';
+      try {
+        rrwebPlayer = new rrweb.Replayer(rrwebEvents, {
+          root: document.getElementById('rrweb-player'),
+          speed: 1,
+          showWarning: false,
+          blockClass: '__unibrowse_blocked__',
+        });
+        rrwebPlayer.play();
+        rrwebPlayer.pause();
+      } catch(e) {
+        console.warn('rrweb player failed:', e);
+        container.style.display = 'none';
+      }
+    }
+
+    // ── Timeline ──────────────────────────────────────────────────────────────
+
+    function buildTimeline() {
+      allTimelineItems = [];
+      const startTime = recording.startTime;
+
+      // Page starts
+      (recording.pages || []).forEach(page => {
+        allTimelineItems.push({
+          type: 'page',
+          absTimestamp: page.startTime,
+          offsetMs: page.startTime - startTime,
+          label: new URL(page.url).pathname || '/',
+          url: page.url,
+          title: page.title,
+        });
+      });
+
+      // Network entries (from recording_events)
+      networkEntries.forEach(entry => {
+        allTimelineItems.push({
+          type: 'network',
+          absTimestamp: entry.timestamp || startTime,
+          offsetMs: (entry.timestamp || startTime) - startTime,
+          method: entry.method,
+          url: entry.url,
+          status: entry.responseStatus,
+          duration: entry.duration,
+          requestBody: entry.requestBody,
+          requestHeaders: entry.requestHeaders,
+          responseBody: entry.responseBody,
+          responseHeaders: entry.responseHeaders,
+        });
+      });
+
+      // Key rrweb events (mouse clicks, inputs — type 3, incrementalSnapshot, source 2=mouseInteraction, 5=input)
+      rrwebEvents.forEach(ev => {
+        if (ev.type === 3 && ev.data) {
+          if (ev.data.source === 2 && ev.data.type === 0) { // MouseInteraction.MouseUp
+            allTimelineItems.push({
+              type: 'click',
+              absTimestamp: ev.timestamp,
+              offsetMs: ev.timestamp - startTime,
+              label: ev.data.tag ? `click ${ev.data.tag.toLowerCase()}${ev.data.id ? '#' + ev.data.id : ''}` : 'click',
+            });
+          } else if (ev.data.source === 5) { // Input
+            allTimelineItems.push({
+              type: 'input',
+              absTimestamp: ev.timestamp,
+              offsetMs: ev.timestamp - startTime,
+              label: `input: "${String(ev.data.text || '').slice(0, 40)}"`,
+            });
+          }
+        }
+      });
+
+      // Sort by time
+      allTimelineItems.sort((a, b) => a.absTimestamp - b.absTimestamp);
+
+      renderTimeline();
+    }
+
+    function setFilter(filter, btn) {
+      currentFilter = filter;
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderTimeline();
+    }
+
+    function renderTimeline() {
+      const container = document.getElementById('timeline');
+      container.innerHTML = '';
+
+      allTimelineItems.forEach((item, i) => {
+        if (currentFilter !== 'all') {
+          if (currentFilter === 'page' && item.type !== 'page') return;
+          if (currentFilter === 'network' && item.type !== 'network') return;
+          if (currentFilter === 'dom' && item.type !== 'click' && item.type !== 'input') return;
+        }
+
+        const t = Math.round(item.offsetMs / 1000);
+        const m = Math.floor(t / 60), s = t % 60;
+        const timeStr = `${m}:${s.toString().padStart(2,'0')}`;
+
+        const div = document.createElement('div');
+        div.className = `timeline-event${item.type === 'page' ? ' page-start' : ''}${item.type === 'network' ? ' network' : ''}`;
+        div.id = `te-${i}`;
+
+        const icon = { page: '◉', network: '○', click: '●', input: '✎' }[item.type] || '·';
+
+        let label = '';
+        if (item.type === 'page') label = item.url || item.label;
+        else if (item.type === 'network') label = `${item.method} ${item.url}`;
+        else label = item.label || item.type;
+
+        const statusHtml = item.type === 'network' ? `<span class="event-status ${item.status >= 200 && item.status < 400 ? 'ok' : 'err'}">${item.status}</span>` : '';
+
+        div.innerHTML = `
+          <div class="event-row">
+            <span class="event-icon">${icon}</span>
+            <span class="event-time">${timeStr}</span>
+            <span class="event-label" title="${escHtml(label)}">${escHtml(label.length > 60 ? label.slice(0,60)+'…' : label)}</span>
+            ${statusHtml}
+          </div>
+          ${item.type === 'network' ? `<div class="event-detail" id="detail-${i}">` +
+            (item.requestBody ? `REQUEST BODY:\n${truncate(item.requestBody, 500)}\n\n` : '') +
+            (item.responseBody ? `RESPONSE BODY:\n${truncate(item.responseBody, 500)}` : '') +
+            `</div>` : ''}
+          ${annotations[item.absTimestamp] ? `<div style="font-size:11px;color:#6f42c1;margin-top:3px;padding-left:24px">📝 ${escHtml(annotations[item.absTimestamp])}</div>` : ''}
+        `;
+
+        div.addEventListener('click', () => selectEvent(i, item));
+        container.appendChild(div);
+      });
+
+      if (container.innerHTML === '') {
+        container.innerHTML = '<div style="padding:20px;color:#999;text-align:center">No events to display</div>';
+      }
+    }
+
+    function selectEvent(i, item) {
+      document.querySelectorAll('.timeline-event').forEach(el => el.classList.remove('selected'));
+      const el = document.getElementById(`te-${i}`);
+      if (el) el.classList.add('selected');
+
+      selectedEventIndex = i;
+
+      // Expand network detail
+      if (item.type === 'network') {
+        const detail = document.getElementById(`detail-${i}`);
+        if (detail) detail.classList.toggle('visible');
+      }
+
+      // Seek video + rrweb
+      seekVideo(item.absTimestamp);
+      seekRrweb(item.absTimestamp);
+
+      // Show annotation panel
+      document.getElementById('annotation-panel').style.display = 'block';
+      const ta = document.getElementById('annotation-text');
+      ta.value = annotations[item.absTimestamp] || '';
+      ta.dataset.timestamp = item.absTimestamp;
+    }
+
+    async function saveAnnotation() {
+      const ta = document.getElementById('annotation-text');
+      const ts = parseInt(ta.dataset.timestamp);
+      if (!ts) return;
+      annotations[ts] = ta.value;
+
+      const annotationsArr = Object.entries(annotations).map(([k, v]) => ({
+        id: String(k),
+        eventTimestamp: parseInt(k),
+        text: v,
+      }));
+
+      try {
+        await fetch(`/api/v1/recordings/${recordingId}/annotations`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ annotations: annotationsArr }),
+        });
+        const ok = document.getElementById('save-ok');
+        ok.style.display = 'inline';
+        setTimeout(() => { ok.style.display = 'none'; }, 2000);
+        renderTimeline(); // Re-render to show annotation
+      } catch(e) {
+        alert('Failed to save annotation: ' + e.message);
+      }
+    }
+
+    async function analyzeRecording() {
+      const msg = `Recording ID for agent analysis: ${recordingId}\n\nUse browser_get_recording tool with id="${recordingId}" to retrieve full recording data including pages, events, and network traffic.`;
+      alert(msg);
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    function escHtml(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function truncate(s, n) {
+      if (!s) return '';
+      return s.length > n ? s.slice(0, n) + '…' : s;
+    }
+
+    init();
+  </script>
+</body>
+</html>

@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsup src/http-server.ts src/stdio-server.ts --format esm && shx chmod +x dist/*.js",
+    "build": "tsup src/http-server.ts src/stdio-server.ts --format esm && shx chmod +x dist/*.js && shx cp -r src/views dist/views && shx cp -r src/public dist/public",
     "prepare": "npm run build",
     "watch": "tsup src/http-server.ts src/stdio-server.ts --format esm --watch",
     "dev": "nodemon",

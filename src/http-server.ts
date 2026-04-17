@@ -426,8 +426,8 @@ async function main() {
 
   // ── Review UI ───────────────────────────────────────────────────────────────
 
-  // Serve rrweb bundle for review page (src/public/ — not bundled by tsup)
-  app.use("/public", express.static(path.join(__dirname, "..", "src", "public")));
+  // Serve static assets copied to dist/public/ by build script
+  app.use("/public", express.static(path.join(__dirname, "public")));
 
   // GET /review — list recordings
   app.get("/review", async (req: any, res: any) => {
@@ -465,7 +465,7 @@ async function main() {
   // GET /review/:id — full review UI
   app.get("/review/:id", async (req: any, res: any) => {
     try {
-      const viewPath = path.join(__dirname, "..", "src", "views", "review.html");
+      const viewPath = path.join(__dirname, "views", "review.html");
       if (fs.existsSync(viewPath)) {
         res.sendFile(viewPath);
       } else {

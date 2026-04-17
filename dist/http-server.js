@@ -95,7 +95,7 @@ import {
   type,
   updateMacro,
   wait
-} from "./chunk-UGBYD4PD.js";
+} from "./chunk-VGNTAFQO.js";
 import "./chunk-FT2ARCXD.js";
 
 // src/http-server.ts
@@ -425,7 +425,7 @@ async function main() {
       res.status(500).json({ error: err.message });
     }
   });
-  app.use("/public", express.static(path.join(__dirname, "..", "src", "public")));
+  app.use("/public", express.static(path.join(__dirname, "public")));
   app.get("/review", async (req, res) => {
     try {
       await ensureMongoConnected();
@@ -455,7 +455,7 @@ async function main() {
   });
   app.get("/review/:id", async (req, res) => {
     try {
-      const viewPath = path.join(__dirname, "..", "src", "views", "review.html");
+      const viewPath = path.join(__dirname, "views", "review.html");
       if (fs.existsSync(viewPath)) {
         res.sendFile(viewPath);
       } else {
