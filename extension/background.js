@@ -1463,8 +1463,12 @@ class BackgroundController {
     try {
       console.log('[Background] Connecting to MCP server...');
 
-      // Connect WebSocket (no debugger attachment yet - lazy attachment)
-      this.ws.connect();
+      // Connect WebSocket (no debugger attachment yet - lazy attachment).
+      // Don't await — the offscreen doc's auto-reconnect handles server unavailability.
+      // Explicitly catch so a rejected promise doesn't surface as an unhandled rejection.
+      this.ws.connect().catch(err => {
+        console.warn('[Background] Initial WebSocket connect attempt failed (auto-reconnect will retry):', err.message);
+      });
 
       // Update state - connected now means WebSocket connected
       // Debugger will be attached on-demand via ensureAttached()

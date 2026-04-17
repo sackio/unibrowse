@@ -171,7 +171,12 @@ class OffscreenManager {
     try {
       switch (message.type) {
         case 'OFFSCREEN_CONNECT':
-          await this.connect(message.url);
+          // Fire-and-forget: start connecting and respond immediately.
+          // The offscreen doc's auto-reconnect loop handles retries if the server
+          // is unavailable — no need to await and risk the 5-second sendToOffscreen timeout.
+          this.connect(message.url).catch(err => {
+            console.log('[Offscreen] Initial connect attempt failed (auto-reconnect will retry):', err.message);
+          });
           sendResponse({ success: true, state: this.connectionState });
           break;
 
@@ -237,10 +242,12 @@ class OffscreenManager {
     this.connectionState = 'connecting';
 
     return new Promise((resolve, reject) => {
+      let opened = false;
       try {
         this.ws = new WebSocket(url);
 
         this.ws.onopen = () => {
+          opened = true;
           console.log('[Offscreen] WebSocket connected');
           this.connectionState = 'connected';
 
@@ -351,6 +358,13 @@ class OffscreenManager {
             reject(new Error('WebSocket disconnected'));
           }
           this.pendingRequests.clear();
+
+          // Reject the connect() promise if the socket closed before it ever opened.
+          // This prevents the OFFSCREEN_CONNECT handler from awaiting indefinitely
+          // when the server is unavailable.
+          if (!opened) {
+            reject(new Error(`WebSocket closed before connecting (code: ${event.code})`));
+          }
 
           // Schedule reconnection (unless it was an intentional disconnect)
           this.scheduleReconnect();
