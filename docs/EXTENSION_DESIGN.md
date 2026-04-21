@@ -184,6 +184,30 @@ async function executeInPage(func, args) {
 
 ---
 
+## Iframe Support
+
+All interaction and inspection tools support an optional `frameTarget` parameter for operating inside iframes, including cross-origin frames.
+
+### How it works
+
+**Frame enumeration** — `browser_list_frames` calls `Page.getFrameTree` (CDP) and returns a flat list of all frames with their IDs, URLs, and parent relationships.
+
+**Cross-origin evaluation** — `Page.createIsolatedWorld({ frameId, worldName: '__unibrowse_frame_ctx__', grantUniversalAccess: true })` returns an `executionContextId` scoped to any frame, bypassing same-origin restrictions. This is the same technique used by Playwright and Puppeteer.
+
+**Viewport coordinate math for clicks** — Clicking inside an iframe requires viewport-absolute coordinates:
+1. `evaluateInFrame(frameId, ...)` returns the element's frame-local `getBoundingClientRect()`
+2. `DOM.getFrameOwner({ frameId })` returns the `backendNodeId` of the `<iframe>` element in the parent document
+3. `DOM.getBoxModel({ backendNodeId })` returns the iframe's viewport-relative position
+4. Frame-local rect + iframe top-left offset = viewport-absolute rect → passed to `Input.dispatchMouseEvent`
+
+**Snapshot/AX tree in frame** — `Accessibility.getFullAXTree({ frameId })` (Chrome 97+) returns the accessibility tree scoped to a specific frame.
+
+### Session recording in iframes
+
+Both `lib/network-interceptor.js` and `session-recorder.js` are injected with `allFrames: true` at recording start. Child frames that load after the main frame are caught by `chrome.webNavigation.onCompleted` (checking `frameId !== 0`) and injected individually using `frameIds: [frameId]`. All recorded events include a `frameId` field for correlation.
+
+---
+
 ## Tool Implementation Matrix
 
 | Tool | Implementation Method | CDP Command / Approach |
@@ -201,7 +225,8 @@ async function executeInPage(func, args) {
 | browser_press_key | CDP | `Input.dispatchKeyEvent` |
 | browser_wait | JavaScript | `setTimeout` / `await sleep(ms)` |
 | **Information** |
-| browser_snapshot | CDP | `Accessibility.getFullAXTree` |
+| browser_snapshot | CDP | `Accessibility.getFullAXTree` (supports `frameId`) |
+| browser_list_frames | CDP | `Page.getFrameTree` |
 | browser_screenshot | CDP | `Page.captureScreenshot` |
 | browser_get_console_logs | CDP | Listen to `Console.messageAdded` events |
 | **DOM Exploration** |

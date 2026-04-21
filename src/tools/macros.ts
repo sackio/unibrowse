@@ -225,7 +225,7 @@ export const executeMacro: Tool = {
       // self-invoking IIFEs ((async function() {...}())), where the latter
       // evaluates to a Promise rather than a callable function.
       const wrappedCode = `
-        (async function() {
+        return (async function() {
           const macroFunction = ${macro.code};
           const params = ${JSON.stringify(validatedParams.params || {})};
           try {

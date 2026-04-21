@@ -1,6 +1,6 @@
 # unibrowse Tools Reference
 
-Complete reference for all 72 MCP tools available in unibrowse.
+Complete reference for all 73 MCP tools available in unibrowse.
 
 ## Table of Contents
 
@@ -8,6 +8,7 @@ Complete reference for all 72 MCP tools available in unibrowse.
 - [Snapshot & Interaction](#snapshot--interaction) (6 tools)
 - [DOM Exploration](#dom-exploration) (11 tools)
 - [Custom](#custom) (4 tools)
+- [Frames](#frames) (1 tool)
 - [Tabs](#tabs) (4 tools)
 - [Multi-Tab Management](#multi-tab-management) (4 tools)
 - [Forms](#forms) (2 tools)
@@ -103,7 +104,8 @@ Wait for a specified amount of time.
 ### `browser_snapshot`
 Capture an accessibility snapshot of the current page.
 
-**Parameters:** None
+**Parameters:**
+- `frameTarget` (string, optional): Target a specific iframe. CDP frame ID from `browser_list_frames`, or CSS selector of an `<iframe>` element. Omit for the main frame.
 
 **Returns:** Accessibility tree with element references
 
@@ -116,6 +118,7 @@ Click on an element.
 - `button` (string, optional): Mouse button ("left", "right", "middle")
 - `doubleClick` (boolean, optional): Perform double-click
 - `modifiers` (array, optional): Modifier keys to hold
+- `frameTarget` (string, optional): Target a specific iframe. CDP frame ID from `browser_list_frames`, or CSS selector of an `<iframe>` element. Omit for the main frame.
 
 **Example:**
 ```json
@@ -133,6 +136,7 @@ Drag and drop between two elements.
 - `startRef` (string, required): Source element reference
 - `endElement` (string, required): Target element description
 - `endRef` (string, required): Target element reference
+- `frameTarget` (string, optional): Target a specific iframe. CDP frame ID from `browser_list_frames`, or CSS selector of an `<iframe>` element. Omit for the main frame.
 
 ### `browser_hover`
 Hover over an element.
@@ -140,6 +144,7 @@ Hover over an element.
 **Parameters:**
 - `element` (string, required): Human-readable element description
 - `ref` (string, required): Element reference from snapshot
+- `frameTarget` (string, optional): Target a specific iframe. CDP frame ID from `browser_list_frames`, or CSS selector of an `<iframe>` element. Omit for the main frame.
 
 ### `browser_type`
 Type text into an editable element.
@@ -150,6 +155,7 @@ Type text into an editable element.
 - `text` (string, required): Text to type
 - `submit` (boolean, optional): Press Enter after typing
 - `slowly` (boolean, optional): Type one character at a time
+- `frameTarget` (string, optional): Target a specific iframe. CDP frame ID from `browser_list_frames`, or CSS selector of an `<iframe>` element. Omit for the main frame.
 
 **Example:**
 ```json
@@ -179,6 +185,7 @@ Query DOM elements by CSS selector.
 **Parameters:**
 - `selector` (string, required): CSS selector
 - `limit` (number, optional): Maximum results to return (default: 10)
+- `frameTarget` (string, optional): Target a specific iframe. CDP frame ID from `browser_list_frames`, or CSS selector of an `<iframe>` element. Omit for the main frame.
 
 **Example:**
 ```json
@@ -255,6 +262,7 @@ Get filtered accessibility tree.
 - `interactiveOnly` (boolean, optional): Only interactive elements
 - `roles` (array, optional): Filter by ARIA roles
 - `maxDepth` (number, optional): Maximum tree depth (default: 5)
+- `frameTarget` (string, optional): Target a specific iframe. CDP frame ID from `browser_list_frames`, or CSS selector of an `<iframe>` element. Omit for the main frame.
 
 ### `browser_find_by_text`
 Find elements containing specific text.
@@ -299,11 +307,20 @@ Evaluate JavaScript in the page context.
 
 **Parameters:**
 - `expression` (string, required): JavaScript code to evaluate
+- `frameTarget` (string, optional): Evaluate inside a specific iframe. CDP frame ID from `browser_list_frames`, or CSS selector of an `<iframe>` element. Omit for the main frame.
 
 **Example:**
 ```json
 {
   "expression": "document.title"
+}
+```
+
+**Iframe example:**
+```json
+{
+  "expression": "document.querySelector('input[name=card]').value",
+  "frameTarget": "iframe#stripe-frame"
 }
 ```
 
@@ -339,6 +356,64 @@ Take a screenshot of the page or element.
 {
   "fullPage": true,
   "filename": "page-capture.png"
+}
+```
+
+---
+
+## Frames
+
+### `browser_list_frames`
+List all frames (iframes) in the current page. Returns frameId, URL, parentFrameId, name, and best-effort iframeSelector for each frame.
+
+Use the `frameId` values returned here with any tool that accepts a `frameTarget` parameter to operate inside that frame. Works with cross-origin frames.
+
+**Parameters:**
+- `tabTarget` (number | string, optional): Tab to query (defaults to active tab)
+
+**Returns:** Object with:
+- `frames` (array): Frame objects with:
+  - `frameId` (string): CDP frame ID (use as `frameTarget` value)
+  - `url` (string): Frame URL
+  - `name` (string | null): Frame name attribute
+  - `parentFrameId` (string | null): Parent frame's ID (null for top-level frame)
+  - `iframeSelector` (string | null): Best-effort CSS selector of the `<iframe>` element
+- `count` (number): Total number of frames
+
+**Example:**
+```json
+// Response:
+{
+  "frames": [
+    {
+      "frameId": "1234ABCD.1",
+      "url": "https://example.com",
+      "name": null,
+      "parentFrameId": null,
+      "iframeSelector": null
+    },
+    {
+      "frameId": "1234ABCD.2",
+      "url": "https://stripe.com/checkout",
+      "name": "stripe-checkout",
+      "parentFrameId": "1234ABCD.1",
+      "iframeSelector": "iframe[name='stripe-checkout']"
+    }
+  ],
+  "count": 2
+}
+```
+
+**Usage pattern:**
+```json
+// 1. List frames to find frameId
+{ "tool": "browser_list_frames" }
+
+// 2. Operate inside the frame using its frameId
+{
+  "tool": "browser_evaluate",
+  "expression": "document.querySelector('input').value",
+  "frameTarget": "1234ABCD.2"
 }
 ```
 
@@ -519,6 +594,33 @@ The following tool categories support the `tabTarget` parameter:
 
 **Note:** Tab management operations (list_tabs, switch_tab, create_tab, close_tab) do not use `tabTarget` as they operate on the browser level, not individual attached tabs.
 
+### Frame Target Parameter
+
+Many browser automation tools also support an optional `frameTarget` parameter to operate inside an iframe on the page:
+
+**Parameters:**
+- `frameTarget` (string, optional): CDP frame ID (from `browser_list_frames`) or CSS selector of an `<iframe>` element
+  - If omitted, operates on the main frame
+  - CDP frame ID format: `"1234ABCD.2"` (hex string + dot + number)
+  - CSS selector format: `"iframe#stripe-frame"` or `"iframe[name='checkout']"`
+  - **Note:** For nameless iframes, always use the `frameId` from `browser_list_frames`
+
+**Supported Tools:**
+- Snapshot & Interaction: `browser_snapshot`, `browser_click`, `browser_drag`, `browser_hover`, `browser_type`
+- DOM Exploration: `browser_query_dom`, `browser_get_filtered_aria_tree`
+- Custom: `browser_evaluate`
+- Forms: `browser_fill_form`
+
+**Example:**
+```json
+// Click a button inside a Stripe checkout iframe
+{
+  "element": "Pay button",
+  "ref": "789",
+  "frameTarget": "1234ABCD.2"
+}
+```
+
 ---
 
 ## Forms
@@ -531,6 +633,7 @@ Fill multiple form fields at once.
   - `element` (string): Field description
   - `ref` (string): Field reference
   - `value` (string): Value to fill
+- `frameTarget` (string, optional): Target a specific iframe. CDP frame ID from `browser_list_frames`, or CSS selector of an `<iframe>` element. Omit for the main frame.
 
 **Example:**
 ```json

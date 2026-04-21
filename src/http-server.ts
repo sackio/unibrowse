@@ -31,6 +31,8 @@ import * as recordings from "@/tools/recordings";
 import * as realisticInput from "@/tools/realistic-input";
 import * as multiTabManagement from "@/tools/multi-tab-management";
 import * as videoRecording from "@/tools/video-recording";
+import * as frames from "@/tools/frames";
+import * as errors from "@/tools/errors";
 import * as chromeLauncher from "@/tools/chrome-launcher";
 import type { Tool } from "@/tools/tool";
 
@@ -88,6 +90,7 @@ const recordingTools: Tool[] = [
   recordings.saveRecording,
   recordings.listRecordings,
   recordings.getRecording,
+  recordings.updateRecording,
   recordings.deleteRecording,
   recordings.startSessionRecording,
   recordings.stopSessionRecording,
@@ -179,6 +182,15 @@ const multiTabTools: Tool[] = [
   multiTabManagement.attachTab,
 ];
 
+const frameTools: Tool[] = [
+  frames.listFrames,
+];
+
+const diagnosticTools: Tool[] = [
+  errors.getErrors,
+  errors.reloadExtension,
+];
+
 const snapshotTools: Tool[] = [
   common.navigate(false),
   common.goBack(false),
@@ -208,6 +220,8 @@ const snapshotTools: Tool[] = [
   ...realisticInputTools,
   ...multiTabTools,
   ...videoRecordingTools,
+  ...frameTools,
+  ...diagnosticTools,
 ];
 
 const resources: Resource[] = [];
@@ -226,7 +240,7 @@ async function main() {
   const app = express();
   app.use(express.json({ limit: "50mb" }));
 
-  // Allow large binary uploads for video
+  // Allow large binary uploads for video (matches both /video and /video/:tabId)
   app.use("/api/v1/recordings/:id/video", express.raw({ type: "video/*", limit: "500mb" }));
 
   // CORS for extension fetch calls
@@ -279,6 +293,9 @@ async function main() {
         networkEntryCount: body.networkEntryCount || 0,
         annotations: [],
         videoPath: null,
+        primaryTabId: body.primaryTabId || null,
+        recordedTabIds: body.recordedTabIds || [],
+        videoStartTimes: body.videoStartTimes || {},
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -307,24 +324,24 @@ async function main() {
     }
   });
 
-  // POST /api/v1/recordings/:id/events — upload rrweb events + network entries
+  // POST /api/v1/recordings/:id/events — upload rrweb events + network entries + interactions
   app.post("/api/v1/recordings/:id/events", async (req: any, res: any) => {
     try {
       await ensureMongoConnected();
       const { id } = req.params;
-      const { rrwebEvents = [], networkEntries = [] } = req.body as any;
+      const { rrwebEvents = [], networkEntries = [], interactions = [] } = req.body as any;
       const recordingEvents = mongodb.getRecordingEventsCollection();
       await recordingEvents.replaceOne(
         { recordingId: id },
-        { recordingId: id, rrwebEvents, networkEntries, updatedAt: new Date() },
+        { recordingId: id, rrwebEvents, networkEntries, interactions, updatedAt: new Date() },
         { upsert: true }
       );
       const recordings = mongodb.getRecordingsCollection();
       await recordings.updateOne(
         { id },
-        { $set: { rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, updatedAt: new Date() } }
+        { $set: { rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, interactionCount: interactions.length, updatedAt: new Date() } }
       );
-      res.json({ success: true, rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length });
+      res.json({ success: true, rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, interactionCount: interactions.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -395,14 +412,78 @@ async function main() {
     }
   });
 
+  // POST /api/v1/recordings/:id/video/:tabId — upload per-tab video
+  app.post("/api/v1/recordings/:id/video/:tabId", async (req: any, res: any) => {
+    try {
+      await ensureMongoConnected();
+      const { id, tabId } = req.params;
+      const videoPath = path.join(RECORDINGS_DIR, `${id}-tab-${tabId}.webm`);
+      fs.writeFileSync(videoPath, req.body as Buffer);
+      const recordings = mongodb.getRecordingsCollection();
+      await recordings.updateOne(
+        { id },
+        { $set: { updatedAt: new Date() } }
+      );
+      res.json({ success: true, size: (req.body as Buffer).length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/v1/recordings/:id/video/:tabId — stream per-tab video
+  app.get("/api/v1/recordings/:id/video/:tabId", (req: any, res: any) => {
+    const { id, tabId } = req.params;
+    const absPath = path.join(RECORDINGS_DIR, `${id}-tab-${tabId}.webm`);
+    if (!fs.existsSync(absPath)) return res.status(404).json({ error: "No video for this tab" });
+    const stat = fs.statSync(absPath);
+    const range = req.headers.range;
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+      res.writeHead(206, {
+        "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+        "Accept-Ranges": "bytes",
+        "Content-Length": end - start + 1,
+        "Content-Type": "video/webm",
+      });
+      fs.createReadStream(absPath, { start, end }).pipe(res);
+    } else {
+      res.writeHead(200, {
+        "Content-Length": stat.size,
+        "Content-Type": "video/webm",
+        "Accept-Ranges": "bytes",
+      });
+      fs.createReadStream(absPath).pipe(res);
+    }
+  });
+
   // GET /api/v1/recordings/:id/events — get rrweb events + network for replay
   app.get("/api/v1/recordings/:id/events", async (req: any, res: any) => {
     try {
       await ensureMongoConnected();
       const recordingEvents = mongodb.getRecordingEventsCollection();
       const doc = await recordingEvents.findOne({ recordingId: req.params.id }, { projection: { _id: 0 } });
-      if (!doc) return res.json({ rrwebEvents: [], networkEntries: [] });
-      res.json({ rrwebEvents: doc.rrwebEvents || [], networkEntries: doc.networkEntries || [] });
+      if (!doc) return res.json({ rrwebEvents: [], networkEntries: [], interactions: [] });
+      res.json({ rrwebEvents: doc.rrwebEvents || [], networkEntries: doc.networkEntries || [], interactions: doc.interactions || [] });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PUT /api/v1/recordings/:id — update title, description, tags
+  app.put("/api/v1/recordings/:id", async (req: any, res: any) => {
+    try {
+      await ensureMongoConnected();
+      const recordings = mongodb.getRecordingsCollection();
+      const { title, description, tags } = req.body as any;
+      const update: any = { updatedAt: new Date() };
+      if (title !== undefined) update.title = title;
+      if (description !== undefined) update.description = description;
+      if (tags !== undefined) update.tags = tags;
+      const result = await recordings.updateOne({ id: req.params.id }, { $set: update });
+      if (result.matchedCount === 0) return res.status(404).json({ error: "Not found" });
+      res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

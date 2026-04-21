@@ -13,9 +13,8 @@ class OffscreenManager {
     this.pendingRequests = new Map();
     this.messageId = 0;
 
-    // Tab capture recording state
-    this.mediaRecorder = null;
-    this.videoChunks = [];
+    // Tab capture recording state — one recorder per tab (keyed by tabId or 'default')
+    this.recorders = new Map();
 
     // Auto-reconnect configuration
     this.reconnectAttempts = 0;
@@ -204,13 +203,21 @@ class OffscreenManager {
           break;
 
         case 'OFFSCREEN_START_TAB_RECORDING':
-          await this.startTabRecording(message.streamId);
+          await this.startTabRecording(message.streamId, message.tabId ?? 'default');
           sendResponse({ success: true });
           break;
 
         case 'OFFSCREEN_STOP_TAB_RECORDING': {
-          const videoData = await this.stopTabRecording();
-          sendResponse({ success: true, arrayBuffer: videoData.arrayBuffer, mimeType: videoData.mimeType });
+          const videoData = await this.stopTabRecording(message.tabId ?? 'default');
+          // Base64-encode to reliably transfer binary across extension contexts.
+          // ArrayBuffers can arrive as plain objects in MV3 service workers via structured clone.
+          const bytes = new Uint8Array(videoData.arrayBuffer);
+          let binary = '';
+          const chunkSize = 8192;
+          for (let i = 0; i < bytes.byteLength; i += chunkSize) {
+            binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + chunkSize, bytes.byteLength)));
+          }
+          sendResponse({ success: true, videoBase64: btoa(binary), mimeType: videoData.mimeType, byteLength: videoData.arrayBuffer.byteLength });
           break;
         }
 
@@ -482,13 +489,13 @@ class OffscreenManager {
     }
   }
 
-  async startTabRecording(streamId) {
-    // Stop any leftover recording
-    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-      this.mediaRecorder.stop();
-      this.mediaRecorder.stream?.getTracks().forEach(t => t.stop());
+  async startTabRecording(streamId, key = 'default') {
+    // Stop any leftover recording for this key
+    const existing = this.recorders.get(key);
+    if (existing && existing.mediaRecorder.state !== 'inactive') {
+      existing.mediaRecorder.stop();
+      existing.stream?.getTracks().forEach(t => t.stop());
     }
-    this.videoChunks = [];
 
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -503,35 +510,38 @@ class OffscreenManager {
       ? 'video/webm;codecs=vp9'
       : 'video/webm';
 
-    this.mediaRecorder = new MediaRecorder(stream, { mimeType });
-    this.mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) this.videoChunks.push(e.data);
+    const chunks = [];
+    const mediaRecorder = new MediaRecorder(stream, { mimeType });
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
     };
-    this.mediaRecorder.start(1000); // 1-second chunks
-    console.log('[Offscreen] Tab recording started, mimeType:', mimeType);
+    mediaRecorder.start(1000); // 1-second chunks
+
+    this.recorders.set(key, { mediaRecorder, chunks, stream });
+    console.log(`[Offscreen] Tab recording started for key=${key}, mimeType:`, mimeType);
   }
 
-  stopTabRecording() {
+  stopTabRecording(key = 'default') {
     return new Promise((resolve, reject) => {
-      if (!this.mediaRecorder || this.mediaRecorder.state === 'inactive') {
-        reject(new Error('No active tab recording'));
+      const rec = this.recorders.get(key);
+      if (!rec || rec.mediaRecorder.state === 'inactive') {
+        reject(new Error(`No active tab recording for key=${key}`));
         return;
       }
       const mimeType = 'video/webm';
-      this.mediaRecorder.onstop = async () => {
+      rec.mediaRecorder.onstop = async () => {
         try {
-          const blob = new Blob(this.videoChunks, { type: mimeType });
+          const blob = new Blob(rec.chunks, { type: mimeType });
           const arrayBuffer = await blob.arrayBuffer();
-          this.videoChunks = [];
-          this.mediaRecorder = null;
-          console.log('[Offscreen] Tab recording stopped,', arrayBuffer.byteLength, 'bytes');
+          this.recorders.delete(key);
+          console.log(`[Offscreen] Tab recording stopped for key=${key},`, arrayBuffer.byteLength, 'bytes');
           resolve({ arrayBuffer, mimeType });
         } catch (err) {
           reject(err);
         }
       };
-      this.mediaRecorder.stream?.getTracks().forEach(t => t.stop());
-      this.mediaRecorder.stop();
+      rec.stream?.getTracks().forEach(t => t.stop());
+      rec.mediaRecorder.stop();
     });
   }
 

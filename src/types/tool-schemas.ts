@@ -58,6 +58,21 @@ const TabTargetSchema = z.object({
     ),
 });
 
+// Schema for optional frame targeting (iframes within a page)
+const FrameTargetSchema = z.object({
+  frameTarget: z
+    .string()
+    .optional()
+    .describe(
+      "Optional frame identifier to operate inside an iframe. " +
+      "Accepts a CDP frameId string from browser_list_frames, or a CSS selector of an " +
+      "<iframe> element (e.g. '#checkout-frame', 'iframe[name=\"payment\"]'). " +
+      "Nameless iframes without a stable selector must use frameId from browser_list_frames. " +
+      "CDP bypasses same-origin policy — cross-origin iframes are accessible. " +
+      "If omitted, operates on the main frame."
+    ),
+});
+
 // Schema for optional token limiting (used across all tools to control response size)
 const MaxTokensSchema = z.object({
   max_tokens: z
@@ -177,7 +192,7 @@ export const CreateWindowTool = z.object({
 
 export const FillFormTool = z.object({
   name: z.literal("browser_fill_form"),
-  description: z.literal("Fill multiple form fields at once"),
+  description: z.literal("Fill multiple form fields at once, including forms inside iframes via frameTarget."),
   arguments: z.object({
     fields: z.array(
       z.object({
@@ -192,7 +207,7 @@ export const FillFormTool = z.object({
           .describe("Value to fill in the field"),
       })
     ).describe("Array of fields to fill"),
-  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+  }).merge(TabTargetSchema).merge(FrameTargetSchema).merge(MaxTokensSchema),
 });
 
 export const SubmitFormTool = z.object({
@@ -212,18 +227,22 @@ export const GetNetworkLogsTool = z.object({
 export const SnapshotTool = z.object({
   name: z.literal("browser_snapshot"),
   description: z.literal(
-    "Capture accessibility snapshot of the current page. Use this for getting references to elements to interact with. Defaults to interactive elements only (buttons, links, inputs, etc.) to minimize context usage. Set interactiveOnly: false for the full tree."
+    "Capture accessibility snapshot of the current page or a specific iframe. " +
+    "Use this for getting references to elements to interact with. " +
+    "Defaults to interactive elements only (buttons, links, inputs, etc.) to minimize context usage. " +
+    "Set interactiveOnly: false for the full tree. " +
+    "Use frameTarget to snapshot the contents of a specific iframe."
   ),
   arguments: z.object({
     interactiveOnly: z.boolean().default(true).describe("Only include interactive elements (buttons, links, inputs, etc.). Default: true. Set to false for the full accessibility tree."),
     maxDepth: z.number().default(5).describe("Maximum depth to traverse in the accessibility tree. Default: 5."),
-  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+  }).merge(TabTargetSchema).merge(FrameTargetSchema).merge(MaxTokensSchema),
 });
 
 export const ClickTool = z.object({
   name: z.literal("browser_click"),
-  description: z.literal("Perform click on a web page"),
-  arguments: ElementSchema.merge(TabTargetSchema).merge(MaxTokensSchema),
+  description: z.literal("Perform click on a web page element, including elements inside iframes via frameTarget."),
+  arguments: ElementSchema.merge(TabTargetSchema).merge(FrameTargetSchema).merge(MaxTokensSchema),
 });
 
 export const DragTool = z.object({
@@ -246,24 +265,24 @@ export const DragTool = z.object({
     endRef: z
       .string()
       .describe("Exact target element reference from the page snapshot"),
-  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+  }).merge(TabTargetSchema).merge(FrameTargetSchema).merge(MaxTokensSchema),
 });
 
 export const HoverTool = z.object({
   name: z.literal("browser_hover"),
-  description: z.literal("Hover over element on page"),
-  arguments: ElementSchema.merge(TabTargetSchema).merge(MaxTokensSchema),
+  description: z.literal("Hover over element on page, including elements inside iframes via frameTarget."),
+  arguments: ElementSchema.merge(TabTargetSchema).merge(FrameTargetSchema).merge(MaxTokensSchema),
 });
 
 export const TypeTool = z.object({
   name: z.literal("browser_type"),
-  description: z.literal("Type text into editable element"),
+  description: z.literal("Type text into editable element, including inputs inside iframes via frameTarget."),
   arguments: ElementSchema.extend({
     text: z.string().describe("Text to type into the element"),
     submit: z
       .boolean()
       .describe("Whether to submit entered text (press Enter after)"),
-  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+  }).merge(TabTargetSchema).merge(FrameTargetSchema).merge(MaxTokensSchema),
 });
 
 export const SelectOptionTool = z.object({
@@ -327,12 +346,53 @@ export const GetConsoleLogsTool = z.object({
 
 export const EvaluateTool = z.object({
   name: z.literal("browser_evaluate"),
-  description: z.literal("Evaluate JavaScript expression on page or element"),
+  description: z.literal(
+    "Evaluate JavaScript expression in the page or inside a specific iframe. " +
+    "Use frameTarget with a frameId from browser_list_frames to execute inside an iframe. " +
+    "CDP bypasses same-origin policy, so cross-origin iframes are accessible."
+  ),
   arguments: z.object({
     expression: z
       .string()
       .describe("JavaScript expression to evaluate in page context"),
-  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+  }).merge(TabTargetSchema).merge(FrameTargetSchema).merge(MaxTokensSchema),
+});
+
+export const ListFramesTool = z.object({
+  name: z.literal("browser_list_frames"),
+  description: z.literal(
+    "List all frames (iframes) in the current page. " +
+    "Returns frameId, url, parentFrameId, name, and best-effort iframeSelector for each frame. " +
+    "Use the frameId with browser_evaluate, browser_click, browser_type, browser_snapshot, " +
+    "browser_query_dom, and browser_fill_form via their frameTarget parameter to operate inside a frame. " +
+    "CDP bypasses same-origin policy — cross-origin iframes are accessible."
+  ),
+  arguments: TabTargetSchema.merge(MaxTokensSchema),
+});
+
+export const GetErrorsTool = z.object({
+  name: z.literal("browser_get_errors"),
+  description: z.literal(
+    "Get a unified error report across all attached browser tabs and the extension background. " +
+    "Returns page-level errors/warnings (from all tabs), background handler errors, tab health status, " +
+    "and a summary. Use 'since' to filter to errors after a timestamp. " +
+    "Designed for the heal/diagnostic workflow — call this first when something seems wrong."
+  ),
+  arguments: z.object({
+    since: z.number().optional().describe("Only return errors after this Unix ms timestamp"),
+    levelsOnly: z.array(z.string()).optional().describe("Filter page errors to these levels (e.g. ['error']). Defaults to error+warning."),
+  }).merge(MaxTokensSchema),
+});
+
+export const ReloadExtensionTool = z.object({
+  name: z.literal("browser_reload_extension"),
+  description: z.literal(
+    "Reload the unibrowse Chrome extension (calls chrome.runtime.reload()). " +
+    "Use this to recover from extension crashes, stale state, or after background.js errors. " +
+    "The extension will reconnect automatically within ~2 seconds. " +
+    "All attached tab sessions will need to be re-established after reload."
+  ),
+  arguments: z.object({}).merge(MaxTokensSchema),
 });
 
 // DOM Exploration Tools
@@ -340,7 +400,8 @@ export const EvaluateTool = z.object({
 export const QueryDOMTool = z.object({
   name: z.literal("browser_query_dom"),
   description: z.literal(
-    "Query DOM elements by CSS selector and return basic info without full ARIA tree"
+    "Query DOM elements by CSS selector and return basic info without full ARIA tree. " +
+    "Use frameTarget to query inside a specific iframe."
   ),
   arguments: z.object({
     selector: z.string().describe("CSS selector to query elements"),
@@ -348,7 +409,7 @@ export const QueryDOMTool = z.object({
       .number()
       .optional()
       .describe("Maximum number of elements to return (default: 10)"),
-  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+  }).merge(TabTargetSchema).merge(FrameTargetSchema).merge(MaxTokensSchema),
 });
 
 export const GetVisibleTextTool = z.object({
@@ -425,7 +486,8 @@ export const GetPageMetadataTool = z.object({
 export const GetFilteredAriaTreeTool = z.object({
   name: z.literal("browser_get_filtered_aria_tree"),
   description: z.literal(
-    "Get ARIA tree with filters to reduce token usage (e.g. only interactive elements, specific roles, max depth)"
+    "Get ARIA tree with filters to reduce token usage (e.g. only interactive elements, specific roles, max depth). " +
+    "Use frameTarget to get the ARIA tree of a specific iframe."
   ),
   arguments: z.object({
     roles: z
@@ -442,7 +504,7 @@ export const GetFilteredAriaTreeTool = z.object({
       .boolean()
       .optional()
       .describe("Only include interactive elements (buttons, links, inputs, etc.)"),
-  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+  }).merge(TabTargetSchema).merge(FrameTargetSchema).merge(MaxTokensSchema),
 });
 
 export const FindByTextTool = z.object({
@@ -1208,8 +1270,9 @@ export const SaveRecordingTool = z.object({
 export const ListRecordingsTool = z.object({
   name: z.literal("browser_list_recordings"),
   description: z.literal(
-    "List saved user interaction recordings from MongoDB. Supports filtering by search text, " +
-    "tags, and starting URL. Returns recordings without steps (use browser_get_recording for full steps)."
+    "List saved session recordings from MongoDB. Returns metadata for each: title, description, tags, " +
+    "startUrl, duration, pages visited, network request count, interaction count, and annotations. " +
+    "Use browser_get_recording with includeEvents=true to get full events for analysis."
   ),
   arguments: z.object({
     search: z.string().optional().describe("Search term to match against title and description"),
@@ -1222,11 +1285,47 @@ export const ListRecordingsTool = z.object({
 export const GetRecordingTool = z.object({
   name: z.literal("browser_get_recording"),
   description: z.literal(
-    "Get a saved user interaction recording by ID, including all steps with their annotations. " +
-    "Use browser_list_recordings to find recording IDs."
+    "Get a saved session recording by ID. Returns metadata by default. " +
+    "Use includeInteractions/includeNetwork/includeStats to fetch event data, with optional filtering by time range, " +
+    "interaction type, selector, URL pattern, HTTP method/status, and limit/offset pagination. " +
+    "includeEvents=true is shorthand for includeInteractions+includeNetwork. " +
+    "Use browser_list_recordings to find IDs."
   ),
   arguments: z.object({
     id: z.string().describe("The recording ID to retrieve"),
+    // what to include
+    includeEvents: z.boolean().optional().describe("Shorthand for includeInteractions=true + includeNetwork=true."),
+    includeInteractions: z.boolean().optional().describe("Include user interaction events (clicks, scrolls, inputs, navigations)."),
+    includeNetwork: z.boolean().optional().describe("Include network request/response entries."),
+    includeStats: z.boolean().optional().describe("Include summary statistics: counts by interaction type, top URLs, network error rate, time span."),
+    // time range
+    startTime: z.number().optional().describe("Filter events at or after this Unix timestamp (ms)."),
+    endTime: z.number().optional().describe("Filter events at or before this Unix timestamp (ms)."),
+    // interaction filters
+    interactionTypes: z.array(z.string()).optional().describe("Filter interactions by kind, e.g. ['click', 'scroll', 'mousemove', 'dom_mutation', 'keydown', 'navigate']."),
+    selectorPattern: z.string().optional().describe("Regex applied to interaction selector strings."),
+    // network filters
+    networkUrlPattern: z.string().optional().describe("Regex applied to network entry URLs."),
+    networkMethod: z.string().optional().describe("Filter network entries by HTTP method (GET, POST, etc.)."),
+    networkStatusMin: z.number().optional().describe("Keep network entries with status >= this value."),
+    networkStatusMax: z.number().optional().describe("Keep network entries with status <= this value."),
+    // pagination
+    limit: z.number().optional().describe("Max interactions or network entries to return (default: 100)."),
+    offset: z.number().optional().describe("Skip first N results for pagination (default: 0)."),
+  }).merge(MaxTokensSchema),
+});
+
+export const UpdateRecordingTool = z.object({
+  name: z.literal("browser_update_recording"),
+  description: z.literal(
+    "Update the title, description, or tags of a saved session recording. " +
+    "Use this to annotate sessions after reviewing them."
+  ),
+  arguments: z.object({
+    id: z.string().describe("The recording ID to update"),
+    title: z.string().optional().describe("New title for the recording"),
+    description: z.string().optional().describe("Description of what this session demonstrates"),
+    tags: z.array(z.string()).optional().describe("Tags for categorization (replaces existing tags)"),
   }).merge(MaxTokensSchema),
 });
 

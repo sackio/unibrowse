@@ -162,7 +162,7 @@ class CDPHelper {
       // Enable essential CDP domains
       // Note: Input domain doesn't have .enable method
       console.log('[CDP] Enabling CDP domains...');
-      await this.enableDomains(['Page', 'Runtime', 'DOM', 'Accessibility', 'Console', 'Network']);
+      await this.enableDomains(['Page', 'Runtime', 'DOM', 'Accessibility', 'Console', 'Log', 'Network']);
       console.log('[CDP] All domains enabled');
 
       console.log('[CDP] attach() complete, returning true');
@@ -425,36 +425,30 @@ class CDPHelper {
    * Evaluate JavaScript in page context
    */
   async evaluate(expression, returnByValue = true) {
+    // Wrap in an async IIFE so const/let declarations are scoped (avoiding "already declared"
+    // on re-runs in the shared MAIN world scope).
+    // For single-line expressions (no semicolons, no newlines) add an explicit `return` so
+    // callers get back the value (e.g. `document.title` should return "Page Title", not undefined).
+    // Multi-line scripts are expected to contain explicit `return` statements themselves.
+    const isExpression = !expression.includes('\n') && !expression.trimEnd().endsWith(';');
+    const body = isExpression ? `return (${expression});` : expression;
+    const wrapped = `(async function() {\n${body}\n})()`;
     try {
       const result = await this.sendCommand('Runtime.evaluate', {
-        expression,
+        expression: wrapped,
         returnByValue,
         awaitPromise: true,
         userGesture: true
       });
 
       if (result.exceptionDetails) {
-        throw new Error(`Evaluation error: ${result.exceptionDetails.exception.description}`);
+        throw new Error(`Evaluation error: ${result.exceptionDetails.exception?.description || result.exceptionDetails.text}`);
       }
 
       return result.result.value;
     } catch (error) {
-      // Auto-retry wrapped in an async IIFE when the expression contains a bare return statement.
-      // Runtime.evaluate expects an expression, not a statement — return outside a function is invalid.
-      if (error.message && error.message.includes('Illegal return statement')) {
-        console.warn('[CDP] Expression has bare return statement, retrying wrapped in async IIFE...');
-        const wrapped = `(async function() {\n${expression}\n})()`;
-        const wrappedResult = await this.sendCommand('Runtime.evaluate', {
-          expression: wrapped,
-          returnByValue,
-          awaitPromise: true,
-          userGesture: true
-        });
-        if (wrappedResult.exceptionDetails) {
-          throw new Error(`Evaluation error: ${wrappedResult.exceptionDetails.exception?.description || 'unknown error'}`);
-        }
-        return wrappedResult.result.value;
-      }
+      // No longer need a separate "Illegal return statement" retry — the IIFE wrapper handles it.
+      // Keep the block for any other retry-able errors below.
       // Check if this is a navigation interruption
       if (error.message && error.message.includes('Page navigation interrupted command execution')) {
         // Return a special value indicating navigation occurred
@@ -466,6 +460,124 @@ class CDPHelper {
       }
       throw error;
     }
+  }
+
+  // ─── Frame-aware evaluation ───────────────────────────────────────────────
+
+  /**
+   * Get the frame tree for the current page.
+   * Returns raw CDP { frame, childFrames } tree from Page.getFrameTree.
+   */
+  async getFrameTree() {
+    const result = await this.sendCommand('Page.getFrameTree');
+    return result.frameTree;
+  }
+
+  /**
+   * Get an executionContextId scoped to a specific frame.
+   * Uses Page.createIsolatedWorld which works cross-origin (CDP bypasses SOP).
+   * Throws a clear error for unscriptable URLs (about:, chrome://, data:).
+   *
+   * @param {string} frameId  CDP frame ID from getFrameTree()
+   */
+  async getFrameExecutionContextId(frameId) {
+    const result = await this.sendCommand('Page.createIsolatedWorld', {
+      frameId,
+      worldName: '__unibrowse_frame_ctx__',
+      grantUniversalAccess: true,
+    });
+    return result.executionContextId;
+  }
+
+  /**
+   * Evaluate JavaScript in a specific frame.
+   * Wraps in an async IIFE (same as evaluate()) so const/let are scoped
+   * and bare return statements are valid.
+   *
+   * @param {string} frameId  CDP frame ID from getFrameTree()
+   * @param {string} expression
+   * @param {boolean} returnByValue
+   */
+  async evaluateInFrame(frameId, expression, returnByValue = true) {
+    let contextId;
+    try {
+      contextId = await this.getFrameExecutionContextId(frameId);
+    } catch (err) {
+      throw new Error(`Cannot get execution context for frame ${frameId}: ${err.message}`);
+    }
+
+    const wrapped = `(async function() {\n${expression}\n})()`;
+    const result = await this.sendCommand('Runtime.evaluate', {
+      expression: wrapped,
+      contextId,
+      returnByValue,
+      awaitPromise: true,
+      userGesture: true,
+    });
+
+    if (result.exceptionDetails) {
+      throw new Error(
+        `Frame evaluation error: ${result.exceptionDetails.exception?.description || result.exceptionDetails.text}`
+      );
+    }
+    return result.result.value;
+  }
+
+  /**
+   * Query an element inside a frame and return its viewport-absolute bounding rect.
+   * Uses DOM.getFrameOwner to find the <iframe> element in the parent, then
+   * DOM.getBoxModel to get its viewport offset — works for nested iframes too.
+   *
+   * @param {string} frameId  CDP frame ID
+   * @param {string} selector CSS selector within the frame's document
+   * @returns {{ exists: boolean, tagName, id, frameId, rect: {x,y,width,height} } | null}
+   */
+  async querySelectorInFrame(frameId, selector) {
+    // Step 1: Get element's bounding rect in frame-local coordinates
+    const frameLocalInfo = await this.evaluateInFrame(frameId, `
+      (function() {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        return {
+          tagName: el.tagName.toLowerCase(),
+          id: el.id || null,
+          rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        };
+      })()
+    `);
+
+    if (!frameLocalInfo) return null;
+
+    // Step 2: Get the <iframe> element's viewport position using DOM.getFrameOwner
+    // This CDP command maps a frameId → the backendNodeId of the <iframe> DOM element.
+    let iframeLeft = 0, iframeTop = 0;
+    try {
+      const frameOwner = await this.sendCommand('DOM.getFrameOwner', { frameId });
+      if (frameOwner.backendNodeId) {
+        const boxModel = await this.sendCommand('DOM.getBoxModel', {
+          backendNodeId: frameOwner.backendNodeId,
+        });
+        // content quad: [x1,y1, x2,y1, x2,y2, x1,y2]
+        iframeLeft = boxModel.model.content[0];
+        iframeTop  = boxModel.model.content[1];
+      }
+    } catch {
+      // If DOM.getFrameOwner fails (e.g. root frame), offsets stay 0
+    }
+
+    return {
+      exists: true,
+      tagName: frameLocalInfo.tagName,
+      id: frameLocalInfo.id,
+      frameId,
+      rect: {
+        x: frameLocalInfo.rect.x + iframeLeft,
+        y: frameLocalInfo.rect.y + iframeTop,
+        width: frameLocalInfo.rect.width,
+        height: frameLocalInfo.rect.height,
+      },
+    };
   }
 
   /**

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import {
+  GetErrorsTool,
+  ListFramesTool,
+  ReloadExtensionTool,
   appConfig,
   attachTab,
   cancelDownload,
@@ -26,6 +29,7 @@ import {
   downloadFile,
   drag,
   enableExtension,
+  errorResponse,
   evaluate,
   executeMacro,
   fillForm,
@@ -54,6 +58,7 @@ import {
   goBack,
   goForward,
   hover,
+  jsonResponse,
   launchIsolatedChrome,
   listAttachedTabs,
   listExtensions,
@@ -94,8 +99,9 @@ import {
   switchTab,
   type,
   updateMacro,
+  updateRecording,
   wait
-} from "./chunk-VGNTAFQO.js";
+} from "./chunk-IWZRYWAQ.js";
 import "./chunk-FT2ARCXD.js";
 
 // src/http-server.ts
@@ -104,6 +110,67 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+
+// src/tools/frames.ts
+import { zodToJsonSchema } from "zod-to-json-schema";
+var listFrames = {
+  schema: {
+    name: ListFramesTool.shape.name.value,
+    description: ListFramesTool.shape.description.value,
+    inputSchema: zodToJsonSchema(ListFramesTool.shape.arguments)
+  },
+  handle: async (context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      await context.ensureAttached();
+      const validatedParams = ListFramesTool.shape.arguments.parse(params || {});
+      const result = await context.sendSocketMessage("browser_list_frames", validatedParams);
+      return jsonResponse(result, true, max_tokens);
+    } catch (error) {
+      return errorResponse(`Failed to list frames: ${error.message}`, false, error, max_tokens);
+    }
+  }
+};
+
+// src/tools/errors.ts
+import { zodToJsonSchema as zodToJsonSchema2 } from "zod-to-json-schema";
+var getErrors = {
+  schema: {
+    name: GetErrorsTool.shape.name.value,
+    description: GetErrorsTool.shape.description.value,
+    inputSchema: zodToJsonSchema2(GetErrorsTool.shape.arguments)
+  },
+  handle: async (context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      await context.ensureAttached();
+      const validatedParams = GetErrorsTool.shape.arguments.parse(params || {});
+      const result = await context.sendSocketMessage("browser_get_errors", validatedParams);
+      return jsonResponse(result, true, max_tokens);
+    } catch (error) {
+      return errorResponse(`Failed to get errors: ${error.message}`, false, error, max_tokens);
+    }
+  }
+};
+var reloadExtension = {
+  schema: {
+    name: ReloadExtensionTool.shape.name.value,
+    description: ReloadExtensionTool.shape.description.value,
+    inputSchema: zodToJsonSchema2(ReloadExtensionTool.shape.arguments)
+  },
+  handle: async (context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      await context.ensureAttached();
+      const result = await context.sendSocketMessage("browser_reload_extension", {});
+      return jsonResponse(result, true, max_tokens);
+    } catch (error) {
+      return errorResponse(`Failed to reload extension: ${error.message}`, false, error, max_tokens);
+    }
+  }
+};
+
+// src/http-server.ts
 import { v4 as uuidv4 } from "uuid";
 var __dirname = path.dirname(fileURLToPath(import.meta.url));
 var RECORDINGS_DIR = process.env.RECORDINGS_DIR || path.join(__dirname, "..", "recordings");
@@ -149,6 +216,7 @@ var recordingTools = [
   saveRecording,
   listRecordings,
   getRecording,
+  updateRecording,
   deleteRecording,
   startSessionRecording,
   stopSessionRecording
@@ -226,6 +294,13 @@ var multiTabTools = [
   getActiveTab,
   attachTab
 ];
+var frameTools = [
+  listFrames
+];
+var diagnosticTools = [
+  getErrors,
+  reloadExtension
+];
 var snapshotTools = [
   navigate(false),
   goBack(false),
@@ -254,7 +329,9 @@ var snapshotTools = [
   ...macroTools,
   ...realisticInputTools,
   ...multiTabTools,
-  ...videoRecordingTools
+  ...videoRecordingTools,
+  ...frameTools,
+  ...diagnosticTools
 ];
 var resources = [];
 async function main() {
@@ -299,6 +376,9 @@ async function main() {
         networkEntryCount: body.networkEntryCount || 0,
         annotations: [],
         videoPath: null,
+        primaryTabId: body.primaryTabId || null,
+        recordedTabIds: body.recordedTabIds || [],
+        videoStartTimes: body.videoStartTimes || {},
         createdAt: /* @__PURE__ */ new Date(),
         updatedAt: /* @__PURE__ */ new Date()
       };
@@ -328,19 +408,19 @@ async function main() {
     try {
       await ensureMongoConnected();
       const { id } = req.params;
-      const { rrwebEvents = [], networkEntries = [] } = req.body;
+      const { rrwebEvents = [], networkEntries = [], interactions = [] } = req.body;
       const recordingEvents = mongodb.getRecordingEventsCollection();
       await recordingEvents.replaceOne(
         { recordingId: id },
-        { recordingId: id, rrwebEvents, networkEntries, updatedAt: /* @__PURE__ */ new Date() },
+        { recordingId: id, rrwebEvents, networkEntries, interactions, updatedAt: /* @__PURE__ */ new Date() },
         { upsert: true }
       );
       const recordings = mongodb.getRecordingsCollection();
       await recordings.updateOne(
         { id },
-        { $set: { rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, updatedAt: /* @__PURE__ */ new Date() } }
+        { $set: { rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, interactionCount: interactions.length, updatedAt: /* @__PURE__ */ new Date() } }
       );
-      res.json({ success: true, rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length });
+      res.json({ success: true, rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, interactionCount: interactions.length });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -400,13 +480,71 @@ async function main() {
       res.status(500).json({ error: err.message });
     }
   });
+  app.post("/api/v1/recordings/:id/video/:tabId", async (req, res) => {
+    try {
+      await ensureMongoConnected();
+      const { id, tabId } = req.params;
+      const videoPath = path.join(RECORDINGS_DIR, `${id}-tab-${tabId}.webm`);
+      fs.writeFileSync(videoPath, req.body);
+      const recordings = mongodb.getRecordingsCollection();
+      await recordings.updateOne(
+        { id },
+        { $set: { updatedAt: /* @__PURE__ */ new Date() } }
+      );
+      res.json({ success: true, size: req.body.length });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  app.get("/api/v1/recordings/:id/video/:tabId", (req, res) => {
+    const { id, tabId } = req.params;
+    const absPath = path.join(RECORDINGS_DIR, `${id}-tab-${tabId}.webm`);
+    if (!fs.existsSync(absPath)) return res.status(404).json({ error: "No video for this tab" });
+    const stat = fs.statSync(absPath);
+    const range = req.headers.range;
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+      res.writeHead(206, {
+        "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+        "Accept-Ranges": "bytes",
+        "Content-Length": end - start + 1,
+        "Content-Type": "video/webm"
+      });
+      fs.createReadStream(absPath, { start, end }).pipe(res);
+    } else {
+      res.writeHead(200, {
+        "Content-Length": stat.size,
+        "Content-Type": "video/webm",
+        "Accept-Ranges": "bytes"
+      });
+      fs.createReadStream(absPath).pipe(res);
+    }
+  });
   app.get("/api/v1/recordings/:id/events", async (req, res) => {
     try {
       await ensureMongoConnected();
       const recordingEvents = mongodb.getRecordingEventsCollection();
       const doc = await recordingEvents.findOne({ recordingId: req.params.id }, { projection: { _id: 0 } });
-      if (!doc) return res.json({ rrwebEvents: [], networkEntries: [] });
-      res.json({ rrwebEvents: doc.rrwebEvents || [], networkEntries: doc.networkEntries || [] });
+      if (!doc) return res.json({ rrwebEvents: [], networkEntries: [], interactions: [] });
+      res.json({ rrwebEvents: doc.rrwebEvents || [], networkEntries: doc.networkEntries || [], interactions: doc.interactions || [] });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  app.put("/api/v1/recordings/:id", async (req, res) => {
+    try {
+      await ensureMongoConnected();
+      const recordings = mongodb.getRecordingsCollection();
+      const { title, description, tags } = req.body;
+      const update = { updatedAt: /* @__PURE__ */ new Date() };
+      if (title !== void 0) update.title = title;
+      if (description !== void 0) update.description = description;
+      if (tags !== void 0) update.tags = tags;
+      const result = await recordings.updateOne({ id: req.params.id }, { $set: update });
+      if (result.matchedCount === 0) return res.status(404).json({ error: "Not found" });
+      res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

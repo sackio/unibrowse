@@ -5,6 +5,7 @@ import {
   SaveRecordingTool,
   ListRecordingsTool,
   GetRecordingTool,
+  UpdateRecordingTool,
   DeleteRecordingTool,
   StartSessionRecordingTool,
   StopSessionRecordingTool,
@@ -118,7 +119,7 @@ export const listRecordings: Tool = {
 };
 
 /**
- * Get a recording by ID including all steps
+ * Get a recording by ID with optional filtered/paginated event data
  */
 export const getRecording: Tool = {
   schema: {
@@ -133,21 +134,144 @@ export const getRecording: Tool = {
         await mongodb.connect();
       }
 
-      const validatedParams = GetRecordingTool.shape.arguments.parse(params);
+      const p = GetRecordingTool.shape.arguments.parse(params);
       const recordings = mongodb.getRecordingsCollection();
 
       const recording = await recordings.findOne(
-        { id: validatedParams.id },
-        { projection: { _id: 0 } }
+        { id: p.id },
+        { projection: { _id: 0, steps: 0 } }
       );
 
       if (!recording) {
+        return errorResponse(`Recording with ID "${p.id}" not found`, true, undefined, max_tokens);
+      }
+
+      const result: any = { recording };
+
+      const wantInteractions = p.includeInteractions || p.includeEvents;
+      const wantNetwork = p.includeNetwork || p.includeEvents;
+
+      if (wantInteractions || wantNetwork || p.includeStats) {
+        const recordingEvents = mongodb.getRecordingEventsCollection();
+        const events = await recordingEvents.findOne(
+          { recordingId: p.id },
+          { projection: { _id: 0, recordingId: 0, rrwebEvents: 0 } }
+        );
+
+        const allInteractions: any[] = events?.interactions || [];
+        const allNetwork: any[] = events?.networkEntries || [];
+
+        if (p.includeStats) {
+          const kindCounts: Record<string, number> = {};
+          for (const i of allInteractions) {
+            const k = i.kind ?? "unknown";
+            kindCounts[k] = (kindCounts[k] || 0) + 1;
+          }
+          const networkErrors = allNetwork.filter(n => n.status >= 400 || n.error).length;
+          const timestamps = allInteractions.map(i => i.timestamp).filter(Boolean);
+          const pages = (recording.pages as any[] | undefined) ?? [];
+          const topUrls = pages
+            .filter(pg => pg.url && !pg.url.startsWith("about:") && !pg.url.includes("js.stripe.com") && !pg.url.includes("stripe.network"))
+            .map(pg => ({ url: pg.url, title: pg.title }));
+          result.stats = {
+            interactionCount: allInteractions.length,
+            networkCount: allNetwork.length,
+            networkErrorCount: networkErrors,
+            interactionsByKind: kindCounts,
+            topUrls,
+            timeSpanMs: timestamps.length >= 2
+              ? Math.max(...timestamps) - Math.min(...timestamps)
+              : null,
+          };
+        }
+
+        if (wantInteractions) {
+          let items = allInteractions;
+          if (p.startTime != null) items = items.filter(i => (i.timestamp ?? 0) >= p.startTime!);
+          if (p.endTime != null)   items = items.filter(i => (i.timestamp ?? 0) <= p.endTime!);
+          if (p.interactionTypes?.length) {
+            const types = new Set(p.interactionTypes);
+            items = items.filter(i => types.has(i.kind));
+          }
+          if (p.selectorPattern) {
+            const re = new RegExp(p.selectorPattern, "i");
+            items = items.filter(i => i.selector && re.test(i.selector));
+          }
+          const limit = p.limit ?? 100;
+          const offset = p.offset ?? 0;
+          result.interactions = items.slice(offset, offset + limit);
+          result.interactionsMeta = { total: items.length, limit, offset, returned: result.interactions.length };
+        }
+
+        if (wantNetwork) {
+          let items = allNetwork;
+          if (p.startTime != null) items = items.filter(n => (n.timestamp ?? n.startTime ?? 0) >= p.startTime!);
+          if (p.endTime != null)   items = items.filter(n => (n.timestamp ?? n.startTime ?? 0) <= p.endTime!);
+          if (p.networkUrlPattern) {
+            const re = new RegExp(p.networkUrlPattern, "i");
+            items = items.filter(n => n.url && re.test(n.url));
+          }
+          if (p.networkMethod) {
+            const method = p.networkMethod.toUpperCase();
+            items = items.filter(n => n.method?.toUpperCase() === method);
+          }
+          if (p.networkStatusMin != null) items = items.filter(n => (n.status ?? 0) >= p.networkStatusMin!);
+          if (p.networkStatusMax != null) items = items.filter(n => (n.status ?? 0) <= p.networkStatusMax!);
+          const limit = p.limit ?? 100;
+          const offset = p.offset ?? 0;
+          result.networkEntries = items.slice(offset, offset + limit);
+          result.networkMeta = { total: items.length, limit, offset, returned: result.networkEntries.length };
+        }
+
+        result.reviewUrl = `http://localhost:9010/review/${p.id}`;
+      }
+
+      return jsonResponse(result, max_tokens);
+    } catch (error) {
+      return errorResponse(`Failed to get recording: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+/**
+ * Update recording title, description, or tags
+ */
+export const updateRecording: Tool = {
+  schema: {
+    name: UpdateRecordingTool.shape.name.value,
+    description: UpdateRecordingTool.shape.description.value,
+    inputSchema: zodToJsonSchema(UpdateRecordingTool.shape.arguments),
+  },
+  handle: async (_context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      if (!mongodb.isConnected()) {
+        await mongodb.connect();
+      }
+
+      const validatedParams = UpdateRecordingTool.shape.arguments.parse(params);
+      const recordings = mongodb.getRecordingsCollection();
+
+      const existing = await recordings.findOne({ id: validatedParams.id });
+      if (!existing) {
         return errorResponse(`Recording with ID "${validatedParams.id}" not found`, true, undefined, max_tokens);
       }
 
-      return jsonResponse({ recording }, max_tokens);
+      const update: any = { updatedAt: new Date() };
+      if (validatedParams.title !== undefined) update.title = validatedParams.title;
+      if (validatedParams.description !== undefined) update.description = validatedParams.description;
+      if (validatedParams.tags !== undefined) update.tags = validatedParams.tags;
+
+      await recordings.updateOne({ id: validatedParams.id }, { $set: update });
+
+      return jsonResponse({
+        success: true,
+        id: validatedParams.id,
+        message: `Recording updated successfully`,
+        updated: update,
+      }, max_tokens);
     } catch (error) {
-      return errorResponse(`Failed to get recording: ${error.message}`, false, error, max_tokens);
+      return errorResponse(`Failed to update recording: ${error.message}`, false, error, max_tokens);
     }
   },
 };

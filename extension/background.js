@@ -633,6 +633,28 @@ class TabManager {
   }
 }
 
+// ─── Frame utilities ─────────────────────────────────────────────────────────
+
+/**
+ * Flatten the CDP Page.getFrameTree result into a simple array.
+ * @param {{ frame, childFrames }} frameNode  CDP frame tree node
+ * @param {string|null} parentId
+ * @returns {Array<{ frameId, url, name, parentFrameId, iframeSelector }>}
+ */
+function flattenFrameTree(frameNode, parentId = null) {
+  const { frame, childFrames = [] } = frameNode;
+  return [
+    {
+      frameId: frame.id,
+      url: frame.url || '',
+      name: frame.name || null,
+      parentFrameId: parentId,
+      iframeSelector: null,   // populated by handleListFrames
+    },
+    ...childFrames.flatMap(c => flattenFrameTree(c, frame.id)),
+  ];
+}
+
 class BackgroundController {
   constructor() {
     this.ws = new WebSocketManager('ws://localhost:9010/ws');
@@ -640,16 +662,12 @@ class BackgroundController {
     this.cdp = new CDPHelper(); // DEPRECATED: Keep for backwards compatibility during migration
     this.handlers = {};
     this.consoleLogs = [];
+    this.backgroundErrors = []; // Ring buffer of handler/critical errors, max 200
     this.networkLogs = [];
     this.badgeBlinkInterval = null;
     this.recordingSessions = new Map(); // Track active recording sessions
     this.backgroundRecorder = new BackgroundRecorder(500); // Background interaction log
-    this.currentUserRecording = null; // { sessionId, startTime, recordingStartTime, tabId, startUrl }
-    this.pendingRecording = null; // Recording awaiting review/save in review tab
-    this.reviewTabId = null; // Tab ID of open review tab
-    this.pendingVideoData = null; // { arrayBuffer, mimeType } — temp video replay, cleared on save/discard
-    this.videoStopPromise = null; // Promise that resolves with video data when recording stops
-    this.sessionRecording = null; // { sessionId, tabId, startTime, startUrl, rrwebEvents[], networkEntries[], pages[], videoStarted }
+    this.sessionRecording = null; // { sessionId, tabId, tabIds[], startTime, startUrl, rrwebEvents[], networkEntries[], interactions[], pages[], videoStarted }
     this.state = {
       connected: false,
       tabId: null, // DEPRECATED: Use tabManager.lastUsedTabId instead
@@ -668,8 +686,6 @@ class BackgroundController {
     // Initialize badge to disconnected state
     this.updateBadge(false);
 
-    // Restore recording state if service worker was killed mid-recording
-    this._restoreRecordingState();
   }
 
   /**
@@ -884,29 +900,31 @@ class BackgroundController {
       console.log('[Background] Extension icon clicked');
     });
 
-    // Tab closed/removed - enhanced detection with recording cleanup
+    // Tab closed/removed
     chrome.tabs.onRemoved.addListener((tabId) => {
-      // Clean up user recording if the recording tab is closed
-      if (this.currentUserRecording && this.currentUserRecording.tabId === tabId) {
-        console.log('[Background] User recording tab closed, cancelling recording');
-        this.currentUserRecording = null;
-        chrome.action.setBadgeText({ text: '' });
-        this._saveRecordingState();
-      }
-
-      // Clean up pending recording if the review tab is closed before saving
-      if (this.reviewTabId === tabId) {
-        console.log('[Background] Review tab closed');
-        this.pendingRecording = null;
-        this.reviewTabId = null;
-        this._saveRecordingState();
-      }
-
       if (this.state.tabId === tabId) {
         console.log('[Background] Active tab closed');
         this.handleTabClosed(tabId);
       }
     });
+
+    // Child frame injection for session recording.
+    // tabs.onUpdated fires for the main frame; child frames that load after the main
+    // frame use webNavigation.onCompleted (details.frameId !== 0).
+    chrome.webNavigation.onCompleted.addListener((details) => {
+      if (details.frameId === 0) return; // main frame handled by tabs.onUpdated
+      if (!this.sessionRecording?.tabIds?.includes(details.tabId)) return;
+      const { tabId, frameId } = details;
+      chrome.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] },
+        world: 'MAIN',
+        files: ['lib/network-interceptor.js'],
+      }).catch(() => {});
+      chrome.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] },
+        files: ['lib/rrweb-record.min.js', 'session-recorder.js'],
+      }).catch(() => {});
+    }, { url: [{ urlMatches: 'https?://.*' }] });
 
     // Tab updated (navigation, etc)
     chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
@@ -976,11 +994,6 @@ class BackgroundController {
           this.injectTabIndicator();
           this.injectBackgroundCapture(); // Always re-inject background capture on navigation
 
-          // Re-inject overlay if there's an active user recording on this tab
-          if (this.currentUserRecording && this.currentUserRecording.tabId === tabId) {
-            this._reinjectUserRecordingOverlay(tabId);
-          }
-
           // Re-inject overlay and content script if there's an active recording
           if (this.currentRecordingRequest) {
             const sessionId = this.currentRecordingRequest.sessionId;
@@ -1042,32 +1055,30 @@ class BackgroundController {
         }
       }
 
-      // Re-inject user recording overlay for the recording tab on any page load
-      // (handles the case where the recording tab is NOT the CDP-attached tab)
-      if (changeInfo.status === 'complete' &&
-          this.currentUserRecording?.tabId === tabId &&
-          this.state.tabId !== tabId) {
-        this._reinjectUserRecordingOverlay(tabId);
-        this.injectBackgroundCapture(tabId).catch(() => {});
-      }
-
-      // Re-inject session recorder scripts on navigation for the recording tab
-      if (changeInfo.status === 'complete' && this.sessionRecording?.tabId === tabId) {
+      // Re-inject session recorder scripts on navigation for any session-recorded tab
+      if (changeInfo.status === 'complete' && this.sessionRecording?.tabIds?.includes(tabId)) {
         console.log('[Background] Re-injecting session recorder after navigation:', tab.url);
         // MAIN world first (bypasses CSP, must precede isolated world injection)
+        // allFrames: true injects into all loaded frames; child frames that load later
+        // are handled by the webNavigation.onCompleted listener.
         chrome.scripting.executeScript({
-          target: { tabId },
+          target: { tabId, allFrames: true },
           world: 'MAIN',
           files: ['lib/network-interceptor.js']
         }).catch(err => {
           console.warn('[Background] Could not re-inject network interceptor:', err.message);
         });
         chrome.scripting.executeScript({
-          target: { tabId },
+          target: { tabId, allFrames: true },
           files: ['lib/rrweb-record.min.js', 'session-recorder.js']
         }).catch(err => {
           console.warn('[Background] Could not re-inject session recorder:', err.message);
         });
+
+        // Start video for this tab if it hasn't been recorded yet
+        if (!this.sessionRecording.recordedTabIds?.includes(tabId)) {
+          this.startSessionTabVideo(tabId);
+        }
       }
 
       // Reattach dead TabManager CDPs when the page finishes loading
@@ -1088,6 +1099,18 @@ class BackgroundController {
               console.error(`[Background] TabManager tab ${tabId} reattach failed on page load:`, err.message);
             });
           }
+        }
+      }
+    });
+
+    // New tab opened — extend session recording to tabs opened from a recorded tab
+    chrome.tabs.onCreated.addListener((tab) => {
+      if (!this.sessionRecording) return;
+      if (tab.openerTabId && this.sessionRecording.tabIds?.includes(tab.openerTabId)) {
+        if (!this.sessionRecording.tabIds.includes(tab.id)) {
+          this.sessionRecording.tabIds.push(tab.id);
+          console.log(`[Background] Session recording extended to new tab ${tab.id} (opened from ${tab.openerTabId})`);
+          // Injection happens in tabs.onUpdated when the tab finishes loading
         }
       }
     });
@@ -1193,77 +1216,38 @@ class BackgroundController {
       // Always accept interactions, even when not connected, so we don't lose data
       if (message.type === 'BACKGROUND_INTERACTION') {
         this.backgroundRecorder.addAction(message.interaction);
-        // Notify overlay if user recording is active
-        if (this.currentUserRecording && this.currentUserRecording.recordingStartTime) {
-          const tabId = this.currentUserRecording.tabId;
-          if (tabId) {
-            chrome.tabs.sendMessage(tabId, { type: 'ACTION_RECORDED' }).catch(() => {});
-          }
-        }
         return false; // Synchronous response - no need to keep channel open
       }
 
-      // Handle tab-originated recording messages (from overlay/review tab)
-      if (message.type === 'RECORDING_COMPLETE' && message.sessionId) {
-        // Check if this is a user-initiated recording (not agent-initiated)
-        if (this.currentUserRecording && this.currentUserRecording.sessionId === message.sessionId) {
-          this.handleUserRecordingComplete(message.sessionId);
-          return false;
-        }
-      }
-
-      if (message.type === 'SELECTOR_CAPTURE_REQUEST' && message.sessionId) {
-        if (this.currentUserRecording?.sessionId === message.sessionId) {
-          const tabId = this.currentUserRecording.tabId;
-          chrome.scripting.executeScript({
-            target: { tabId },
-            func: (sid) => { window._mcpCaptureSid = sid; },
-            args: [message.sessionId]
-          }).then(() =>
-            chrome.scripting.executeScript({ target: { tabId }, files: ['selector-capture.js'] })
-          ).catch(err => {
-            console.error('[Background] Failed to inject selector-capture:', err);
-            chrome.tabs.sendMessage(tabId, { type: 'SELECTOR_CAPTURE_CANCELLED', sessionId: message.sessionId }).catch(() => {});
-          });
-        }
-        return false;
-      }
-
-      if (message.type === 'SELECTOR_CAPTURE_COMPLETE' && message.sessionId) {
-        if (this.currentUserRecording?.sessionId === message.sessionId) {
-          this.currentUserRecording.capturedSelectors.push({
-            ...message.capture,
-            _absoluteTimestamp: message.capture.timestamp
-          });
-          this._saveRecordingState();
-          chrome.tabs.sendMessage(this.currentUserRecording.tabId,
-            { type: 'SELECTOR_CAPTURE_DONE', sessionId: message.sessionId }
-          ).catch(() => {});
-        }
-        return false;
-      }
-
-      if (message.type === 'SELECTOR_CAPTURE_CANCELLED' && message.sessionId) {
-        if (this.currentUserRecording?.sessionId === message.sessionId) {
-          chrome.tabs.sendMessage(this.currentUserRecording.tabId,
-            { type: 'SELECTOR_CAPTURE_CANCELLED', sessionId: message.sessionId }
-          ).catch(() => {});
-        }
-        return false;
-      }
-
       // Session recording event accumulation (from session-recorder.js content script)
-      if (this.sessionRecording && sender?.tab?.id === this.sessionRecording.tabId) {
+      if (this.sessionRecording && this.sessionRecording.tabIds?.includes(sender?.tab?.id)) {
         if (message.type === 'SR_RRWEB') {
           this.sessionRecording.rrwebEvents.push(message.event);
           return false;
         }
         if (message.type === 'SR_NETWORK') {
-          this.sessionRecording.networkEntries.push(message.entry);
+          this.sessionRecording.networkEntries.push({
+            ...message.entry,
+            frameId: sender.frameId || 0,
+          });
           return false;
         }
         if (message.type === 'SR_PAGE_START') {
-          this.sessionRecording.pages.push({ url: message.url, title: message.title, startTime: message.timestamp });
+          this.sessionRecording.pages.push({
+            url: message.url,
+            title: message.title,
+            startTime: message.timestamp,
+            tabId: sender.tab.id,
+            frameId: sender.frameId || 0,
+            isFrame: message.isFrame || false,
+            referrer: message.referrer || null,
+            viewport: message.viewport || null,
+            screen: message.screen || null,
+            language: message.language || null,
+            timezone: message.timezone || null,
+            userAgent: message.userAgent || null,
+            performance: message.performance || null,
+          });
           return false;
         }
         if (message.type === 'SR_PAGE_END') {
@@ -1271,10 +1255,18 @@ class BackgroundController {
           if (lastPage && !lastPage.endTime) lastPage.endTime = message.timestamp;
           return false;
         }
+        if (message.type === 'SR_INTERACTION') {
+          this.sessionRecording.interactions.push({
+            ...message.interaction,
+            tabId: sender.tab.id,
+            frameId: sender.frameId || 0,
+          });
+          return false;
+        }
       }
 
       // Only handle popup-specific messages here
-      const popupMessages = ['connect', 'disconnect', 'get_state', 'ensure_attached', 'list_attached_tabs', 'set_tab_label', 'detach_tab', 'start_user_recording', 'get_pending_recording', 'save_recording', 'discard_recording', 'get_recording_video', 'start_session_recording', 'stop_session_recording', 'get_session_recording_state'];
+      const popupMessages = ['connect', 'disconnect', 'get_state', 'ensure_attached', 'list_attached_tabs', 'set_tab_label', 'detach_tab', 'start_session_recording', 'stop_session_recording', 'get_session_recording_state'];
       if (popupMessages.includes(message.type)) {
         this.handlePopupMessage(message, sendResponse);
         return true; // Keep channel open for async response
@@ -1283,84 +1275,124 @@ class BackgroundController {
       return false;
     });
 
-    // Notification button clicks
-    // Console API called (for console log collection)
+    // Console/error collection + page navigation events across ALL attached tabs
     chrome.debugger.onEvent.addListener(async (source, method, params) => {
-      if (source.tabId === this.state.tabId) {
-        if (method === 'Console.messageAdded') {
-          this.consoleLogs.push({
-            level: params.message.level,
-            text: params.message.text,
-            timestamp: Date.now()
-          });
-        }
+      const isLegacyTab = source.tabId === this.state.tabId;
+      const tmTab = this.tabManager?.attachedTabs?.get(source.tabId);
+      if (!isLegacyTab && !tmTab) return; // not one of our tabs
 
-        // Page navigation events - track navigations to prevent disconnection
-        if (method === 'Page.frameNavigated' && params.frame.parentId === undefined) {
-          // Main frame navigated
-          console.log('[Background] Main frame navigated to:', params.frame.url);
-          this.state.tabUrl = params.frame.url;
+      const tabLabel = tmTab?.label || null;
 
-          // Check if we need to reattach after navigation to restricted URL
-          if (this.state.temporarilyDetached) {
-            if (!this.isRestrictedUrl(params.frame.url)) {
-              console.log('[Background] Navigation returned from restricted URL, will reattach...');
-              // Wait a bit for page to stabilize before reattaching
-              setTimeout(async () => {
-                try {
-                  if (this.state.temporarilyDetached && this.state.connected) {
-                    await this.cdp.attach(this.state.tabId);
-                    this.state.temporarilyDetached = false;
-                    console.log('[Background] Debugger re-attached after navigation');
+      if (method === 'Console.messageAdded') {
+        this.consoleLogs.push({
+          level: params.message.level,
+          text: params.message.text,
+          url: params.message.url || null,
+          line: params.message.line || null,
+          timestamp: Date.now(),
+          tabId: source.tabId,
+          tabLabel,
+          source: 'page',
+        });
+        if (this.consoleLogs.length > 500) this.consoleLogs.shift();
+      }
 
-                    // Get current tab and update title
-                    const tab = await chrome.tabs.get(this.state.tabId);
-                    this.state.originalTabTitle = tab.title.startsWith('🟢 [MCP] ')
-                      ? tab.title.replace('🟢 [MCP] ', '')
-                      : tab.title;
+      if (method === 'Log.entryAdded') {
+        const entry = params.entry;
+        this.consoleLogs.push({
+          level: entry.level,
+          text: entry.text,
+          url: entry.url || null,
+          timestamp: Date.now(),
+          tabId: source.tabId,
+          tabLabel,
+          source: 'page',
+        });
+        if (this.consoleLogs.length > 500) this.consoleLogs.shift();
+      }
 
-                    // Re-inject indicators
-                    await this.updateTabTitle();
-                    await this.injectTabIndicator();
-                    await this.injectBackgroundCapture();
-                  }
-                } catch (error) {
-                  console.error('[Background] Failed to reattach after navigation:', error);
+      if (method === 'Runtime.exceptionThrown') {
+        const ex = params.exceptionDetails;
+        this.consoleLogs.push({
+          level: 'error',
+          text: ex.exception?.description || ex.text || 'Uncaught exception',
+          url: ex.url || null,
+          line: ex.lineNumber || null,
+          timestamp: Date.now(),
+          tabId: source.tabId,
+          tabLabel,
+          source: 'page',
+        });
+        if (this.consoleLogs.length > 500) this.consoleLogs.shift();
+      }
+
+      if (!isLegacyTab) return; // remaining handlers below are legacy-tab-only
+
+      // Page navigation events - track navigations to prevent disconnection
+      if (method === 'Page.frameNavigated' && params.frame.parentId === undefined) {
+        // Main frame navigated
+        console.log('[Background] Main frame navigated to:', params.frame.url);
+        this.state.tabUrl = params.frame.url;
+
+        // Check if we need to reattach after navigation to restricted URL
+        if (this.state.temporarilyDetached) {
+          if (!this.isRestrictedUrl(params.frame.url)) {
+            console.log('[Background] Navigation returned from restricted URL, will reattach...');
+            // Wait a bit for page to stabilize before reattaching
+            setTimeout(async () => {
+              try {
+                if (this.state.temporarilyDetached && this.state.connected) {
+                  await this.cdp.attach(this.state.tabId);
+                  this.state.temporarilyDetached = false;
+                  console.log('[Background] Debugger re-attached after navigation');
+
+                  // Get current tab and update title
+                  const tab = await chrome.tabs.get(this.state.tabId);
+                  this.state.originalTabTitle = tab.title.startsWith('🟢 [MCP] ')
+                    ? tab.title.replace('🟢 [MCP] ', '')
+                    : tab.title;
+
+                  // Re-inject indicators
+                  await this.updateTabTitle();
+                  await this.injectTabIndicator();
+                  await this.injectBackgroundCapture();
                 }
-              }, 500);
-            }
+              } catch (error) {
+                console.error('[Background] Failed to reattach after navigation:', error);
+              }
+            }, 500);
           }
         }
+      }
 
-        if (method === 'Page.loadEventFired') {
-          console.log('[Background] Page load completed');
-        }
+      if (method === 'Page.loadEventFired') {
+        console.log('[Background] Page load completed');
+      }
 
-        // Network events (for network log collection)
-        if (method === 'Network.requestWillBeSent') {
-          this.networkLogs.push({
-            type: 'request',
-            requestId: params.requestId,
-            url: params.request.url,
-            method: params.request.method,
-            headers: params.request.headers,
-            timestamp: Date.now()
-          });
-        }
+      // Network events (for network log collection)
+      if (method === 'Network.requestWillBeSent') {
+        this.networkLogs.push({
+          type: 'request',
+          requestId: params.requestId,
+          url: params.request.url,
+          method: params.request.method,
+          headers: params.request.headers,
+          timestamp: Date.now()
+        });
+      }
 
-        if (method === 'Network.responseReceived') {
-          // Find the matching request and add response info
-          const request = this.networkLogs.find(
-            log => log.requestId === params.requestId && log.type === 'request'
-          );
-          if (request) {
-            request.response = {
-              status: params.response.status,
-              statusText: params.response.statusText,
-              headers: params.response.headers,
-              mimeType: params.response.mimeType
-            };
-          }
+      if (method === 'Network.responseReceived') {
+        // Find the matching request and add response info
+        const request = this.networkLogs.find(
+          log => log.requestId === params.requestId && log.type === 'request'
+        );
+        if (request) {
+          request.response = {
+            status: params.response.status,
+            statusText: params.response.statusText,
+            headers: params.response.headers,
+            mimeType: params.response.mimeType
+          };
         }
       }
     });
@@ -1431,8 +1463,11 @@ class BackgroundController {
     this.handlers['browser_screenshot'] = this.handleScreenshot.bind(this);
     this.handlers['browser_segmented_screenshot'] = this.handleSegmentedScreenshot.bind(this);
     this.handlers['browser_get_console_logs'] = this.handleGetConsoleLogs.bind(this);
+    this.handlers['browser_get_errors'] = this.handleGetErrors.bind(this);
+    this.handlers['browser_reload_extension'] = this.handleReloadExtension.bind(this);
     this.handlers['browser_get_network_logs'] = this.handleGetNetworkLogs.bind(this);
     this.handlers['browser_evaluate'] = this.handleEvaluate.bind(this);
+    this.handlers['browser_list_frames'] = this.handleListFrames.bind(this);
     this.handlers['getUrl'] = this.handleGetUrl.bind(this);
     this.handlers['getTitle'] = this.handleGetTitle.bind(this);
 
@@ -2709,6 +2744,8 @@ class BackgroundController {
     } catch (error) {
       // Classify and handle error appropriately
       console.error('[Background] Handler error:', error);
+      this.backgroundErrors.push({ timestamp: Date.now(), level: 'error', source: 'handler', message: error.message || String(error), stack: error.stack || null });
+      if (this.backgroundErrors.length > 200) this.backgroundErrors.shift();
 
       const errorClassification = this.classifyError(error);
 
@@ -2871,6 +2908,8 @@ class BackgroundController {
     console.error('[Background] Critical error:', error.message);
     console.error('[Background] Error stack:', error.stack);
     console.error('[Background] State at error:', stateSnapshot);
+    this.backgroundErrors.push({ timestamp: Date.now(), level: 'critical', source: 'handler', message: error.message || String(error), stack: error.stack || null });
+    if (this.backgroundErrors.length > 200) this.backgroundErrors.shift();
 
     await this.safeSendResponse(requestId, {
       error: error.message,
@@ -2920,7 +2959,7 @@ class BackgroundController {
               tabUrl: this.state.tabUrl,
               tabTitle: this.state.tabTitle,
               recordingRequest: this.currentRecordingRequest || null,
-              isRecording: !!this.currentUserRecording,
+              isRecording: false,
               sessionRecording: this.sessionRecording ? { startTime: this.sessionRecording.startTime } : null,
             }
           });
@@ -2935,7 +2974,7 @@ class BackgroundController {
               tabUrl: this.state.tabUrl,
               tabTitle: this.state.tabTitle,
               recordingRequest: this.currentRecordingRequest || null,
-              isRecording: !!this.currentUserRecording,
+              isRecording: false,
               sessionRecording: this.sessionRecording ? { startTime: this.sessionRecording.startTime } : null,
             }
           });
@@ -2985,51 +3024,6 @@ class BackgroundController {
         }
         break;
 
-      case 'start_user_recording':
-        try {
-          await this.handleStartUserRecording(sendResponse);
-        } catch (error) {
-          sendResponse({ success: false, error: error.message });
-        }
-        break;
-
-      case 'get_pending_recording':
-        sendResponse({ success: true, recording: this.pendingRecording });
-        break;
-
-      case 'save_recording':
-        try {
-          await this.handleSaveRecording(message.recording, sendResponse);
-        } catch (error) {
-          sendResponse({ success: false, error: error.message });
-        }
-        break;
-
-      case 'discard_recording':
-        this.pendingRecording = null;
-        this.pendingVideoData = null;
-        this.videoStopPromise = null;
-        this._saveRecordingState();
-        sendResponse({ success: true });
-        break;
-
-      case 'get_recording_video':
-        if (this.pendingVideoData) {
-          sendResponse({ success: true, arrayBuffer: this.pendingVideoData.arrayBuffer, mimeType: this.pendingVideoData.mimeType });
-        } else if (this.videoStopPromise) {
-          // Video is still being finalized — wait for it (channel kept open by return true above)
-          this.videoStopPromise
-            .then(data => data
-              ? sendResponse({ success: true, arrayBuffer: data.arrayBuffer, mimeType: data.mimeType })
-              : sendResponse({ success: false, error: 'No video data' })
-            )
-            .catch(() => sendResponse({ success: false, error: 'Video unavailable' }));
-          return; // async — don't fall through to break
-        } else {
-          sendResponse({ success: false, error: 'No video data' });
-        }
-        break;
-
       case 'start_session_recording':
         try {
           await this.handleStartSessionRecording(sendResponse);
@@ -3068,284 +3062,6 @@ class BackgroundController {
   }
 
   /**
-   * Handle user clicking Record in the popup — inject overlay into current active tab
-   */
-  /**
-   * Persist current recording state to chrome.storage.session so it survives
-   * service worker restarts (MV3 workers can be killed after ~30s idle).
-   */
-  _saveRecordingState() {
-    chrome.storage.session.set({
-      currentUserRecording: this.currentUserRecording || null,
-      pendingRecording: this.pendingRecording || null,
-      reviewTabId: this.reviewTabId || null,
-    }).catch(err => console.warn('[Background] Failed to save recording state:', err));
-  }
-
-  /**
-   * Restore recording state after a service worker restart.
-   * If a recording was in progress, the page will already have the overlay
-   * (sessionStorage restores it), so we just need to restore our in-memory state.
-   */
-  async _restoreRecordingState() {
-    try {
-      const data = await chrome.storage.session.get([
-        'currentUserRecording', 'pendingRecording', 'reviewTabId'
-      ]);
-      if (data.currentUserRecording) {
-        this.currentUserRecording = data.currentUserRecording;
-        // Re-set the badge
-        chrome.action.setBadgeText({ text: 'REC' });
-        chrome.action.setBadgeBackgroundColor({ color: '#dc3545' });
-        console.log('[Background] Restored currentUserRecording:', this.currentUserRecording.sessionId);
-      }
-      if (data.pendingRecording) {
-        this.pendingRecording = data.pendingRecording;
-        console.log('[Background] Restored pendingRecording:', this.pendingRecording.sessionId);
-      }
-      if (data.reviewTabId) {
-        this.reviewTabId = data.reviewTabId;
-      }
-    } catch (err) {
-      console.warn('[Background] Failed to restore recording state:', err);
-    }
-  }
-
-  /**
-   * Re-inject the recording overlay into the recording tab after navigation
-   */
-  _reinjectUserRecordingOverlay(tabId) {
-    const rec = this.currentUserRecording;
-    if (!rec) return;
-    const sid = rec.sessionId;
-    const isRecording = !!rec.recordingStartTime;
-    chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['recording-overlay.js']
-    }).then(() => {
-      const overlayState = isRecording
-        ? { state: 'minimized-recording', actionCount: 0, startTime: rec.recordingStartTime, position: { x: null, y: null } }
-        : null;
-      return chrome.scripting.executeScript({
-        target: { tabId },
-        func: (sid, state) => {
-          if (window.RecordingOverlay) {
-            window.mcpUserRecordingOverlay = new window.RecordingOverlay(sid, 'User Recording', state);
-          }
-        },
-        args: [sid, overlayState]
-      });
-    }).catch(err => {
-      console.error('[Background] Failed to re-inject user recording overlay:', err);
-    });
-  }
-
-  async handleStartUserRecording(sendResponse) {
-    if (this.currentUserRecording) {
-      sendResponse({ success: false, error: 'A recording is already in progress' });
-      return;
-    }
-
-    // Get the currently active tab
-    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (!activeTab || !activeTab.id) {
-      sendResponse({ success: false, error: 'No active tab found' });
-      return;
-    }
-
-    const tabId = activeTab.id;
-    const sessionId = `user-recording-${Date.now()}`;
-
-    this.currentUserRecording = {
-      sessionId,
-      startTime: Date.now(),
-      recordingStartTime: null,
-      tabId,
-      startUrl: activeTab.url || '',
-      capturedSelectors: []
-    };
-
-    // Inject background capture (idempotent)
-    this.injectBackgroundCapture().catch(err => {
-      console.warn('[Background] Could not inject background capture:', err.message);
-    });
-
-    // Inject overlay
-    chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['recording-overlay.js']
-    }).then(() => {
-      return chrome.scripting.executeScript({
-        target: { tabId },
-        func: (sid) => {
-          if (window.RecordingOverlay) {
-            window.mcpUserRecordingOverlay = new window.RecordingOverlay(sid, 'User Recording', null);
-          }
-        },
-        args: [sessionId]
-      });
-    }).catch(err => {
-      console.error('[Background] Failed to inject recording overlay:', err);
-      this.currentUserRecording = null;
-      this._saveRecordingState();
-    });
-
-    // Set badge
-    chrome.action.setBadgeText({ text: 'REC' });
-    chrome.action.setBadgeBackgroundColor({ color: '#dc3545' });
-
-    // Start tab video capture for replay (optional — recording works without it)
-    this.pendingVideoData = null;
-    this.videoStopPromise = null;
-    chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (streamId) => {
-      if (chrome.runtime.lastError || !streamId) {
-        console.warn('[Background] tabCapture unavailable:', chrome.runtime.lastError?.message);
-        return;
-      }
-      chrome.runtime.sendMessage({ type: 'OFFSCREEN_START_TAB_RECORDING', streamId }).catch(err => {
-        console.warn('[Background] Could not start tab video recording:', err.message);
-      });
-    });
-
-    // Persist initial recording state
-    this._saveRecordingState();
-
-    // Listen for START_RECORDING_NOW from the overlay
-    const startListener = (msg, sender) => {
-      if (msg.type === 'START_RECORDING_NOW' && msg.sessionId === sessionId) {
-        if (this.currentUserRecording && this.currentUserRecording.sessionId === sessionId) {
-          this.currentUserRecording.recordingStartTime = Date.now();
-          console.log('[Background] User recording started:', sessionId);
-          this._saveRecordingState();
-        }
-        chrome.runtime.onMessage.removeListener(startListener);
-      }
-    };
-    chrome.runtime.onMessage.addListener(startListener);
-
-    sendResponse({ success: true, sessionId });
-  }
-
-  /**
-   * Handle user clicking Stop in the overlay — collect steps and open review tab
-   */
-  async handleUserRecordingComplete(sessionId) {
-    if (!this.currentUserRecording || this.currentUserRecording.sessionId !== sessionId) {
-      return;
-    }
-
-    const endTime = Date.now();
-    const startTime = this.currentUserRecording.recordingStartTime || this.currentUserRecording.startTime;
-    const startUrl = this.currentUserRecording.startUrl;
-
-    // Slice interactions from the buffer
-    const { interactions } = this.backgroundRecorder.get({
-      startTime,
-      endTime,
-      sortOrder: 'asc',
-      limit: 2000
-    });
-
-    // Interaction steps (from backgroundRecorder buffer)
-    const interactionSteps = interactions.map(action => ({
-      type: action.type,
-      _abs: action.timestamp,
-      timestamp: action.timestamp - startTime,
-      url: action.url,
-      element: action.element,
-      value: action.value,
-      key: action.key,
-      x: action.x,
-      y: action.y,
-      scrollX: action.scrollX,
-      scrollY: action.scrollY,
-      note: ''
-    }));
-
-    // Selector capture steps
-    const captureSteps = (this.currentUserRecording.capturedSelectors || []).map(cap => ({
-      type: 'selector_capture',
-      _abs: cap._absoluteTimestamp,
-      timestamp: cap._absoluteTimestamp - startTime,
-      url: cap.url,
-      name: cap.name,
-      description: cap.description || '',
-      selector: cap.selector,
-      matchCount: cap.matchCount,
-      selectorOptions: cap.selectorOptions || [],
-      elements: cap.elements || [],
-      region: cap.region || null,
-      note: ''
-    }));
-
-    // Merge, sort by absolute timestamp, assign IDs, strip temp field
-    const steps = [...interactionSteps, ...captureSteps]
-      .sort((a, b) => a._abs - b._abs)
-      .map((step, i) => { const { _abs, ...s } = step; return { id: i + 1, ...s }; });
-
-    this.pendingRecording = {
-      sessionId,
-      startUrl,
-      startTime,
-      endTime,
-      duration: endTime - startTime,
-      steps
-    };
-
-    // Clear recording state
-    this.currentUserRecording = null;
-    chrome.action.setBadgeText({ text: '' });
-
-    // Stop tab video recording — store a promise so review tab can await it
-    this.videoStopPromise = chrome.runtime.sendMessage({ type: 'OFFSCREEN_STOP_TAB_RECORDING' })
-      .then(response => {
-        if (response?.success && response.arrayBuffer) {
-          this.pendingVideoData = { arrayBuffer: response.arrayBuffer, mimeType: response.mimeType || 'video/webm' };
-          console.log('[Background] Video replay ready:', response.arrayBuffer.byteLength, 'bytes');
-          return this.pendingVideoData;
-        }
-        return null;
-      })
-      .catch(err => {
-        console.warn('[Background] Tab video stop failed:', err.message);
-        return null;
-      });
-
-    // Open review tab
-    try {
-      const reviewTab = await chrome.tabs.create({
-        url: chrome.runtime.getURL(`review.html?sessionId=${sessionId}`)
-      });
-      this.reviewTabId = reviewTab.id;
-    } catch (err) {
-      console.error('[Background] Failed to open review tab:', err);
-    }
-
-    this._saveRecordingState();
-  }
-
-  /**
-   * Forward recording save request to MCP server via WebSocket
-   */
-  async handleSaveRecording(recording, sendResponse) {
-    try {
-      // Use sendNoResponse to avoid creating a pending request in the offscreen
-      await this.ws.sendNoResponse({
-        id: `save-recording-${Date.now()}`,
-        type: 'browser_save_recording',
-        payload: recording
-      });
-      this.pendingRecording = null;
-      this.pendingVideoData = null;
-      this.videoStopPromise = null;
-      this._saveRecordingState();
-      sendResponse({ success: true });
-    } catch (error) {
-      sendResponse({ success: false, error: error.message });
-    }
-  }
-
-  /**
    * Start a session recording: rrweb DOM capture + network interceptor + video
    * Survives cross-domain navigation via chrome.storage.session.
    */
@@ -3367,48 +3083,42 @@ class BackgroundController {
 
     this.sessionRecording = {
       sessionId,
-      tabId,
+      tabId,              // Primary tab (for video capture)
+      tabIds: [tabId],    // All tabs being recorded (grows as new tabs open)
+      recordedTabIds: [], // Tabs that have an active video recording
+      videoStartTimes: {}, // tabId → epoch ms when video started
       startTime,
       startUrl: activeTab.url || '',
       rrwebEvents: [],
       networkEntries: [],
+      interactions: [],
       pages: [],
       videoStarted: false,
     };
 
     // Inject network interceptor into page's MAIN world (bypasses CSP)
+    // allFrames: true injects into the main frame AND all already-loaded child frames.
+    // Frames that load later are handled by the webNavigation.onCompleted listener.
     chrome.scripting.executeScript({
-      target: { tabId },
+      target: { tabId, allFrames: true },
       world: 'MAIN',
       files: ['lib/network-interceptor.js']
     }).catch(err => {
       console.warn('[Background] Could not inject network interceptor:', err.message);
     });
 
-    // Inject rrweb + session-recorder into ISOLATED world
+    // Inject rrweb + session-recorder into ISOLATED world (all frames)
     try {
       await chrome.scripting.executeScript({
-        target: { tabId },
+        target: { tabId, allFrames: true },
         files: ['lib/rrweb-record.min.js', 'session-recorder.js']
       });
     } catch (err) {
       console.warn('[Background] Could not inject session recorder:', err.message);
     }
 
-    // Start tab capture video
-    chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (streamId) => {
-      if (chrome.runtime.lastError || !streamId) {
-        console.warn('[Background] Session record: tabCapture unavailable:', chrome.runtime.lastError?.message);
-        return;
-      }
-      chrome.runtime.sendMessage({ type: 'OFFSCREEN_START_TAB_RECORDING', streamId }).then(() => {
-        this.sessionRecording.videoStarted = true;
-        this.sessionRecording.videoStartTime = Date.now();
-        console.log('[Background] Session recording video started');
-      }).catch(err => {
-        console.warn('[Background] Session record: could not start video:', err.message);
-      });
-    });
+    // Start tab capture video for primary tab
+    this.startSessionTabVideo(tabId);
 
     // Set badge
     chrome.action.setBadgeText({ text: 'SR' });
@@ -3418,6 +3128,32 @@ class BackgroundController {
     chrome.storage.session.set({ sessionRecording: this.sessionRecording }).catch(() => {});
 
     sendResponse({ success: true, sessionId, startTime });
+  }
+
+  /**
+   * Start tab capture video for a specific tab within the current session recording.
+   */
+  startSessionTabVideo(tabId) {
+    if (!this.sessionRecording) return;
+    if (this.sessionRecording.recordedTabIds.includes(tabId)) return; // Already recording
+
+    chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (streamId) => {
+      if (chrome.runtime.lastError || !streamId) {
+        console.warn(`[Background] tabCapture unavailable for tab ${tabId}:`, chrome.runtime.lastError?.message);
+        return;
+      }
+      chrome.runtime.sendMessage({ type: 'OFFSCREEN_START_TAB_RECORDING', streamId, tabId }).then(() => {
+        if (!this.sessionRecording) return;
+        this.sessionRecording.recordedTabIds.push(tabId);
+        this.sessionRecording.videoStartTimes[tabId] = Date.now();
+        if (!this.sessionRecording.videoStarted) {
+          this.sessionRecording.videoStarted = true;
+        }
+        console.log(`[Background] Session video started for tab ${tabId}`);
+      }).catch(err => {
+        console.warn(`[Background] Could not start video for tab ${tabId}:`, err.message);
+      });
+    });
   }
 
   /**
@@ -3441,26 +3177,27 @@ class BackgroundController {
     const lastPage = recording.pages[recording.pages.length - 1];
     if (lastPage && !lastPage.endTime) lastPage.endTime = endTime;
 
-    // Stop video if it was started
-    let videoBuffer = null;
-    let videoMimeType = 'video/webm';
-    if (recording.videoStarted) {
+    // Stop all tab videos
+    const tabVideos = []; // { tabId, videoBase64, mimeType }
+    for (const recordedTabId of (recording.recordedTabIds || [])) {
       try {
-        const videoResponse = await chrome.runtime.sendMessage({ type: 'OFFSCREEN_STOP_TAB_RECORDING' });
-        if (videoResponse?.success && videoResponse.arrayBuffer) {
-          videoBuffer = videoResponse.arrayBuffer;
-          videoMimeType = videoResponse.mimeType || 'video/webm';
-          console.log('[Background] Session recording video stopped:', videoBuffer.byteLength, 'bytes');
+        const videoResponse = await chrome.runtime.sendMessage({ type: 'OFFSCREEN_STOP_TAB_RECORDING', tabId: recordedTabId });
+        if (videoResponse?.success && videoResponse.videoBase64) {
+          tabVideos.push({ tabId: recordedTabId, videoBase64: videoResponse.videoBase64, mimeType: videoResponse.mimeType || 'video/webm' });
+          console.log(`[Background] Video stopped for tab ${recordedTabId}:`, videoResponse.byteLength, 'bytes');
         }
       } catch (err) {
-        console.warn('[Background] Session record: video stop failed:', err.message);
+        console.warn(`[Background] Video stop failed for tab ${recordedTabId}:`, err.message);
       }
     }
 
     // Build metadata for the server
+    let hostname = recording.startUrl;
+    try { hostname = new URL(recording.startUrl).hostname; } catch {}
+    const autoTitle = `Session: ${hostname} @ ${new Date(recording.startTime).toLocaleTimeString()}`;
     const metadata = {
       sessionId: recording.sessionId,
-      title: `Session: ${new URL(recording.startUrl).hostname} @ ${new Date(recording.startTime).toLocaleTimeString()}`,
+      title: recording.title || autoTitle,
       description: '',
       tags: ['session-recording'],
       startUrl: recording.startUrl,
@@ -3470,7 +3207,11 @@ class BackgroundController {
       pages: recording.pages,
       rrwebEventCount: recording.rrwebEvents.length,
       networkEntryCount: recording.networkEntries.length,
+      interactionCount: (recording.interactions || []).length,
       status: 'complete',
+      primaryTabId: recording.tabId,
+      recordedTabIds: recording.recordedTabIds || [],
+      videoStartTimes: recording.videoStartTimes || {},
     };
 
     const SERVER_BASE = 'http://localhost:9010';
@@ -3486,28 +3227,32 @@ class BackgroundController {
       if (!createData.id) throw new Error('Server did not return recording id');
       const recordingId = createData.id;
 
-      // 2. Upload video (fire and forget — review page can still load without it)
-      if (videoBuffer) {
-        const videoBlob = new Blob([videoBuffer], { type: videoMimeType });
-        fetch(`${SERVER_BASE}/api/v1/recordings/${recordingId}/video`, {
+      // 2. Upload per-tab videos (fire and forget)
+      for (const tv of tabVideos) {
+        const binaryStr = atob(tv.videoBase64);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+        const blob = new Blob([bytes.buffer], { type: tv.mimeType });
+        fetch(`${SERVER_BASE}/api/v1/recordings/${recordingId}/video/${tv.tabId}`, {
           method: 'POST',
-          headers: { 'Content-Type': videoMimeType },
-          body: videoBlob,
+          headers: { 'Content-Type': tv.mimeType },
+          body: blob,
         }).then(r => r.json()).then(d => {
-          console.log('[Background] Session video uploaded:', d);
+          console.log(`[Background] Video uploaded for tab ${tv.tabId}:`, d);
         }).catch(err => {
-          console.warn('[Background] Session video upload failed:', err.message);
+          console.warn(`[Background] Video upload failed for tab ${tv.tabId}:`, err.message);
         });
       }
 
-      // 3. Upload rrweb events + network entries
-      if (recording.rrwebEvents.length > 0 || recording.networkEntries.length > 0) {
+      // 3. Upload rrweb events + network entries + interactions
+      if (recording.rrwebEvents.length > 0 || recording.networkEntries.length > 0 || (recording.interactions || []).length > 0) {
         fetch(`${SERVER_BASE}/api/v1/recordings/${recordingId}/events`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             rrwebEvents: recording.rrwebEvents,
             networkEntries: recording.networkEntries,
+            interactions: recording.interactions || [],
           }),
         }).then(r => r.json()).then(d => {
           console.log('[Background] Session events uploaded:', d);
@@ -3568,16 +3313,18 @@ class BackgroundController {
     return { success: true, time };
   }
 
-  async handleClick({ element, ref, tabTarget }) {
+  async handleClick({ element, ref, tabTarget, frameTarget }) {
     const cdp = await this.tabManager.requireCDP(tabTarget);
 
-    // Get element position
-    const elemInfo = await cdp.querySelector(ref);
+    // Get element position (frame-aware)
+    const elemInfo = frameTarget
+      ? await cdp.querySelectorInFrame(await this.resolveFrameId(cdp, frameTarget), ref)
+      : await cdp.querySelector(ref);
     if (!elemInfo) {
       throw new Error(`Element not found: ${ref}`);
     }
 
-    // Click at element center
+    // Click at element center (coordinates are already viewport-relative)
     const x = elemInfo.rect.x + elemInfo.rect.width / 2;
     const y = elemInfo.rect.y + elemInfo.rect.height / 2;
     await cdp.click(x, y);
@@ -3585,12 +3332,14 @@ class BackgroundController {
     return { success: true, element, ref };
   }
 
-  async handleType({ element, ref, text, submit, tabTarget }) {
+  async handleType({ element, ref, text, submit, tabTarget, frameTarget }) {
     try {
       const cdp = await this.tabManager.requireCDP(tabTarget);
 
-      // Focus the element first by clicking it
-      const elemInfo = await cdp.querySelector(ref);
+      // Focus the element first by clicking it (frame-aware)
+      const elemInfo = frameTarget
+        ? await cdp.querySelectorInFrame(await this.resolveFrameId(cdp, frameTarget), ref)
+        : await cdp.querySelector(ref);
       if (!elemInfo) {
         throw new Error(`Element not found: ${ref}`);
       }
@@ -3631,11 +3380,13 @@ class BackgroundController {
     }
   }
 
-  async handleHover({ element, ref, tabTarget }) {
-    const cdp = this.tabManager.requireCDP(tabTarget);
+  async handleHover({ element, ref, tabTarget, frameTarget }) {
+    const cdp = await this.tabManager.requireCDP(tabTarget);
 
-    // Get element position
-    const elemInfo = await cdp.querySelector(ref);
+    // Get element position (frame-aware)
+    const elemInfo = frameTarget
+      ? await cdp.querySelectorInFrame(await this.resolveFrameId(cdp, frameTarget), ref)
+      : await cdp.querySelector(ref);
     if (!elemInfo) {
       throw new Error(`Element not found: ${ref}`);
     }
@@ -3653,17 +3404,22 @@ class BackgroundController {
     return { success: true, element, ref };
   }
 
-  async handleDrag({ startElement, startRef, endElement, endRef, tabTarget }) {
-    const cdp = this.tabManager.requireCDP(tabTarget);
+  async handleDrag({ startElement, startRef, endElement, endRef, tabTarget, frameTarget }) {
+    const cdp = await this.tabManager.requireCDP(tabTarget);
 
-    // Get start element position
-    const startElemInfo = await cdp.querySelector(startRef);
+    // Get start element position (frame-aware)
+    const resolvedFrameId = frameTarget ? await this.resolveFrameId(cdp, frameTarget) : null;
+    const startElemInfo = resolvedFrameId
+      ? await cdp.querySelectorInFrame(resolvedFrameId, startRef)
+      : await cdp.querySelector(startRef);
     if (!startElemInfo) {
       throw new Error(`Start element not found: ${startRef}`);
     }
 
     // Get end element position
-    const endElemInfo = await cdp.querySelector(endRef);
+    const endElemInfo = resolvedFrameId
+      ? await cdp.querySelectorInFrame(resolvedFrameId, endRef)
+      : await cdp.querySelector(endRef);
     if (!endElemInfo) {
       throw new Error(`End element not found: ${endRef}`);
     }
@@ -3741,13 +3497,14 @@ class BackgroundController {
   }
 
   async handleRealisticType({ text, minDelay, maxDelay, mistakeChance, pressEnter, tabTarget }) {
-    const cdp = this.tabManager.requireCDP(tabTarget);
+    const cdp = await this.tabManager.requireCDP(tabTarget);
+    const safeText = text ?? '';
     try {
       if (!cdp.isAttached() || cdp.isDetaching) {
         throw new Error('Debugger detached before typing could start');
       }
 
-      await cdp.typeRealistic(text, {
+      await cdp.typeRealistic(safeText, {
         minDelay,
         maxDelay,
         mistakeChance,
@@ -3756,9 +3513,9 @@ class BackgroundController {
 
       return {
         success: true,
-        text,
-        length: text.length,
-        message: `Typed "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"${pressEnter ? ' and pressed Enter' : ''}`
+        text: safeText,
+        length: safeText.length,
+        message: `Typed "${safeText.substring(0, 50)}${safeText.length > 50 ? '...' : ''}"${pressEnter ? ' and pressed Enter' : ''}`
       };
     } catch (error) {
       if (error.message && (error.message.includes('Detached') || error.message.includes('detached'))) {
@@ -3797,20 +3554,12 @@ class BackgroundController {
     if (!response?.success) {
       throw new Error(response?.error || 'No active video recording to stop');
     }
-    // Convert ArrayBuffer to base64 for WebSocket transfer
-    const bytes = new Uint8Array(response.arrayBuffer);
-    const chunkSize = 8192;
-    let binary = '';
-    for (let i = 0; i < bytes.byteLength; i += chunkSize) {
-      const chunk = bytes.subarray(i, i + chunkSize);
-      binary += String.fromCharCode.apply(null, chunk);
-    }
-    const base64 = btoa(binary);
+    // Offscreen now sends videoBase64 directly (avoids ArrayBuffer deserialization issues in MV3)
     return {
       success: true,
-      videoBase64: base64,
+      videoBase64: response.videoBase64,
       mimeType: response.mimeType || 'video/webm',
-      byteLength: response.arrayBuffer.byteLength
+      byteLength: response.byteLength || 0,
     };
   }
 
@@ -3888,6 +3637,16 @@ class BackgroundController {
 
     // Get final tab info and attach
     const tab = await chrome.tabs.get(targetTabId);
+
+    // Skip debugger attachment for restricted URLs (about:blank, chrome://, etc.)
+    const isRestricted = !tab.url || tab.url === 'about:blank' ||
+      tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') ||
+      tab.url.startsWith('edge://') || tab.url.startsWith('about:');
+    if (isRestricted) {
+      console.log('[handleCreateTab] Restricted URL, skipping debugger attachment:', tab.url);
+      return { success: true, tabId: tab.id, label: `tab-${tab.id}`, url: tab.url || 'about:blank' };
+    }
+
     const tabInfo = await this.tabManager.attachTab(targetTabId, tab.url, tab.title);
     await this.injectTabIndicator(targetTabId);
     await this.injectBackgroundCapture(targetTabId);
@@ -3956,10 +3715,10 @@ class BackgroundController {
     };
   }
 
-  async handleFillForm({ fields, tabTarget }) {
-    const cdp = this.tabManager.requireCDP(tabTarget);
+  async handleFillForm({ fields, tabTarget, frameTarget }) {
+    const cdp = await this.tabManager.requireCDP(tabTarget);
     // Use JavaScript to fill all fields at once (more reliable than keyboard simulation)
-    const result = await cdp.evaluate(`
+    const fillScript = `
       (function() {
         const results = [];
         const fields = ${JSON.stringify(fields)};
@@ -3983,7 +3742,11 @@ class BackgroundController {
 
         return { success: true, fieldCount: fields.length, results: results };
       })()
-    `, true);
+    `;
+
+    const result = frameTarget
+      ? await cdp.evaluateInFrame(await this.resolveFrameId(cdp, frameTarget), fillScript, true)
+      : await cdp.evaluate(fillScript, true);
 
     return result;
   }
@@ -4023,9 +3786,16 @@ class BackgroundController {
 
   async handleSnapshot(data) {
     try {
-      const { tabTarget, interactiveOnly = true, maxDepth = 5 } = data || {};
+      const { tabTarget, frameTarget, interactiveOnly = true, maxDepth = 5 } = data || {};
       const cdp = await this.tabManager.requireCDP(tabTarget);
-      const tree = await cdp.getPartialAccessibilityTree(maxDepth);
+      let tree;
+      if (frameTarget) {
+        const frameId = await this.resolveFrameId(cdp, frameTarget);
+        // Accessibility.getFullAXTree accepts frameId (Chrome 97+)
+        tree = await cdp.sendCommand('Accessibility.getFullAXTree', { frameId, depth: maxDepth });
+      } else {
+        tree = await cdp.getPartialAccessibilityTree(maxDepth);
+      }
 
       // Check if tree is empty due to restricted frames
       if (!tree.nodes || tree.nodes.length === 0) {
@@ -4135,7 +3905,74 @@ class BackgroundController {
   }
 
   async handleGetConsoleLogs() {
-    return this.consoleLogs;
+    // Merge page console logs with background extension errors so agents see both.
+    // Background errors are tagged with source:'background' for easy filtering.
+    const bgEntries = this.backgroundErrors.map(e => ({
+      level: e.level === 'critical' ? 'error' : e.level,
+      text: `[Background ${e.level}] ${e.message}`,
+      stack: e.stack || undefined,
+      timestamp: e.timestamp,
+      source: 'background',
+    }));
+    return [...this.consoleLogs, ...bgEntries].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  }
+
+  /**
+   * browser_get_errors — unified error view across all attached tabs + background.
+   * Designed for the heal skill: returns a complete health picture with actionable context.
+   */
+  async handleGetErrors({ since, levelsOnly } = {}) {
+    const cutoff = since ? Number(since) : 0;
+
+    // Page errors/warnings from all tabs
+    const pageErrors = this.consoleLogs.filter(e => {
+      if (e.timestamp < cutoff) return false;
+      if (levelsOnly) return levelsOnly.includes(e.level);
+      return ['error', 'warning', 'warn'].includes(e.level);
+    });
+
+    // Background handler/critical errors
+    const bgErrors = this.backgroundErrors.filter(e => e.timestamp >= cutoff);
+
+    // Tab health status
+    const tabs = [];
+    for (const [tabId, info] of (this.tabManager?.attachedTabs || new Map())) {
+      tabs.push({
+        tabId,
+        label: info.label,
+        url: info.url,
+        title: info.title,
+        cdpAlive: !!(info.cdp?.isAttached()),
+        lastUsedAt: info.lastUsedAt,
+      });
+    }
+
+    // Extension connection state — getState() is async, must await
+    let wsConnected = false;
+    try {
+      const wsState = await this.ws?.getState?.();
+      wsConnected = wsState === 'connected';
+    } catch (_) {}
+
+    return {
+      summary: {
+        pageErrorCount: pageErrors.length,
+        backgroundErrorCount: bgErrors.length,
+        attachedTabCount: tabs.length,
+        unhealthyTabCount: tabs.filter(t => !t.cdpAlive).length,
+        wsConnected,
+        sessionRecordingActive: !!this.sessionRecording,
+      },
+      pageErrors,
+      backgroundErrors: bgErrors,
+      tabs,
+    };
+  }
+
+  async handleReloadExtension() {
+    // Send acknowledgement before reloading (response may not arrive but try)
+    setTimeout(() => chrome.runtime.reload(), 200);
+    return { success: true, message: 'Extension reloading in 200ms. Reconnect after ~2 seconds.' };
   }
 
   async handleGetNetworkLogs({ filter }) {
@@ -4146,11 +3983,92 @@ class BackgroundController {
     return this.networkLogs;
   }
 
-  async handleEvaluate({ expression, tabTarget }) {
+  async handleEvaluate({ expression, tabTarget, frameTarget }) {
     const cdp = await this.tabManager.requireCDP(tabTarget);
-    // Execute JavaScript in page context
-    const result = await cdp.evaluate(expression, true);
-    return result;
+    if (frameTarget) {
+      const frameId = await this.resolveFrameId(cdp, frameTarget);
+      return cdp.evaluateInFrame(frameId, expression, true);
+    }
+    return cdp.evaluate(expression, true);
+  }
+
+  /**
+   * List all frames in the current page.
+   * Returns frameId, url, parentFrameId, and best-effort iframeSelector for each frame.
+   */
+  async handleListFrames({ tabTarget }) {
+    const cdp = await this.tabManager.requireCDP(tabTarget);
+    const frameTree = await cdp.getFrameTree();
+    const frames = flattenFrameTree(frameTree);
+
+    // Best-effort: populate iframeSelector for child frames by querying the main frame DOM
+    if (frames.length > 1) {
+      try {
+        const iframeData = await cdp.evaluate(`
+          Array.from(document.querySelectorAll('iframe, frame')).map((el, i) => ({
+            src: el.src || el.getAttribute('src') || null,
+            name: el.name || null,
+            id: el.id || null,
+            selector: el.id
+              ? '#' + el.id
+              : (el.name
+                ? 'iframe[name="' + el.name + '"]'
+                : 'iframe:nth-of-type(' + (i + 1) + ')'),
+          }))
+        `);
+
+        if (Array.isArray(iframeData)) {
+          for (const frame of frames) {
+            if (!frame.parentFrameId) continue; // skip root frame
+            // Match by name first, then by URL prefix
+            const match = iframeData.find(d =>
+              (frame.name && d.name === frame.name) ||
+              (d.src && frame.url && frame.url.startsWith(d.src.split('?')[0]))
+            );
+            if (match) frame.iframeSelector = match.selector;
+          }
+        }
+      } catch { /* best-effort, ignore errors */ }
+    }
+
+    return { frames, count: frames.length };
+  }
+
+  /**
+   * Resolve a frameTarget (CDP frameId string or CSS selector) to a CDP frameId.
+   * @param {CDPHelper} cdp
+   * @param {string} frameTarget
+   */
+  async resolveFrameId(cdp, frameTarget) {
+    // If it looks like a CDP frameId (uppercase hex dot number), use directly
+    if (/^[0-9A-Fa-f]+\.[0-9]+$/.test(frameTarget)) {
+      return frameTarget;
+    }
+
+    // Treat as CSS selector — find the iframe element and read its name/id
+    const frameName = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector(${JSON.stringify(frameTarget)});
+        if (!el || (el.tagName !== 'IFRAME' && el.tagName !== 'FRAME')) return null;
+        return el.name || el.id || null;
+      })()
+    `);
+
+    if (!frameName) {
+      throw new Error(
+        `Cannot resolve iframe from selector "${frameTarget}". ` +
+        `Use browser_list_frames to get frameId values for nameless iframes.`
+      );
+    }
+
+    // Cross-reference with the live frame tree
+    const frameTree = await cdp.getFrameTree();
+    const allFrames = flattenFrameTree(frameTree);
+    const found = allFrames.find(f => f.name === frameName);
+    if (!found) {
+      throw new Error(`No CDP frame found with name "${frameName}" (resolved from "${frameTarget}")`);
+    }
+    return found.frameId;
   }
 
   async handleGetUrl({ tabTarget }) {
@@ -4175,10 +4093,10 @@ class BackgroundController {
     return this.state.tabTitle;
   }
 
-  async handleQueryDOM({ selector, limit = 10, tabTarget }) {
-    const cdp = this.tabManager.requireCDP(tabTarget);
-    return cdp.evaluate(`
-      Array.from(document.querySelectorAll('${selector.replace(/'/g, "\\'")}'))
+  async handleQueryDOM({ selector, limit = 10, tabTarget, frameTarget }) {
+    const cdp = await this.tabManager.requireCDP(tabTarget);
+    const queryScript = `
+      Array.from(document.querySelectorAll(${JSON.stringify(selector)}))
         .slice(0, ${limit})
         .map((el, index) => ({
           index,
@@ -4187,7 +4105,11 @@ class BackgroundController {
           className: el.className || undefined,
           text: el.textContent?.trim().substring(0, 100) || undefined
         }))
-    `);
+    `;
+    if (frameTarget) {
+      return cdp.evaluateInFrame(await this.resolveFrameId(cdp, frameTarget), queryScript);
+    }
+    return cdp.evaluate(queryScript);
   }
 
   async handleGetVisibleText({ selector, maxLength = 5000, tabTarget }) {
@@ -4337,9 +4259,16 @@ class BackgroundController {
     `);
   }
 
-  async handleGetFilteredAriaTree({ roles, maxDepth = 5, interactiveOnly, tabTarget }) {
-    const cdp = this.tabManager.requireCDP(tabTarget);
-    const fullTree = await cdp.getPartialAccessibilityTree(maxDepth);
+  async handleGetFilteredAriaTree({ roles, maxDepth = 5, interactiveOnly, tabTarget, frameTarget }) {
+    const cdp = await this.tabManager.requireCDP(tabTarget);
+    let fullTree;
+    if (frameTarget) {
+      const frameId = await this.resolveFrameId(cdp, frameTarget);
+      // Accessibility.getFullAXTree accepts frameId (Chrome 97+)
+      fullTree = await cdp.sendCommand('Accessibility.getFullAXTree', { frameId, depth: maxDepth });
+    } else {
+      fullTree = await cdp.getPartialAccessibilityTree(maxDepth);
+    }
 
     if (!fullTree.nodes || fullTree.nodes.length === 0) {
       return null;

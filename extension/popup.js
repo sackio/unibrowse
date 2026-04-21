@@ -16,8 +16,6 @@ class PopupController {
       tabsList: document.getElementById('tabs-list'),
       refreshTabsBtn: document.getElementById('refresh-tabs-btn'),
       error: document.getElementById('error'),
-      recordSection: document.getElementById('record-section'),
-      recordBtn: document.getElementById('record-btn'),
       sessionRecordSection: document.getElementById('session-record-section'),
       sessionRecordBtn: document.getElementById('session-record-btn'),
       sessionRecordStats: document.getElementById('session-record-stats'),
@@ -54,10 +52,6 @@ class PopupController {
 
     this.elements.refreshAttachedTabsBtn.addEventListener('click', () => {
       this.loadAttachedTabs();
-    });
-
-    this.elements.recordBtn.addEventListener('click', () => {
-      this.handleRecordClick();
     });
 
     this.elements.sessionRecordBtn.addEventListener('click', () => {
@@ -130,34 +124,6 @@ class PopupController {
     if (this.sessionTimerInterval) {
       clearInterval(this.sessionTimerInterval);
       this.sessionTimerInterval = null;
-    }
-  }
-
-  /**
-   * Handle Record button click
-   */
-  async handleRecordClick() {
-    try {
-      this.elements.recordBtn.disabled = true;
-      this.elements.recordBtn.textContent = '⏳ Starting...';
-
-      const response = await chrome.runtime.sendMessage({ type: 'start_user_recording' });
-
-      if (response && response.success) {
-        this.elements.recordBtn.textContent = '⏺ Recording...';
-        this.elements.recordBtn.classList.add('recording');
-      } else {
-        this.elements.recordBtn.textContent = '⏺ Record Interactions';
-        this.elements.recordBtn.disabled = false;
-        if (response && response.error) {
-          this.showError(response.error);
-        }
-      }
-    } catch (error) {
-      console.error('Failed to start recording:', error);
-      this.elements.recordBtn.textContent = '⏺ Record Interactions';
-      this.elements.recordBtn.disabled = false;
-      this.showError(error.message);
     }
   }
 
@@ -514,24 +480,11 @@ class PopupController {
     if (state.connected) {
       this.elements.attachedTabsSection.style.display = 'block';
       this.elements.tabsSection.style.display = 'block';
-      this.elements.recordSection.style.display = 'block';
       this.elements.sessionRecordSection.style.display = 'block';
     } else {
       this.elements.attachedTabsSection.style.display = 'none';
       this.elements.tabsSection.style.display = 'none';
-      this.elements.recordSection.style.display = 'none';
       this.elements.sessionRecordSection.style.display = 'none';
-    }
-
-    // Update record button state
-    if (state.isRecording) {
-      this.elements.recordBtn.textContent = '⏺ Recording...';
-      this.elements.recordBtn.classList.add('recording');
-      this.elements.recordBtn.disabled = true;
-    } else {
-      this.elements.recordBtn.textContent = '⏺ Record Interactions';
-      this.elements.recordBtn.classList.remove('recording');
-      this.elements.recordBtn.disabled = false;
     }
 
     // Update session record button state

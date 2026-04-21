@@ -79,6 +79,80 @@
   InterceptedXHR.prototype = OrigXHR.prototype;
   window.XMLHttpRequest = InterceptedXHR;
 
+  // ── WebSocket Interceptor ─────────────────────────────────────────────────
+  const OrigWS = window.WebSocket;
+  if (OrigWS) {
+    window.WebSocket = function (url, protocols) {
+      const ws = protocols != null ? new OrigWS(url, protocols) : new OrigWS(url);
+      const wsUrl = String(url);
+      ws.addEventListener('open', () => {
+        dispatch({ type: 'ws_open', url: wsUrl, protocol: ws.protocol || null, timestamp: Date.now() });
+      });
+      ws.addEventListener('message', (e) => {
+        let data = '';
+        try { data = typeof e.data === 'string' ? e.data.slice(0, 1024) : '[binary]'; } catch {}
+        dispatch({ type: 'ws_message', url: wsUrl, direction: 'received', data, timestamp: Date.now() });
+      });
+      ws.addEventListener('close', (e) => {
+        dispatch({ type: 'ws_close', url: wsUrl, code: e.code, reason: (e.reason || '').slice(0, 200), timestamp: Date.now() });
+      });
+      const origWsSend = ws.send.bind(ws);
+      ws.send = function (data) {
+        let payload = '';
+        try { payload = typeof data === 'string' ? data.slice(0, 1024) : '[binary]'; } catch {}
+        dispatch({ type: 'ws_message', url: wsUrl, direction: 'sent', data: payload, timestamp: Date.now() });
+        return origWsSend(data);
+      };
+      return ws;
+    };
+    window.WebSocket.prototype = OrigWS.prototype;
+    window.WebSocket.CONNECTING = OrigWS.CONNECTING;
+    window.WebSocket.OPEN      = OrigWS.OPEN;
+    window.WebSocket.CLOSING   = OrigWS.CLOSING;
+    window.WebSocket.CLOSED    = OrigWS.CLOSED;
+  }
+
+  // ── History API — SPA navigation ──────────────────────────────────────────
+  function dispatchSpaNav(type, url, title) {
+    window.dispatchEvent(new CustomEvent('__unibrowse_spa_nav__', {
+      detail: { type, url: url ? String(url) : location.href, title: title ? String(title) : '' },
+    }));
+  }
+  const origPushState = history.pushState.bind(history);
+  history.pushState = function (state, title, url) {
+    origPushState(state, title, url);
+    dispatchSpaNav('push', url, title);
+  };
+  const origReplaceState = history.replaceState.bind(history);
+  history.replaceState = function (state, title, url) {
+    origReplaceState(state, title, url);
+    dispatchSpaNav('replace', url, title);
+  };
+
+  // ── Dialog patches (alert / confirm / prompt) ─────────────────────────────
+  function dispatchDialog(kind, message, result) {
+    window.dispatchEvent(new CustomEvent('__unibrowse_dialog__', {
+      detail: { kind, message: String(message || '').slice(0, 500), result },
+    }));
+  }
+  const origAlert = window.alert;
+  window.alert = function (msg) {
+    dispatchDialog('alert', msg, null);
+    return origAlert?.call(window, msg);
+  };
+  const origConfirm = window.confirm;
+  window.confirm = function (msg) {
+    const result = origConfirm?.call(window, msg);
+    dispatchDialog('confirm', msg, result);
+    return result;
+  };
+  const origPrompt = window.prompt;
+  window.prompt = function (msg, def) {
+    const result = origPrompt?.call(window, msg, def);
+    dispatchDialog('prompt', msg, result !== null ? '[answered]' : '[dismissed]');
+    return result;
+  };
+
   // ── Fetch Interceptor ──────────────────────────────────────────────────────
   const origFetch = window.fetch;
   window.fetch = async function (input, init = {}) {

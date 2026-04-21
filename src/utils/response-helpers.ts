@@ -37,7 +37,8 @@ function getTokenEncoder(): Tiktoken {
  * @param text - Text to count tokens for
  * @returns Estimated token count
  */
-export function estimateTokens(text: string): number {
+export function estimateTokens(text: string | undefined | null): number {
+  if (text == null) return 0;
   try {
     const encoder = getTokenEncoder();
     return encoder.encode(text).length;
@@ -98,7 +99,8 @@ export function jsonResponse(
   pretty = true,
   maxTokens: number = DEFAULT_MAX_TOKENS
 ): CallToolResult {
-  let text = JSON.stringify(data, null, pretty ? 2 : 0);
+  // JSON.stringify(undefined) returns undefined (not a string) — coerce to 'null'
+  let text = JSON.stringify(data, null, pretty ? 2 : 0) ?? "null";
 
   if (maxTokens && maxTokens > 0) {
     text = truncateToTokens(text, maxTokens);
