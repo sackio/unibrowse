@@ -52,6 +52,7 @@ import {
   getNetworkState,
   getPageMetadata,
   getRecording,
+  getRecordingScreenshot,
   getSystemInfo,
   getVersion,
   getVisibleText,
@@ -101,7 +102,7 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-IWZRYWAQ.js";
+} from "./chunk-2HLFOM3V.js";
 import "./chunk-FT2ARCXD.js";
 
 // src/http-server.ts
@@ -219,7 +220,8 @@ var recordingTools = [
   updateRecording,
   deleteRecording,
   startSessionRecording,
-  stopSessionRecording
+  stopSessionRecording,
+  getRecordingScreenshot
 ];
 var interactionTools = [
   getInteractions,
@@ -561,6 +563,46 @@ async function main() {
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
+    }
+  });
+  app.get("/api/v1/recordings/:id/frame", async (req, res) => {
+    try {
+      await ensureMongoConnected();
+      const { exec } = await import("child_process");
+      const { promisify } = await import("util");
+      const execAsync = promisify(exec);
+      const recordings = mongodb.getRecordingsCollection();
+      const recording = await recordings.findOne({ id: req.params.id });
+      if (!recording) return res.status(404).json({ error: "Recording not found" });
+      const targetTs = parseInt(req.query.t || "0", 10) || recording.startTime;
+      const tabId = req.query.tabId ? parseInt(req.query.tabId, 10) : recording.primaryTabId ?? recording.recordedTabIds?.[0];
+      const videoFile = tabId ? path.join(RECORDINGS_DIR, `${req.params.id}-tab-${tabId}.webm`) : path.join(RECORDINGS_DIR, `${req.params.id}.webm`);
+      if (!fs.existsSync(videoFile)) return res.status(404).json({ error: "No video file found" });
+      const videoStartTimes = recording.videoStartTimes || {};
+      const videoStart = tabId && videoStartTimes[tabId] ? videoStartTimes[tabId] : recording.videoStartTime ?? recording.startTime;
+      const offsetSec = Math.max(0, (targetTs - videoStart) / 1e3).toFixed(3);
+      res.setHeader("Content-Type", "image/png");
+      const ffmpeg = exec(
+        `ffmpeg -ss ${offsetSec} -i "${videoFile}" -vframes 1 -f image2 -vcodec png pipe:1`,
+        { encoding: "buffer", maxBuffer: 20 * 1024 * 1024 },
+        (err, stdout) => {
+          if (err) {
+            if (!res.headersSent) res.status(500).json({ error: err.message });
+            return;
+          }
+          res.end(stdout);
+        }
+      );
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  app.get("/rrweb-player", (_req, res) => {
+    const viewPath = path.join(__dirname, "views", "rrweb-player.html");
+    if (fs.existsSync(viewPath)) {
+      res.sendFile(viewPath);
+    } else {
+      res.status(404).send("rrweb player not found");
     }
   });
   app.use("/public", express.static(path.join(__dirname, "public")));

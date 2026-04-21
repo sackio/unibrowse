@@ -1339,6 +1339,25 @@ export const DeleteRecordingTool = z.object({
   }).merge(MaxTokensSchema),
 });
 
+export const GetRecordingScreenshotTool = z.object({
+  name: z.literal("browser_get_recording_screenshot"),
+  description: z.literal(
+    "Get a screenshot of a session recording at a specific timestamp. " +
+    "Two modes: 'video' extracts a frame from the recorded video using ffmpeg (fast, full-page); " +
+    "'dom' replays rrweb events in a live browser tab and screenshots the reconstructed DOM " +
+    "(supports selector highlighting, works even without video). " +
+    "'auto' uses video if available, falls back to dom. " +
+    "Returns a PNG image. Use browser_get_recording to find timestamps from interactions/network entries."
+  ),
+  arguments: z.object({
+    id: z.string().describe("Recording ID"),
+    timestamp: z.number().describe("Unix timestamp in ms to render. Use 0 for the start of the recording."),
+    selector: z.string().optional().describe("CSS selector to highlight in the DOM replay (dom/auto mode). Draws a red outline around the matched element."),
+    mode: z.enum(["video", "dom", "auto"]).optional().describe("Screenshot source: 'video' (ffmpeg frame), 'dom' (rrweb replay), 'auto' (default — video if available, else dom)."),
+    tabId: z.number().optional().describe("For video mode with multi-tab recordings: which tab's video to use. Defaults to primaryTabId."),
+  }).merge(MaxTokensSchema),
+});
+
 // ==================== SESSION RECORDING TOOLS ====================
 
 export const StartSessionRecordingTool = z.object({

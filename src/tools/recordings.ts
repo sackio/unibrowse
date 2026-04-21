@@ -1,5 +1,14 @@
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { v4 as uuidv4 } from "uuid";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const execFileAsync = promisify(execFile);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const RECORDINGS_DIR = process.env.RECORDINGS_DIR || path.join(__dirname, "..", "..", "recordings");
 
 import {
   SaveRecordingTool,
@@ -9,8 +18,9 @@ import {
   DeleteRecordingTool,
   StartSessionRecordingTool,
   StopSessionRecordingTool,
+  GetRecordingScreenshotTool,
 } from "@/types/tool-schemas";
-import { jsonResponse, errorResponse } from "@/utils/response-helpers";
+import { jsonResponse, errorResponse, imageResponse } from "@/utils/response-helpers";
 import { mongodb } from "@/utils/mongodb";
 
 import { Tool } from "./tool";
@@ -349,6 +359,117 @@ export const deleteRecording: Tool = {
       }, max_tokens);
     } catch (error) {
       return errorResponse(`Failed to delete recording: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+/**
+ * Screenshot a recording at a specific timestamp — video frame (ffmpeg) or rrweb DOM replay
+ */
+export const getRecordingScreenshot: Tool = {
+  schema: {
+    name: GetRecordingScreenshotTool.shape.name.value,
+    description: GetRecordingScreenshotTool.shape.description.value,
+    inputSchema: zodToJsonSchema(GetRecordingScreenshotTool.shape.arguments),
+  },
+  handle: async (context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      if (!mongodb.isConnected()) await mongodb.connect();
+
+      const p = GetRecordingScreenshotTool.shape.arguments.parse(params);
+      const recordingsColl = mongodb.getRecordingsCollection();
+      const recording = await recordingsColl.findOne({ id: p.id }, { projection: { _id: 0 } });
+      if (!recording) return errorResponse(`Recording "${p.id}" not found`, true, undefined, max_tokens);
+
+      const targetTs = p.timestamp > 0 ? p.timestamp : recording.startTime;
+      const mode = p.mode ?? "auto";
+
+      // ── Video frame via ffmpeg ─────────────────────────────────────────────
+      const useVideo = mode === "video" || (mode === "auto" && (recording.videoPath || recording.recordedTabIds?.length));
+
+      if (useVideo) {
+        // Find the right video file
+        const tabId = p.tabId ?? recording.primaryTabId ?? (recording.recordedTabIds?.[0]);
+        const videoFile = tabId
+          ? path.join(RECORDINGS_DIR, `${p.id}-tab-${tabId}.webm`)
+          : path.join(RECORDINGS_DIR, `${p.id}.webm`);
+
+        if (fs.existsSync(videoFile)) {
+          const videoStartTimes = recording.videoStartTimes || {};
+          const videoStart = (tabId && videoStartTimes[tabId])
+            ? videoStartTimes[tabId]
+            : (recording.videoStartTime ?? recording.startTime);
+          const offsetSec = Math.max(0, (targetTs - videoStart) / 1000).toFixed(3);
+
+          const { stdout } = await execFileAsync("ffmpeg", [
+            "-ss", offsetSec,
+            "-i", videoFile,
+            "-vframes", "1",
+            "-f", "image2",
+            "-vcodec", "png",
+            "pipe:1",
+          ], { encoding: "buffer", maxBuffer: 20 * 1024 * 1024 });
+
+          const base64 = (stdout as unknown as Buffer).toString("base64");
+          return imageResponse(base64, "image/png", max_tokens);
+        }
+
+        if (mode === "video") {
+          return errorResponse(`No video file found for recording "${p.id}"${tabId ? ` tab ${tabId}` : ""}`, true, undefined, max_tokens);
+        }
+        // fall through to DOM mode
+      }
+
+      // ── rrweb DOM replay via browser tab ──────────────────────────────────
+      await context.ensureAttached();
+
+      const label = `rrweb-frame-${Date.now()}`;
+      const playerUrl = `http://localhost:9010/rrweb-player?id=${p.id}&t=${targetTs}${p.selector ? "&selector=" + encodeURIComponent(p.selector) : ""}`;
+
+      await context.sendSocketMessage("browser_create_tab", { label });
+
+      try {
+        await context.sendSocketMessage("browser_navigate", { url: playerUrl, tabTarget: label });
+
+        // Poll until __playerReady (up to 15s)
+        const ready = await context.sendSocketMessage("browser_evaluate", {
+          expression: `new Promise((resolve, reject) => {
+            const start = Date.now();
+            const poll = () => {
+              if (window.__playerReady) return resolve(true);
+              if (Date.now() - start > 15000) return reject(new Error('rrweb player timeout'));
+              setTimeout(poll, 200);
+            };
+            poll();
+          })`,
+          tabTarget: label,
+        });
+
+        if (!ready) throw new Error("Player did not become ready");
+
+        // If selector given, get element bounds for a tight crop
+        let screenshotSelector = "#rrweb-container";
+        if (p.selector) {
+          const bounds = await context.sendSocketMessage("browser_evaluate", {
+            expression: "window.__elementBounds",
+            tabTarget: label,
+          });
+          // bounds gives viewport coords — use full container but caller can crop; keep full for now
+        }
+
+        const shot = await context.sendSocketMessage("browser_screenshot", {
+          selector: screenshotSelector,
+          tabTarget: label,
+        });
+
+        const base64 = shot?.data ?? shot;
+        return imageResponse(base64, "image/png", max_tokens);
+      } finally {
+        await context.sendSocketMessage("browser_close_tab", { tabTarget: label }).catch(() => {});
+      }
+    } catch (error) {
+      return errorResponse(`Failed to get recording screenshot: ${error.message}`, false, error, max_tokens);
     }
   },
 };

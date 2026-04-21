@@ -94,6 +94,7 @@ const recordingTools: Tool[] = [
   recordings.deleteRecording,
   recordings.startSessionRecording,
   recordings.stopSessionRecording,
+  recordings.getRecordingScreenshot,
 ];
 
 const interactionTools: Tool[] = [
@@ -502,6 +503,60 @@ async function main() {
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/v1/recordings/:id/frame — extract a video frame at a timestamp via ffmpeg
+  app.get("/api/v1/recordings/:id/frame", async (req: any, res: any) => {
+    try {
+      await ensureMongoConnected();
+      const { exec } = await import("child_process");
+      const { promisify } = await import("util");
+      const execAsync = promisify(exec);
+
+      const recordings = mongodb.getRecordingsCollection();
+      const recording = await recordings.findOne({ id: req.params.id });
+      if (!recording) return res.status(404).json({ error: "Recording not found" });
+
+      const targetTs = parseInt(req.query.t as string || "0", 10) || recording.startTime;
+      const tabId = req.query.tabId ? parseInt(req.query.tabId as string, 10) : (recording.primaryTabId ?? recording.recordedTabIds?.[0]);
+
+      const videoFile = tabId
+        ? path.join(RECORDINGS_DIR, `${req.params.id}-tab-${tabId}.webm`)
+        : path.join(RECORDINGS_DIR, `${req.params.id}.webm`);
+
+      if (!fs.existsSync(videoFile)) return res.status(404).json({ error: "No video file found" });
+
+      const videoStartTimes = recording.videoStartTimes || {};
+      const videoStart = (tabId && videoStartTimes[tabId])
+        ? videoStartTimes[tabId]
+        : (recording.videoStartTime ?? recording.startTime);
+      const offsetSec = Math.max(0, (targetTs - videoStart) / 1000).toFixed(3);
+
+      res.setHeader("Content-Type", "image/png");
+      const ffmpeg = exec(
+        `ffmpeg -ss ${offsetSec} -i "${videoFile}" -vframes 1 -f image2 -vcodec png pipe:1`,
+        { encoding: "buffer", maxBuffer: 20 * 1024 * 1024 } as any,
+        (err: any, stdout: any) => {
+          if (err) {
+            if (!res.headersSent) res.status(500).json({ error: err.message });
+            return;
+          }
+          res.end(stdout);
+        }
+      );
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /rrweb-player — rrweb DOM replay player for screenshots
+  app.get("/rrweb-player", (_req: any, res: any) => {
+    const viewPath = path.join(__dirname, "views", "rrweb-player.html");
+    if (fs.existsSync(viewPath)) {
+      res.sendFile(viewPath);
+    } else {
+      res.status(404).send("rrweb player not found");
     }
   });
 
