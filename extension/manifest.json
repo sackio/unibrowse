@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "unibrowse",
-  "version": "1.0.0",
+  "version": "1.0.1",
+  "incognito": "spanning",
   "description": "Bridge the gap between AI agents and browser automation",
   "permissions": [
     "debugger",

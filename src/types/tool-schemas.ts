@@ -161,9 +161,10 @@ export const SwitchTabTool = z.object({
 
 export const CreateTabTool = z.object({
   name: z.literal("browser_create_tab"),
-  description: z.literal("Create a new browser tab and automatically attach it for control. Returns tabId and label that can be used as tabTarget in subsequent operations."),
+  description: z.literal("Create a new browser tab and automatically attach it for control. Returns tabId and label that can be used as tabTarget in subsequent operations. Use incognito=true for a fresh anonymous session (no cookies, history, or login state from the main profile). Requires 'Allow in incognito' to be enabled for unibrowse in chrome://extensions."),
   arguments: z.object({
     url: z.string().optional().describe("URL to open in the new tab (default: about:blank)"),
+    incognito: z.boolean().optional().describe("Open tab in an incognito window for a fresh anonymous session. All incognito tabs share one persistent incognito window. Requires extension to be allowed in incognito (chrome://extensions)."),
   }).merge(MaxTokensSchema),
 });
 

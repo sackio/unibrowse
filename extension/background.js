@@ -3618,8 +3618,37 @@ class BackgroundController {
     };
   }
 
-  async handleCreateTab({ url }) {
-    const newTab = await chrome.tabs.create({ url: url || 'about:blank', active: true });
+  async handleCreateTab({ url, incognito }) {
+    let newTab;
+
+    if (incognito) {
+      const allowed = await chrome.extension.isAllowedIncognitoAccess();
+      if (!allowed) {
+        throw new Error(
+          'Extension not allowed in incognito mode. ' +
+          'Go to chrome://extensions, find unibrowse, and enable "Allow in incognito".'
+        );
+      }
+
+      // Find or create the shared incognito window
+      let incognitoWindowId = this._incognitoWindowId;
+      if (incognitoWindowId) {
+        try { await chrome.windows.get(incognitoWindowId); }
+        catch { incognitoWindowId = null; this._incognitoWindowId = null; }
+      }
+
+      if (!incognitoWindowId) {
+        const win = await chrome.windows.create({ incognito: true, url: url || 'about:blank' });
+        this._incognitoWindowId = win.id;
+        newTab = win.tabs[0];
+        // If the window was created with the URL already, we're done
+      } else {
+        newTab = await chrome.tabs.create({ url: url || 'about:blank', windowId: incognitoWindowId, active: true });
+      }
+    } else {
+      newTab = await chrome.tabs.create({ url: url || 'about:blank', active: true });
+    }
+
     let targetTabId = newTab.id;
 
     // Wait for the tab to finish loading before attaching
