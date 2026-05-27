@@ -577,6 +577,7 @@
       form_submit:  { icon: '▶', label: 'submit',   cls: 'kind-form'      },
       scroll:       { icon: '↕', label: 'scroll',   cls: 'kind-mouse'     },
       mousemove:    { icon: '·', label: 'move',     cls: 'kind-mouse'     },
+      hover:        { icon: '◐', label: 'hover',    cls: 'kind-selection' },
       rrweb_click:      { icon: '⬤', label: 'click',    cls: 'kind-click'     },
       dom_mutation:     { icon: '◈', label: 'dom',      cls: 'kind-dom'       },
       spa_navigate:     { icon: '⇒', label: 'navigate', cls: 'kind-nav'       },
@@ -666,6 +667,10 @@
         } else if (action.kind === 'click' || action.kind === 'contextmenu' || action.kind === 'middle_click' || action.kind === 'auxclick') {
           label = `${action.selector || action.tagName || 'element'}`;
           if (action.text) label += `  "${action.text.slice(0, 60)}"`;
+        } else if (action.kind === 'hover') {
+          const ctxText = action.context?.container?.text || action.context?.target?.text || action.text || '';
+          const sel = action.context?.target?.selector || action.selector || action.tagName || 'element';
+          label = `${sel}${ctxText ? `  "${ctxText.slice(0, 80)}"` : ''}`;
         } else if (action.kind === 'input_change') {
           const target = action.id ? `#${action.id}` : (action.name ? `[name=${action.name}]` : action.selector || 'input');
           label = `${target}: "${action.value?.slice(0, 60)}"`;

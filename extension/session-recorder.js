@@ -87,6 +87,149 @@ if (window.__unibrowse_recording__) {
             el.getAttribute('title') || el.getAttribute('alt') || '').trim().slice(0, 120);
   }
 
+  // ─── Context-snapshot helpers ──────────────────────────────────────────────
+  // When the user hovers, clicks, or otherwise interacts, we want to capture
+  // *why* the mouse is in that area — the smallest meaningful HTML region
+  // around the target. We score candidate ancestors and pick the best one.
+
+  const SEMANTIC_TAGS = new Set([
+    'a','button','label','input','textarea','select','li','tr','td','th',
+    'article','section','header','footer','nav','aside','dialog','form',
+    'figure','fieldset','dt','dd','option','summary','details','menuitem',
+  ]);
+  const INTERACTIVE_TAGS = new Set(['a','button','input','select','textarea','label']);
+  const NEVER_CONTEXT_TAGS = new Set(['html','body','main']);
+
+  /**
+   * Score how "interesting" an element is as a context container. Higher = more
+   * likely to capture what the user is paying attention to. Looks at semantic
+   * tag, interactive descendants, text density, ARIA hints, and bounding rect.
+   */
+  function scoreCandidate(el) {
+    if (!el || el.nodeType !== 1) return -Infinity;
+    const tag = el.tagName.toLowerCase();
+    if (NEVER_CONTEXT_TAGS.has(tag)) return -Infinity;
+    let s = 0;
+    if (SEMANTIC_TAGS.has(tag)) s += 30;
+    if (INTERACTIVE_TAGS.has(tag)) s += 20;
+    if (el.hasAttribute('role')) s += 12;
+    if (el.hasAttribute('aria-label')) s += 8;
+    if (el.hasAttribute('data-testid') || el.hasAttribute('data-test')) s += 8;
+    if (el.id) s += 5;
+    const txt = (el.textContent || '').trim();
+    // Sweet spot: 30–800 chars of text = readable block. Too sparse or too dense scores lower.
+    if (txt.length >= 30 && txt.length <= 800) s += 18;
+    else if (txt.length > 800 && txt.length <= 2500) s += 4;
+    // Has a few interactive descendants — looks like a card / row / panel
+    try {
+      const interactives = el.querySelectorAll('a,button,input,select,textarea').length;
+      if (interactives >= 1 && interactives <= 8) s += 10;
+      else if (interactives > 8) s -= 5; // probably too big
+    } catch {}
+    // Bounded rect — not a sliver, not the whole viewport
+    try {
+      const r = el.getBoundingClientRect();
+      const vw = window.innerWidth || 1, vh = window.innerHeight || 1;
+      if (r.width >= 80 && r.height >= 24 && r.width <= vw * 0.95 && r.height <= vh * 0.85) s += 10;
+      if (r.width > vw * 0.98 && r.height > vh * 0.9) s -= 20; // viewport-sized
+    } catch {}
+    return s;
+  }
+
+  /**
+   * Walk up from el (max 8 levels), score each candidate, return the highest-
+   * scoring ancestor — or the element itself if nothing scores well.
+   */
+  function findContextContainer(el) {
+    if (!el || el.nodeType !== 1) return null;
+    let best = el;
+    let bestScore = scoreCandidate(el);
+    let node = el.parentElement;
+    let depth = 0;
+    while (node && node !== document.body && depth < 8) {
+      const s = scoreCandidate(node);
+      if (s > bestScore) { best = node; bestScore = s; }
+      node = node.parentElement;
+      depth++;
+    }
+    return best;
+  }
+
+  /**
+   * Text content of `el` excluding <script>/<style>/<noscript> subtrees — so we
+   * don't bleed CSS rules or inline JS into the snapshot. Falls back to
+   * textContent if the TreeWalker throws.
+   */
+  function getCleanText(el) {
+    try {
+      let out = '';
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+        acceptNode(n) {
+          const p = n.parentElement;
+          if (!p) return NodeFilter.FILTER_REJECT;
+          const tag = p.tagName;
+          if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      });
+      let node;
+      while ((node = walker.nextNode())) out += node.nodeValue + ' ';
+      return out.trim().replace(/\s+/g, ' ');
+    } catch {
+      return (el.textContent || '').trim().replace(/\s+/g, ' ');
+    }
+  }
+
+  /**
+   * outerHTML of `el` with <script>/<style>/<noscript> blocks stripped. Cheap
+   * regex sweep — these tags don't legally contain other tags so the regex is
+   * safe for the level of fidelity we need.
+   */
+  function getCleanHtml(el) {
+    let html = '';
+    try { html = el.outerHTML || ''; } catch { return ''; }
+    return html.replace(/<(script|style|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
+  }
+
+  /**
+   * Snapshot an element to a {selector, tag, text, html, rect} object with
+   * adaptive caps. `truncated` flags signal that the raw value was longer.
+   */
+  function snapshotElement(el, maxText, maxHtml) {
+    if (!el || el.nodeType !== 1) return null;
+    const text = getCleanText(el);
+    const html = getCleanHtml(el);
+    let rect = null;
+    try {
+      const r = el.getBoundingClientRect();
+      rect = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+    } catch {}
+    return {
+      selector: getCSSSelector(el),
+      tag: el.tagName.toLowerCase(),
+      text: text.slice(0, maxText),
+      textTruncated: text.length > maxText,
+      html: html.slice(0, maxHtml),
+      htmlTruncated: html.length > maxHtml,
+      rect,
+    };
+  }
+
+  /**
+   * Capture {target, container} snapshots for an interaction. `target` is the
+   * exact element under the cursor (tight cap); `container` is the closest
+   * meaningful region around it (looser cap). If they resolve to the same
+   * element, only `target` is returned.
+   */
+  function captureContext(el) {
+    if (!el || el.nodeType !== 1) return null;
+    if (el === document.body || el === document.documentElement) return null;
+    const target = snapshotElement(el, 250, 1200);
+    const container = findContextContainer(el);
+    if (!container || container === el) return { target };
+    return { target, container: snapshotElement(container, 800, 3000) };
+  }
+
   // ─── Page Lifecycle Markers ────────────────────────────────────────────────
 
   safeSend({
@@ -181,8 +324,10 @@ if (window.__unibrowse_recording__) {
         y: Math.round(e.clientY),
         pageX: Math.round(e.pageX),
         pageY: Math.round(e.pageY),
+        context: captureContext(target),
       },
     });
+    noteClickedRegion(target);
   }, true);
 
   // Right-click / context menu tracking
@@ -202,8 +347,10 @@ if (window.__unibrowse_recording__) {
         y: Math.round(e.clientY),
         pageX: Math.round(e.pageX),
         pageY: Math.round(e.pageY),
+        context: captureContext(target),
       },
     });
+    noteClickedRegion(target);
   }, true);
 
   // Middle-click (and other non-left button clicks)
@@ -224,8 +371,10 @@ if (window.__unibrowse_recording__) {
         y: Math.round(e.clientY),
         pageX: Math.round(e.pageX),
         pageY: Math.round(e.pageY),
+        context: captureContext(target),
       },
     });
+    noteClickedRegion(target);
   }, true);
 
   // Input change tracking — fires on blur after value changed
@@ -248,6 +397,7 @@ if (window.__unibrowse_recording__) {
         id: target.id || null,
         placeholder: (target.placeholder || '').slice(0, 80),
         value: isPassword ? '[password]' : (String(target.value || '')).slice(0, 500),
+        context: captureContext(target),
       },
     });
   }, true);
@@ -376,6 +526,81 @@ if (window.__unibrowse_recording__) {
     });
   }, true);
 
+  // ─── Dwell-based Hover Capture ───────────────────────────────────────────
+  // When the cursor settles on an element for HOVER_DWELL_MS, snapshot the
+  // surrounding region (text + html of the best-scoring container) so agents
+  // can see what the user was *looking at*, not just what they clicked.
+  // Cancels on every mouseover (cursor still moving) and on mouseout.
+  // Dedupes: same container within HOVER_DEDUPE_MS is skipped. Also skips
+  // hovers that fire right after a click on the same region (clicks already
+  // carry the context payload).
+  {
+    const HOVER_DWELL_MS = 350;
+    const HOVER_DEDUPE_MS = 2000;
+    const POST_CLICK_SUPPRESS_MS = 600;
+
+    let hoverTimer = null;
+    let pendingTarget = null;
+    let lastCapturedSelector = null;
+    let lastCapturedTs = 0;
+    let lastClickedSelector = null;
+    let lastClickedTs = 0;
+
+    // Exposed to click handlers so a hover right after a click is suppressed.
+    window.__unibrowse_note_click__ = (el) => {
+      try {
+        const ctx = el && findContextContainer(el);
+        lastClickedSelector = ctx ? getCSSSelector(ctx) : null;
+        lastClickedTs = Date.now();
+      } catch {}
+    };
+
+    document.addEventListener('mouseover', (e) => {
+      if (!isContextValid()) return;
+      const t = e.target;
+      if (!t || t.nodeType !== 1) return;
+      if (t === document.body || t === document.documentElement) return;
+      pendingTarget = t;
+      if (hoverTimer) clearTimeout(hoverTimer);
+      hoverTimer = setTimeout(() => {
+        hoverTimer = null;
+        if (pendingTarget !== t) return; // moved on before dwell elapsed
+        const ctx = captureContext(t);
+        if (!ctx) return;
+        const containerSel = (ctx.container || ctx.target)?.selector || null;
+        const now = Date.now();
+        // Skip if we just clicked this same region
+        if (lastClickedSelector && containerSel === lastClickedSelector &&
+            now - lastClickedTs < POST_CLICK_SUPPRESS_MS) return;
+        // Dedupe: same container hovered again within HOVER_DEDUPE_MS
+        if (containerSel && containerSel === lastCapturedSelector &&
+            now - lastCapturedTs < HOVER_DEDUPE_MS) return;
+        lastCapturedSelector = containerSel;
+        lastCapturedTs = now;
+        safeSend({
+          type: 'SR_INTERACTION',
+          interaction: {
+            kind: 'hover',
+            timestamp: now,
+            selector: ctx.target.selector,
+            tagName: ctx.target.tag,
+            text: ctx.target.text,
+            context: ctx,
+          },
+        });
+      }, HOVER_DWELL_MS);
+    }, { passive: true, capture: true });
+
+    document.addEventListener('mouseout', () => {
+      if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+      pendingTarget = null;
+    }, { passive: true, capture: true });
+  }
+  // Bridge for click handlers above to record the just-clicked region
+  function noteClickedRegion(el) {
+    try { window.__unibrowse_note_click__ && window.__unibrowse_note_click__(el); } catch {}
+  }
+
   // Mouse movement tracking — throttled to at most one event per 150ms.
   // Stored for timeline overlay; hidden in review by default (opt-in via Mouse filter).
   {
@@ -437,6 +662,7 @@ if (window.__unibrowse_recording__) {
         selector: getCSSSelector(form),
         action: form?.action || null,
         method: form?.method || null,
+        context: captureContext(form),
       },
     });
   }, true);
@@ -555,6 +781,7 @@ if (window.__unibrowse_recording__) {
         name: target.name || null,
         inputType: target.type || null,
         placeholder: (target.placeholder || '').slice(0, 80),
+        context: captureContext(target),
       },
     });
   }, true);
