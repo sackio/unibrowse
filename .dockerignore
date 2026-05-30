@@ -7,7 +7,9 @@ npm-debug.log
 test-*.js
 test-*.cjs
 test-*.json
-extension
+extension/.gitignore
+extension/.nfs*
+extension/*.backup-*
 .vscode
 .idea
 coverage

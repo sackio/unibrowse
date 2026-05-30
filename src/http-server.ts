@@ -28,6 +28,8 @@ import * as tabs from "@/tools/tabs";
 import * as userAction from "@/tools/user-action";
 import * as macros from "@/tools/macros";
 import * as recordings from "@/tools/recordings";
+import { installLandingHandler, installZipHandler } from "@/install";
+import { requireApiKey, isAuthEnabled } from "@/utils/auth";
 import * as realisticInput from "@/tools/realistic-input";
 import * as multiTabManagement from "@/tools/multi-tab-management";
 import * as videoRecording from "@/tools/video-recording";
@@ -239,7 +241,7 @@ async function createServerWithWebSocket(): Promise<Server> {
 
 async function main() {
   const app = express();
-  app.use(express.json({ limit: "50mb" }));
+  app.use(express.json({ limit: "10gb" }));
 
   // Allow large binary uploads for video (matches both /video and /video/:tabId)
   app.use("/api/v1/recordings/:id/video", express.raw({ type: "video/*", limit: "500mb" }));
@@ -255,10 +257,15 @@ async function main() {
 
   const port = parseInt(process.env.PORT || "9010");
 
-  // Health check endpoint
+  // Health check endpoint — always public (used by docker healthcheck + LAN probe)
   app.get("/health", (req, res) => {
-    res.json({ status: "ok", version: packageJSON.version });
+    res.json({ status: "ok", version: packageJSON.version, authRequired: isAuthEnabled() });
   });
+
+  // Extension distribution — public landing page; the zip download itself is
+  // gated by the same API key middleware when UNIBROWSE_API_KEYS is set.
+  app.get("/install", installLandingHandler);
+  app.get("/install/extension.zip", installZipHandler);
 
   // ── Session Recording API ───────────────────────────────────────────────────
 
@@ -325,24 +332,30 @@ async function main() {
     }
   });
 
-  // POST /api/v1/recordings/:id/events — upload rrweb events + network entries + interactions
+  // POST /api/v1/recordings/:id/events — append a chunk of events.
+  // Recordings can produce >16MB of events (Mongo's per-doc limit), so each call
+  // inserts a NEW chunk doc rather than replacing. Pass ?reset=1 on the first
+  // chunk to wipe any prior chunks for this recording (re-uploads).
+  // Chunks are reassembled on read by querying all docs for recordingId, sorted
+  // by chunkIndex.
   app.post("/api/v1/recordings/:id/events", async (req: any, res: any) => {
     try {
       await ensureMongoConnected();
       const { id } = req.params;
-      const { rrwebEvents = [], networkEntries = [], interactions = [] } = req.body as any;
+      const { rrwebEvents = [], networkEntries = [], interactions = [], chunkIndex = 0 } = req.body as any;
       const recordingEvents = mongodb.getRecordingEventsCollection();
-      await recordingEvents.replaceOne(
-        { recordingId: id },
-        { recordingId: id, rrwebEvents, networkEntries, interactions, updatedAt: new Date() },
-        { upsert: true }
-      );
-      const recordings = mongodb.getRecordingsCollection();
-      await recordings.updateOne(
-        { id },
-        { $set: { rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, interactionCount: interactions.length, updatedAt: new Date() } }
-      );
-      res.json({ success: true, rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, interactionCount: interactions.length });
+      if (req.query.reset === "1" || chunkIndex === 0) {
+        await recordingEvents.deleteMany({ recordingId: id });
+      }
+      await recordingEvents.insertOne({
+        recordingId: id,
+        chunkIndex,
+        rrwebEvents,
+        networkEntries,
+        interactions,
+        updatedAt: new Date(),
+      });
+      res.json({ success: true, chunkIndex, rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, interactionCount: interactions.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -459,14 +472,26 @@ async function main() {
     }
   });
 
-  // GET /api/v1/recordings/:id/events — get rrweb events + network for replay
+  // GET /api/v1/recordings/:id/events — get rrweb events + network for replay.
+  // Aggregates all chunks for this recording, sorted by chunkIndex.
   app.get("/api/v1/recordings/:id/events", async (req: any, res: any) => {
     try {
       await ensureMongoConnected();
       const recordingEvents = mongodb.getRecordingEventsCollection();
-      const doc = await recordingEvents.findOne({ recordingId: req.params.id }, { projection: { _id: 0 } });
-      if (!doc) return res.json({ rrwebEvents: [], networkEntries: [], interactions: [] });
-      res.json({ rrwebEvents: doc.rrwebEvents || [], networkEntries: doc.networkEntries || [], interactions: doc.interactions || [] });
+      const docs = await recordingEvents
+        .find({ recordingId: req.params.id }, { projection: { _id: 0 } })
+        .sort({ chunkIndex: 1 })
+        .toArray();
+      if (docs.length === 0) return res.json({ rrwebEvents: [], networkEntries: [], interactions: [] });
+      const rrwebEvents: any[] = [];
+      const networkEntries: any[] = [];
+      const interactions: any[] = [];
+      for (const d of docs) {
+        if (d.rrwebEvents) rrwebEvents.push(...d.rrwebEvents);
+        if (d.networkEntries) networkEntries.push(...d.networkEntries);
+        if (d.interactions) interactions.push(...d.interactions);
+      }
+      res.json({ rrwebEvents, networkEntries, interactions });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -629,7 +654,8 @@ async function main() {
   await httpMcpServer.connect(transport);
 
   // MCP endpoint - delegates to transport.handleRequest()
-  app.post("/mcp", (req, res) => {
+  // API key required when UNIBROWSE_API_KEYS is set (no-op otherwise).
+  app.post("/mcp", requireApiKey, (req, res) => {
     console.log(`[HTTP] New MCP request from ${req.ip}`);
     transport.handleRequest(req, res, req.body);
   });
@@ -639,6 +665,8 @@ async function main() {
     console.log(`[HTTP] Browser MCP server listening on http://localhost:${port}`);
     console.log(`[HTTP] MCP endpoint: http://localhost:${port}/mcp`);
     console.log(`[HTTP] Health check: http://localhost:${port}/health`);
+    console.log(`[HTTP] Install page:  http://localhost:${port}/install`);
+    console.log(`[HTTP] Auth required: ${isAuthEnabled() ? "YES (UNIBROWSE_API_KEYS set)" : "no (open mode)"}`);
   });
 
   // Create WebSocket server on the same HTTP server

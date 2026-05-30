@@ -35,6 +35,9 @@ services:
       MONGODB_DB: unibrowse
       NODE_ENV: production
       RECORDINGS_DIR: /app/recordings
+      # Comma-separated list of valid API keys. Empty/unset = open mode (auth disabled).
+      # When set, /mcp + WebSocket upgrade + /install/extension.zip all require a valid key.
+      UNIBROWSE_API_KEYS: ${UNIBROWSE_API_KEYS:-}
     depends_on:
       mongodb:
         condition: service_healthy

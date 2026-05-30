@@ -3,7 +3,7 @@
  * Central coordinator for WebSocket, Chrome Debugger, and message routing
  */
 
-importScripts('utils/websocket-offscreen.js', 'utils/cdp.js');
+importScripts('config.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js');
 
 // Global state for auto-connect
 let offscreenReady = false;
@@ -641,6 +641,47 @@ class TabManager {
  * @param {string|null} parentId
  * @returns {Array<{ frameId, url, name, parentFrameId, iframeSelector }>}
  */
+/**
+ * Split rrweb / network / interaction event arrays into chunks where each chunk's
+ * combined JSON.stringify size stays under maxBytes. Returns
+ *   [{ rrwebEvents, networkEntries, interactions }, ...]
+ * preserving event order. Used by handleStopSessionRecording to stay under
+ * MongoDB's 16MB-per-doc limit.
+ */
+function chunkEventsBySize(rrweb, network, interactions, maxBytes) {
+  const chunks = [];
+  let cur = { rrwebEvents: [], networkEntries: [], interactions: [] };
+  let curSize = 0;
+  const flush = () => {
+    if (cur.rrwebEvents.length || cur.networkEntries.length || cur.interactions.length) {
+      chunks.push(cur);
+      cur = { rrwebEvents: [], networkEntries: [], interactions: [] };
+      curSize = 0;
+    }
+  };
+  const push = (key, item) => {
+    let s;
+    try { s = JSON.stringify(item).length; } catch { s = 1024; }
+    // If a single event exceeds maxBytes, accept it alone — better to send a
+    // single oversized chunk and let the server reject than drop data silently.
+    if (s > maxBytes && cur.rrwebEvents.length + cur.networkEntries.length + cur.interactions.length === 0) {
+      cur[key].push(item);
+      chunks.push(cur);
+      cur = { rrwebEvents: [], networkEntries: [], interactions: [] };
+      curSize = 0;
+      return;
+    }
+    if (curSize + s > maxBytes) flush();
+    cur[key].push(item);
+    curSize += s;
+  };
+  for (const e of rrweb) push('rrwebEvents', e);
+  for (const e of network) push('networkEntries', e);
+  for (const e of interactions) push('interactions', e);
+  flush();
+  return chunks.length ? chunks : [{ rrwebEvents: [], networkEntries: [], interactions: [] }];
+}
+
 function flattenFrameTree(frameNode, parentId = null) {
   const { frame, childFrames = [] } = frameNode;
   return [
@@ -657,7 +698,11 @@ function flattenFrameTree(frameNode, parentId = null) {
 
 class BackgroundController {
   constructor() {
+    // URL is resolved lazily before the first connect() — see initServerConfig().
+    // We construct with localhost as a sentinel so the WS manager wires its
+    // listeners; resolveServerConfig() will overwrite this.url before connecting.
     this.ws = new WebSocketManager('ws://localhost:9010/ws');
+    this.serverConfig = null; // populated by initServerConfig()
     this.tabManager = new TabManager(); // NEW: Multi-tab manager
     this.cdp = new CDPHelper(); // DEPRECATED: Keep for backwards compatibility during migration
     this.handlers = {};
@@ -1205,6 +1250,24 @@ class BackgroundController {
         return false;
       }
 
+      // Options page asked us to re-resolve server config and reconnect
+      if (message.type === 'RECONNECT_WS') {
+        (async () => {
+          try {
+            console.log('[Background] RECONNECT_WS — disconnecting and re-resolving server config');
+            try { await this.ws.disconnect(); } catch {}
+            this.serverConfig = await resolveServerConfig();
+            this.ws.url = this.serverConfig.wsUrl;
+            console.log(`[Background] New server URL: ${this.ws.url.replace(/key=[^&]+/, 'key=***')} (source: ${this.serverConfig.source})`);
+            await this.ws.connect();
+            sendResponse({ success: true, source: this.serverConfig.source, httpUrl: this.serverConfig.httpUrl });
+          } catch (err) {
+            sendResponse({ success: false, error: err?.message || String(err) });
+          }
+        })();
+        return true; // async response
+      }
+
       // Handle WebSocket messages from offscreen document
       if (message.type === 'WS_MESSAGE') {
         console.log('[Background] Received WS_MESSAGE from offscreen:', message.message?.type);
@@ -1547,6 +1610,18 @@ class BackgroundController {
     try {
       console.log('[Background] Connecting to MCP server...');
 
+      // Resolve the active server URL (storage override → baked config → localhost)
+      // before kicking off the WebSocket. URL carries ?key=<api_key> when set.
+      try {
+        this.serverConfig = await resolveServerConfig();
+        this.ws.url = this.serverConfig.wsUrl;
+        console.log(`[Background] Server config resolved (${this.serverConfig.source}): ${this.serverConfig.httpUrl} → ${this.ws.url.replace(/key=[^&]+/, 'key=***')}`);
+      } catch (err) {
+        console.warn('[Background] resolveServerConfig failed, falling back to ws://localhost:9010/ws:', err?.message || err);
+        this.ws.url = 'ws://localhost:9010/ws';
+        this.serverConfig = { httpUrl: 'http://localhost:9010', wsUrl: 'ws://localhost:9010/ws', apiKey: '', source: 'fallback' };
+      }
+
       // Connect WebSocket (no debugger attachment yet - lazy attachment).
       // Don't await — the offscreen doc's auto-reconnect handles server unavailability.
       // Explicitly catch so a rejected promise doesn't surface as an unhandled rejection.
@@ -1557,6 +1632,8 @@ class BackgroundController {
       // Update state - connected now means WebSocket connected
       // Debugger will be attached on-demand via ensureAttached()
       this.state.connected = true;
+      chrome.storage.session.set({ swShouldReconnect: true });
+      chrome.alarms.create('sw-keepalive', { periodInMinutes: 0.5 });
       this.consoleLogs = [];
       this.networkLogs = [];
 
@@ -1588,6 +1665,8 @@ class BackgroundController {
 
     // Set connected to false FIRST to prevent event listeners from re-adding indicators
     this.state.connected = false;
+    chrome.storage.session.set({ swShouldReconnect: false });
+    chrome.alarms.clear('sw-keepalive');
 
     // Stop keepalive mechanism
     this.stopKeepalive();
@@ -1945,16 +2024,38 @@ class BackgroundController {
 
       // Check if already attached to this tab (idempotent)
       if (this.tabManager.attachedTabs.has(targetTabId)) {
-        console.log('[Background] Already attached to tab:', targetTabId);
-        this.tabManager.markUsed(targetTabId);
         const tabInfo = this.tabManager.attachedTabs.get(targetTabId);
 
-        // Update state for backwards compatibility
-        this.state.tabId = targetTabId;
-        this.state.tabUrl = tabInfo.url;
-        this.state.tabTitle = tabInfo.title;
+        if (tabInfo.cdp.isAttached()) {
+          console.log('[Background] Already attached to tab:', targetTabId);
+          this.tabManager.markUsed(targetTabId);
+          this.state.tabId = targetTabId;
+          this.state.tabUrl = tabInfo.url;
+          this.state.tabTitle = tabInfo.title;
+          return { tabId: targetTabId, label: tabInfo.label, url: tabInfo.url };
+        }
 
-        return { tabId: targetTabId, label: tabInfo.label, url: tabInfo.url };
+        // CDP session died (navigation killed it, retry exhausted) — re-attach now
+        console.log('[Background] Tab in map but CDP disconnected, re-attaching:', targetTabId);
+        try {
+          const tab = await chrome.tabs.get(targetTabId).catch(() => null);
+          if (tab && !this.isRestrictedUrl(tab.url)) {
+            await tabInfo.cdp.attach(targetTabId);
+            tabInfo.url = tab.url;
+            tabInfo.title = tab.title;
+            tabInfo.lastUsedAt = Date.now();
+            this.tabManager.markUsed(targetTabId);
+            this.state.tabId = targetTabId;
+            this.state.tabUrl = tab.url;
+            this.state.tabTitle = tab.title;
+            await this.injectBackgroundCapture(targetTabId).catch(() => {});
+            console.log('[Background] Re-attached to tab after dead session:', targetTabId);
+            return { tabId: targetTabId, label: tabInfo.label, url: tab.url };
+          }
+        } catch (reattachErr) {
+          console.warn('[Background] Re-attach failed, removing from map for fresh attach:', reattachErr.message);
+          this.tabManager.attachedTabs.delete(targetTabId);
+        }
       }
 
       // Get tab info
@@ -3214,13 +3315,16 @@ class BackgroundController {
       videoStartTimes: recording.videoStartTimes || {},
     };
 
-    const SERVER_BASE = 'http://localhost:9010';
+    // Use the same server URL + auth header the WebSocket is using.
+    const cfg = this.serverConfig || await resolveServerConfig();
+    const SERVER_BASE = cfg.httpUrl || 'http://localhost:9010';
+    const authHeaders = cfg.apiKey ? { 'Authorization': `Bearer ${cfg.apiKey}` } : {};
 
     try {
       // 1. Create recording metadata
       const createResp = await fetch(`${SERVER_BASE}/api/v1/recordings`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify(metadata),
       });
       const createData = await createResp.json();
@@ -3235,7 +3339,7 @@ class BackgroundController {
         const blob = new Blob([bytes.buffer], { type: tv.mimeType });
         fetch(`${SERVER_BASE}/api/v1/recordings/${recordingId}/video/${tv.tabId}`, {
           method: 'POST',
-          headers: { 'Content-Type': tv.mimeType },
+          headers: { 'Content-Type': tv.mimeType, ...authHeaders },
           body: blob,
         }).then(r => r.json()).then(d => {
           console.log(`[Background] Video uploaded for tab ${tv.tabId}:`, d);
@@ -3244,25 +3348,49 @@ class BackgroundController {
         });
       }
 
-      // 3. Upload rrweb events + network entries + interactions
-      if (recording.rrwebEvents.length > 0 || recording.networkEntries.length > 0 || (recording.interactions || []).length > 0) {
-        fetch(`${SERVER_BASE}/api/v1/recordings/${recordingId}/events`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            rrwebEvents: recording.rrwebEvents,
-            networkEntries: recording.networkEntries,
-            interactions: recording.interactions || [],
-          }),
-        }).then(r => r.json()).then(d => {
-          console.log('[Background] Session events uploaded:', d);
-        }).catch(err => {
-          console.warn('[Background] Session events upload failed:', err.message);
-        });
+      // 3. Upload rrweb events + network entries + interactions.
+      // Two issues to handle:
+      //  (a) MV3 service worker can terminate mid-fetch — must await every POST
+      //      before sendResponse, or the SW dies and silently drops the upload.
+      //  (b) Mongo doc limit is 16MB. Long sessions with many iframes (e.g.
+      //      shaws.com/weeklyad) easily exceed that, so we chunk client-side
+      //      into ~12MB batches; each chunk becomes its own Mongo doc and the
+      //      server aggregates them on read.
+      const CHUNK_BYTES = 12 * 1024 * 1024; // ~12MB per chunk, headroom under 16MB Mongo limit
+      const eventsUploadStatus = { chunks: 0, totalBytes: 0, errors: [] };
+      const allRrweb = recording.rrwebEvents || [];
+      const allNetwork = recording.networkEntries || [];
+      const allInteractions = recording.interactions || [];
+      if (allRrweb.length > 0 || allNetwork.length > 0 || allInteractions.length > 0) {
+        const chunks = chunkEventsBySize(allRrweb, allNetwork, allInteractions, CHUNK_BYTES);
+        console.log(`[Background] Uploading session events: ${chunks.length} chunks, ${allRrweb.length} rrweb / ${allNetwork.length} network / ${allInteractions.length} interactions`);
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          const body = JSON.stringify({ ...chunk, chunkIndex: i });
+          eventsUploadStatus.totalBytes += body.length;
+          try {
+            const url = `${SERVER_BASE}/api/v1/recordings/${recordingId}/events${i === 0 ? '?reset=1' : ''}`;
+            const resp = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...authHeaders },
+              body,
+            });
+            if (!resp.ok) {
+              const text = await resp.text().catch(() => '');
+              throw new Error(`HTTP ${resp.status}: ${text.slice(0, 200)}`);
+            }
+            await resp.json();
+            eventsUploadStatus.chunks++;
+          } catch (err) {
+            console.error(`[Background] Chunk ${i}/${chunks.length} upload failed:`, err.message);
+            eventsUploadStatus.errors.push({ chunkIndex: i, error: err.message });
+          }
+        }
+        console.log(`[Background] Session events upload done: ${eventsUploadStatus.chunks}/${chunks.length} chunks, ${(eventsUploadStatus.totalBytes / 1024 / 1024).toFixed(1)}MB total`);
       }
 
       const reviewUrl = `${SERVER_BASE}/review/${recordingId}`;
-      sendResponse({ success: true, recordingId, reviewUrl });
+      sendResponse({ success: true, recordingId, reviewUrl, eventsUploadStatus });
     } catch (err) {
       console.error('[Background] Failed to save session recording:', err);
       sendResponse({ success: false, error: err.message });
@@ -3618,7 +3746,7 @@ class BackgroundController {
     };
   }
 
-  async handleCreateTab({ url, incognito }) {
+  async handleCreateTab({ url, incognito, label }) {
     let newTab;
 
     if (incognito) {
@@ -3677,6 +3805,14 @@ class BackgroundController {
     }
 
     const tabInfo = await this.tabManager.attachTab(targetTabId, tab.url, tab.title);
+    // Apply caller-requested label so the tab is resolvable by it (e.g. the
+    // recording-screenshot flow creates a tab labeled "rrweb-frame-<ts>" and then
+    // navigates/screenshots/closes it by that label). Without this the label was
+    // silently dropped and every subsequent tabTarget lookup failed.
+    if (label) {
+      try { this.tabManager.setTabLabel(targetTabId, label); }
+      catch (err) { console.warn('[handleCreateTab] Could not apply requested label:', err.message); }
+    }
     await this.injectTabIndicator(targetTabId);
     await this.injectBackgroundCapture(targetTabId);
 
@@ -3699,7 +3835,16 @@ class BackgroundController {
     }
 
     if (!resolvedTabId) {
-      throw new Error(`browser_close_tab: could not resolve tab — provide tabId (number) or a valid tabTarget label`);
+      // Nothing identifiable was passed → genuinely malformed call.
+      if (tabId === undefined && tabTarget === undefined) {
+        throw new Error(`browser_close_tab: could not resolve tab — provide tabId (number) or a valid tabTarget label`);
+      }
+      // A target WAS supplied but didn't resolve — the tab is almost certainly already
+      // closed. Close is idempotent, so report success instead of throwing (and logging
+      // a noisy "critical error"). This is hit by best-effort cleanup such as the
+      // recording-screenshot finally block.
+      console.log('[Background] handleCloseTab: target already gone, nothing to close:', tabTarget ?? tabId);
+      return { success: true, tabId: null, alreadyClosed: true };
     }
 
     // Also remove from TabManager if it's an attached tab
@@ -3707,7 +3852,17 @@ class BackgroundController {
       await this.tabManager.detachTab(resolvedTabId).catch(() => {});
     }
 
-    await chrome.tabs.remove(resolvedTabId);
+    // chrome.tabs.remove rejects if the tab is already gone — the goal (tab closed) is
+    // already met, so swallow that case rather than surfacing it as a handler error.
+    try {
+      await chrome.tabs.remove(resolvedTabId);
+    } catch (err) {
+      if (/No tab with id|Invalid tab ID|cannot be edited/i.test(err.message || '')) {
+        console.log('[Background] handleCloseTab: tab already closed:', resolvedTabId);
+        return { success: true, tabId: resolvedTabId, alreadyClosed: true };
+      }
+      throw err;
+    }
     return { success: true, tabId: resolvedTabId };
   }
 
@@ -5551,17 +5706,80 @@ async function autoConnect() {
   }
 }
 
+// Alarm listener must be registered synchronously at top level so Chrome wakes
+// the service worker when the alarm fires (even after suspension).
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== 'sw-keepalive') return;
+  console.log('[Background] sw-keepalive alarm fired — service worker awake');
+
+  // Always check the ACTUAL WebSocket state, not controller.state.connected. The
+  // in-memory state is set optimistically in connect() before the async ws.connect()
+  // resolves, so it can stay `true` after a silent failure — which would block the
+  // alarm from ever recovering. isConnected() is async (offscreen round-trip), so
+  // it MUST be awaited — otherwise wsLive is a (truthy) Promise and we never recover.
+  const wsLive = await controller.ws.isConnected();
+
+  // Default to reconnecting unless storage explicitly says no. This recovers from
+  // session-storage being cleared or never written.
+  const { swShouldReconnect } = await chrome.storage.session.get('swShouldReconnect');
+  const shouldReconnect = swShouldReconnect !== false;
+
+  // Reconcile in-memory state with reality.
+  controller.state.connected = wsLive;
+
+  if (shouldReconnect && !wsLive) {
+    console.log('[Background] Alarm wake: WebSocket dead, forcing reconnect…');
+    autoConnectAttempted = false; // clear any stuck flag
+    await autoConnect();
+  }
+
+  // Restart keepalive interval if the service worker was suspended and it stopped.
+  if (wsLive && !controller.keepaliveInterval) {
+    controller.startKeepalive();
+  }
+});
+
+// Wake on Chrome (re)startup — without this, a closed-then-reopened browser leaves
+// the extension dormant until the next alarm tick, which can be 30s of dead time.
+chrome.runtime.onStartup.addListener(() => {
+  console.log('[Background] chrome.runtime.onStartup — kicking auto-connect');
+  autoConnectAttempted = false;
+  autoConnect();
+});
+
+chrome.runtime.onInstalled.addListener((details) => {
+  console.log('[Background] chrome.runtime.onInstalled', details.reason);
+  autoConnectAttempted = false;
+  autoConnect();
+});
+
 // Start auto-connect on extension load
 autoConnect();
 
-// Periodic health check - retry connection every 5 seconds if disconnected
-// This ensures the extension reconnects quickly when the server becomes available
-setInterval(() => {
-  if (!controller.ws.isConnected() && !autoConnectAttempted) {
-    console.log('[Background] Periodic health check: Attempting to reconnect...');
+// Periodic health check while the service worker is active — catches WebSocket drops
+// (server restart, network blip) without needing an alarm wakeup. Also clears
+// `autoConnectAttempted` if it got stuck (e.g. a previous attempt errored without
+// firing a `disconnected` event, which is the only place the listener clears it).
+let lastAutoConnectAt = Date.now();
+setInterval(async () => {
+  // isConnected() is async (offscreen round-trip) — must await, or the truthy
+  // Promise short-circuits this check and we never reconnect after a drop.
+  if (await controller.ws.isConnected()) {
+    autoConnectAttempted = false;
+    return;
+  }
+  // WS isn't connected. If we tried recently, give it time. If it's been >30s,
+  // reset the flag and try again.
+  if (autoConnectAttempted && Date.now() - lastAutoConnectAt > 30000) {
+    console.log('[Background] autoConnectAttempted stuck for >30s — clearing');
+    autoConnectAttempted = false;
+  }
+  if (!autoConnectAttempted) {
+    console.log('[Background] Periodic health check: attempting to reconnect…');
+    lastAutoConnectAt = Date.now();
     autoConnect();
   }
-}, 5000); // Check every 5 seconds (reduced from 30s)
+}, 5000);
 
 // Auto-reconnect if tab changes
 chrome.tabs.onActivated.addListener(async (activeInfo) => {

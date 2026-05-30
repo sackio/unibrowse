@@ -13,6 +13,9 @@ RUN npm ci --only=production --ignore-scripts
 # Copy pre-built application
 COPY dist ./dist
 
+# Copy the extension source so /install/extension.zip can package it on demand
+COPY extension ./extension
+
 # Expose WebSocket port
 EXPOSE 9010
 
