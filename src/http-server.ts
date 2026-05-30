@@ -264,13 +264,10 @@ async function main() {
     res.json({
       status: "ok",
       version: packageJSON.version,
-      // /mcp is ALWAYS LAN-only (no key bypass). Extension-plane endpoints
-      // (/ws, /install/zip, /api/v1/recordings/*) are LAN-open and require
-      // an API key from remote clients when UNIBROWSE_API_KEYS is set.
-      policy: {
-        mcp: "lan-only",
-        extension: authOn ? "lan-open-remote-required" : "open",
-      },
+      // All gated routes (/mcp, /ws, /install/zip, /api/v1/recordings/*)
+      // share the same policy: LAN clients always allowed; remote clients
+      // need an API key when UNIBROWSE_API_KEYS is set.
+      policy: authOn ? "lan-open-remote-required" : "open",
       authRequired: authOn && !local,
       clientIp: getEffectiveClientIP(req),
       isLocalClient: local,
@@ -668,10 +665,10 @@ async function main() {
   // Connect MCP server to transport
   await httpMcpServer.connect(transport);
 
-  // MCP endpoint — strictly LAN-only. The MCP control plane is for LAN AI
-  // agents; remote callers are rejected outright, no key bypass. Remote
-  // extension-side flows go through /ws + /install + /api/v1/recordings.
-  app.post("/mcp", requireLan, (req, res) => {
+  // MCP endpoint — LAN clients are always allowed; remote clients need a
+  // valid API key when UNIBROWSE_API_KEYS is set (same policy as /ws,
+  // /install/extension.zip, and /api/v1/recordings/*).
+  app.post("/mcp", requireApiKey, (req, res) => {
     console.log(`[HTTP] New MCP request from ${req.ip}`);
     transport.handleRequest(req, res, req.body);
   });
@@ -682,8 +679,7 @@ async function main() {
     console.log(`[HTTP] MCP endpoint: http://localhost:${port}/mcp`);
     console.log(`[HTTP] Health check: http://localhost:${port}/health`);
     console.log(`[HTTP] Install page:  http://localhost:${port}/install`);
-    console.log(`[HTTP] /mcp policy:   LAN-only (no key bypass)`);
-    console.log(`[HTTP] /ws + /install/zip + /api/v1/recordings/* policy: ${isAuthEnabled() ? "LAN open, remote requires API key (UNIBROWSE_API_KEYS set)" : "open (no UNIBROWSE_API_KEYS)"}`);
+    console.log(`[HTTP] Auth policy:   ${isAuthEnabled() ? "LAN open, remote requires API key (UNIBROWSE_API_KEYS set)" : "open (no UNIBROWSE_API_KEYS — all clients allowed)"}`);
   });
 
   // Create WebSocket server on the same HTTP server
