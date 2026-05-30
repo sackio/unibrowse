@@ -3315,10 +3315,18 @@ class BackgroundController {
       videoStartTimes: recording.videoStartTimes || {},
     };
 
-    // Use the same server URL + auth header the WebSocket is using.
-    const cfg = this.serverConfig || await resolveServerConfig();
+    // Route to the server bound to the PRIMARY recorded tab so a tab assigned
+    // to a remote server uploads its recording to THAT server rather than the
+    // extension's default. Falls back to the default if no per-tab binding exists.
+    const primaryTabId = recording.tabId
+                       || (recording.recordedTabIds && recording.recordedTabIds[0])
+                       || null;
+    const cfg = primaryTabId != null
+      ? await getServerForTab(primaryTabId)
+      : (this.serverConfig || await resolveServerConfig());
     const SERVER_BASE = cfg.httpUrl || 'http://localhost:9010';
     const authHeaders = cfg.apiKey ? { 'Authorization': `Bearer ${cfg.apiKey}` } : {};
+    console.log(`[Background] Recording upload routed to ${cfg.name || cfg.httpUrl} (source: ${cfg.source})`);
 
     try {
       // 1. Create recording metadata

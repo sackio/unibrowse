@@ -4,55 +4,65 @@
   <meta charset="utf-8">
   <title>unibrowse — server settings</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 620px; margin: 30px auto; padding: 0 20px; color: #222; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 760px; margin: 30px auto; padding: 0 20px; color: #222; }
     h1 { font-size: 22px; margin-bottom: 4px; }
+    h2 { font-size: 16px; margin: 28px 0 10px; }
     .sub { color: #666; margin-bottom: 24px; font-size: 13px; }
-    label { display: block; margin-top: 18px; font-weight: 600; font-size: 13px; }
-    input[type="text"], input[type="password"] {
-      width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #ccc;
-      border-radius: 4px; font-size: 14px; font-family: ui-monospace, "SF Mono", Consolas, monospace;
-      margin-top: 4px;
-    }
-    input:focus { outline: none; border-color: #6f42c1; }
-    .hint { font-size: 11px; color: #888; margin-top: 4px; }
-    .row { display: flex; gap: 8px; margin-top: 22px; align-items: center; }
-    button {
-      padding: 9px 16px; background: #6f42c1; color: white; border: 0; border-radius: 4px;
-      font-weight: 600; cursor: pointer; font-size: 13px;
-    }
+    table.servers { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+    table.servers th { text-align: left; padding: 8px 6px; border-bottom: 1px solid #ddd; color: #555; font-weight: 600; }
+    table.servers td { padding: 8px 6px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+    table.servers tr.is-default td { background: #f6f5fb; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .pill.default { background: #6f42c1; color: white; }
+    button { padding: 6px 12px; background: #6f42c1; color: white; border: 0; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 12px; }
     button:hover { background: #5a32a3; }
     button.secondary { background: #eee; color: #333; }
     button.secondary:hover { background: #ddd; }
-    .status { margin-top: 18px; padding: 10px 14px; border-radius: 4px; font-size: 13px; display: none; }
-    .status.ok  { display: block; background: #e6f7e6; color: #2a662a; border: 1px solid #a8d8a8; }
+    button.danger { background: #c0392b; }
+    button.danger:hover { background: #962818; }
+    .add-form { background: #f8f8f8; padding: 16px; border-radius: 6px; margin-top: 12px; }
+    .add-form label { display: block; font-size: 12px; font-weight: 600; margin-top: 10px; color: #444; }
+    .add-form input { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; font-family: ui-monospace, "SF Mono", Consolas, monospace; margin-top: 3px; }
+    .add-form input:focus { outline: none; border-color: #6f42c1; }
+    .row { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+    .status { margin-top: 16px; padding: 10px 14px; border-radius: 4px; font-size: 13px; display: none; }
+    .status.ok { display: block; background: #e6f7e6; color: #2a662a; border: 1px solid #a8d8a8; }
     .status.err { display: block; background: #fbeaea; color: #8a2a2a; border: 1px solid #d99a9a; }
     .status.info { display: block; background: #eef4fb; color: #2a4d7a; border: 1px solid #9bbedf; }
-    .current { background: #f8f8f8; padding: 12px 14px; border-radius: 4px; font-size: 12px; margin-top: 24px; color: #555; }
-    .current code { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+    code { background: #f4f4f4; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+    .actions button { margin-right: 4px; }
   </style>
 </head>
 <body>
-  <h1>unibrowse — server settings</h1>
-  <div class="sub">Configure the unibrowse server this extension connects to. Leave blank to use the values baked in at install time (or localhost as a fallback).</div>
+  <h1>unibrowse — servers</h1>
+  <div class="sub">Define one or more unibrowse servers this extension can connect to. The default server is used for any tab without an explicit binding; per-tab bindings are set from the popup.</div>
 
-  <label for="server-url">Server URL</label>
-  <input type="text" id="server-url" placeholder="https://office.sack.io:9010 or http://localhost:9010" autocomplete="off">
-  <div class="hint">HTTP base URL — the WebSocket endpoint is derived automatically as <code>ws(s)://&lt;host&gt;/ws</code>.</div>
+  <h2>Known servers</h2>
+  <table class="servers">
+    <thead>
+      <tr><th>Name</th><th>URL</th><th>Key</th><th></th><th style="width: 230px;">Actions</th></tr>
+    </thead>
+    <tbody id="servers-body"></tbody>
+  </table>
 
-  <label for="api-key">API key</label>
-  <input type="password" id="api-key" placeholder="(leave blank if the server doesn't require auth)" autocomplete="off">
-  <div class="hint">Sent as <code>?key=&lt;value&gt;</code> on WS handshake and <code>Authorization: Bearer &lt;value&gt;</code> on HTTP uploads.</div>
-
-  <div class="row">
-    <button id="save">Save &amp; reconnect</button>
-    <button id="test" class="secondary">Test connection</button>
-    <button id="reset" class="secondary">Reset to defaults</button>
+  <h2>Add a server</h2>
+  <div class="add-form">
+    <label for="add-name">Name</label>
+    <input type="text" id="add-name" placeholder="Office, lab, remote-1…">
+    <label for="add-url">Server URL</label>
+    <input type="text" id="add-url" placeholder="https://office.sack.io:9010 or http://localhost:9010">
+    <label for="add-key">API key (optional, required when server enforces auth for remote)</label>
+    <input type="password" id="add-key" placeholder="paste the key here, or leave blank">
+    <div class="row">
+      <button id="add-server">Add server</button>
+      <button id="add-test" class="secondary">Test connection</button>
+    </div>
   </div>
 
   <div class="status" id="status"></div>
 
-  <div class="current" id="current-config">Loading current config…</div>
-
+  <script src="config.js"></script>
+  <script src="utils/server-resolver.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

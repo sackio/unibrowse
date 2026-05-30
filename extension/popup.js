@@ -550,3 +550,80 @@ class PopupController {
 const popup = new PopupController();
 
 console.log('Browser MCP popup loaded');
+
+// ─── Server registry + per-tab binding UI ───────────────────────────────────
+
+(async function initServerUI() {
+  const select = document.getElementById('tab-server-select');
+  const statusLine = document.getElementById('tab-binding-status');
+  const serverInfo = document.getElementById('current-server-info');
+  const openOptionsLink = document.getElementById('open-server-options');
+  if (!select) return;
+
+  if (openOptionsLink) {
+    openOptionsLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (chrome.runtime.openOptionsPage) chrome.runtime.openOptionsPage();
+      else window.open(chrome.runtime.getURL('options.html'));
+    });
+  }
+
+  async function getActiveTabId() {
+    try {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      return tabs[0]?.id ?? null;
+    } catch { return null; }
+  }
+
+  async function render() {
+    const servers = await listServers();
+    const defaultId = await getDefaultServerId();
+    const tabId = await getActiveTabId();
+    const binding = tabId != null ? await getTabBinding(tabId) : null;
+
+    // Populate dropdown
+    select.innerHTML = '';
+    const def = document.createElement('option');
+    def.value = '';
+    const defaultName = servers.find(s => s.id === defaultId)?.name || '(none)';
+    def.textContent = `— use default (${defaultName}) —`;
+    select.appendChild(def);
+    for (const s of servers) {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = `${s.name}${s.id === defaultId ? '  ★ default' : ''}`;
+      select.appendChild(opt);
+    }
+    select.value = binding || '';
+
+    statusLine.textContent = tabId == null
+      ? 'No active tab (open this popup from a regular tab).'
+      : binding
+        ? `Tab ${tabId} bound to "${servers.find(s => s.id === binding)?.name || binding}".`
+        : `Tab ${tabId} using default server.`;
+
+    // Top info row: show what server the WS is currently connected to
+    const def2 = servers.find(s => s.id === defaultId);
+    if (def2 && serverInfo) {
+      try {
+        const u = new URL(def2.serverUrl || 'http://localhost:9010');
+        serverInfo.textContent = u.host || def2.serverUrl;
+        serverInfo.title = def2.name;
+      } catch {
+        serverInfo.textContent = def2.serverUrl || 'localhost:9010';
+      }
+    } else if (serverInfo) {
+      serverInfo.textContent = 'localhost:9010';
+    }
+  }
+
+  select.addEventListener('change', async () => {
+    const tabId = await getActiveTabId();
+    if (tabId == null) return;
+    const val = select.value || null;
+    await setTabBinding(tabId, val);
+    await render();
+  });
+
+  await render();
+})();

@@ -1,32 +1,11 @@
-// Options page: lets the user override SERVER_URL + API_KEY at runtime,
-// test the connection, and reset back to baked-in/localhost defaults.
-
-const STORAGE_KEY = 'unibrowse_server_config';
+// Server registry management UI.
 
 const $ = (id) => document.getElementById(id);
+const status = $('status');
 
 function setStatus(kind, msg) {
-  const el = $('status');
-  el.className = 'status ' + kind;
-  el.textContent = msg;
-}
-
-async function loadCurrent() {
-  const stored = await chrome.storage.local.get(STORAGE_KEY);
-  const cfg = stored[STORAGE_KEY] || {};
-  $('server-url').value = cfg.SERVER_URL || '';
-  $('api-key').value = cfg.API_KEY || '';
-
-  // Show the active resolved config for context (what background.js will use)
-  const baked = (typeof self !== 'undefined' && self.UNIBROWSE_CONFIG) || null;
-  let bakedLine = 'none';
-  if (baked && baked.SERVER_URL) {
-    bakedLine = `${baked.SERVER_URL} (installed ${baked.INSTALLED_AT || 'unknown'})`;
-  }
-  $('current-config').innerHTML =
-    `<strong>Override (stored):</strong> ${cfg.SERVER_URL ? `<code>${escapeHtml(cfg.SERVER_URL)}</code>` : '<em>not set</em>'}<br>` +
-    `<strong>Baked default:</strong> <code>${escapeHtml(bakedLine)}</code><br>` +
-    `<strong>Fallback:</strong> <code>http://localhost:9010</code>`;
+  status.className = 'status ' + kind;
+  status.textContent = msg;
 }
 
 function escapeHtml(s) {
@@ -34,79 +13,123 @@ function escapeHtml(s) {
 }
 
 function normalizeServerUrl(raw) {
-  let u = raw.trim();
+  let u = (raw || '').trim();
   if (!u) return '';
-  // If user just gives a host:port, assume http
   if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
-  // Strip trailing slash
   u = u.replace(/\/+$/, '');
   return u;
 }
 
-async function save() {
-  const serverUrl = normalizeServerUrl($('server-url').value);
-  const apiKey = $('api-key').value.trim();
+async function renderServers() {
+  const body = $('servers-body');
+  body.innerHTML = '';
+  const servers = await listServers();
+  const defaultId = await getDefaultServerId();
 
-  if (!serverUrl && !apiKey) {
-    // Both empty → clear the override entirely
-    await chrome.storage.local.remove(STORAGE_KEY);
-    setStatus('ok', 'Override cleared — extension will use baked-in / localhost defaults on next connect.');
-  } else {
-    await chrome.storage.local.set({
-      [STORAGE_KEY]: { SERVER_URL: serverUrl, WS_URL: '', API_KEY: apiKey },
-    });
-    setStatus('ok', `Saved. Reconnecting to ${serverUrl || '(baked default)'}…`);
+  if (servers.length === 0) {
+    body.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:#888;">No servers yet — add one below.</td></tr>';
+    return;
   }
 
-  // Ask the background service worker to drop the current connection and reconnect
-  try {
-    await chrome.runtime.sendMessage({ type: 'RECONNECT_WS' });
-  } catch (err) {
-    // Background not listening for this yet — the user can just reload the extension
-    setStatus('info', 'Saved. Reload the extension (chrome://extensions → reload) for the new server settings to take effect.');
+  for (const s of servers) {
+    const tr = document.createElement('tr');
+    if (s.id === defaultId) tr.className = 'is-default';
+    const keyDisplay = s.apiKey ? `<code>${escapeHtml(s.apiKey.slice(0, 4))}…${escapeHtml(s.apiKey.slice(-4))}</code>` : '<em style="color:#aaa">(none)</em>';
+    tr.innerHTML = `
+      <td><strong>${escapeHtml(s.name || '(unnamed)')}</strong></td>
+      <td><code>${escapeHtml(s.serverUrl || '')}</code></td>
+      <td>${keyDisplay}</td>
+      <td>${s.id === defaultId ? '<span class="pill default">DEFAULT</span>' : ''}</td>
+      <td class="actions">
+        ${s.id === defaultId ? '' : `<button class="secondary" data-action="default" data-id="${s.id}">Make default</button>`}
+        <button class="secondary" data-action="test" data-id="${s.id}">Test</button>
+        <button class="danger" data-action="remove" data-id="${s.id}">Remove</button>
+      </td>
+    `;
+    body.appendChild(tr);
   }
 
-  await loadCurrent();
+  body.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.addEventListener('click', () => onAction(btn.dataset.action, btn.dataset.id));
+  });
 }
 
-async function testConnection() {
-  setStatus('info', 'Testing /health…');
-  const serverUrl = normalizeServerUrl($('server-url').value);
-  const apiKey = $('api-key').value.trim();
-  // If user hasn't typed anything, test the currently-active config
-  let target = serverUrl;
-  if (!target) {
-    const stored = await chrome.storage.local.get(STORAGE_KEY);
-    target = (stored[STORAGE_KEY] && stored[STORAGE_KEY].SERVER_URL)
-          || (self.UNIBROWSE_CONFIG && self.UNIBROWSE_CONFIG.SERVER_URL)
-          || 'http://localhost:9010';
-  }
+async function onAction(action, id) {
   try {
-    const headers = apiKey ? { 'Authorization': 'Bearer ' + apiKey } : {};
-    const resp = await fetch(target + '/health', { headers });
+    const server = await getServerById(id);
+    if (action === 'default') {
+      await setDefaultServerId(id);
+      setStatus('ok', `"${server.name}" is now the default server.`);
+      await renderServers();
+      // Tell the background to reconnect with the new default
+      try { await chrome.runtime.sendMessage({ type: 'RECONNECT_WS' }); } catch {}
+    } else if (action === 'remove') {
+      if (!confirm(`Remove server "${server?.name || id}"? Tab bindings pointing at it will revert to the default.`)) return;
+      const ok = await removeServer(id);
+      if (!ok) {
+        setStatus('err', 'Cannot remove the last server. Add another first.');
+        return;
+      }
+      setStatus('ok', 'Server removed.');
+      await renderServers();
+      try { await chrome.runtime.sendMessage({ type: 'RECONNECT_WS' }); } catch {}
+    } else if (action === 'test') {
+      await testServer(server);
+    }
+  } catch (err) {
+    setStatus('err', 'Error: ' + (err.message || err));
+  }
+}
+
+async function testServer(server) {
+  setStatus('info', `Testing ${server.name} (${server.serverUrl})…`);
+  try {
+    const headers = server.apiKey ? { 'Authorization': 'Bearer ' + server.apiKey } : {};
+    const resp = await fetch(server.serverUrl + '/health', { headers });
     if (!resp.ok) {
-      setStatus('err', `HTTP ${resp.status} from ${target}/health`);
+      setStatus('err', `HTTP ${resp.status} from ${server.serverUrl}/health`);
       return;
     }
     const data = await resp.json();
-    setStatus('ok', `OK — ${target} v${data.version || '?'} (auth ${data.authRequired ? 'required' : 'open'})`);
+    const requiresAuth = data.authRequired ? 'yes' : 'no';
+    setStatus('ok', `OK — ${server.name} v${data.version || '?'} (this client must authenticate: ${requiresAuth})`);
   } catch (err) {
     setStatus('err', 'Failed: ' + (err.message || err));
   }
 }
 
-async function reset() {
-  await chrome.storage.local.remove(STORAGE_KEY);
-  $('server-url').value = '';
-  $('api-key').value = '';
-  setStatus('ok', 'Cleared. Extension will use baked-in / localhost defaults.');
-  try { await chrome.runtime.sendMessage({ type: 'RECONNECT_WS' }); } catch {}
-  await loadCurrent();
+async function addServerFromForm() {
+  const name = $('add-name').value.trim();
+  const url = normalizeServerUrl($('add-url').value);
+  const key = $('add-key').value.trim();
+  if (!url) {
+    setStatus('err', 'Please enter a server URL.');
+    return;
+  }
+  try {
+    const id = await addServer({ name: name || url, serverUrl: url, apiKey: key });
+    $('add-name').value = '';
+    $('add-url').value = '';
+    $('add-key').value = '';
+    setStatus('ok', `Added "${name || url}".`);
+    await renderServers();
+  } catch (err) {
+    setStatus('err', 'Failed: ' + (err.message || err));
+  }
+}
+
+async function testFromForm() {
+  const url = normalizeServerUrl($('add-url').value);
+  const key = $('add-key').value.trim();
+  if (!url) {
+    setStatus('err', 'Please enter a server URL to test.');
+    return;
+  }
+  await testServer({ name: 'this URL', serverUrl: url, apiKey: key });
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  loadCurrent().catch(err => setStatus('err', 'Failed to load current config: ' + err.message));
-  $('save').addEventListener('click', save);
-  $('test').addEventListener('click', testConnection);
-  $('reset').addEventListener('click', reset);
+  renderServers().catch(err => setStatus('err', 'Failed to load: ' + err.message));
+  $('add-server').addEventListener('click', addServerFromForm);
+  $('add-test').addEventListener('click', testFromForm);
 });

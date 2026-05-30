@@ -448,7 +448,7 @@
   <div class="info">
     <div class="info-row">
       <span class="info-label">MCP Server:</span>
-      <span class="info-value">localhost:9009</span>
+      <span class="info-value" id="current-server-info">—</span>
     </div>
     <div class="info-row">
       <span class="info-label">WebSocket:</span>
@@ -462,6 +462,17 @@
       <button class="session-record-btn" id="session-record-btn">⏺ Session Record</button>
       <div class="session-record-stats" id="session-record-stats"></div>
     </div>
+  </div>
+
+  <div class="tab-binding-section" id="tab-binding-section" style="background:#f6f5fb;padding:10px 12px;border-radius:6px;margin-bottom:15px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <strong style="font-size:13px;">Server for this tab</strong>
+      <a href="#" id="open-server-options" style="font-size:11px;color:#6f42c1;text-decoration:none;">manage servers →</a>
+    </div>
+    <select id="tab-server-select" style="width:100%;padding:6px;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+      <option value="">— use default —</option>
+    </select>
+    <div id="tab-binding-status" style="font-size:11px;color:#666;margin-top:6px;">Active tab: loading…</div>
   </div>
 
   <div class="attached-tabs-section" id="attached-tabs-section" style="display: none;">
@@ -482,6 +493,8 @@
 
   <div class="error" id="error"></div>
 
+  <script src="config.js"></script>
+  <script src="utils/server-resolver.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
