@@ -29,7 +29,7 @@ import * as userAction from "@/tools/user-action";
 import * as macros from "@/tools/macros";
 import * as recordings from "@/tools/recordings";
 import { installLandingHandler, installZipHandler } from "@/install";
-import { requireApiKey, isAuthEnabled, isLocalClient, getEffectiveClientIP } from "@/utils/auth";
+import { requireApiKey, requireLan, isAuthEnabled, isLocalClient, getEffectiveClientIP } from "@/utils/auth";
 import * as realisticInput from "@/tools/realistic-input";
 import * as multiTabManagement from "@/tools/multi-tab-management";
 import * as videoRecording from "@/tools/video-recording";
@@ -250,7 +250,7 @@ async function main() {
   app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key");
     if (req.method === "OPTIONS") return res.sendStatus(204);
     next();
   });
@@ -264,8 +264,13 @@ async function main() {
     res.json({
       status: "ok",
       version: packageJSON.version,
-      authPolicy: authOn ? "lan-open-remote-required" : "open",
-      // Per-request: would THIS client need to send a key?
+      // /mcp is ALWAYS LAN-only (no key bypass). Extension-plane endpoints
+      // (/ws, /install/zip, /api/v1/recordings/*) are LAN-open and require
+      // an API key from remote clients when UNIBROWSE_API_KEYS is set.
+      policy: {
+        mcp: "lan-only",
+        extension: authOn ? "lan-open-remote-required" : "open",
+      },
       authRequired: authOn && !local,
       clientIp: getEffectiveClientIP(req),
       isLocalClient: local,
@@ -290,7 +295,7 @@ async function main() {
   }
 
   // POST /api/v1/recordings — create recording metadata, return id
-  app.post("/api/v1/recordings", async (req: any, res: any) => {
+  app.post("/api/v1/recordings", requireApiKey, async (req: any, res: any) => {
     try {
       await ensureMongoConnected();
       const recordings = mongodb.getRecordingsCollection();
@@ -325,7 +330,7 @@ async function main() {
   });
 
   // POST /api/v1/recordings/:id/video — upload raw video bytes
-  app.post("/api/v1/recordings/:id/video", async (req: any, res: any) => {
+  app.post("/api/v1/recordings/:id/video", requireApiKey, async (req: any, res: any) => {
     try {
       await ensureMongoConnected();
       const { id } = req.params;
@@ -348,7 +353,7 @@ async function main() {
   // chunk to wipe any prior chunks for this recording (re-uploads).
   // Chunks are reassembled on read by querying all docs for recordingId, sorted
   // by chunkIndex.
-  app.post("/api/v1/recordings/:id/events", async (req: any, res: any) => {
+  app.post("/api/v1/recordings/:id/events", requireApiKey, async (req: any, res: any) => {
     try {
       await ensureMongoConnected();
       const { id } = req.params;
@@ -437,7 +442,7 @@ async function main() {
   });
 
   // POST /api/v1/recordings/:id/video/:tabId — upload per-tab video
-  app.post("/api/v1/recordings/:id/video/:tabId", async (req: any, res: any) => {
+  app.post("/api/v1/recordings/:id/video/:tabId", requireApiKey, async (req: any, res: any) => {
     try {
       await ensureMongoConnected();
       const { id, tabId } = req.params;
@@ -663,9 +668,10 @@ async function main() {
   // Connect MCP server to transport
   await httpMcpServer.connect(transport);
 
-  // MCP endpoint - delegates to transport.handleRequest()
-  // API key required when UNIBROWSE_API_KEYS is set (no-op otherwise).
-  app.post("/mcp", requireApiKey, (req, res) => {
+  // MCP endpoint — strictly LAN-only. The MCP control plane is for LAN AI
+  // agents; remote callers are rejected outright, no key bypass. Remote
+  // extension-side flows go through /ws + /install + /api/v1/recordings.
+  app.post("/mcp", requireLan, (req, res) => {
     console.log(`[HTTP] New MCP request from ${req.ip}`);
     transport.handleRequest(req, res, req.body);
   });
@@ -676,7 +682,8 @@ async function main() {
     console.log(`[HTTP] MCP endpoint: http://localhost:${port}/mcp`);
     console.log(`[HTTP] Health check: http://localhost:${port}/health`);
     console.log(`[HTTP] Install page:  http://localhost:${port}/install`);
-    console.log(`[HTTP] Auth policy:   ${isAuthEnabled() ? "LAN open, remote requires API key (UNIBROWSE_API_KEYS set)" : "open (no UNIBROWSE_API_KEYS — all clients allowed)"}`);
+    console.log(`[HTTP] /mcp policy:   LAN-only (no key bypass)`);
+    console.log(`[HTTP] /ws + /install/zip + /api/v1/recordings/* policy: ${isAuthEnabled() ? "LAN open, remote requires API key (UNIBROWSE_API_KEYS set)" : "open (no UNIBROWSE_API_KEYS)"}`);
   });
 
   // Create WebSocket server on the same HTTP server

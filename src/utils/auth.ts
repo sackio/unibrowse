@@ -173,3 +173,17 @@ export function verifyWebSocketAuth(req: IncomingMessage): boolean {
   if (isLocalClient(req)) return true;
   return isValidKey(extractKey(req));
 }
+
+/**
+ * Express middleware that rejects all remote (non-LAN) clients with 403.
+ * No key bypass. Used to keep endpoints like /mcp strictly LAN-local even
+ * when the server is reverse-proxied to the public internet — the MCP
+ * control plane is for LAN AI agents only, not remote callers.
+ */
+export function requireLan(req: Request, res: Response, next: NextFunction) {
+  if (isLocalClient(req)) return next();
+  res.status(403).json({
+    error: "This endpoint is LAN-only. Remote clients are not permitted, even with a valid API key.",
+    clientIp: getEffectiveClientIP(req),
+  });
+}
