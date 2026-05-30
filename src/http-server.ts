@@ -29,7 +29,7 @@ import * as userAction from "@/tools/user-action";
 import * as macros from "@/tools/macros";
 import * as recordings from "@/tools/recordings";
 import { installLandingHandler, installZipHandler } from "@/install";
-import { requireApiKey, isAuthEnabled } from "@/utils/auth";
+import { requireApiKey, isAuthEnabled, isLocalClient, getEffectiveClientIP } from "@/utils/auth";
 import * as realisticInput from "@/tools/realistic-input";
 import * as multiTabManagement from "@/tools/multi-tab-management";
 import * as videoRecording from "@/tools/video-recording";
@@ -259,7 +259,17 @@ async function main() {
 
   // Health check endpoint — always public (used by docker healthcheck + LAN probe)
   app.get("/health", (req, res) => {
-    res.json({ status: "ok", version: packageJSON.version, authRequired: isAuthEnabled() });
+    const authOn = isAuthEnabled();
+    const local = isLocalClient(req);
+    res.json({
+      status: "ok",
+      version: packageJSON.version,
+      authPolicy: authOn ? "lan-open-remote-required" : "open",
+      // Per-request: would THIS client need to send a key?
+      authRequired: authOn && !local,
+      clientIp: getEffectiveClientIP(req),
+      isLocalClient: local,
+    });
   });
 
   // Extension distribution — public landing page; the zip download itself is
@@ -666,7 +676,7 @@ async function main() {
     console.log(`[HTTP] MCP endpoint: http://localhost:${port}/mcp`);
     console.log(`[HTTP] Health check: http://localhost:${port}/health`);
     console.log(`[HTTP] Install page:  http://localhost:${port}/install`);
-    console.log(`[HTTP] Auth required: ${isAuthEnabled() ? "YES (UNIBROWSE_API_KEYS set)" : "no (open mode)"}`);
+    console.log(`[HTTP] Auth policy:   ${isAuthEnabled() ? "LAN open, remote requires API key (UNIBROWSE_API_KEYS set)" : "open (no UNIBROWSE_API_KEYS — all clients allowed)"}`);
   });
 
   // Create WebSocket server on the same HTTP server

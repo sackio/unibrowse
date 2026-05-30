@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import archiver from "archiver";
 
-import { isAuthEnabled, isValidKey, extractKey } from "@/utils/auth";
+import { isAuthEnabled, isValidKey, extractKey, isLocalClient, getEffectiveClientIP } from "@/utils/auth";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -24,6 +24,12 @@ function findExtensionDir(): string | null {
     } catch { /* ignore */ }
   }
   return null;
+}
+
+function escapeHtml(s: string): string {
+  return String(s).replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!
+  ));
 }
 
 // Derive the server's externally-visible base URL from the request.
@@ -47,13 +53,16 @@ export function installLandingHandler(req: Request, res: Response) {
   const { http: httpBase, ws: wsBase } = deriveBaseUrl(req);
   const queryKey = (req.query.key as string | undefined) || "";
   const authOn = isAuthEnabled();
-  const keyIsValid = authOn ? isValidKey(queryKey) : true;
+  const isLocal = isLocalClient(req);
+  // Effective auth for THIS visitor — LAN clients can always download.
+  const authForThisClient = authOn && !isLocal;
+  const keyIsValid = authForThisClient ? isValidKey(queryKey) : true;
 
   const downloadHref = `/install/extension.zip${queryKey ? `?key=${encodeURIComponent(queryKey)}` : ""}`;
-  const errorBanner = authOn && queryKey && !keyIsValid
+  const errorBanner = authForThisClient && queryKey && !keyIsValid
     ? `<div class="banner err">The provided key is not valid on this server.</div>`
-    : authOn && !queryKey
-    ? `<div class="banner warn">This server requires an API key. Append <code>?key=&lt;your-key&gt;</code> to this URL to enable the download.</div>`
+    : authForThisClient && !queryKey
+    ? `<div class="banner warn">This server requires an API key for remote clients. Append <code>?key=&lt;your-key&gt;</code> to this URL to enable the download.</div>`
     : "";
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -95,7 +104,8 @@ export function installLandingHandler(req: Request, res: Response) {
   <div class="meta">
     Server: <code>${httpBase}</code><br>
     WebSocket: <code>${wsBase}/ws</code><br>
-    Auth: <code>${authOn ? "API key required" : "open (no key required)"}</code>
+    Auth policy: <code>${authOn ? "LAN open / remote requires API key" : "open (no key required)"}</code><br>
+    You are: <code>${isLocal ? "LAN client (open access)" : "remote client (API key required)"}</code> — ${escapeHtml(getEffectiveClientIP(req))}
   </div>
 </body>
 </html>`);
@@ -109,10 +119,14 @@ export function installLandingHandler(req: Request, res: Response) {
  * open (backward compat for localhost-only setups).
  */
 export async function installZipHandler(req: Request, res: Response) {
-  if (isAuthEnabled()) {
+  // Remote clients need a valid key; LAN clients are always allowed.
+  if (isAuthEnabled() && !isLocalClient(req)) {
     const key = extractKey(req);
     if (!isValidKey(key)) {
-      res.status(401).json({ error: "Invalid or missing API key. Open /install?key=<key> to download." });
+      res.status(401).json({
+        error: "Invalid or missing API key. Open /install?key=<key> to download.",
+        clientIp: getEffectiveClientIP(req),
+      });
       return;
     }
   }
