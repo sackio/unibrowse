@@ -131,16 +131,26 @@ class CDPHelper {
           try {
             await chrome.debugger.attach(this.target, '1.3');
             attachSuccess = true;
+            if (attempt > 1) {
+              console.log(`[CDP] Attach succeeded on retry ${attempt}/5 after force-detach`);
+            }
             break;
           } catch (attachError) {
             lastError = attachError;
-            console.error(`[CDP] Attach error (attempt ${attempt}/5):`, attachError);
-
-            if (attachError.message && attachError.message.includes('Another debugger is already attached')) {
-              console.warn(`[CDP] Another debugger is attached, force detaching (attempt ${attempt}/5)...`);
+            const isAlreadyAttached = attachError.message && attachError.message.includes('Another debugger is already attached');
+            // Downgrade the per-retry log noise: this is an expected race when
+            // multiple agents touch the same tab or a service-worker restart
+            // leaves a stale handle. Only the FINAL failure deserves an error.
+            if (isAlreadyAttached && attempt < 5) {
+              console.log(`[CDP] Attach race on tab ${this.target.tabId} (attempt ${attempt}/5) — force-detaching and retrying`);
               await chrome.debugger.detach(this.target).catch(() => {});
               await new Promise(resolve => setTimeout(resolve, 300 * attempt));
+            } else if (isAlreadyAttached) {
+              // Final attempt failed — escalate to error.
+              console.error(`[CDP] Attach failed after 5 retries against an existing-debugger race on tab ${this.target.tabId}`);
+              throw attachError;
             } else {
+              console.error(`[CDP] Attach error (non-retryable):`, attachError);
               throw attachError;
             }
           }

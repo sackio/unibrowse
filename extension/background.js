@@ -3865,6 +3865,18 @@ class BackgroundController {
 
       if (!incognitoWindowId) {
         const win = await chrome.windows.create({ incognito: true, url: url || 'about:blank', focused: shouldFocus });
+        // Same silent-fallback detection as handleCreateWindow: even when
+        // isAllowedIncognitoAccess() returned true earlier, the result can
+        // come back as a normal window if state shifted. Trust the result.
+        if (win.incognito !== true) {
+          try { await chrome.windows.remove(win.id); } catch {}
+          throw new Error(
+            'Cannot open incognito tab: extension is not allowed in incognito ' +
+            '(Chrome silently fell back to the default profile). Go to ' +
+            'chrome://extensions, find unibrowse, and enable "Allow in incognito", ' +
+            'then retry.'
+          );
+        }
         this._incognitoWindowId = win.id;
         newTab = win.tabs[0];
       } else {
@@ -3969,22 +3981,6 @@ class BackgroundController {
   }
 
   async handleCreateWindow({ url, focused, incognito, width, height }) {
-    // Guard against the silent-fallback bug: when incognito=true is passed but
-    // chrome://extensions has "Allow in incognito" turned off for unibrowse,
-    // chrome.windows.create({incognito:true}) used to quietly drop the flag
-    // and open a NORMAL window in the user's profile. Returning {incognito:true}
-    // would then be a lie. Fail loud instead with the same actionable message
-    // handleCreateTab uses.
-    if (incognito === true) {
-      const allowed = await chrome.extension.isAllowedIncognitoAccess();
-      if (!allowed) {
-        throw new Error(
-          'Cannot open incognito window: extension is not allowed in incognito. ' +
-          'Go to chrome://extensions, find unibrowse, and enable "Allow in incognito", ' +
-          'then retry.'
-        );
-      }
-    }
     // Default to background-open so a new window doesn't steal focus from
     // whatever the user is doing. Callers pass focused=true to override.
     const createData = { focused: focused === true };
@@ -4008,6 +4004,23 @@ class BackgroundController {
     if (height !== undefined) createData.height = height;
 
     const window = await chrome.windows.create(createData);
+
+    // Detect the silent-incognito-fallback bug from ha #1: Chrome will quietly
+    // open a NORMAL window in the user's profile when the extension lacks
+    // chrome://extensions "Allow in incognito", and chrome.windows.create
+    // resolves with `incognito:false` on the returned object regardless of
+    // what was requested. Trust the RESULT object — not the request param —
+    // so we don't echo a lie back to the caller. Close the wrong-mode
+    // window first so we don't leave it lying around.
+    if (incognito === true && window.incognito !== true) {
+      try { await chrome.windows.remove(window.id); } catch { /* best-effort */ }
+      throw new Error(
+        'Cannot open incognito window: extension is not allowed in incognito ' +
+        '(Chrome silently fell back to the default profile). Go to ' +
+        'chrome://extensions, find unibrowse, and enable "Allow in incognito", ' +
+        'then retry.'
+      );
+    }
 
     return {
       success: true,
