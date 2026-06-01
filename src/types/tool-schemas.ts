@@ -46,7 +46,15 @@ const ElementSchema = z.object({
     .describe("Exact target element reference from the page snapshot"),
 });
 
-// Schema for optional tab targeting (used across all browser automation tools)
+// Schema for optional tab targeting (used across all browser automation tools).
+// The `agent` and `takeover` fields here drive the tab-reservation system:
+// when an agent passes `agent: "<name>"` on browser_create_tab / browser_attach_tab,
+// that tab becomes RESERVED to that agent — other agents calling control tools
+// on the same tab while supplying a different `agent` get a `tab-reserved` error
+// listing the current owner. They can retry the same call with `takeover: true`
+// to forcibly transfer ownership (logged in the tab's history). Callers that do
+// NOT supply `agent` get the legacy free-for-all behavior, so existing macros
+// and scripts keep working unchanged.
 const TabTargetSchema = z.object({
   tabTarget: z
     .union([z.number(), z.string()])
@@ -55,6 +63,24 @@ const TabTargetSchema = z.object({
       "Optional tab identifier — must be a tab ID or label from browser_list_attached_tabs (NOT a Chrome tab ID from browser_list_tabs). " +
       "If not provided, uses the last-used attached tab. " +
       "Use browser_create_tab or browser_attach_tab to attach a tab before targeting it."
+    ),
+  agent: z
+    .string()
+    .optional()
+    .describe(
+      "Your agent identifier (e.g. your ATC session name: \"shopping\", \"ha\", \"unibrowse\"). " +
+      "When supplied on browser_create_tab/browser_attach_tab, reserves the tab to you so other " +
+      "agents can't hijack it. When supplied on control tools (navigate/evaluate/click/etc.), the " +
+      "server checks ownership and returns a tab-reserved error if a different agent owns the tab. " +
+      "Omit for legacy free-for-all behavior (any caller can drive the tab)."
+    ),
+  takeover: z
+    .boolean()
+    .optional()
+    .describe(
+      "Set true to forcibly take over a tab currently reserved by a different agent. The takeover " +
+      "is recorded in the tab's reservation history. Requires `agent` to be set. Use sparingly — " +
+      "intended for cleanup when the prior owner has died or you genuinely need the tab back."
     ),
 });
 
@@ -162,11 +188,13 @@ export const SwitchTabTool = z.object({
 
 export const CreateTabTool = z.object({
   name: z.literal("browser_create_tab"),
-  description: z.literal("Create a new browser tab and automatically attach it for control. Returns tabId and label that can be used as tabTarget in subsequent operations. NEW TABS OPEN IN THE BACKGROUND BY DEFAULT — the user's currently-focused tab stays focused so agent work doesn't disrupt user flow. Pass focus=true to override and bring the new tab to front. Use incognito=true for a fresh anonymous session (no cookies, history, or login state from the main profile). Requires 'Allow in incognito' to be enabled for unibrowse in chrome://extensions."),
+  description: z.literal("Create a new browser tab and automatically attach it for control. Returns tabId and label that can be used as tabTarget in subsequent operations. NEW TABS OPEN IN THE BACKGROUND BY DEFAULT — the user's currently-focused tab stays focused so agent work doesn't disrupt user flow. Pass focus=true to override and bring the new tab to front. Use incognito=true for a fresh anonymous session (no cookies, history, or login state from the main profile). Requires 'Allow in incognito' to be enabled for unibrowse in chrome://extensions. When you pass `agent` the new tab is reserved to you so other agents can't drive it."),
   arguments: z.object({
     url: z.string().optional().describe("URL to open in the new tab (default: about:blank)"),
     incognito: z.boolean().optional().describe("Open tab in an incognito window for a fresh anonymous session. All incognito tabs share one persistent incognito window. Requires extension to be allowed in incognito (chrome://extensions)."),
     focus: z.boolean().optional().describe("Bring the new tab to front and focus it (default: false — opens in background so user flow isn't disrupted)."),
+    agent: z.string().optional().describe("Your agent identifier; if supplied, the newly-created tab is reserved to you so other agents can't drive it without passing takeover:true."),
+    takeover: z.boolean().optional().describe("Used together with agent: if the new tab's id collides with an existing reservation (rare), set true to forcibly take ownership."),
   }).merge(MaxTokensSchema),
 });
 
@@ -1196,7 +1224,8 @@ export const AttachTabTool = z.object({
   name: z.literal("browser_attach_tab"),
   description: z.literal(
     "Attach debugger to a browser tab. Can attach to an existing tab by ID or open a new tab with a URL. " +
-    "Use this to start controlling a tab before performing operations on it."
+    "Use this to start controlling a tab before performing operations on it. When you pass `agent`, the tab " +
+    "is reserved to you and other agents will get a tab-reserved error on attempted control."
   ),
   arguments: z.object({
     tabId: z
@@ -1211,6 +1240,39 @@ export const AttachTabTool = z.object({
       .string()
       .optional()
       .describe("Optional label to assign to the tab after attaching"),
+    agent: z
+      .string()
+      .optional()
+      .describe("Your agent identifier; if supplied, the attached tab is reserved to you."),
+    takeover: z
+      .boolean()
+      .optional()
+      .describe("When attaching to a tab already reserved by a different agent, set true to forcibly transfer ownership."),
+  }).merge(MaxTokensSchema),
+});
+
+export const ReserveTabTool = z.object({
+  name: z.literal("browser_reserve_tab"),
+  description: z.literal(
+    "Explicitly reserve an already-attached tab for an agent. Useful when claiming a tab someone else created or previously released. " +
+    "Requires `agent`. Returns tab-reserved if another agent owns it and `takeover` isn't set; pass takeover:true to forcibly transfer (logged in tab history)."
+  ),
+  arguments: z.object({
+    tabTarget: z.union([z.number(), z.string()]).describe("Tab ID or label to reserve"),
+    agent: z.string().describe("Your agent identifier"),
+    takeover: z.boolean().optional().describe("Forcibly take over from the current owner"),
+  }).merge(MaxTokensSchema),
+});
+
+export const ReleaseTabTool = z.object({
+  name: z.literal("browser_release_tab"),
+  description: z.literal(
+    "Release the reservation on a tab so another agent can claim it. The owner is logged in the tab's history. " +
+    "If `agent` is supplied, only the matching owner may release; if omitted, the release is permissive."
+  ),
+  arguments: z.object({
+    tabTarget: z.union([z.number(), z.string()]).describe("Tab ID or label to release"),
+    agent: z.string().optional().describe("Your agent identifier (must match the current owner unless omitted)"),
   }).merge(MaxTokensSchema),
 });
 

@@ -6,10 +6,12 @@ import {
   DetachTabTool,
   GetActiveTabTool,
   AttachTabTool,
+  ReserveTabTool,
+  ReleaseTabTool,
 } from "@/types/tool-schemas";
 
 import type { Context } from "@/context";
-import { textResponse, errorResponse } from "@/utils/response-helpers";
+import { textResponse, errorResponse, jsonResponse } from "@/utils/response-helpers";
 
 import type { Tool } from "./tool";
 
@@ -35,20 +37,19 @@ export const listAttachedTabs: Tool = {
       );
 
       if (!result.tabs || result.tabs.length === 0) {
-        return textResponse("No tabs currently attached", max_tokens);
+        return jsonResponse({ tabs: [], message: "No tabs currently attached" }, true, max_tokens);
       }
-
-      const tabList = result.tabs
-        .map(
-          (tab: any) =>
-            `- Tab ${tab.tabId} (${tab.label}): ${tab.title}\n  URL: ${tab.url}\n  Last used: ${new Date(tab.lastUsedAt).toLocaleString()}`
-        )
-        .join("\n");
-
-      return textResponse(
-        `Attached tabs (${result.tabs.length}):\n${tabList}`,
-        max_tokens
-      );
+      // Clean JSON shape so callers can read tab.reservation.owner /
+      // tab.reservation.history programmatically. The narrative summary is
+      // kept in `message` for log surfaces that prefer one-liners.
+      const summary = `Attached tabs (${result.tabs.length}):\n` +
+        result.tabs.map((tab: any) => {
+          const res = tab.reservation
+            ? ` [reserved: ${tab.reservation.owner} since ${new Date(tab.reservation.claimedAt).toISOString()}]`
+            : "";
+          return `- Tab ${tab.tabId} (${tab.label}): ${tab.title}${res}\n  URL: ${tab.url}\n  Last used: ${new Date(tab.lastUsedAt).toLocaleString()}`;
+        }).join("\n");
+      return jsonResponse({ tabs: result.tabs, message: summary }, true, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(
@@ -202,6 +203,53 @@ export const attachTab: Tool = {
       return errorResponse(
         `Failed to attach to tab: ${error.message}`, false, error
       , max_tokens);
+    }
+  },
+};
+
+/**
+ * Reserve an attached tab to an agent, so other agents can't drive it.
+ * Pair with browser_release_tab to free it later.
+ */
+export const reserveTab: Tool = {
+  schema: {
+    name: ReserveTabTool.shape.name.value,
+    description: ReserveTabTool.shape.description.value,
+    inputSchema: zodToJsonSchema(ReserveTabTool.shape.arguments),
+  },
+  handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      const validatedParams = ReserveTabTool.shape.arguments.parse(params);
+      const result = await context.sendSocketMessage("browser_reserve_tab", validatedParams);
+      return jsonResponse(result, true, max_tokens);
+    } catch (error) {
+      return errorResponse(
+        `Failed to reserve tab: ${(error as any).message}`, false, error, max_tokens
+      );
+    }
+  },
+};
+
+/**
+ * Release a tab's reservation so any agent can claim it again.
+ */
+export const releaseTab: Tool = {
+  schema: {
+    name: ReleaseTabTool.shape.name.value,
+    description: ReleaseTabTool.shape.description.value,
+    inputSchema: zodToJsonSchema(ReleaseTabTool.shape.arguments),
+  },
+  handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      const validatedParams = ReleaseTabTool.shape.arguments.parse(params);
+      const result = await context.sendSocketMessage("browser_release_tab", validatedParams);
+      return jsonResponse(result, true, max_tokens);
+    } catch (error) {
+      return errorResponse(
+        `Failed to release tab: ${(error as any).message}`, false, error, max_tokens
+      );
     }
   },
 };

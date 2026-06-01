@@ -279,6 +279,91 @@ class TabManager {
     this.attachedTabs = new Map(); // Map<tabId, TabInfo>
     this.labelCounter = new Map(); // Map<domain, number>
     this.lastUsedTabId = null;
+    // Tab reservation registry — Map<tabId, { owner, claimedAt, history[] }>
+    // - owner: agent name string ("shopping", "ha", etc.) — the agent that
+    //   currently controls the tab. Operations from other agents (when they
+    //   supply an `agent` param) get a tab-reserved error unless they also
+    //   set takeover:true.
+    // - claimedAt: epoch ms when current owner took control.
+    // - history: rolling list (max 10) of prior {owner, claimedAt, releasedAt,
+    //   releaseReason} entries so callers can see who had it before.
+    // A missing entry means the tab is unreserved (legacy free-for-all).
+    this.reservations = new Map();
+  }
+
+  // ─── Reservation registry ──────────────────────────────────────────────
+
+  /** Claim a tab for an agent. Throws `tab-reserved` if held by another and
+   *  takeover is false. No-op if agent is empty (legacy free-for-all). */
+  claimTab(tabId, agent, options = {}) {
+    if (!agent) return null;
+    const takeover = options.takeover === true;
+    const existing = this.reservations.get(tabId);
+    if (existing && existing.owner && existing.owner !== agent) {
+      if (!takeover) {
+        const err = new Error(
+          `Tab ${tabId} is reserved by "${existing.owner}" since ` +
+          `${new Date(existing.claimedAt).toISOString()}. Pass takeover:true on the ` +
+          `same call to forcibly transfer ownership (logged in tab history).`
+        );
+        err.code = 'tab-reserved';
+        err.owner = existing.owner;
+        err.claimedAt = existing.claimedAt;
+        throw err;
+      }
+      // Takeover: record the prior owner in history before claiming.
+      const history = existing.history || [];
+      history.push({
+        owner: existing.owner,
+        claimedAt: existing.claimedAt,
+        releasedAt: Date.now(),
+        releaseReason: `taken-over-by:${agent}`,
+      });
+      while (history.length > 10) history.shift();
+      this.reservations.set(tabId, { owner: agent, claimedAt: Date.now(), history });
+      console.log(`[TabManager] Tab ${tabId} forcibly taken over by "${agent}" from "${existing.owner}"`);
+      return { taken: true, previousOwner: existing.owner };
+    }
+    if (existing && existing.owner === agent) {
+      // Already ours, refresh nothing — keep original claimedAt.
+      return { reclaimed: true };
+    }
+    // Unreserved → claim.
+    const history = (existing && existing.history) || [];
+    this.reservations.set(tabId, { owner: agent, claimedAt: Date.now(), history });
+    console.log(`[TabManager] Tab ${tabId} reserved by "${agent}"`);
+    return { claimed: true };
+  }
+
+  /** Release the reservation on a tab and append a history entry. */
+  releaseTab(tabId, reason = 'released') {
+    const existing = this.reservations.get(tabId);
+    if (!existing || !existing.owner) return;
+    const history = existing.history || [];
+    history.push({
+      owner: existing.owner,
+      claimedAt: existing.claimedAt,
+      releasedAt: Date.now(),
+      releaseReason: reason,
+    });
+    while (history.length > 10) history.shift();
+    this.reservations.set(tabId, { owner: null, claimedAt: null, history });
+    console.log(`[TabManager] Tab ${tabId} released ("${existing.owner}" → ${reason})`);
+  }
+
+  /** Read-only ownership probe. Returns null when caller may proceed (no agent
+   *  supplied, no reservation, or caller IS the owner). Returns a
+   *  {blocked:true, owner, claimedAt} record when another agent owns it. */
+  checkAccess(tabId, agent) {
+    if (!agent) return null;
+    const existing = this.reservations.get(tabId);
+    if (!existing || !existing.owner) return null;
+    if (existing.owner === agent) return null;
+    return { blocked: true, owner: existing.owner, claimedAt: existing.claimedAt };
+  }
+
+  getReservation(tabId) {
+    return this.reservations.get(tabId) || null;
   }
 
   /**
@@ -316,8 +401,14 @@ class TabManager {
    * Attach debugger to a tab
    * Creates new CDP instance and stores tab info
    */
-  async attachTab(tabId, url, title) {
+  async attachTab(tabId, url, title, options = {}) {
     try {
+      // Reservation: when an `agent` is supplied, claim ownership before
+      // anything else. Throws `tab-reserved` if another agent already owns
+      // it and takeover isn't set, leaving the tab state untouched.
+      const { agent, takeover } = options;
+      this.claimTab(tabId, agent, { takeover: takeover === true });
+
       // Check if already attached
       let preservedLabel = null;
       if (this.attachedTabs.has(tabId)) {
@@ -404,6 +495,9 @@ class TabManager {
       console.warn('[TabManager] Tab not attached:', tabId);
       return;
     }
+
+    // Release the reservation so other agents can claim the tab.
+    this.releaseTab(tabId, 'detached');
 
     console.log('[TabManager] Detaching from tab:', tabId, tabInfo.label);
 
@@ -554,17 +648,55 @@ class TabManager {
   /**
    * Get active CDP or throw a descriptive error if not found.
    * Use this in handlers instead of getActiveCDP() to avoid null-dereference crashes.
+   * When `agent` is supplied (4th arg via options), enforces the tab reservation:
+   * non-owners get a tab-reserved error unless they also pass takeover:true,
+   * in which case ownership is transferred (logged in history).
    */
-  requireCDP(tabTarget) {
-    const cdp = this.getActiveCDP(tabTarget);
-    if (!cdp) {
+  requireCDP(tabTarget, options = {}) {
+    // Caller can pass options explicitly, OR the dispatcher has stashed the
+    // request's agent + takeover on `this._currentAgent` / `_currentTakeover`
+    // before invoking the handler. The explicit options win when supplied.
+    const agent = options.agent !== undefined ? options.agent : this._currentAgent;
+    const takeover = options.takeover !== undefined ? options.takeover : this._currentTakeover;
+    // Resolve tab info (without marking used yet — we may bail on reservation)
+    let tabInfo = null;
+    if (tabTarget) {
+      tabInfo = this.resolveTab(tabTarget);
+    } else if (this.lastUsedTabId) {
+      tabInfo = this.attachedTabs.get(this.lastUsedTabId);
+    }
+    if (!tabInfo || !tabInfo.cdp) {
       throw new Error(
         tabTarget
           ? `Tab ${tabTarget} not found or not attached. Use browser_list_attached_tabs to see available tabs.`
           : 'No tabs currently attached. Use browser_attach_tab or browser_create_tab first.'
       );
     }
-    return cdp;
+    // Reservation gate. When agent is supplied: if the tab is reserved by
+    // someone else, either honor it (no takeover → throw) or take over.
+    if (agent) {
+      const block = this.checkAccess(tabInfo.tabId, agent);
+      if (block) {
+        if (takeover === true) {
+          this.claimTab(tabInfo.tabId, agent, { takeover: true });
+        } else {
+          const err = new Error(
+            `Tab ${tabInfo.label || tabInfo.tabId} is reserved by "${block.owner}" since ` +
+            `${new Date(block.claimedAt).toISOString()}. Pass takeover:true to forcibly transfer ownership.`
+          );
+          err.code = 'tab-reserved';
+          err.owner = block.owner;
+          err.claimedAt = block.claimedAt;
+          throw err;
+        }
+      } else if (!this.reservations.get(tabInfo.tabId)?.owner) {
+        // Tab is unreserved AND caller identified themselves — claim it as a
+        // courtesy so future calls from other agents see the reservation.
+        this.claimTab(tabInfo.tabId, agent);
+      }
+    }
+    this.markUsed(tabInfo.tabId);
+    return tabInfo.cdp;
   }
 
   /**
@@ -607,15 +739,29 @@ class TabManager {
    * @returns {Array} Array of tab info objects
    */
   listTabs() {
-    return Array.from(this.attachedTabs.values()).map(t => ({
-      tabId: t.tabId,
-      label: t.label,
-      url: t.url,
-      title: t.title,
-      attachedAt: t.attachedAt,
-      lastUsedAt: t.lastUsedAt,
-      isActive: t.tabId === this.lastUsedTabId
-    }));
+    return Array.from(this.attachedTabs.values()).map(t => {
+      const r = this.reservations.get(t.tabId);
+      return {
+        tabId: t.tabId,
+        label: t.label,
+        url: t.url,
+        title: t.title,
+        attachedAt: t.attachedAt,
+        lastUsedAt: t.lastUsedAt,
+        isActive: t.tabId === this.lastUsedTabId,
+        // Reservation: surface current owner + claim time + prior owners.
+        // null when free-for-all (no reservation), so legacy callers can
+        // ignore the field harmlessly.
+        reservation: r && r.owner
+          ? {
+              owner: r.owner,
+              claimedAt: r.claimedAt,
+              historyCount: (r.history || []).length,
+              recentHistory: (r.history || []).slice(-3),
+            }
+          : null,
+      };
+    });
   }
 
   /**
@@ -1506,6 +1652,8 @@ class BackgroundController {
 
     // Connection/Attachment handlers
     this.handlers['browser_ensure_attached'] = this.handleEnsureAttached.bind(this);
+    this.handlers['browser_reserve_tab'] = this.handleReserveTab.bind(this);
+    this.handlers['browser_release_tab'] = this.handleReleaseTab.bind(this);
 
     // Navigation handlers
     this.handlers['browser_navigate'] = this.handleNavigate.bind(this);
@@ -2143,8 +2291,12 @@ class BackgroundController {
 
       console.log('[Background] Attaching to tab:', targetTabId, tab.url);
 
-      // Attach using TabManager (creates new CDP instance)
-      const tabInfo = await this.tabManager.attachTab(targetTabId, tab.url, tab.title);
+      // Attach using TabManager (creates new CDP instance). Pass caller's
+      // agent/takeover so the tab is reserved to them on first attach.
+      const tabInfo = await this.tabManager.attachTab(targetTabId, tab.url, tab.title, {
+        agent: this.tabManager._currentAgent,
+        takeover: this.tabManager._currentTakeover,
+      });
 
       // Update state for backwards compatibility
       this.state.tabId = targetTabId;
@@ -2169,7 +2321,7 @@ class BackgroundController {
   }
 
   /**
-   * List all attached tabs with their labels
+   * List all attached tabs with their labels and reservation info.
    */
   async handleListAttachedTabs() {
     try {
@@ -2179,6 +2331,47 @@ class BackgroundController {
       console.error('[Background] handleListAttachedTabs failed:', error);
       throw error;
     }
+  }
+
+  /**
+   * Explicitly reserve a tab for an agent. Useful when an agent wants to claim
+   * a tab it didn't create (e.g. one the user opened, or one previously released
+   * by another agent). Accepts the same agent/takeover semantics as everything
+   * else — pass takeover:true to forcibly transfer ownership.
+   */
+  async handleReserveTab({ tabTarget, agent, takeover }) {
+    if (!agent) throw new Error('browser_reserve_tab requires an agent identifier');
+    const info = this.tabManager.resolveTab(tabTarget);
+    if (!info) throw new Error(`Tab ${tabTarget} not attached. Use browser_list_attached_tabs.`);
+    const outcome = this.tabManager.claimTab(info.tabId, agent, { takeover: takeover === true });
+    return {
+      success: true,
+      tabId: info.tabId,
+      label: info.label,
+      reservedTo: agent,
+      outcome,
+    };
+  }
+
+  /**
+   * Explicitly release a tab's reservation, freeing it for any other agent to
+   * pick up. No-op if the tab isn't reserved.
+   */
+  async handleReleaseTab({ tabTarget, agent }) {
+    const info = this.tabManager.resolveTab(tabTarget);
+    if (!info) throw new Error(`Tab ${tabTarget} not attached. Use browser_list_attached_tabs.`);
+    // Only the owner may release (unless no agent supplied — be permissive then)
+    const existing = this.tabManager.reservations.get(info.tabId);
+    if (existing && existing.owner && agent && existing.owner !== agent) {
+      const err = new Error(
+        `Cannot release tab ${info.label || info.tabId}: reserved by "${existing.owner}", not "${agent}".`
+      );
+      err.code = 'tab-reserved';
+      err.owner = existing.owner;
+      throw err;
+    }
+    this.tabManager.releaseTab(info.tabId, agent ? `released-by:${agent}` : 'released');
+    return { success: true, tabId: info.tabId, label: info.label };
   }
 
   /**
@@ -2877,6 +3070,16 @@ class BackgroundController {
     // same WS the command came in on — even when handlers don't explicitly
     // thread the wsId through their call chains.
     this._currentOriginWsId = originWsId;
+    // Same trick for the reservation system: stash the caller's agent name +
+    // takeover flag on the TabManager so requireCDP() can enforce ownership
+    // without every handler having to plumb `agent` / `takeover` through its
+    // call chain. Cleared in finally below.
+    const callerAgent = (payload && typeof payload === 'object') ? payload.agent : undefined;
+    const callerTakeover = (payload && typeof payload === 'object') ? payload.takeover === true : false;
+    if (this.tabManager) {
+      this.tabManager._currentAgent = callerAgent || null;
+      this.tabManager._currentTakeover = callerTakeover;
+    }
 
     // Preserve state for recovery
     const stateSnapshot = {
@@ -3918,7 +4121,11 @@ class BackgroundController {
       return { success: true, tabId: tab.id, label: `tab-${tab.id}`, url: tab.url || 'about:blank' };
     }
 
-    const tabInfo = await this.tabManager.attachTab(targetTabId, tab.url, tab.title);
+    // Pass the caller's agent/takeover so the tab is reserved on creation.
+    const tabInfo = await this.tabManager.attachTab(targetTabId, tab.url, tab.title, {
+      agent: this.tabManager._currentAgent,
+      takeover: this.tabManager._currentTakeover,
+    });
     // Apply caller-requested label so the tab is resolvable by it (e.g. the
     // recording-screenshot flow creates a tab labeled "rrweb-frame-<ts>" and then
     // navigates/screenshots/closes it by that label). Without this the label was
@@ -3930,7 +4137,9 @@ class BackgroundController {
     await this.injectTabIndicator(targetTabId);
     await this.injectBackgroundCapture(targetTabId);
 
-    return { success: true, tabId: tab.id, label: tabInfo.label, url: tab.url };
+    const result = { success: true, tabId: tab.id, label: tabInfo.label, url: tab.url };
+    if (this.tabManager._currentAgent) result.reservedTo = this.tabManager._currentAgent;
+    return result;
   }
 
   async handleCloseTab({ tabId, tabTarget }) {

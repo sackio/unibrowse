@@ -183,6 +183,8 @@ const multiTabTools: Tool[] = [
   multiTabManagement.detachTab,
   multiTabManagement.getActiveTab,
   multiTabManagement.attachTab,
+  multiTabManagement.reserveTab,
+  multiTabManagement.releaseTab,
 ];
 
 const frameTools: Tool[] = [
