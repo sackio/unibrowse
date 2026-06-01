@@ -1,6 +1,20 @@
 FROM node:22-alpine
 
-RUN apk add --no-cache ffmpeg
+# ffmpeg: video-frame extraction for recording screenshots
+# chromium + supporting libs: lets browser_launch_isolated_chrome spawn
+#   a true headless Chrome inside the container (host's Chrome can't run
+#   here because it's glibc-linked and we're on musl). The launcher picks
+#   /usr/bin/chromium-browser automatically.
+RUN apk add --no-cache \
+      ffmpeg \
+      chromium \
+      nss freetype freetype-dev harfbuzz ca-certificates ttf-freefont \
+      font-noto-emoji
+
+# Tell the launcher (and anything else that honors this) where Chrome lives,
+# and skip any Puppeteer self-download — the apk install gave us the binary.
+ENV CHROME_PATH=/usr/bin/chromium-browser \
+    PUPPETEER_SKIP_DOWNLOAD=true
 
 WORKDIR /app
 

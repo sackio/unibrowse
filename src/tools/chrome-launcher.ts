@@ -2,9 +2,14 @@ import { spawn, type ChildProcess } from "child_process";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import * as path from "path";
 import * as fs from "fs";
+import { fileURLToPath } from "url";
 import { LaunchIsolatedChromeTool } from "@/types/tool-schemas";
 import { textResponse, errorResponse } from "@/utils/response-helpers";
 import type { Tool } from "./tool";
+
+// __dirname is not defined in ESM bundles; recompute it from the module URL.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /**
  * Track spawned Chrome processes
@@ -81,17 +86,29 @@ export const launchIsolatedChrome: Tool = {
         );
       }
 
-      // Determine project root (go up from src/tools/)
-      const projectRoot = path.resolve(__dirname, "../..", max_tokens);
-      const extensionDir = path.join(projectRoot, "extension");
-      const profilesDir = path.join(projectRoot, ".chrome-profiles");
-
-      // Verify extension directory exists
-      if (!fs.existsSync(extensionDir)) {
+      // Resolve the extension directory. In dev mode, src/tools/ lives two
+      // levels under repo root; in the production bundle, __dirname is /app/dist
+      // and extension/ sits next to it at /app/extension. Probe both layouts
+      // (and an absolute /app fallback for safety) and pick the first that
+      // contains a manifest.json.
+      const candidates = [
+        path.resolve(__dirname, "..", "extension"),         // /app/extension when run from /app/dist
+        path.resolve(__dirname, "..", "..", "extension"),   // <repo>/extension when run from <repo>/src/tools
+        "/app/extension",
+      ];
+      let extensionDir: string | null = null;
+      for (const c of candidates) {
+        try {
+          if (fs.existsSync(path.join(c, "manifest.json"))) { extensionDir = c; break; }
+        } catch { /* ignore */ }
+      }
+      if (!extensionDir) {
         return errorResponse(
-          `Extension directory not found at ${extensionDir}`, false
+          `Extension directory not found (searched: ${candidates.join(", ")})`, false
         );
       }
+      // Profiles live next to the extension dir for portability
+      const profilesDir = path.join(path.dirname(extensionDir), ".chrome-profiles");
 
       // Create profiles directory if it doesn't exist
       if (!fs.existsSync(profilesDir)) {
@@ -134,6 +151,17 @@ export const launchIsolatedChrome: Tool = {
         "--disable-features=TranslateUI",
         "--disable-default-apps",
       ];
+
+      // Detect "we're running inside a container" and add the flags Chrome
+      // needs to survive there. The big two:
+      //   --no-sandbox: container kernel namespacing collides with Chrome's
+      //                 own sandbox; without this the renderer exits at start.
+      //   --disable-dev-shm-usage: default /dev/shm in docker is 64MB; Chrome
+      //                 mmap's much more and falls over. Use /tmp instead.
+      const inContainer = fs.existsSync("/.dockerenv") || process.env.UNIBROWSE_FORCE_CHROME_NOSANDBOX === "1";
+      if (inContainer) {
+        chromeArgs.push("--no-sandbox", "--disable-dev-shm-usage");
+      }
 
       // Add window dimensions if specified
       if (validatedParams.width && validatedParams.height) {
