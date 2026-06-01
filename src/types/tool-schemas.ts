@@ -89,9 +89,10 @@ const MaxTokensSchema = z.object({
 
 export const NavigateTool = z.object({
   name: z.literal("browser_navigate"),
-  description: z.literal("Navigate to a URL"),
+  description: z.literal("Navigate to a URL. WHEN tabTarget IS OMITTED, A NEW TAB IS CREATED at the URL (in the background) instead of reusing whichever tab was most recently used — this prevents cross-agent collisions on a shared unibrowse server. The new tab is auto-attached and becomes this caller's last-used tab so a subsequent browser_evaluate / browser_click / etc. without tabTarget hits it. Pass an explicit tabTarget to navigate an existing attached tab. Pass focus=true to bring the auto-created tab to front (default background)."),
   arguments: z.object({
     url: z.string().describe("The URL to navigate to"),
+    focus: z.boolean().optional().describe("Only used when tabTarget is omitted (auto-create path). Bring the new tab to front (default: false — opens in background)."),
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
@@ -161,10 +162,11 @@ export const SwitchTabTool = z.object({
 
 export const CreateTabTool = z.object({
   name: z.literal("browser_create_tab"),
-  description: z.literal("Create a new browser tab and automatically attach it for control. Returns tabId and label that can be used as tabTarget in subsequent operations. Use incognito=true for a fresh anonymous session (no cookies, history, or login state from the main profile). Requires 'Allow in incognito' to be enabled for unibrowse in chrome://extensions."),
+  description: z.literal("Create a new browser tab and automatically attach it for control. Returns tabId and label that can be used as tabTarget in subsequent operations. NEW TABS OPEN IN THE BACKGROUND BY DEFAULT — the user's currently-focused tab stays focused so agent work doesn't disrupt user flow. Pass focus=true to override and bring the new tab to front. Use incognito=true for a fresh anonymous session (no cookies, history, or login state from the main profile). Requires 'Allow in incognito' to be enabled for unibrowse in chrome://extensions."),
   arguments: z.object({
     url: z.string().optional().describe("URL to open in the new tab (default: about:blank)"),
     incognito: z.boolean().optional().describe("Open tab in an incognito window for a fresh anonymous session. All incognito tabs share one persistent incognito window. Requires extension to be allowed in incognito (chrome://extensions)."),
+    focus: z.boolean().optional().describe("Bring the new tab to front and focus it (default: false — opens in background so user flow isn't disrupted)."),
   }).merge(MaxTokensSchema),
 });
 
@@ -181,10 +183,10 @@ export const CloseTabTool = z.object({
 
 export const CreateWindowTool = z.object({
   name: z.literal("browser_create_window"),
-  description: z.literal("Create a new browser window"),
+  description: z.literal("Create a new browser window. Opens in the BACKGROUND by default — the user's currently-focused window stays in front so agent work doesn't disrupt user flow. Pass focused=true to bring the new window to front."),
   arguments: z.object({
     url: z.union([z.string(), z.array(z.string())]).optional().describe("URL or array of URLs to open in the new window (default: about:blank)"),
-    focused: z.boolean().optional().describe("Whether the new window should be focused (default: true)"),
+    focused: z.boolean().optional().describe("Whether the new window should be focused / brought to front (default: false — opens in background so user flow isn't disrupted)."),
     incognito: z.boolean().optional().describe("Whether to open in incognito/private mode (default: false)"),
     width: z.number().optional().describe("Window width in pixels"),
     height: z.number().optional().describe("Window height in pixels"),

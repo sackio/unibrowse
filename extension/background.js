@@ -3486,7 +3486,23 @@ class BackgroundController {
   //   handleGetFormValues, handleCheckElementState, handleGetNetworkState,
   //   handleSetNetworkConditions, handleClearCache
 
-  async handleNavigate({ url, tabTarget }) {
+  async handleNavigate({ url, tabTarget, focus }) {
+    // When tabTarget is omitted, AUTO-CREATE a fresh attached tab at the URL
+    // instead of falling back to the global lastUsedTabId. Shared unibrowse
+    // servers serve many agents at once; the old fallback meant "whoever
+    // navigated last wins" and other agents' tabs got hijacked mid-flow.
+    // Auto-creating gives each agent its own tab without needing to think
+    // about it. To navigate an existing tab, pass an explicit tabTarget.
+    if (tabTarget === undefined || tabTarget === null || tabTarget === "") {
+      const created = await this.handleCreateTab({ url, focus });
+      return {
+        success: true,
+        url: created.url || url,
+        tabId: created.tabId,
+        label: created.label,
+        autoCreated: true,
+      };
+    }
     const cdp = await this.tabManager.requireCDP(tabTarget);
     await cdp.navigate(url);
     return { success: true, url };
@@ -3814,7 +3830,11 @@ class BackgroundController {
     };
   }
 
-  async handleCreateTab({ url, incognito, label }) {
+  async handleCreateTab({ url, incognito, label, focus }) {
+    // Default behavior: new tabs open in the background so agent work doesn't
+    // steal focus from whatever the user is doing. Callers pass focus=true to
+    // explicitly bring the new tab to front.
+    const shouldFocus = focus === true;
     let newTab;
 
     if (incognito) {
@@ -3834,15 +3854,19 @@ class BackgroundController {
       }
 
       if (!incognitoWindowId) {
-        const win = await chrome.windows.create({ incognito: true, url: url || 'about:blank' });
+        const win = await chrome.windows.create({ incognito: true, url: url || 'about:blank', focused: shouldFocus });
         this._incognitoWindowId = win.id;
         newTab = win.tabs[0];
-        // If the window was created with the URL already, we're done
       } else {
-        newTab = await chrome.tabs.create({ url: url || 'about:blank', windowId: incognitoWindowId, active: true });
+        newTab = await chrome.tabs.create({ url: url || 'about:blank', windowId: incognitoWindowId, active: shouldFocus });
+        if (shouldFocus) {
+          // chrome.tabs.create active=true brings the tab to front within its window,
+          // but does not focus the window itself — do that explicitly when requested.
+          try { await chrome.windows.update(incognitoWindowId, { focused: true }); } catch {}
+        }
       }
     } else {
-      newTab = await chrome.tabs.create({ url: url || 'about:blank', active: true });
+      newTab = await chrome.tabs.create({ url: url || 'about:blank', active: shouldFocus });
     }
 
     let targetTabId = newTab.id;
@@ -3935,7 +3959,9 @@ class BackgroundController {
   }
 
   async handleCreateWindow({ url, focused, incognito, width, height }) {
-    const createData = {};
+    // Default to background-open so a new window doesn't steal focus from
+    // whatever the user is doing. Callers pass focused=true to override.
+    const createData = { focused: focused === true };
 
     // Set URL - can be a string or array of URLs
     if (url) {
@@ -3948,8 +3974,7 @@ class BackgroundController {
       createData.url = 'about:blank';
     }
 
-    // Set window state
-    if (focused !== undefined) createData.focused = focused;
+    // focused already set above per the default-background policy.
     if (incognito !== undefined) createData.incognito = incognito;
 
     // Set window size if provided
