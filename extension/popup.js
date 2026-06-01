@@ -622,6 +622,14 @@ console.log('Browser MCP popup loaded');
     if (tabId == null) return;
     const val = select.value || null;
     await setTabBinding(tabId, val);
+    // Ask the service worker to spin up a WS connection for this tab's bound
+    // server (no-op if it's the default, or already connected). This lets the
+    // bound server actually drive the tab over its own WebSocket.
+    try {
+      await chrome.runtime.sendMessage({ type: 'ENSURE_SERVER_WS', tabId });
+    } catch (err) {
+      console.log('[popup] ENSURE_SERVER_WS message failed (extension may be reloading):', err?.message || err);
+    }
     await render();
   });
 

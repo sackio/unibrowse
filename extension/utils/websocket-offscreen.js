@@ -4,14 +4,15 @@
  */
 
 class WebSocketManager {
-  constructor(url = 'ws://localhost:9010/ws') {
+  constructor(url = 'ws://localhost:9010/ws', options = {}) {
     this.url = url;
+    this.wsId = options.wsId || 'default';
     this.stateChangeHandlers = [];
     this.offscreenReady = false;
     this.messageIdCounter = 0;
     this.pendingResponses = new Map();
 
-    console.log('[WebSocketManager] Initialized with offscreen adapter');
+    console.log(`[WebSocketManager:${this.wsId}] Initialized with offscreen adapter`);
 
     // Check if Chrome APIs are available
     // This can happen during extension reload - it's normal and not an error
@@ -20,27 +21,29 @@ class WebSocketManager {
       return;
     }
 
-    // Listen for messages from offscreen document
+    // Listen for messages from offscreen document — filter by wsId so a
+    // manager only sees events for its own connection. Messages without a
+    // wsId (legacy offscreen builds) are treated as belonging to "default".
     try {
       chrome.runtime.onMessage.addListener((message, sender) => {
         if (message.type === 'OFFSCREEN_READY') {
           console.log('[WebSocketManager] ✓ Offscreen document is ready and responding');
           this.offscreenReady = true;
-        } else if (message.type === 'WS_CONNECTED') {
-          console.log('[WebSocketManager] Offscreen WebSocket connected');
+          return;
+        }
+        const msgWsId = message.wsId || 'default';
+        if (msgWsId !== this.wsId) return;
+        if (message.type === 'WS_CONNECTED') {
+          console.log(`[WebSocketManager:${this.wsId}] WebSocket connected`);
           this.emitStateChange('connected');
         } else if (message.type === 'WS_DISCONNECTED') {
-          console.log('[WebSocketManager] Offscreen WebSocket disconnected');
+          console.log(`[WebSocketManager:${this.wsId}] WebSocket disconnected`);
           this.emitStateChange('disconnected');
         } else if (message.type === 'WS_ERROR') {
-          console.warn('[WebSocketManager] WebSocket error (non-critical):', message.error);
-          // Don't emit state change for errors - they're followed by disconnect/reconnect
-          // this.emitStateChange('error', message.error);
-        } else if (message.type === 'WS_MESSAGE') {
-          console.log('[WebSocketManager] Offscreen message:', message.message);
-          // Don't emit state change - message is already handled by WS_MESSAGE handler in background.js
-          // This prevents duplicate message processing
+          console.warn(`[WebSocketManager:${this.wsId}] WebSocket error (non-critical):`, message.error);
         }
+        // WS_MESSAGE: background.js's central onMessage handler dispatches it
+        // — we don't ack here so the dispatch fires once.
       });
     } catch (error) {
       // This shouldn't happen since we already checked Chrome API availability
@@ -49,7 +52,27 @@ class WebSocketManager {
       return;
     }
 
-    this.ensureOffscreenDocument();
+    // Fire-and-forget on construction. A rejection here (typically Chrome's
+    // transient "No SW" while the service worker is still activating) MUST be
+    // caught — otherwise it surfaces as an "Uncaught (in promise)" error. Every
+    // sendToOffscreen() lazily re-runs this, so a deferred failure self-heals.
+    this.ensureOffscreenDocument().catch((err) => {
+      console.log('[WebSocketManager] Initial offscreen ensure deferred (will retry on demand):', err?.message || err);
+    });
+  }
+
+  /**
+   * Chrome throws these while the service worker is still activating or being
+   * torn down (e.g. right after an alarm/startup wake). They clear on their own,
+   * so callers should retry rather than surface them as hard errors.
+   */
+  _isTransientSwError(msg) {
+    if (!msg) return false;
+    return msg.includes('No SW') ||
+           msg.includes('No service worker') ||
+           msg.includes('No active service worker') ||
+           msg.includes('Service worker is not active') ||
+           msg.includes('service worker is not yet active');
   }
 
   /**
@@ -66,51 +89,81 @@ class WebSocketManager {
   }
 
   /**
-   * Ensure offscreen document exists
+   * Ensure the offscreen document exists.
+   *
+   * Single-flight: concurrent callers (constructor, connect, the 5s health
+   * check, getState) share one in-flight attempt instead of racing to create
+   * the document — which would otherwise throw "Only a single offscreen
+   * document may be created" against itself.
    */
   async ensureOffscreenDocument() {
-    // Check if Chrome APIs are available first
-    if (!this.isChromeAvailable()) {
-      console.log('[WebSocketManager] Chrome APIs not available (extension reloading)');
-      throw new Error('Chrome APIs not available');
-    }
+    if (this._ensuringPromise) return this._ensuringPromise;
+    this._ensuringPromise = this._ensureOffscreenDocumentOnce()
+      .finally(() => { this._ensuringPromise = null; });
+    return this._ensuringPromise;
+  }
 
-    try {
-      // Check if offscreen document already exists
-      const existingContexts = await chrome.runtime.getContexts({
-        contextTypes: ['OFFSCREEN_DOCUMENT'],
-        documentUrls: [chrome.runtime.getURL('offscreen.html')]
-      });
-
-      if (existingContexts.length > 0) {
-        console.log('[WebSocketManager] Offscreen document already exists');
-        this.offscreenReady = true;
-        return;
+  async _ensureOffscreenDocumentOnce() {
+    const MAX_ATTEMPTS = 5;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      // Check if Chrome APIs are available first
+      if (!this.isChromeAvailable()) {
+        console.log('[WebSocketManager] Chrome APIs not available (extension reloading)');
+        throw new Error('Chrome APIs not available');
       }
 
-      // Create offscreen document
-      console.log('[WebSocketManager] Creating offscreen document');
-      await chrome.offscreen.createDocument({
-        url: 'offscreen.html',
-        reasons: ['WORKERS', 'USER_MEDIA'],
-        justification: 'Maintain WebSocket connection and perform tab capture for recording replay'
-      });
+      try {
+        // Check if offscreen document already exists
+        const existingContexts = await chrome.runtime.getContexts({
+          contextTypes: ['OFFSCREEN_DOCUMENT'],
+          documentUrls: [chrome.runtime.getURL('offscreen.html')]
+        });
 
-      // Give the offscreen document a moment to initialize
-      await new Promise(resolve => setTimeout(resolve, 100));
+        if (existingContexts.length > 0) {
+          this.offscreenReady = true;
+          return;
+        }
 
-      this.offscreenReady = true;
-      console.log('[WebSocketManager] Offscreen document created and ready');
-    } catch (error) {
-      // Document may already exist, which throws an error
-      if (error.message.includes('Only a single offscreen')) {
-        console.log('[WebSocketManager] Offscreen document already exists (caught error)');
+        // Create offscreen document
+        console.log('[WebSocketManager] Creating offscreen document');
+        await chrome.offscreen.createDocument({
+          url: 'offscreen.html',
+          reasons: ['WORKERS', 'USER_MEDIA'],
+          justification: 'Maintain WebSocket connection and perform tab capture for recording replay'
+        });
+
+        // Give the offscreen document a moment to initialize
+        await new Promise(resolve => setTimeout(resolve, 100));
+
         this.offscreenReady = true;
-      } else if (error.message === 'Chrome APIs not available' || !this.isChromeAvailable()) {
-        // Extension is reloading, this is expected
-        console.log('[WebSocketManager] Offscreen document creation skipped (extension reloading)');
-        throw error;
-      } else {
+        console.log('[WebSocketManager] Offscreen document created and ready');
+        return;
+      } catch (error) {
+        const msg = error?.message || String(error);
+
+        // Document already exists (getContexts can transiently miss it) — fine.
+        if (msg.includes('Only a single offscreen')) {
+          this.offscreenReady = true;
+          return;
+        }
+
+        // Extension is reloading / context invalidated — expected; let the
+        // caller retry later.
+        if (msg === 'Chrome APIs not available' || !this.isChromeAvailable()) {
+          console.log('[WebSocketManager] Offscreen document creation skipped (extension reloading)');
+          throw error;
+        }
+
+        // "No SW" et al: the service worker isn't fully active yet (common right
+        // after an alarm/startup wake). Back off briefly and retry instead of
+        // failing the whole connect.
+        if (this._isTransientSwError(msg) && attempt < MAX_ATTEMPTS) {
+          const delay = 100 * attempt;
+          console.log(`[WebSocketManager] Offscreen ensure hit transient SW state ("${msg}"), retry ${attempt}/${MAX_ATTEMPTS - 1} in ${delay}ms`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+
         console.error('[WebSocketManager] Failed to create offscreen document:', error);
         throw error;
       }
@@ -135,7 +188,7 @@ class WebSocketManager {
 
       try {
         chrome.runtime.sendMessage(
-          { type, ...data },
+          { type, wsId: this.wsId, ...data },
           (response) => {
             clearTimeout(timeout);
 
@@ -198,6 +251,10 @@ class WebSocketManager {
         console.log('[WebSocketManager] Connection initiated with new offscreen document');
       } else if (error.message.includes('Chrome APIs not available') || !this.isChromeAvailable()) {
         console.log('[WebSocketManager] Connection skipped - extension reloading');
+        throw error;
+      } else if (this._isTransientSwError(error.message)) {
+        // Service worker still spinning up — auto-reconnect / health check will retry.
+        console.log('[WebSocketManager] Connection deferred - service worker not active yet:', error.message);
         throw error;
       } else {
         console.error('[WebSocketManager] Connection failed:', error);

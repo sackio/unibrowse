@@ -1,37 +1,29 @@
 /**
- * Offscreen Document - Maintains persistent WebSocket connection
+ * Offscreen Document — maintains persistent WebSocket connections.
  *
- * This runs in an offscreen document (not a service worker) so it can
- * maintain long-lived WebSocket connections without being terminated.
+ * Multi-WS pool: one OffscreenManager owns a Map<wsId, Conn> so the extension
+ * can talk to multiple unibrowse servers simultaneously (one per known server,
+ * keyed by serverId from the registry). All OFFSCREEN_* messages may include
+ * an optional `wsId`; if omitted, the legacy "default" connection is used so
+ * older callers and the initial bootstrap work unchanged.
  */
+
+const DEFAULT_WS_ID = 'default';
 
 class OffscreenManager {
   constructor() {
-    this.ws = null;
-    this.serverUrl = null;
-    this.connectionState = 'disconnected';
-    this.pendingRequests = new Map();
-    this.messageId = 0;
+    /** @type {Map<string, object>} wsId -> Conn */
+    this.connections = new Map();
 
     // Tab capture recording state — one recorder per tab (keyed by tabId or 'default')
     this.recorders = new Map();
 
-    // Auto-reconnect configuration
-    this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = Infinity; // Always try to reconnect
-    this.reconnectDelay = 1000; // Start with 1 second
-    this.maxReconnectDelay = 30000; // Max 30 seconds between attempts
-    this.reconnectTimer = null;
-    this.intentionalDisconnect = false; // Track if disconnect was intentional
-
     console.log('[Offscreen] OffscreenManager constructing...');
 
-    // ALWAYS set up message listener, even if Chrome APIs aren't fully ready yet
-    // The listener will check API availability per-message
     try {
       chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         this.handleMessage(message, sender, sendResponse);
-        return true; // Keep sendResponse channel open for async
+        return true;
       });
       console.log('[Offscreen] ✓ Message listener registered successfully');
     } catch (error) {
@@ -39,7 +31,6 @@ class OffscreenManager {
       return;
     }
 
-    // Now check if Chrome APIs are fully available for initialization
     if (!this.isChromeAvailable()) {
       console.log('[Offscreen] Chrome APIs not fully available yet, skipping connection restore');
       return;
@@ -47,160 +38,151 @@ class OffscreenManager {
 
     console.log('[Offscreen] ✓ OffscreenManager initialized with Chrome APIs available');
 
-    // Delay connection restoration to ensure Chrome APIs are fully ready
-    // and to avoid race conditions during extension reload
-    setTimeout(() => {
-      this.restoreConnection();
-    }, 100);
+    setTimeout(() => { this.restoreConnection(); }, 100);
   }
 
-  /**
-   * Check if Chrome APIs are available
-   * Returns false if extension context has been invalidated
-   */
   isChromeAvailable() {
     try {
-      // Only check what we actually need - chrome.runtime.sendMessage
-      // chrome.runtime.id can be undefined in offscreen documents
       return typeof chrome !== 'undefined' &&
              chrome.runtime &&
              typeof chrome.runtime.sendMessage === 'function';
-    } catch (error) {
-      return false;
-    }
+    } catch { return false; }
   }
 
-  /**
-   * Check if Chrome Storage API is available
-   * Storage API may not be available in all contexts
-   */
   isStorageAvailable() {
     try {
       return typeof chrome !== 'undefined' &&
              chrome.storage &&
              chrome.storage.local &&
              typeof chrome.storage.local.get === 'function';
-    } catch (error) {
-      return false;
-    }
+    } catch { return false; }
   }
 
   async restoreConnection() {
     try {
-      // Check if Chrome APIs are still available
-      if (!this.isChromeAvailable()) {
-        console.log('[Offscreen] Chrome APIs not available, skipping connection restore');
-        return;
-      }
-
-      // Always try to connect to default server URL
+      if (!this.isChromeAvailable()) return;
       const defaultUrl = 'ws://localhost:9010/ws';
-      console.log('[Offscreen] Auto-connecting to', defaultUrl);
-      this.intentionalDisconnect = false;
-      await this.connect(defaultUrl);
+      console.log('[Offscreen] Auto-connecting to', defaultUrl, 'as', DEFAULT_WS_ID);
+      const conn = this._getOrCreateConn(DEFAULT_WS_ID);
+      conn.intentionalDisconnect = false;
+      await this.connect(defaultUrl, DEFAULT_WS_ID);
     } catch (error) {
       console.log('[Offscreen] Initial connection failed, will retry:', error.message);
-      // Schedule reconnect - this will handle the retry logic
-      this.scheduleReconnect();
+      this.scheduleReconnect(DEFAULT_WS_ID);
     }
   }
 
-  /**
-   * Schedule a reconnection attempt with exponential backoff
-   */
-  scheduleReconnect() {
-    // Don't reconnect if it was an intentional disconnect
-    if (this.intentionalDisconnect) {
-      console.log('[Offscreen] Skipping reconnect - disconnect was intentional');
+  // ─── Per-connection state ────────────────────────────────────────────────
+
+  _getOrCreateConn(wsId) {
+    const id = wsId || DEFAULT_WS_ID;
+    if (!this.connections.has(id)) {
+      this.connections.set(id, {
+        wsId: id,
+        ws: null,
+        serverUrl: null,
+        connectionState: 'disconnected',
+        pendingRequests: new Map(),
+        messageId: 0,
+        reconnectAttempts: 0,
+        reconnectDelay: 1000,
+        maxReconnectDelay: 30000,
+        reconnectTimer: null,
+        intentionalDisconnect: false,
+      });
+    }
+    return this.connections.get(id);
+  }
+
+  _isOpen(conn) {
+    return conn && conn.ws && conn.ws.readyState === WebSocket.OPEN;
+  }
+
+  scheduleReconnect(wsId) {
+    const conn = this._getOrCreateConn(wsId);
+    if (conn.intentionalDisconnect) {
+      console.log(`[Offscreen][${conn.wsId}] Skipping reconnect — intentional disconnect`);
       return;
     }
-
-    // Clear any existing timer
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-    }
-
-    // Calculate delay with exponential backoff
-    const delay = Math.min(
-      this.reconnectDelay * Math.pow(2, this.reconnectAttempts),
-      this.maxReconnectDelay
-    );
-
-    this.reconnectAttempts++;
-    console.log(`[Offscreen] Scheduling reconnect attempt #${this.reconnectAttempts} in ${delay}ms`);
-
-    this.reconnectTimer = setTimeout(async () => {
-      console.log(`[Offscreen] Attempting reconnect #${this.reconnectAttempts}...`);
+    if (conn.reconnectTimer) clearTimeout(conn.reconnectTimer);
+    const delay = Math.min(conn.reconnectDelay * Math.pow(2, conn.reconnectAttempts), conn.maxReconnectDelay);
+    conn.reconnectAttempts++;
+    console.log(`[Offscreen][${conn.wsId}] Scheduling reconnect attempt #${conn.reconnectAttempts} in ${delay}ms`);
+    conn.reconnectTimer = setTimeout(async () => {
+      console.log(`[Offscreen][${conn.wsId}] Attempting reconnect #${conn.reconnectAttempts}...`);
       try {
-        await this.connect(this.serverUrl || 'ws://localhost:9010/ws');
-        // Success - reset attempts
-        this.reconnectAttempts = 0;
-        console.log('[Offscreen] Reconnected successfully!');
+        await this.connect(conn.serverUrl || 'ws://localhost:9010/ws', conn.wsId);
+        conn.reconnectAttempts = 0;
+        console.log(`[Offscreen][${conn.wsId}] Reconnected successfully`);
       } catch (error) {
-        console.log('[Offscreen] Reconnect failed:', error.message);
-        // Schedule next attempt
-        this.scheduleReconnect();
+        console.log(`[Offscreen][${conn.wsId}] Reconnect failed:`, error.message);
+        this.scheduleReconnect(conn.wsId);
       }
     }, delay);
   }
 
-  /**
-   * Cancel any scheduled reconnection
-   */
-  cancelReconnect() {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+  cancelReconnect(wsId) {
+    const conn = this.connections.get(wsId || DEFAULT_WS_ID);
+    if (!conn) return;
+    if (conn.reconnectTimer) {
+      clearTimeout(conn.reconnectTimer);
+      conn.reconnectTimer = null;
     }
-    this.reconnectAttempts = 0;
+    conn.reconnectAttempts = 0;
   }
 
+  // ─── Message handling ────────────────────────────────────────────────────
+
   async handleMessage(message, sender, sendResponse) {
-    console.log('[Offscreen] handleMessage called with:', message?.type || 'no type');
-
-    // Only handle messages prefixed with OFFSCREEN_
-    // All other messages are meant for the background service worker
-    if (!message.type || !message.type.startsWith('OFFSCREEN_')) {
-      console.log('[Offscreen] Ignoring non-OFFSCREEN message:', message?.type);
-      return; // Ignore, let background service worker handle it
-    }
-
-    console.log('[Offscreen] Processing OFFSCREEN message:', message.type);
+    if (!message.type || !message.type.startsWith('OFFSCREEN_')) return;
+    const wsId = message.wsId || DEFAULT_WS_ID;
+    console.log(`[Offscreen][${wsId}] Processing ${message.type}`);
 
     try {
       switch (message.type) {
         case 'OFFSCREEN_CONNECT':
-          // Fire-and-forget: start connecting and respond immediately.
-          // The offscreen doc's auto-reconnect loop handles retries if the server
-          // is unavailable — no need to await and risk the 5-second sendToOffscreen timeout.
-          this.connect(message.url).catch(err => {
-            console.log('[Offscreen] Initial connect attempt failed (auto-reconnect will retry):', err.message);
+          this.connect(message.url, wsId).catch(err => {
+            console.log(`[Offscreen][${wsId}] Initial connect failed (auto-reconnect):`, err.message);
           });
-          sendResponse({ success: true, state: this.connectionState });
+          sendResponse({ success: true, state: this._getOrCreateConn(wsId).connectionState });
           break;
 
         case 'OFFSCREEN_DISCONNECT':
-          await this.disconnect();
+          await this.disconnect(wsId);
           sendResponse({ success: true });
           break;
 
-        case 'OFFSCREEN_SEND_MESSAGE':
-          const result = await this.sendMessage(message.messageType, message.data, message.options);
+        case 'OFFSCREEN_SEND_MESSAGE': {
+          const result = await this.sendMessage(message.messageType, message.data, message.options, wsId);
           sendResponse({ success: true, result });
           break;
+        }
 
         case 'OFFSCREEN_SEND_MESSAGE_NO_RESPONSE':
-          this.sendMessageNoResponse(message.data);
+          this.sendMessageNoResponse(message.data, wsId);
           sendResponse({ success: true });
           break;
 
-        case 'OFFSCREEN_GET_STATE':
+        case 'OFFSCREEN_GET_STATE': {
+          const conn = this.connections.get(wsId);
           sendResponse({
             success: true,
-            state: this.connectionState,
-            connected: this.ws && this.ws.readyState === WebSocket.OPEN
+            state: conn?.connectionState || 'disconnected',
+            connected: this._isOpen(conn),
           });
           break;
+        }
+
+        case 'OFFSCREEN_LIST_CONNECTIONS': {
+          const summary = Array.from(this.connections.values()).map(c => ({
+            wsId: c.wsId,
+            serverUrl: c.serverUrl,
+            connectionState: c.connectionState,
+            open: c.ws && c.ws.readyState === WebSocket.OPEN,
+          }));
+          sendResponse({ success: true, connections: summary });
+          break;
+        }
 
         case 'OFFSCREEN_START_TAB_RECORDING':
           await this.startTabRecording(message.streamId, message.tabId ?? 'default');
@@ -209,8 +191,6 @@ class OffscreenManager {
 
         case 'OFFSCREEN_STOP_TAB_RECORDING': {
           const videoData = await this.stopTabRecording(message.tabId ?? 'default');
-          // Base64-encode to reliably transfer binary across extension contexts.
-          // ArrayBuffers can arrive as plain objects in MV3 service workers via structured clone.
           const bytes = new Uint8Array(videoData.arrayBuffer);
           let binary = '';
           const chunkSize = 8192;
@@ -222,275 +202,175 @@ class OffscreenManager {
         }
 
         default:
-          console.warn('[Offscreen] Unknown OFFSCREEN_ message type:', message.type);
+          console.warn(`[Offscreen][${wsId}] Unknown message type:`, message.type);
           sendResponse({ success: false, error: 'Unknown message type' });
       }
     } catch (error) {
-      // Check if error is due to extension context being invalidated (reload)
       if (!this.isChromeAvailable() || error.message?.includes('Extension context invalidated')) {
-        console.log('[Offscreen] Message handling skipped - extension reloading');
         sendResponse({ success: false, error: 'Extension context invalidated' });
       } else {
-        console.error('[Offscreen] Error handling message:', error);
+        console.error(`[Offscreen][${wsId}] Error handling message:`, error);
         sendResponse({ success: false, error: error.message });
       }
     }
   }
 
-  async connect(url) {
-    console.log('[Offscreen] Connecting to', url);
+  // ─── connect / disconnect / send ─────────────────────────────────────────
 
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      console.log('[Offscreen] Already connected');
+  async connect(url, wsId = DEFAULT_WS_ID) {
+    const conn = this._getOrCreateConn(wsId);
+    console.log(`[Offscreen][${conn.wsId}] Connecting to`, url);
+
+    if (this._isOpen(conn) && conn.serverUrl === url) {
+      console.log(`[Offscreen][${conn.wsId}] Already connected to`, url);
       return;
     }
+    if (conn.ws && conn.serverUrl !== url) {
+      try { conn.ws.close(); } catch {}
+      conn.ws = null;
+    }
 
-    this.serverUrl = url;
-    this.connectionState = 'connecting';
+    conn.serverUrl = url;
+    conn.connectionState = 'connecting';
+    conn.intentionalDisconnect = false;
 
     return new Promise((resolve, reject) => {
       let opened = false;
       try {
-        this.ws = new WebSocket(url);
+        conn.ws = new WebSocket(url);
 
-        this.ws.onopen = () => {
+        conn.ws.onopen = () => {
           opened = true;
-          console.log('[Offscreen] WebSocket connected');
-          this.connectionState = 'connected';
+          console.log(`[Offscreen][${conn.wsId}] WebSocket connected`);
+          conn.connectionState = 'connected';
 
-          // IMPORTANT: Send identification message to server
-          // This tells the server that this connection is from the browser extension
-          // (not from an external MCP client like the test suite)
-          // Check readyState before sending to avoid CONNECTING state race condition
           const sendIdentification = () => {
+            const payload = JSON.stringify({
+              type: 'EXTENSION_REGISTER',
+              source: 'browser-extension',
+              wsId: conn.wsId,
+            });
             try {
-              if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                this.ws.send(JSON.stringify({
-                  type: 'EXTENSION_REGISTER',
-                  source: 'browser-extension'
-                }));
-                console.log('[Offscreen] Sent extension identification to server');
+              if (conn.ws && conn.ws.readyState === WebSocket.OPEN) {
+                conn.ws.send(payload);
               } else {
-                // WebSocket not yet in OPEN state, retry after a short delay
-                console.log('[Offscreen] WebSocket not yet OPEN (state:', this.ws?.readyState, '), retrying in 100ms');
                 setTimeout(() => {
-                  try {
-                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                      this.ws.send(JSON.stringify({
-                        type: 'EXTENSION_REGISTER',
-                        source: 'browser-extension'
-                      }));
-                      console.log('[Offscreen] Sent delayed extension identification to server');
-                    } else {
-                      console.warn('[Offscreen] WebSocket still not OPEN after retry. State:', this.ws?.readyState);
-                    }
-                  } catch (retryError) {
-                    console.error('[Offscreen] Retry failed:', retryError.message || retryError.toString());
-                  }
+                  try { if (conn.ws && conn.ws.readyState === WebSocket.OPEN) conn.ws.send(payload); } catch {}
                 }, 100);
               }
-            } catch (error) {
-              console.warn('[Offscreen] Initial send failed, retrying in 100ms:', error.message || error.toString());
+            } catch {
               setTimeout(() => {
-                try {
-                  if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({
-                      type: 'EXTENSION_REGISTER',
-                      source: 'browser-extension'
-                    }));
-                    console.log('[Offscreen] Sent delayed extension identification to server');
-                  } else {
-                    console.warn('[Offscreen] WebSocket no longer open, identification not sent. State:', this.ws?.readyState);
-                  }
-                } catch (retryError) {
-                  console.error('[Offscreen] Retry failed:', retryError.message || retryError.toString());
-                }
+                try { if (conn.ws && conn.ws.readyState === WebSocket.OPEN) conn.ws.send(payload); } catch {}
               }, 100);
             }
           };
-
           sendIdentification();
 
-          // Store connection info (only if Chrome APIs available)
           if (this.isChromeAvailable()) {
-            try {
-              // Store connection state if storage API available
-              if (this.isStorageAvailable()) {
-                chrome.storage.local.set({
-                  serverUrl: url,
-                  isConnected: true
-                }).catch(err => {
-                  console.log('[Offscreen] Could not store connection info:', err.message);
-                });
-              }
-
-              // Notify service worker
-              chrome.runtime.sendMessage({
-                type: 'WS_CONNECTED'
-              }).catch(err => {
-                console.log('[Offscreen] Could not notify service worker (may be sleeping):', err.message);
-              });
-            } catch (err) {
-              console.log('[Offscreen] Error in onopen handler:', err.message);
-            }
+            chrome.runtime.sendMessage({
+              type: 'WS_CONNECTED',
+              wsId: conn.wsId,
+              serverUrl: url,
+            }).catch(err => {
+              console.log(`[Offscreen][${conn.wsId}] Could not notify SW:`, err.message);
+            });
           }
-
           resolve();
         };
 
-        this.ws.onclose = (event) => {
-          console.log('[Offscreen] WebSocket closed:', event.code, event.reason);
-          this.connectionState = 'disconnected';
+        conn.ws.onclose = (event) => {
+          console.log(`[Offscreen][${conn.wsId}] WebSocket closed:`, event.code, event.reason);
+          conn.connectionState = 'disconnected';
 
-          // Clear stored connection (only if Chrome APIs available)
           if (this.isChromeAvailable()) {
-            if (this.isStorageAvailable()) {
-              chrome.storage.local.set({ isConnected: false }).catch(err => {
-                console.log('[Offscreen] Could not clear connection state:', err.message);
-              });
-            }
-
-            // Notify service worker
             chrome.runtime.sendMessage({
               type: 'WS_DISCONNECTED',
+              wsId: conn.wsId,
               code: event.code,
-              reason: event.reason
+              reason: event.reason,
             }).catch(err => {
-              console.log('[Offscreen] Could not notify service worker (may be sleeping):', err.message);
+              console.log(`[Offscreen][${conn.wsId}] Could not notify SW:`, err.message);
             });
           }
 
-          // Reject any pending requests
-          for (const [id, { reject }] of this.pendingRequests) {
-            reject(new Error('WebSocket disconnected'));
+          for (const [, { reject: r }] of conn.pendingRequests) {
+            try { r(new Error('WebSocket disconnected')); } catch {}
           }
-          this.pendingRequests.clear();
+          conn.pendingRequests.clear();
 
-          // Reject the connect() promise if the socket closed before it ever opened.
-          // This prevents the OFFSCREEN_CONNECT handler from awaiting indefinitely
-          // when the server is unavailable.
-          if (!opened) {
-            reject(new Error(`WebSocket closed before connecting (code: ${event.code})`));
-          }
-
-          // Schedule reconnection (unless it was an intentional disconnect)
-          this.scheduleReconnect();
+          if (!opened) reject(new Error(`WebSocket closed before connecting (code: ${event.code})`));
+          this.scheduleReconnect(conn.wsId);
         };
 
-        this.ws.onerror = (error) => {
-          // WebSocket errors are always followed by onclose, which handles reconnection.
-          // This is expected behaviour on reload / server restart — not an actionable error.
-          console.log('[Offscreen] WebSocket error event (non-critical, will reconnect)');
-
-          // Don't change state to 'error' - let onclose handle state changes
-          // Don't reject promise - onclose will handle cleanup and reconnection
-          // The error event object doesn't contain useful info, so we just log that it occurred
-
-          // Notify service worker for logging purposes only (only if Chrome APIs available)
+        conn.ws.onerror = () => {
+          console.log(`[Offscreen][${conn.wsId}] WebSocket error event (non-critical, will reconnect)`);
           if (this.isChromeAvailable()) {
             try {
               chrome.runtime.sendMessage({
                 type: 'WS_ERROR',
-                error: 'WebSocket error event (connection will be retried automatically)'
-              }).catch(err => {
-                // Service worker might be sleeping, this is fine
-                console.log('[Offscreen] Could not notify service worker:', err.message);
-              });
-            } catch (err) {
-              // Extension might be reloading, this is fine
-              console.log('[Offscreen] Error in onerror handler:', err.message);
-            }
+                wsId: conn.wsId,
+                error: 'WebSocket error event (connection will be retried automatically)',
+              }).catch(() => {});
+            } catch {}
           }
-
-          // Don't reject the promise - let onclose handle the cleanup
-          // The onclose handler will fire after this and handle reconnection
         };
 
-        this.ws.onmessage = (event) => {
-          this.handleWebSocketMessage(event);
+        conn.ws.onmessage = (event) => {
+          this.handleWebSocketMessage(event, conn.wsId);
         };
 
       } catch (error) {
-        console.error('[Offscreen] Failed to create WebSocket:', error);
-        this.connectionState = 'error';
+        console.error(`[Offscreen][${conn.wsId}] Failed to create WebSocket:`, error);
+        conn.connectionState = 'error';
         reject(error);
       }
     });
   }
 
-  async disconnect() {
-    console.log('[Offscreen] Disconnecting');
-
-    // Mark as intentional disconnect to prevent auto-reconnect
-    this.intentionalDisconnect = true;
-
-    // Cancel any pending reconnection attempts
-    this.cancelReconnect();
-
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+  async disconnect(wsId = DEFAULT_WS_ID) {
+    const conn = this.connections.get(wsId);
+    if (!conn) return;
+    console.log(`[Offscreen][${conn.wsId}] Disconnecting`);
+    conn.intentionalDisconnect = true;
+    this.cancelReconnect(conn.wsId);
+    if (conn.ws) {
+      try { conn.ws.close(); } catch {}
+      conn.ws = null;
     }
-
-    this.connectionState = 'disconnected';
-
-    // Clear stored connection (only if Chrome APIs available)
-    if (this.isChromeAvailable() && this.isStorageAvailable()) {
-      try {
-        await chrome.storage.local.set({ isConnected: false });
-      } catch (error) {
-        console.log('[Offscreen] Could not clear connection state:', error.message);
-      }
-    }
+    conn.connectionState = 'disconnected';
   }
 
-  handleWebSocketMessage(event) {
+  handleWebSocketMessage(event, wsId) {
+    const conn = this.connections.get(wsId);
+    if (!conn) return;
     try {
       const message = JSON.parse(event.data);
-      console.log('[Offscreen] WebSocket message:', message);
 
-      // Check if this is a response to a pending request
-      if (message.id && this.pendingRequests.has(message.id)) {
-        console.log('[Offscreen] Message matches pending request:', message.id);
-        const { resolve, reject, timeoutId } = this.pendingRequests.get(message.id);
-
-        // Clear timeout
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-        }
-
-        // Remove from pending
-        this.pendingRequests.delete(message.id);
-
-        // Resolve or reject based on response
-        if (message.error) {
-          reject(new Error(message.error));
-        } else {
-          resolve(message.result || message);
-        }
+      if (message.id && conn.pendingRequests.has(message.id)) {
+        const { resolve, reject, timeoutId } = conn.pendingRequests.get(message.id);
+        if (timeoutId) clearTimeout(timeoutId);
+        conn.pendingRequests.delete(message.id);
+        if (message.error) reject(new Error(message.error));
+        else resolve(message.result || message);
       } else {
-        // Unsolicited message - forward to service worker (only if Chrome APIs available)
-        console.log('[Offscreen] Forwarding message to background:', message.type);
         if (this.isChromeAvailable()) {
           chrome.runtime.sendMessage({
             type: 'WS_MESSAGE',
-            message
-          }).then(() => {
-            console.log('[Offscreen] ✓ Message forwarded successfully');
+            wsId: conn.wsId,
+            message,
           }).catch(err => {
-            console.log('[Offscreen] ✗ Could not forward message to service worker:', err.message);
+            console.log(`[Offscreen][${conn.wsId}] Could not forward message:`, err.message);
           });
-        } else {
-          console.log('[Offscreen] ✗ Chrome APIs not available, cannot forward');
         }
       }
     } catch (error) {
-      console.error('[Offscreen] Error parsing WebSocket message:', error);
+      console.error(`[Offscreen][${conn.wsId}] Error parsing WS message:`, error);
     }
   }
 
+  // ─── Tab capture recording (unchanged) ───────────────────────────────────
+
   async startTabRecording(streamId, key = 'default') {
-    // Stop any leftover recording for this key
     const existing = this.recorders.get(key);
     if (existing && existing.mediaRecorder.state !== 'inactive') {
       existing.mediaRecorder.stop();
@@ -498,12 +378,8 @@ class OffscreenManager {
     }
 
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId }
-      },
-      video: {
-        mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId }
-      }
+      audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } },
+      video: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } },
     });
 
     const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
@@ -515,7 +391,7 @@ class OffscreenManager {
     mediaRecorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) chunks.push(e.data);
     };
-    mediaRecorder.start(1000); // 1-second chunks
+    mediaRecorder.start(1000);
 
     this.recorders.set(key, { mediaRecorder, chunks, stream });
     console.log(`[Offscreen] Tab recording started for key=${key}, mimeType:`, mimeType);
@@ -536,76 +412,60 @@ class OffscreenManager {
           this.recorders.delete(key);
           console.log(`[Offscreen] Tab recording stopped for key=${key},`, arrayBuffer.byteLength, 'bytes');
           resolve({ arrayBuffer, mimeType });
-        } catch (err) {
-          reject(err);
-        }
+        } catch (err) { reject(err); }
       };
       rec.stream?.getTracks().forEach(t => t.stop());
       rec.mediaRecorder.stop();
     });
   }
 
-  sendMessage(messageType, data, options = {}) {
-    console.log('[Offscreen] Sending message:', messageType, data);
+  // ─── Send helpers ─────────────────────────────────────────────────────────
 
+  sendMessage(messageType, data, options = {}, wsId = DEFAULT_WS_ID) {
+    const conn = this._getOrCreateConn(wsId);
     return new Promise((resolve, reject) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        reject(new Error('WebSocket not connected'));
+      if (!this._isOpen(conn)) {
+        reject(new Error(`WebSocket not connected for wsId=${conn.wsId}`));
         return;
       }
-
-      const id = ++this.messageId;
-      const message = {
-        id,
-        type: messageType,
-        ...data
-      };
-
-      // Set up timeout
+      const id = ++conn.messageId;
+      const message = { id, type: messageType, ...data };
       const timeoutMs = options.timeoutMs || 30000;
       const timeoutId = setTimeout(() => {
-        if (this.pendingRequests.has(id)) {
-          this.pendingRequests.delete(id);
-          reject(new Error(`Request timeout after ${timeoutMs}ms`));
+        if (conn.pendingRequests.has(id)) {
+          conn.pendingRequests.delete(id);
+          reject(new Error(`Request timeout after ${timeoutMs}ms (wsId=${conn.wsId})`));
         }
       }, timeoutMs);
-
-      // Store pending request
-      this.pendingRequests.set(id, { resolve, reject, timeoutId });
-
-      // Send message
+      conn.pendingRequests.set(id, { resolve, reject, timeoutId });
       try {
-        this.ws.send(JSON.stringify(message));
+        conn.ws.send(JSON.stringify(message));
       } catch (error) {
         clearTimeout(timeoutId);
-        this.pendingRequests.delete(id);
+        conn.pendingRequests.delete(id);
         reject(error);
       }
     });
   }
 
-  /**
-   * Send a message that doesn't expect a response (e.g., responses to server requests)
-   */
-  sendMessageNoResponse(data) {
-    console.log('[Offscreen] Sending message (no response expected):', data);
-
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error('WebSocket not connected');
+  sendMessageNoResponse(data, wsId = DEFAULT_WS_ID) {
+    const conn = this._getOrCreateConn(wsId);
+    if (!this._isOpen(conn)) {
+      throw new Error(`WebSocket not connected for wsId=${conn.wsId}`);
     }
-
     try {
-      this.ws.send(JSON.stringify(data));
+      conn.ws.send(JSON.stringify(data));
     } catch (error) {
-      console.error('[Offscreen] Failed to send message:', error);
+      console.error(`[Offscreen][${conn.wsId}] Failed to send:`, error);
       throw error;
     }
   }
 }
 
+// ─── Bootstrap ────────────────────────────────────────────────────────────
+
 console.log('[Offscreen] Script executing - about to initialize');
 
-// Update status in the page
 function updateStatus(message) {
   const statusEl = document.getElementById('status');
   if (statusEl) {
@@ -616,26 +476,20 @@ function updateStatus(message) {
 
 updateStatus('Script loaded, initializing...');
 
-// Initialize the offscreen manager
 const offscreenManager = new OffscreenManager();
 
 console.log('[Offscreen] OffscreenManager instance created');
-console.log('[Offscreen] Document loaded and ready');
 updateStatus('OffscreenManager created');
 
-// Notify background script that we're ready - do this immediately
 if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
   console.log('[Offscreen] Sending OFFSCREEN_READY notification');
   updateStatus('Notifying background script...');
-  chrome.runtime.sendMessage({
-    type: 'OFFSCREEN_READY'
-  }).then(() => {
-    console.log('[Offscreen] OFFSCREEN_READY sent successfully');
-    updateStatus('Ready! Waiting for messages...');
-  }).catch(err => {
-    console.log('[Offscreen] Could not notify background:', err.message);
-    updateStatus('Error: Could not notify background');
-  });
+  chrome.runtime.sendMessage({ type: 'OFFSCREEN_READY' })
+    .then(() => { updateStatus('Ready! Waiting for messages...'); })
+    .catch(err => {
+      console.log('[Offscreen] Could not notify background:', err.message);
+      updateStatus('Error: Could not notify background');
+    });
 } else {
   console.error('[Offscreen] Chrome APIs not available for notification!');
   updateStatus('Error: Chrome APIs not available');

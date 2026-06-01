@@ -701,8 +701,13 @@ class BackgroundController {
     // URL is resolved lazily before the first connect() — see initServerConfig().
     // We construct with localhost as a sentinel so the WS manager wires its
     // listeners; resolveServerConfig() will overwrite this.url before connecting.
-    this.ws = new WebSocketManager('ws://localhost:9010/ws');
+    this.ws = new WebSocketManager('ws://localhost:9010/ws', { wsId: 'default' });
     this.serverConfig = null; // populated by initServerConfig()
+    // Connection pool: serverId → WebSocketManager. The "default" entry is
+    // this.ws; additional entries are created on demand by ensureWsForServer
+    // when a tab is bound to a non-default server.
+    this.serverPool = new Map();
+    this.serverPool.set('default', this.ws);
     this.tabManager = new TabManager(); // NEW: Multi-tab manager
     this.cdp = new CDPHelper(); // DEPRECATED: Keep for backwards compatibility during migration
     this.handlers = {};
@@ -1268,10 +1273,31 @@ class BackgroundController {
         return true; // async response
       }
 
-      // Handle WebSocket messages from offscreen document
+      // Popup asked us to ensure a WebSocket connection exists for a given
+      // tab's bound server. Spins up a pool entry if not already open, so the
+      // bound server can drive that tab over its own connection.
+      if (message.type === 'ENSURE_SERVER_WS') {
+        (async () => {
+          try {
+            const tabId = message.tabId;
+            if (tabId == null) throw new Error('tabId required');
+            const cfg = await getServerForTab(tabId);
+            const result = await this.ensureWsForServer(cfg);
+            sendResponse({ success: true, ...result });
+          } catch (err) {
+            sendResponse({ success: false, error: err?.message || String(err) });
+          }
+        })();
+        return true;
+      }
+
+      // Handle WebSocket messages from offscreen document. The wsId field
+      // tells us which pool connection delivered the message; we thread it
+      // through so responses go back the same way.
       if (message.type === 'WS_MESSAGE') {
-        console.log('[Background] Received WS_MESSAGE from offscreen:', message.message?.type);
-        this.handleMCPMessage(message.message);
+        const originWsId = message.wsId || 'default';
+        console.log(`[Background] WS_MESSAGE from offscreen (wsId=${originWsId}):`, message.message?.type);
+        this.handleMCPMessage(message.message, originWsId);
         return false;
       }
 
@@ -1650,6 +1676,34 @@ class BackgroundController {
       await this.disconnect();
       throw error;
     }
+  }
+
+  /**
+   * Ensure a WebSocket connection exists for the given server config and
+   * return it (creating a new pool entry on demand). Used by ENSURE_SERVER_WS
+   * so a tab bound to a non-default server gets its own WS opened transparently.
+   * The default server's WS lives at this.ws / serverPool.get('default') and
+   * never goes through this helper.
+   */
+  async ensureWsForServer(serverCfg) {
+    const id = serverCfg?.id || 'default';
+    if (id === 'default') {
+      return { wsId: 'default', already: true };
+    }
+    const existing = this.serverPool.get(id);
+    if (existing) {
+      const state = await existing.getState().catch(() => 'unknown');
+      return { wsId: id, already: true, state };
+    }
+    console.log(`[Background] Spinning up pool WS for server ${id} → ${(serverCfg.wsUrl || '').replace(/key=[^&]+/, 'key=***')}`);
+    const mgr = new WebSocketManager(serverCfg.wsUrl, { wsId: id });
+    this.serverPool.set(id, mgr);
+    try {
+      await mgr.connect();
+    } catch (err) {
+      console.warn(`[Background] Initial pool connect for ${id} deferred (auto-reconnect will retry):`, err?.message || err);
+    }
+    return { wsId: id, already: false };
   }
 
   /**
@@ -2750,10 +2804,12 @@ class BackgroundController {
   async safeSendResponse(requestId, payload, options = {}) {
     const maxAttempts = options.maxAttempts || 3;
     const baseDelay = options.baseDelay || 100;
+    const wsId = options.wsId || this._currentOriginWsId || 'default';
+    const ws = this.serverPool.get(wsId) || this.ws;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        await this.ws.sendNoResponse({
+        await ws.sendNoResponse({
           type: 'messageResponse',
           payload: { requestId, ...payload }
         });
@@ -2804,9 +2860,13 @@ class BackgroundController {
    * Handle message from MCP server
    * Implements comprehensive error containment to prevent detachment
    */
-  async handleMCPMessage(message) {
+  async handleMCPMessage(message, originWsId = 'default') {
     const { type, payload, id } = message;
-    console.log('[Background] Handling MCP message:', type, payload);
+    console.log(`[Background] Handling MCP message (wsId=${originWsId}):`, type, payload);
+    // Stash the origin so safeSendResponse can route the reply back via the
+    // same WS the command came in on — even when handlers don't explicitly
+    // thread the wsId through their call chains.
+    this._currentOriginWsId = originWsId;
 
     // Preserve state for recovery
     const stateSnapshot = {
