@@ -241,10 +241,14 @@ export const executeMacro: Tool = {
         })()
       `;
 
-      // Execute in page context
-      const result = await context.sendSocketMessage("browser_evaluate", {
-        expression: wrappedCode,
-      });
+      // Execute in page context. Honor the caller's timeout_ms when supplied
+      // (default 30000) so long-running macros aren't capped by the WS layer.
+      const timeoutMs = validatedParams.timeout_ms || 30000;
+      const result = await context.sendSocketMessage(
+        "browser_evaluate",
+        { expression: wrappedCode },
+        { timeoutMs },
+      );
 
       // Update usage statistics
       const isSuccess = result.success === true;

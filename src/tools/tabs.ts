@@ -30,7 +30,9 @@ export const listTabs: Tool = {
     try {
       // Don't call ensureAttached() - browser_list_tabs uses chrome.tabs.query which works without attachment
       const tabs = await context.sendSocketMessage("browser_list_tabs", {});
-      return textResponse(`Open tabs:\n${JSON.stringify(tabs, null, 2)}`, max_tokens);
+      // Return clean JSON instead of the "Open tabs:\n[...JSON...]" narrative
+      // prefix that used to force callers to regex-extract the payload.
+      return jsonResponse({ tabs: Array.isArray(tabs) ? tabs : (tabs?.tabs || []) }, true, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to list tabs: ${error.message}`, false, error, max_tokens);
@@ -81,15 +83,19 @@ export const createTab: Tool = {
     try {
       await context.ensureAttached();
       const validatedParams = CreateTabTool.shape.arguments.parse(params);
-      const result = await context.sendSocketMessage(
+      const result: any = await context.sendSocketMessage(
         "browser_create_tab",
         validatedParams
       );
-      return textResponse(
-        `Created and attached tab ${result.tabId} (label: "${result.label}")${validatedParams.url ? ` at ${validatedParams.url}` : ""}\n` +
-        `Use tabTarget: "${result.label}" or tabTarget: ${result.tabId} to target this tab.`,
-        max_tokens
-      );
+      // Return clean JSON. Keep a human-readable `message` field so logs/UIs
+      // can still surface a one-liner without re-formatting the payload.
+      return jsonResponse({
+        tabId: result.tabId,
+        label: result.label,
+        url: result.url ?? validatedParams.url ?? null,
+        incognito: result.incognito ?? validatedParams.incognito ?? false,
+        message: `Created and attached tab ${result.tabId} (label: "${result.label}")${validatedParams.url ? ` at ${validatedParams.url}` : ""}. Use tabTarget: "${result.label}" or tabTarget: ${result.tabId} to target it.`,
+      }, true, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to create tab: ${error.message}`, false, error, max_tokens);

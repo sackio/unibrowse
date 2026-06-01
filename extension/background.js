@@ -1459,15 +1459,25 @@ class BackgroundController {
       }
 
       // Network events (for network log collection)
+      // Cap at NETWORK_LOG_MAX entries (ring buffer) so a long-lived session
+      // doesn't accumulate megabytes of stale entries — used to be unbounded
+      // (ha bug #4). Per-entry tabId+tabLabel let handleGetNetworkLogs filter
+      // to a single tab instead of leaking cross-tab traffic.
       if (method === 'Network.requestWillBeSent') {
         this.networkLogs.push({
           type: 'request',
+          tabId: source.tabId,
+          tabLabel,
           requestId: params.requestId,
           url: params.request.url,
           method: params.request.method,
           headers: params.request.headers,
           timestamp: Date.now()
         });
+        const NETWORK_LOG_MAX = 1000;
+        if (this.networkLogs.length > NETWORK_LOG_MAX) {
+          this.networkLogs.splice(0, this.networkLogs.length - NETWORK_LOG_MAX);
+        }
       }
 
       if (method === 'Network.responseReceived') {
@@ -3959,6 +3969,22 @@ class BackgroundController {
   }
 
   async handleCreateWindow({ url, focused, incognito, width, height }) {
+    // Guard against the silent-fallback bug: when incognito=true is passed but
+    // chrome://extensions has "Allow in incognito" turned off for unibrowse,
+    // chrome.windows.create({incognito:true}) used to quietly drop the flag
+    // and open a NORMAL window in the user's profile. Returning {incognito:true}
+    // would then be a lie. Fail loud instead with the same actionable message
+    // handleCreateTab uses.
+    if (incognito === true) {
+      const allowed = await chrome.extension.isAllowedIncognitoAccess();
+      if (!allowed) {
+        throw new Error(
+          'Cannot open incognito window: extension is not allowed in incognito. ' +
+          'Go to chrome://extensions, find unibrowse, and enable "Allow in incognito", ' +
+          'then retry.'
+        );
+      }
+    }
     // Default to background-open so a new window doesn't steal focus from
     // whatever the user is doing. Callers pass focused=true to override.
     const createData = { focused: focused === true };
@@ -4252,12 +4278,26 @@ class BackgroundController {
     return { success: true, message: 'Extension reloading in 200ms. Reconnect after ~2 seconds.' };
   }
 
-  async handleGetNetworkLogs({ filter }) {
-    if (filter) {
-      // Filter network logs by URL
-      return this.networkLogs.filter(log => log.url.includes(filter));
+  async handleGetNetworkLogs({ filter, tabTarget, since }) {
+    let logs = this.networkLogs;
+    // Per-tab isolation (ha bug #4) — when a tabTarget is supplied, only
+    // entries belonging to that tab are returned, instead of leaking the
+    // global cross-tab stream.
+    if (tabTarget !== undefined && tabTarget !== null && tabTarget !== '') {
+      const info = this.tabManager?.resolveTab?.(tabTarget);
+      const targetTabId = info?.tabId
+        ?? (typeof tabTarget === 'number' ? tabTarget : (parseInt(tabTarget, 10) || null));
+      if (targetTabId != null) {
+        logs = logs.filter(l => l.tabId === targetTabId);
+      }
     }
-    return this.networkLogs;
+    if (typeof since === 'number' && since > 0) {
+      logs = logs.filter(l => (l.timestamp || 0) >= since);
+    }
+    if (filter) {
+      logs = logs.filter(l => l.url && l.url.includes(filter));
+    }
+    return logs;
   }
 
   async handleEvaluate({ expression, tabTarget, frameTarget }) {

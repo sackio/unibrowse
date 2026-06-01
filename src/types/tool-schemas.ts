@@ -221,9 +221,10 @@ export const SubmitFormTool = z.object({
 
 export const GetNetworkLogsTool = z.object({
   name: z.literal("browser_get_network_logs"),
-  description: z.literal("Get network requests and responses captured since page load"),
+  description: z.literal("Get captured network requests/responses. Pass tabTarget to scope to a single tab (avoids cross-tab leakage that used to happen because the log was global). Pass since=<epoch ms> to skip stale entries from earlier in the session. The underlying buffer is capped at 1000 entries (rolling) so a long-lived session can't accumulate megabytes of stale traffic."),
   arguments: z.object({
     filter: z.string().optional().describe("Optional filter to match URLs (e.g., 'api', '.json')"),
+    since: z.number().int().nonnegative().optional().describe("Only return entries with timestamp >= this epoch-ms value. Useful to skip stale entries from prior navigations."),
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
@@ -1042,10 +1043,11 @@ export const ListMacrosTool = z.object({
 
 export const ExecuteMacroTool = z.object({
   name: z.literal("browser_execute_macro"),
-  description: z.literal("Execute a stored macro by ID with provided parameters. The macro runs in the page context and returns the result."),
+  description: z.literal("Execute a stored macro by ID with provided parameters. The macro runs in the page context and returns the result. Pass timeout_ms (default 30000, max 120000) to extend the WebSocket-level wait for long-running macros — the previous default 30s ceiling could not be overridden from the caller."),
   arguments: z.object({
     id: z.string().describe("Macro ID to execute"),
     params: z.record(z.any()).optional().describe("Parameters to pass to the macro function"),
+    timeout_ms: z.number().int().positive().max(120000).optional().describe("WebSocket-level timeout for this call in ms (default 30000, max 120000). Use for macros known to take longer than 30s (e.g. multi-step network waits)."),
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 

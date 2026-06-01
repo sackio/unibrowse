@@ -427,10 +427,11 @@ class CDPHelper {
   async evaluate(expression, returnByValue = true) {
     // Wrap in an async IIFE so const/let declarations are scoped (avoiding "already declared"
     // on re-runs in the shared MAIN world scope).
-    // For single-line expressions (no semicolons, no newlines) add an explicit `return` so
-    // callers get back the value (e.g. `document.title` should return "Page Title", not undefined).
-    // Multi-line scripts are expected to contain explicit `return` statements themselves.
-    const isExpression = !expression.includes('\n') && !expression.trimEnd().endsWith(';');
+    // For single-line expressions (no semicolons anywhere, no newlines, no leading `return`)
+    // add an explicit `return` so callers get back the value (e.g. `document.title` → "Page Title").
+    // Multi-statement scripts (any `;`) and explicit-return statements are used as-is — wrapping
+    // `let x = 5; x + 1` in `return (...)` would produce a SyntaxError.
+    const isExpression = !expression.includes('\n') && !expression.includes(';') && !/^\s*return\b/.test(expression);
     const body = isExpression ? `return (${expression});` : expression;
     const wrapped = `(async function() {\n${body}\n})()`;
     try {
@@ -445,7 +446,22 @@ class CDPHelper {
         throw new Error(`Evaluation error: ${result.exceptionDetails.exception?.description || result.exceptionDetails.text}`);
       }
 
-      return result.result.value;
+      // When returnByValue=true and the result can't be deep-cloned for
+      // structured-clone transport (regex objects, functions, DOM nodes,
+      // window, circular refs, etc.), CDP returns an objectId + no `value`
+      // — and we used to surface that as the literal value undefined which
+      // JSON-serialized to `null`. That silent loss is bug #5 from ha.
+      // Now: detect the no-value-with-objectId case and throw a real error
+      // that points the caller at the wrapping recipe.
+      const r = result.result || {};
+      if (returnByValue && r.value === undefined && r.objectId) {
+        const desc = r.description || `<${r.type || 'object'}${r.subtype ? '/' + r.subtype : ''}>`;
+        throw new Error(
+          `Expression returned a non-serializable value (${desc}). ` +
+          `Wrap it so the result is a primitive: JSON.stringify(<expr>) or (() => { const v = <expr>; return v ? String(v) : null; })().`
+        );
+      }
+      return r.value;
     } catch (error) {
       // No longer need a separate "Illegal return statement" retry — the IIFE wrapper handles it.
       // Keep the block for any other retry-able errors below.
