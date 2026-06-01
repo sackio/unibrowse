@@ -31,9 +31,17 @@ export const navigate: ToolFactory = (snapshot) => ({
       const { max_tokens } = params || {};
       await context.ensureAttached();
       const validatedParams = NavigateTool.shape.arguments.parse(params);
-      await context.sendSocketMessage("browser_navigate", validatedParams);
+      const result: any = await context.sendSocketMessage("browser_navigate", validatedParams);
       if (snapshot) {
-        return captureAriaSnapshot(context, "", validatedParams.tabTarget, max_tokens);
+        const tabT = validatedParams.tabTarget ?? result?.label ?? result?.tabId;
+        return captureAriaSnapshot(context, "", tabT, max_tokens);
+      }
+      if (result?.autoCreated) {
+        return textResponse(
+          `Auto-created new tab ${result.tabId} (label: "${result.label}") at ${validatedParams.url}\n` +
+          `Use tabTarget: "${result.label}" or tabTarget: ${result.tabId} to target this tab in subsequent calls.`,
+          max_tokens,
+        );
       }
       return textResponse(`Navigated to ${validatedParams.url}`, max_tokens);
     } catch (error) {
