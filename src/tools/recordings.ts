@@ -304,7 +304,7 @@ export const startSessionRecording: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      const result = await context.sendSocketMessage("browser_start_session_recording", {});
+      const result = await context.sendSocketMessage("browser_start_session_recording", params || {});
       return jsonResponse(result, max_tokens);
     } catch (error) {
       return errorResponse(`Failed to start session recording: ${error.message}`, false, error, max_tokens);
@@ -324,7 +324,7 @@ export const stopSessionRecording: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      const result = await context.sendSocketMessage("browser_stop_session_recording", {});
+      const result = await context.sendSocketMessage("browser_stop_session_recording", params || {});
       return jsonResponse(result, max_tokens);
     } catch (error) {
       return errorResponse(`Failed to stop session recording: ${error.message}`, false, error, max_tokens);

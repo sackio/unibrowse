@@ -70,14 +70,26 @@ export async function createServerWithTools(options: Options): Promise<Server> {
     // extension. Sent in pairs around TabManager.attachTab/detachTab.
     if (type === 'TAB_ATTACHED' || type === 'TAB_DETACHED') {
       let extensionId = (payload?.extensionId as string) || (message?.wsId as string);
-      // Fallback: container chromiums whose SW didn't complete ensureExtensionId
-      // before TabManager.attachTab fired send TAB_ATTACHED with no extensionId
-      // (self.__unibrowseExtensionId was still undefined). Look up which
-      // registered extension owns this ws and use that — guaranteed to be the
-      // sender, since each ws maps to exactly one extension.
-      if (!extensionId) {
+      // Defensive fallback for two cases:
+      //   1. extensionId missing — container chromium's SW didn't complete
+      //      ensureExtensionId before TabManager.attachTab fired.
+      //   2. extensionId set but doesn't match any registered extension —
+      //      split-brain bug where background SW's ensureExtensionId and
+      //      offscreen's first-run mint generated DIFFERENT UUIDs in a
+      //      write-write race on chrome.storage.local. The extension
+      //      registered with one (via offscreen's EXTENSION_REGISTER) but
+      //      announces tabs with the other (background's self.__unibrowseExtensionId).
+      // In both cases the inbound ws unambiguously identifies the sender —
+      // each ws maps to exactly one registered extension. Trust the ws.
+      if (!extensionId || !globalContext.getExtension(extensionId)) {
         for (const conn of globalContext.listExtensions()) {
-          if (conn.ws === ws) { extensionId = conn.extensionId; break; }
+          if (conn.ws === ws) {
+            if (extensionId && extensionId !== conn.extensionId) {
+              console.log(`[Server] TAB_${type === 'TAB_ATTACHED' ? 'ATTACHED' : 'DETACHED'}: split-brain detected, payload claimed ${extensionId} but ws owner is ${conn.extensionId}`);
+            }
+            extensionId = conn.extensionId;
+            break;
+          }
         }
       }
       const tabId = payload?.tabId as number;

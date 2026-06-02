@@ -28,8 +28,9 @@ export const listTabs: Tool = {
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
     try {
-      // Don't call ensureAttached() - browser_list_tabs uses chrome.tabs.query which works without attachment
-      const tabs = await context.sendSocketMessage("browser_list_tabs", {});
+      // Don't call ensureAttached() - browser_list_tabs uses chrome.tabs.query which works without attachment.
+      // Pass params through so multi-extension routing picks up extensionId.
+      const tabs = await context.sendSocketMessage("browser_list_tabs", params || {});
       // Return clean JSON instead of the "Open tabs:\n[...JSON...]" narrative
       // prefix that used to force callers to regex-extract the payload.
       return jsonResponse({ tabs: Array.isArray(tabs) ? tabs : (tabs?.tabs || []) }, true, max_tokens);

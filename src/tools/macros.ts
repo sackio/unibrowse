@@ -243,11 +243,18 @@ export const executeMacro: Tool = {
 
       // Execute in page context. Honor the caller's timeout_ms when supplied
       // (default 30000) so long-running macros aren't capped by the WS layer.
+      // Forward extensionId + tabTarget through options so multi-extension
+      // routing works — otherwise we'd hit "Multiple extensions are connected"
+      // even with a valid extensionId on the macro call.
       const timeoutMs = validatedParams.timeout_ms || 30000;
       const result = await context.sendSocketMessage(
         "browser_evaluate",
         { expression: wrappedCode },
-        { timeoutMs },
+        {
+          timeoutMs,
+          extensionId: validatedParams.extensionId,
+          tabTarget: validatedParams.tabTarget,
+        },
       );
 
       // Update usage statistics

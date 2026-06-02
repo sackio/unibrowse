@@ -34,7 +34,7 @@ export const reloadExtension: Tool = {
     const { max_tokens } = params || {};
     try {
       await context.ensureAttachedFromParams(params);
-      const result = await context.sendSocketMessage("browser_reload_extension", {});
+      const result = await context.sendSocketMessage("browser_reload_extension", params || {});
       return jsonResponse(result, true, max_tokens);
     } catch (error) {
       return errorResponse(`Failed to reload extension: ${error.message}`, false, error, max_tokens);
