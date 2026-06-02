@@ -93,6 +93,21 @@ const TabTargetSchema = z.object({
     ),
 });
 
+// Standalone extensionId field for tools that don't take TabTarget but still
+// need to be routed when multiple extensions are connected (browser_list_tabs,
+// browser_switch_tab, browser_create_tab, browser_close_tab — all operate on
+// a specific Chrome instance's tab registry).
+const ExtensionIdSchema = z.object({
+  extensionId: z
+    .string()
+    .optional()
+    .describe(
+      "Pin this call to a specific extension. Required when multiple extensions are connected; " +
+      "if omitted in single-extension mode the only registered extension is used. Get the id from " +
+      "browser_launch_isolated_chrome's response or browser_list_attached_tabs's `extensions` array."
+    ),
+});
+
 // Schema for optional frame targeting (iframes within a page)
 const FrameTargetSchema = z.object({
   frameTarget: z
@@ -181,7 +196,7 @@ export const ScrollToElementTool = z.object({
 export const ListTabsTool = z.object({
   name: z.literal("browser_list_tabs"),
   description: z.literal("List all open Chrome browser tabs. NOTE: The tabIds returned here are Chrome tab IDs, only usable with browser_switch_tab and browser_close_tab. For targeting tabs in operations like browser_navigate/browser_snapshot, use browser_list_attached_tabs instead."),
-  arguments: z.object({}).merge(MaxTokensSchema),
+  arguments: z.object({}).merge(ExtensionIdSchema).merge(MaxTokensSchema),
 });
 
 export const SwitchTabTool = z.object({
@@ -190,7 +205,7 @@ export const SwitchTabTool = z.object({
   arguments: z.object({
     tabId: z.number().optional().describe("Numeric Chrome tab ID to switch to"),
     tabTarget: z.union([z.string(), z.number()]).optional().describe("Tab label or ID (resolves via attached tab registry)"),
-  }).merge(MaxTokensSchema).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
+  }).merge(ExtensionIdSchema).merge(MaxTokensSchema).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
     message: "Provide either tabId (number) or tabTarget (label/id)",
   }),
 });
@@ -204,7 +219,7 @@ export const CreateTabTool = z.object({
     focus: z.boolean().optional().describe("Bring the new tab to front and focus it (default: false — opens in background so user flow isn't disrupted)."),
     agent: z.string().optional().describe("Your agent identifier; if supplied, the newly-created tab is reserved to you so other agents can't drive it without passing takeover:true."),
     takeover: z.boolean().optional().describe("Used together with agent: if the new tab's id collides with an existing reservation (rare), set true to forcibly take ownership."),
-  }).merge(MaxTokensSchema),
+  }).merge(ExtensionIdSchema).merge(MaxTokensSchema),
 });
 
 export const CloseTabTool = z.object({
@@ -213,7 +228,7 @@ export const CloseTabTool = z.object({
   arguments: z.object({
     tabId: z.number().optional().describe("Numeric Chrome tab ID to close"),
     tabTarget: z.union([z.string(), z.number()]).optional().describe("Tab label or ID (resolves via attached tab registry)"),
-  }).merge(MaxTokensSchema).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
+  }).merge(ExtensionIdSchema).merge(MaxTokensSchema).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
     message: "Provide either tabId (number) or tabTarget (label/id)",
   }),
 });
@@ -1215,7 +1230,7 @@ export const DetachTabTool = z.object({
   arguments: z.object({
     tabId: z.number().optional().describe("Numeric Chrome tab ID to detach"),
     tabTarget: z.union([z.string(), z.number()]).optional().describe("Tab label or ID (resolves via attached tab registry)"),
-  }).merge(MaxTokensSchema).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
+  }).merge(ExtensionIdSchema).merge(MaxTokensSchema).refine(d => d.tabId !== undefined || d.tabTarget !== undefined, {
     message: "Provide either tabId (number) or tabTarget (label/id)",
   }),
 });
@@ -1226,7 +1241,7 @@ export const GetActiveTabTool = z.object({
     "Get information about the currently active (last-used) tab. " +
     "Returns tab ID, label, URL, and last used timestamp."
   ),
-  arguments: z.object({}).merge(MaxTokensSchema),
+  arguments: z.object({}).merge(ExtensionIdSchema).merge(MaxTokensSchema),
 });
 
 export const AttachTabTool = z.object({
@@ -1257,7 +1272,7 @@ export const AttachTabTool = z.object({
       .boolean()
       .optional()
       .describe("When attaching to a tab already reserved by a different agent, set true to forcibly transfer ownership."),
-  }).merge(MaxTokensSchema),
+  }).merge(ExtensionIdSchema).merge(MaxTokensSchema),
 });
 
 export const ReserveTabTool = z.object({
