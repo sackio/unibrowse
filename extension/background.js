@@ -5,6 +5,31 @@
 
 importScripts('config.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js');
 
+// Stable extension identity for the multi-extension server pool. Generated once
+// per Chrome profile, persisted in chrome.storage.local, and shipped to the
+// server in EXTENSION_REGISTER so the server can route per-tab tool calls back
+// to the right extension when multiple are connected (e.g. ben's main Chrome
+// vs a container chromium spawned by browser_launch_isolated_chrome).
+async function ensureExtensionId() {
+  try {
+    const stored = await chrome.storage.local.get(['__unibrowseExtensionId', '__unibrowseProfileHint']);
+    let id = stored.__unibrowseExtensionId;
+    if (!id) {
+      id = 'ext_' + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
+      await chrome.storage.local.set({ __unibrowseExtensionId: id });
+    }
+    self.__unibrowseExtensionId = id;
+    self.__unibrowseProfileHint = stored.__unibrowseProfileHint || null;
+    return id;
+  } catch (err) {
+    // Extension context invalidated etc. Fall back to a per-process id so the
+    // server can still distinguish connections during reload windows.
+    self.__unibrowseExtensionId = self.__unibrowseExtensionId || ('ext_eph_' + Math.random().toString(36).slice(2));
+    return self.__unibrowseExtensionId;
+  }
+}
+ensureExtensionId().catch(() => {});
+
 // Global state for auto-connect
 let offscreenReady = false;
 let autoConnectAttempted = false;
@@ -477,6 +502,23 @@ class TabManager {
       }
 
       console.log('[TabManager] Tab attached successfully:', label);
+      // Announce ownership to the server so it can route tabTarget-bound
+      // tool calls to our WebSocket (multi-extension pool). Best-effort —
+      // doesn't block the attach result.
+      try {
+        const announce = {
+          type: 'TAB_ATTACHED',
+          payload: {
+            extensionId: self.__unibrowseExtensionId,
+            tabId,
+            label,
+            url,
+          },
+        };
+        if (typeof self.__unibrowseSendBareToServer === 'function') {
+          self.__unibrowseSendBareToServer(announce);
+        }
+      } catch { /* best-effort */ }
       return tabInfo;
     } catch (error) {
       console.error('[TabManager] CRITICAL ERROR in attachTab:', error);
@@ -498,6 +540,17 @@ class TabManager {
 
     // Release the reservation so other agents can claim the tab.
     this.releaseTab(tabId, 'detached');
+
+    // Announce detachment to the server's multi-extension pool.
+    try {
+      const announce = {
+        type: 'TAB_DETACHED',
+        payload: { extensionId: self.__unibrowseExtensionId, tabId },
+      };
+      if (typeof self.__unibrowseSendBareToServer === 'function') {
+        self.__unibrowseSendBareToServer(announce);
+      }
+    } catch { /* best-effort */ }
 
     console.log('[TabManager] Detaching from tab:', tabId, tabInfo.label);
 
@@ -848,6 +901,13 @@ class BackgroundController {
     // We construct with localhost as a sentinel so the WS manager wires its
     // listeners; resolveServerConfig() will overwrite this.url before connecting.
     this.ws = new WebSocketManager('ws://localhost:9010/ws', { wsId: 'default' });
+    // Expose a helper for TabManager (and other components) to send bare
+    // notification messages to the server without expecting a response —
+    // used for TAB_ATTACHED / TAB_DETACHED announcements that populate the
+    // server's multi-extension routing table.
+    self.__unibrowseSendBareToServer = (message) => {
+      try { this.ws.sendNoResponse(message); } catch { /* best-effort */ }
+    };
     this.serverConfig = null; // populated by initServerConfig()
     // Connection pool: serverId → WebSocketManager. The "default" entry is
     // this.ws; additional entries are created on demand by ensureWsForServer
@@ -1793,6 +1853,11 @@ class BackgroundController {
   async connect() {
     try {
       console.log('[Background] Connecting to MCP server...');
+      // Make sure the extensionId is loaded from chrome.storage BEFORE we
+      // initiate the WebSocket connect — the OFFSCREEN_CONNECT message carries
+      // it through to the offscreen document so the EXTENSION_REGISTER frame
+      // has the right id from the very first round-trip.
+      try { await ensureExtensionId(); } catch {}
 
       // Resolve the active server URL (storage override → baked config → localhost)
       // before kicking off the WebSocket. URL carries ?key=<api_key> when set.

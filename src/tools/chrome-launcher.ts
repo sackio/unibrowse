@@ -1,10 +1,10 @@
-import { spawn, type ChildProcess } from "child_process";
+import { spawn, execSync, type ChildProcess } from "child_process";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import * as path from "path";
 import * as fs from "fs";
 import { fileURLToPath } from "url";
 import { LaunchIsolatedChromeTool } from "@/types/tool-schemas";
-import { textResponse, errorResponse } from "@/utils/response-helpers";
+import { textResponse, errorResponse, jsonResponse } from "@/utils/response-helpers";
 import type { Tool } from "./tool";
 
 // __dirname is not defined in ESM bundles; recompute it from the module URL.
@@ -39,7 +39,6 @@ function findChromeExecutable(): string | null {
 
   // Try which/where commands
   try {
-    const { execSync } = require("child_process");
     const commands = ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium"];
 
     for (const cmd of commands) {
@@ -76,6 +75,14 @@ export const launchIsolatedChrome: Tool = {
     const { max_tokens } = params || {};
     try {
       const validatedParams = LaunchIsolatedChromeTool.shape.arguments.parse(params);
+
+      // Snapshot the currently-registered extensionIds before spawn. After
+      // launch, we poll for a NEW id to appear in the pool — that's how we
+      // know which extension belongs to the chromium we just started, and we
+      // return it so the caller can pin subsequent tool calls.
+      const preLaunchExtensionIds = new Set(
+        (context as any).listExtensions?.().map((e: any) => e.extensionId) ?? [],
+      );
 
       // Find Chrome executable
       const chromeBin = findChromeExecutable();
@@ -177,10 +184,44 @@ export const launchIsolatedChrome: Tool = {
       // Add URLs to open
       chromeArgs.push(...urls);
 
+      // When running headful inside a container, we need a display server.
+      // Auto-spin an Xvfb on a per-launch display number (:90 + random) so
+      // multiple isolated chromiums don't collide. The chromium process gets
+      // DISPLAY=:N set in its env, but the host's display server is untouched
+      // — so the window is invisible to whoever is on the host's :0/:1. This
+      // is the magic that lets Auth0 see a "real browser" fingerprint while
+      // ben's desktop stays uncluttered.
+      const spawnEnv: Record<string, string> = { ...(process.env as any) };
+      let xvfbProcess: any = null;
+      let xvfbDisplay: string | null = null;
+      if (inContainer && !validatedParams.headless) {
+        xvfbDisplay = `:${90 + Math.floor(Math.random() * 100)}`;
+        try {
+          xvfbProcess = spawn("Xvfb", [xvfbDisplay, "-screen", "0", "1280x1024x24", "-nolisten", "tcp"], {
+            detached: true,
+            stdio: "ignore",
+          });
+          xvfbProcess.unref();
+          // Brief wait for Xvfb to come up before chromium binds to it
+          // (Xvfb's listen socket appears in /tmp/.X11-unix/ — chromium fails
+          // fast otherwise with "Cannot open display").
+          const startSleep = Date.now();
+          while (Date.now() - startSleep < 1500) {
+            if (fs.existsSync(`/tmp/.X11-unix/X${xvfbDisplay.slice(1)}`)) break;
+            execSync("sleep 0.1");
+          }
+          spawnEnv.DISPLAY = xvfbDisplay;
+          console.log(`[chrome-launcher] Spawned Xvfb on ${xvfbDisplay} (pid ${xvfbProcess.pid}) for headful chromium`);
+        } catch (xvfbErr) {
+          console.warn(`[chrome-launcher] Xvfb failed to start (${(xvfbErr as any).message}); chromium will likely fail to open display`);
+        }
+      }
+
       // Spawn Chrome process
       const chromeProcess = spawn(chromeBin, chromeArgs, {
         detached: true,
         stdio: "ignore",
+        env: spawnEnv,
       });
 
       // Unref the process so it doesn't keep the Node.js process alive
@@ -189,6 +230,25 @@ export const launchIsolatedChrome: Tool = {
       // Track the process
       if (chromeProcess.pid) {
         launchedProcesses.set(chromeProcess.pid, chromeProcess);
+      }
+
+      // Wait for the freshly-spawned chromium's extension to register so we
+      // can return its extensionId. We poll listExtensions() for up to 15s
+      // (cold start of headful chromium + Xvfb + extension load can be slow);
+      // if it never appears we still return success with the PID, just no
+      // extensionId — the caller can recover via listAttachedTabs's
+      // extensions array. We always grab the LAST newcomer in case multiple
+      // launches race.
+      let spawnedExtensionId: string | null = null;
+      const pollDeadline = Date.now() + 15_000;
+      while (Date.now() < pollDeadline) {
+        const current = (context as any).listExtensions?.() ?? [];
+        const newcomers = current.filter((e: any) => !preLaunchExtensionIds.has(e.extensionId));
+        if (newcomers.length > 0) {
+          spawnedExtensionId = newcomers[newcomers.length - 1].extensionId;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 200));
       }
 
       // Build response message
@@ -201,9 +261,22 @@ export const launchIsolatedChrome: Tool = {
       if (validatedParams.headless) {
         message += `  Mode: Headless\n`;
       }
-      message += `\nThe extension will auto-connect to the MCP server at localhost:9010`;
+      if (spawnedExtensionId) {
+        message += `  Extension ID: ${spawnedExtensionId}\n`;
+        message += `\nPass extensionId=${spawnedExtensionId} on subsequent tool calls to pin them to this chromium.`;
+      } else {
+        message += `\nThe extension will auto-connect to the MCP server at localhost:9010 (extension id not seen within 15s — check browser_list_attached_tabs).`;
+      }
 
-      return textResponse(message, max_tokens);
+      return jsonResponse({
+        pid: chromeProcess.pid,
+        profileName,
+        profileDir,
+        extensionDir,
+        urls,
+        extensionId: spawnedExtensionId,
+        message,
+      }, true, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(

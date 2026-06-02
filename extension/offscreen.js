@@ -141,6 +141,14 @@ class OffscreenManager {
     try {
       switch (message.type) {
         case 'OFFSCREEN_CONNECT':
+          // Background sends extensionId here so we don't have to re-read it from
+          // chrome.storage at every reconnect (which races against the SW's
+          // own storage initialisation). Stash on the connection for use in
+          // sendIdentification below.
+          if (message.extensionId) {
+            const conn = this._getOrCreateConn(wsId);
+            conn.extensionId = message.extensionId;
+          }
           this.connect(message.url, wsId).catch(err => {
             console.log(`[Offscreen][${wsId}] Initial connect failed (auto-reconnect):`, err.message);
           });
@@ -244,11 +252,55 @@ class OffscreenManager {
           console.log(`[Offscreen][${conn.wsId}] WebSocket connected`);
           conn.connectionState = 'connected';
 
-          const sendIdentification = () => {
+          const sendIdentification = async () => {
+            // Multi-extension pool: include a stable extensionId so the server
+            // can route per-tab tool calls back to the right extension when
+            // multiple are connected (e.g. ben's main Chrome + a container
+            // chromium spawned via browser_launch_isolated_chrome). The
+            // extensionId is generated once per Chrome profile and persisted
+            // in chrome.storage.local — see ensureExtensionId() in background.js.
+            // The offscreen document has its own `self`, separate from the
+            // service worker's. The extensionId is pushed in via OFFSCREEN_CONNECT
+            // (stashed on conn.extensionId), but we also fall back to a
+            // storage read in case the connect path didn't carry it.
+            let extensionId = conn.extensionId || null;
+            let profileHint = null;
+            if (!extensionId) {
+              try {
+                if (chrome?.storage?.local?.get) {
+                  const s = await chrome.storage.local.get(['__unibrowseExtensionId', '__unibrowseProfileHint']);
+                  extensionId = s.__unibrowseExtensionId || null;
+                  profileHint = s.__unibrowseProfileHint || null;
+                }
+              } catch {}
+            }
+            // First-run fallback: storage was empty AND background.js's
+            // ensureExtensionId() hadn't completed in time (race on container
+            // spinup, since the WS auto-reconnect can fire before the SW's
+            // top-level await resolves). Mint a UUID here so the very first
+            // EXTENSION_REGISTER carries a unique id, and persist it so future
+            // reconnects stay stable.
+            if (!extensionId) {
+              try {
+                const minted = 'ext_' + (crypto && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
+                extensionId = minted;
+                conn.extensionId = minted;
+                if (chrome?.storage?.local?.set) {
+                  chrome.storage.local.set({ __unibrowseExtensionId: minted }).catch(() => {});
+                }
+                console.log(`[Offscreen][${conn.wsId}] Minted extensionId in offscreen fallback: ${minted}`);
+              } catch {}
+            }
             const payload = JSON.stringify({
               type: 'EXTENSION_REGISTER',
               source: 'browser-extension',
               wsId: conn.wsId,
+              payload: {
+                extensionId: extensionId || conn.wsId,
+                profileName: profileHint,
+                hostname: null,
+                userAgent: (typeof navigator !== 'undefined' && navigator.userAgent) || null,
+              },
             });
             try {
               if (conn.ws && conn.ws.readyState === WebSocket.OPEN) {

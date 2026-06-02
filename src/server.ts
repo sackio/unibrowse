@@ -40,10 +40,44 @@ export async function createServerWithTools(options: Options): Promise<Server> {
   async function handleBrowserMessage(ws: WebSocket, message: any) {
     const { id, type, payload } = message;
 
-    // Handle extension registration
+    // Handle extension registration. The extension supplies a stable
+    // `extensionId` (UUID it generated on first run and stored in
+    // chrome.storage.local) plus optional meta (profileName / hostname /
+    // userAgent). When multiple extensions are connected (e.g. ben's main
+    // Chrome + a container chromium spawned by browser_launch_isolated_chrome),
+    // each one is tracked independently so tool calls can be routed to the
+    // right one — see Context.wsFor().
     if (type === 'EXTENSION_REGISTER') {
-      console.log(`[Server] Extension registered, storing as primary browser connection`);
-      globalContext.ws = ws;
+      const extensionId = (payload?.extensionId as string)
+        || (message?.wsId as string)               // older message shape
+        || `legacy-${Math.random().toString(36).slice(2, 10)}`;
+      const meta = {
+        profileName: payload?.profileName as string | undefined,
+        hostname: payload?.hostname as string | undefined,
+        userAgent: payload?.userAgent as string | undefined,
+      };
+      globalContext.registerExtension(extensionId, ws, meta);
+      console.log(`[Server] Extension registered: extensionId=${extensionId} profile=${meta.profileName ?? '-'} totalConnected=${globalContext.listExtensions().length}`);
+      // Ack back so the extension knows its registered identity.
+      try {
+        ws.send(JSON.stringify({ type: 'EXTENSION_REGISTER_ACK', payload: { extensionId } }));
+      } catch { /* best-effort */ }
+      return;
+    }
+
+    // Extensions announce attached tabs so the server can route tabTarget-bound
+    // tool calls to the right WebSocket without round-tripping to every
+    // extension. Sent in pairs around TabManager.attachTab/detachTab.
+    if (type === 'TAB_ATTACHED' || type === 'TAB_DETACHED') {
+      const extensionId = (payload?.extensionId as string) || (message?.wsId as string);
+      const tabId = payload?.tabId as number;
+      if (tabId != null && extensionId) {
+        if (type === 'TAB_ATTACHED') {
+          globalContext.recordTabOwner(tabId, extensionId);
+        } else {
+          globalContext.forgetTabOwner(tabId);
+        }
+      }
       return;
     }
 
@@ -124,11 +158,13 @@ export async function createServerWithTools(options: Options): Promise<Server> {
       connections.delete(websocket);
       console.log(`[Server] Total active connections: ${connections.size}`);
 
-      // If this was the extension connection, clear it
-      // Use hasWs() to avoid throwing error when checking
+      // Drop any extension registration this ws owned, plus its tab ownership.
+      globalContext.unregisterExtensionByWs(websocket);
+
+      // Backward compat: if this was the legacy primary ws, clear it too.
       if (globalContext.hasWs() && globalContext.ws === websocket) {
-        console.log("[Server] Extension connection closed, clearing globalContext.ws");
-        globalContext.ws = undefined;
+        console.log("[Server] Primary extension ws closed, clearing globalContext.ws");
+        globalContext.ws = undefined as any;
       }
     });
 

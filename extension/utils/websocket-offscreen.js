@@ -233,7 +233,7 @@ class WebSocketManager {
     this.emitStateChange('connecting');
 
     try {
-      await this.sendToOffscreen('OFFSCREEN_CONNECT', { url: this.url });
+      await this.sendToOffscreen('OFFSCREEN_CONNECT', { url: this.url, extensionId: self.__unibrowseExtensionId || null });
       console.log('[WebSocketManager] Connection initiated');
     } catch (error) {
       // Check if this is due to extension reload vs actual connection error
@@ -247,7 +247,7 @@ class WebSocketManager {
         }
         // Retry connection with fresh offscreen document
         await this.ensureOffscreenDocument();
-        await this.sendToOffscreen('OFFSCREEN_CONNECT', { url: this.url });
+        await this.sendToOffscreen('OFFSCREEN_CONNECT', { url: this.url, extensionId: self.__unibrowseExtensionId || null });
         console.log('[WebSocketManager] Connection initiated with new offscreen document');
       } else if (error.message.includes('Chrome APIs not available') || !this.isChromeAvailable()) {
         console.log('[WebSocketManager] Connection skipped - extension reloading');

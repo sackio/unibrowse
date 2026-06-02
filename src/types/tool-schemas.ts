@@ -82,6 +82,15 @@ const TabTargetSchema = z.object({
       "is recorded in the tab's reservation history. Requires `agent` to be set. Use sparingly — " +
       "intended for cleanup when the prior owner has died or you genuinely need the tab back."
     ),
+  extensionId: z
+    .string()
+    .optional()
+    .describe(
+      "Pin this call to a specific extension (host Chrome vs container chromium). Get the id from " +
+      "browser_launch_isolated_chrome's response or browser_list_attached_tabs's `extensions` array. " +
+      "Omit when only one extension is connected, or when tabTarget refers to a tab the server has " +
+      "already routed via TAB_ATTACHED."
+    ),
 });
 
 // Schema for optional frame targeting (iframes within a page)

@@ -76,7 +76,9 @@ import {
   realisticClick,
   realisticMouseMove,
   realisticType,
+  releaseTab,
   requestUserAction,
+  reserveTab,
   saveRecording,
   screenshot,
   scroll,
@@ -102,15 +104,171 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-3VCT5HEE.js";
-import "./chunk-FT2ARCXD.js";
+} from "./chunk-3CCY2BGI.js";
+import {
+  extractKey,
+  getEffectiveClientIP,
+  isAuthEnabled,
+  isLocalClient,
+  isValidKey,
+  requireApiKey
+} from "./chunk-HZXH4WRF.js";
 
 // src/http-server.ts
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
+import fs2 from "fs";
+import path2 from "path";
+import { fileURLToPath as fileURLToPath2 } from "url";
+
+// src/install.ts
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import archiver from "archiver";
+var __dirname = path.dirname(fileURLToPath(import.meta.url));
+function findExtensionDir() {
+  const candidates = [
+    path.join(__dirname, "..", "extension"),
+    // /app/extension when run from /app/dist
+    path.join(__dirname, "..", "..", "extension"),
+    // <repo>/extension when run from <repo>/dist
+    "/app/extension"
+  ];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c) && fs.statSync(c).isDirectory()) return c;
+    } catch {
+    }
+  }
+  return null;
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+function deriveBaseUrl(req) {
+  const proto = req.headers["x-forwarded-proto"]?.split(",")[0].trim() || (req.secure ? "https" : "http");
+  const host = req.headers["x-forwarded-host"]?.split(",")[0].trim() || req.headers.host || "localhost:9010";
+  const wsProto = proto === "https" ? "wss" : "ws";
+  return { http: `${proto}://${host}`, ws: `${wsProto}://${host}` };
+}
+function installLandingHandler(req, res) {
+  const { http: httpBase, ws: wsBase } = deriveBaseUrl(req);
+  const queryKey = req.query.key || "";
+  const authOn = isAuthEnabled();
+  const isLocal = isLocalClient(req);
+  const authForThisClient = authOn && !isLocal;
+  const keyIsValid = authForThisClient ? isValidKey(queryKey) : true;
+  const downloadHref = `/install/extension.zip${queryKey ? `?key=${encodeURIComponent(queryKey)}` : ""}`;
+  const errorBanner = authForThisClient && queryKey && !keyIsValid ? `<div class="banner err">The provided key is not valid on this server.</div>` : authForThisClient && !queryKey ? `<div class="banner warn">This server requires an API key for remote clients. Append <code>?key=&lt;your-key&gt;</code> to this URL to enable the download.</div>` : "";
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>unibrowse \u2014 install extension</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 780px; margin: 40px auto; padding: 0 20px; color: #222; line-height: 1.55; }
+    h1 { font-size: 28px; margin-bottom: 4px; }
+    .sub { color: #666; margin-bottom: 28px; }
+    .banner { padding: 12px 16px; border-radius: 6px; margin: 18px 0; font-size: 14px; }
+    .banner.err { background: #fee; border: 1px solid #f99; color: #800; }
+    .banner.warn { background: #fff8e1; border: 1px solid #f0c060; color: #806000; }
+    .download { display: inline-block; background: #6f42c1; color: white; padding: 12px 22px; border-radius: 6px; text-decoration: none; font-weight: 600; margin: 12px 0 20px; }
+    .download[aria-disabled="true"] { background: #999; cursor: not-allowed; pointer-events: none; }
+    code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+    pre { background: #1e1e1e; color: #eee; padding: 14px; border-radius: 6px; overflow-x: auto; }
+    ol li { margin: 8px 0; }
+    .meta { color: #999; font-size: 12px; margin-top: 36px; }
+  </style>
+</head>
+<body>
+  <h1>Install the unibrowse extension</h1>
+  <div class="sub">This dev extension is distributed directly from your server, not the Chrome Web Store.</div>
+  ${errorBanner}
+  <a class="download" href="${downloadHref}" ${!keyIsValid ? 'aria-disabled="true"' : ""}>Download extension (.zip)</a>
+  <h3>Install steps</h3>
+  <ol>
+    <li>Click the button above to download <code>unibrowse-extension.zip</code>.</li>
+    <li>Unzip it somewhere stable (e.g. <code>~/unibrowse-extension</code>).</li>
+    <li>Open <code>chrome://extensions</code> in Chrome and toggle <strong>Developer mode</strong> on (top-right).</li>
+    <li>Click <strong>Load unpacked</strong> and select the unzipped folder.</li>
+    <li>The extension auto-connects to this server (<code>${wsBase}/ws</code>).</li>
+  </ol>
+  <h3>Configuration</h3>
+  <p>The downloaded extension is pre-configured for this server. You can override the server URL or API key any time via the extension's <strong>Options</strong> page (Right-click the extension icon \u2192 Options).</p>
+  <div class="meta">
+    Server: <code>${httpBase}</code><br>
+    WebSocket: <code>${wsBase}/ws</code><br>
+    Auth policy: <code>${authOn ? "LAN open / remote requires API key" : "open (no key required)"}</code><br>
+    You are: <code>${isLocal ? "LAN client (open access)" : "remote client (API key required)"}</code> \u2014 ${escapeHtml(getEffectiveClientIP(req))}
+  </div>
+</body>
+</html>`);
+}
+async function installZipHandler(req, res) {
+  if (isAuthEnabled() && !isLocalClient(req)) {
+    const key = extractKey(req);
+    if (!isValidKey(key)) {
+      res.status(401).json({
+        error: "Invalid or missing API key. Open /install?key=<key> to download.",
+        clientIp: getEffectiveClientIP(req)
+      });
+      return;
+    }
+  }
+  const extDir = findExtensionDir();
+  if (!extDir) {
+    res.status(500).json({ error: "Extension directory not found on server" });
+    return;
+  }
+  const { http: httpBase, ws: wsBase } = deriveBaseUrl(req);
+  const apiKey = extractKey(req) || "";
+  const configContent = `// Auto-generated by /install/extension.zip on ${(/* @__PURE__ */ new Date()).toISOString()}
+// Server: ${httpBase}
+// Edit via the extension's Options page to override at runtime.
+self.UNIBROWSE_CONFIG = {
+  SERVER_URL: ${JSON.stringify(httpBase)},
+  WS_URL: ${JSON.stringify(`${wsBase}/ws`)},
+  API_KEY: ${JSON.stringify(apiKey)},
+  INSTALLED_FROM: ${JSON.stringify(httpBase)},
+  INSTALLED_AT: ${JSON.stringify((/* @__PURE__ */ new Date()).toISOString())},
+};
+`;
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="unibrowse-extension.zip"`);
+  const archive = archiver("zip", { zlib: { level: 9 } });
+  archive.on("error", (err) => {
+    console.error("[install] zip error:", err);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else res.end();
+  });
+  archive.pipe(res);
+  const skip = (name) => {
+    if (name.startsWith(".nfs")) return true;
+    if (name.endsWith(".backup")) return true;
+    if (name.includes(".backup-")) return true;
+    if (name === ".gitignore") return true;
+    if (name === "generate-icons.js") return true;
+    return false;
+  };
+  function walk(dir, rel) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (skip(entry.name)) continue;
+      const abs = path.join(dir, entry.name);
+      const inner = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        walk(abs, inner);
+      } else if (entry.isFile()) {
+        if (inner === "config.js") continue;
+        archive.file(abs, { name: inner });
+      }
+    }
+  }
+  walk(extDir, "");
+  archive.append(configContent, { name: "config.js" });
+  archive.finalize();
+}
 
 // src/tools/frames.ts
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -173,8 +331,8 @@ var reloadExtension = {
 
 // src/http-server.ts
 import { v4 as uuidv4 } from "uuid";
-var __dirname = path.dirname(fileURLToPath(import.meta.url));
-var RECORDINGS_DIR = process.env.RECORDINGS_DIR || path.join(__dirname, "..", "recordings");
+var __dirname2 = path2.dirname(fileURLToPath2(import.meta.url));
+var RECORDINGS_DIR = process.env.RECORDINGS_DIR || path2.join(__dirname2, "..", "recordings");
 var commonTools = [
   pressKey,
   scroll,
@@ -294,7 +452,9 @@ var multiTabTools = [
   setTabLabel,
   detachTab,
   getActiveTab,
-  attachTab
+  attachTab,
+  reserveTab,
+  releaseTab
 ];
 var frameTools = [
   listFrames
@@ -338,26 +498,40 @@ var snapshotTools = [
 var resources = [];
 async function main() {
   const app = express();
-  app.use(express.json({ limit: "50mb" }));
+  app.use(express.json({ limit: "10gb" }));
   app.use("/api/v1/recordings/:id/video", express.raw({ type: "video/*", limit: "500mb" }));
   app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key");
     if (req.method === "OPTIONS") return res.sendStatus(204);
     next();
   });
   const port = parseInt(process.env.PORT || "9010");
   app.get("/health", (req, res) => {
-    res.json({ status: "ok", version: package_default.version });
+    const authOn = isAuthEnabled();
+    const local = isLocalClient(req);
+    res.json({
+      status: "ok",
+      version: package_default.version,
+      // All gated routes (/mcp, /ws, /install/zip, /api/v1/recordings/*)
+      // share the same policy: LAN clients always allowed; remote clients
+      // need an API key when UNIBROWSE_API_KEYS is set.
+      policy: authOn ? "lan-open-remote-required" : "open",
+      authRequired: authOn && !local,
+      clientIp: getEffectiveClientIP(req),
+      isLocalClient: local
+    });
   });
-  if (!fs.existsSync(RECORDINGS_DIR)) {
-    fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
+  app.get("/install", installLandingHandler);
+  app.get("/install/extension.zip", installZipHandler);
+  if (!fs2.existsSync(RECORDINGS_DIR)) {
+    fs2.mkdirSync(RECORDINGS_DIR, { recursive: true });
   }
   async function ensureMongoConnected() {
     if (!mongodb.isConnected()) await mongodb.connect();
   }
-  app.post("/api/v1/recordings", async (req, res) => {
+  app.post("/api/v1/recordings", requireApiKey, async (req, res) => {
     try {
       await ensureMongoConnected();
       const recordings = mongodb.getRecordingsCollection();
@@ -390,12 +564,12 @@ async function main() {
       res.status(500).json({ error: err.message });
     }
   });
-  app.post("/api/v1/recordings/:id/video", async (req, res) => {
+  app.post("/api/v1/recordings/:id/video", requireApiKey, async (req, res) => {
     try {
       await ensureMongoConnected();
       const { id } = req.params;
-      const videoPath = path.join(RECORDINGS_DIR, `${id}.webm`);
-      fs.writeFileSync(videoPath, req.body);
+      const videoPath = path2.join(RECORDINGS_DIR, `${id}.webm`);
+      fs2.writeFileSync(videoPath, req.body);
       const recordings = mongodb.getRecordingsCollection();
       await recordings.updateOne(
         { id },
@@ -406,23 +580,24 @@ async function main() {
       res.status(500).json({ error: err.message });
     }
   });
-  app.post("/api/v1/recordings/:id/events", async (req, res) => {
+  app.post("/api/v1/recordings/:id/events", requireApiKey, async (req, res) => {
     try {
       await ensureMongoConnected();
       const { id } = req.params;
-      const { rrwebEvents = [], networkEntries = [], interactions = [] } = req.body;
+      const { rrwebEvents = [], networkEntries = [], interactions = [], chunkIndex = 0 } = req.body;
       const recordingEvents = mongodb.getRecordingEventsCollection();
-      await recordingEvents.replaceOne(
-        { recordingId: id },
-        { recordingId: id, rrwebEvents, networkEntries, interactions, updatedAt: /* @__PURE__ */ new Date() },
-        { upsert: true }
-      );
-      const recordings = mongodb.getRecordingsCollection();
-      await recordings.updateOne(
-        { id },
-        { $set: { rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, interactionCount: interactions.length, updatedAt: /* @__PURE__ */ new Date() } }
-      );
-      res.json({ success: true, rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, interactionCount: interactions.length });
+      if (req.query.reset === "1" || chunkIndex === 0) {
+        await recordingEvents.deleteMany({ recordingId: id });
+      }
+      await recordingEvents.insertOne({
+        recordingId: id,
+        chunkIndex,
+        rrwebEvents,
+        networkEntries,
+        interactions,
+        updatedAt: /* @__PURE__ */ new Date()
+      });
+      res.json({ success: true, chunkIndex, rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, interactionCount: interactions.length });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -455,9 +630,9 @@ async function main() {
       const recordings = mongodb.getRecordingsCollection();
       const recording = await recordings.findOne({ id: req.params.id });
       if (!recording || !recording.videoPath) return res.status(404).json({ error: "No video" });
-      const absPath = path.join(RECORDINGS_DIR, `${req.params.id}.webm`);
-      if (!fs.existsSync(absPath)) return res.status(404).json({ error: "Video file not found" });
-      const stat = fs.statSync(absPath);
+      const absPath = path2.join(RECORDINGS_DIR, `${req.params.id}.webm`);
+      if (!fs2.existsSync(absPath)) return res.status(404).json({ error: "Video file not found" });
+      const stat = fs2.statSync(absPath);
       const range = req.headers.range;
       if (range) {
         const parts = range.replace(/bytes=/, "").split("-");
@@ -469,25 +644,25 @@ async function main() {
           "Content-Length": end - start + 1,
           "Content-Type": "video/webm"
         });
-        fs.createReadStream(absPath, { start, end }).pipe(res);
+        fs2.createReadStream(absPath, { start, end }).pipe(res);
       } else {
         res.writeHead(200, {
           "Content-Length": stat.size,
           "Content-Type": "video/webm",
           "Accept-Ranges": "bytes"
         });
-        fs.createReadStream(absPath).pipe(res);
+        fs2.createReadStream(absPath).pipe(res);
       }
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
-  app.post("/api/v1/recordings/:id/video/:tabId", async (req, res) => {
+  app.post("/api/v1/recordings/:id/video/:tabId", requireApiKey, async (req, res) => {
     try {
       await ensureMongoConnected();
       const { id, tabId } = req.params;
-      const videoPath = path.join(RECORDINGS_DIR, `${id}-tab-${tabId}.webm`);
-      fs.writeFileSync(videoPath, req.body);
+      const videoPath = path2.join(RECORDINGS_DIR, `${id}-tab-${tabId}.webm`);
+      fs2.writeFileSync(videoPath, req.body);
       const recordings = mongodb.getRecordingsCollection();
       await recordings.updateOne(
         { id },
@@ -500,9 +675,9 @@ async function main() {
   });
   app.get("/api/v1/recordings/:id/video/:tabId", (req, res) => {
     const { id, tabId } = req.params;
-    const absPath = path.join(RECORDINGS_DIR, `${id}-tab-${tabId}.webm`);
-    if (!fs.existsSync(absPath)) return res.status(404).json({ error: "No video for this tab" });
-    const stat = fs.statSync(absPath);
+    const absPath = path2.join(RECORDINGS_DIR, `${id}-tab-${tabId}.webm`);
+    if (!fs2.existsSync(absPath)) return res.status(404).json({ error: "No video for this tab" });
+    const stat = fs2.statSync(absPath);
     const range = req.headers.range;
     if (range) {
       const parts = range.replace(/bytes=/, "").split("-");
@@ -514,23 +689,31 @@ async function main() {
         "Content-Length": end - start + 1,
         "Content-Type": "video/webm"
       });
-      fs.createReadStream(absPath, { start, end }).pipe(res);
+      fs2.createReadStream(absPath, { start, end }).pipe(res);
     } else {
       res.writeHead(200, {
         "Content-Length": stat.size,
         "Content-Type": "video/webm",
         "Accept-Ranges": "bytes"
       });
-      fs.createReadStream(absPath).pipe(res);
+      fs2.createReadStream(absPath).pipe(res);
     }
   });
   app.get("/api/v1/recordings/:id/events", async (req, res) => {
     try {
       await ensureMongoConnected();
       const recordingEvents = mongodb.getRecordingEventsCollection();
-      const doc = await recordingEvents.findOne({ recordingId: req.params.id }, { projection: { _id: 0 } });
-      if (!doc) return res.json({ rrwebEvents: [], networkEntries: [], interactions: [] });
-      res.json({ rrwebEvents: doc.rrwebEvents || [], networkEntries: doc.networkEntries || [], interactions: doc.interactions || [] });
+      const docs = await recordingEvents.find({ recordingId: req.params.id }, { projection: { _id: 0 } }).sort({ chunkIndex: 1 }).toArray();
+      if (docs.length === 0) return res.json({ rrwebEvents: [], networkEntries: [], interactions: [] });
+      const rrwebEvents = [];
+      const networkEntries = [];
+      const interactions = [];
+      for (const d of docs) {
+        if (d.rrwebEvents) rrwebEvents.push(...d.rrwebEvents);
+        if (d.networkEntries) networkEntries.push(...d.networkEntries);
+        if (d.interactions) interactions.push(...d.interactions);
+      }
+      res.json({ rrwebEvents, networkEntries, interactions });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -576,8 +759,8 @@ async function main() {
       if (!recording) return res.status(404).json({ error: "Recording not found" });
       const targetTs = parseInt(req.query.t || "0", 10) || recording.startTime;
       const tabId = req.query.tabId ? parseInt(req.query.tabId, 10) : recording.primaryTabId ?? recording.recordedTabIds?.[0];
-      const videoFile = tabId ? path.join(RECORDINGS_DIR, `${req.params.id}-tab-${tabId}.webm`) : path.join(RECORDINGS_DIR, `${req.params.id}.webm`);
-      if (!fs.existsSync(videoFile)) return res.status(404).json({ error: "No video file found" });
+      const videoFile = tabId ? path2.join(RECORDINGS_DIR, `${req.params.id}-tab-${tabId}.webm`) : path2.join(RECORDINGS_DIR, `${req.params.id}.webm`);
+      if (!fs2.existsSync(videoFile)) return res.status(404).json({ error: "No video file found" });
       const videoStartTimes = recording.videoStartTimes || {};
       const videoStart = tabId && videoStartTimes[tabId] ? videoStartTimes[tabId] : recording.videoStartTime ?? recording.startTime;
       const offsetSec = Math.max(0, (targetTs - videoStart) / 1e3).toFixed(3);
@@ -598,14 +781,14 @@ async function main() {
     }
   });
   app.get("/rrweb-player", (_req, res) => {
-    const viewPath = path.join(__dirname, "views", "rrweb-player.html");
-    if (fs.existsSync(viewPath)) {
+    const viewPath = path2.join(__dirname2, "views", "rrweb-player.html");
+    if (fs2.existsSync(viewPath)) {
       res.sendFile(viewPath);
     } else {
       res.status(404).send("rrweb player not found");
     }
   });
-  app.use("/public", express.static(path.join(__dirname, "public")));
+  app.use("/public", express.static(path2.join(__dirname2, "public")));
   app.get("/review", async (req, res) => {
     try {
       await ensureMongoConnected();
@@ -635,8 +818,8 @@ async function main() {
   });
   app.get("/review/:id", async (req, res) => {
     try {
-      const viewPath = path.join(__dirname, "views", "review.html");
-      if (fs.existsSync(viewPath)) {
+      const viewPath = path2.join(__dirname2, "views", "review.html");
+      if (fs2.existsSync(viewPath)) {
         res.sendFile(viewPath);
       } else {
         res.status(404).send("Review UI not found");
@@ -656,7 +839,7 @@ async function main() {
     // Stateless mode
   });
   await httpMcpServer.connect(transport);
-  app.post("/mcp", (req, res) => {
+  app.post("/mcp", requireApiKey, (req, res) => {
     console.log(`[HTTP] New MCP request from ${req.ip}`);
     transport.handleRequest(req, res, req.body);
   });
@@ -664,8 +847,10 @@ async function main() {
     console.log(`[HTTP] Browser MCP server listening on http://localhost:${port}`);
     console.log(`[HTTP] MCP endpoint: http://localhost:${port}/mcp`);
     console.log(`[HTTP] Health check: http://localhost:${port}/health`);
+    console.log(`[HTTP] Install page:  http://localhost:${port}/install`);
+    console.log(`[HTTP] Auth policy:   ${isAuthEnabled() ? "LAN open, remote requires API key (UNIBROWSE_API_KEYS set)" : "open (no UNIBROWSE_API_KEYS \u2014 all clients allowed)"}`);
   });
-  const { createWebSocketServerFromHTTP } = await import("./ws-XJAPUUIR.js");
+  const { createWebSocketServerFromHTTP } = await import("./ws-KEK7CW26.js");
   const wss = createWebSocketServerFromHTTP(httpServer);
   await createServerWithTools({
     name: appConfig.name,

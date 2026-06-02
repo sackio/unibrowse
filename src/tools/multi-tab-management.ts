@@ -30,26 +30,44 @@ export const listAttachedTabs: Tool = {
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
     try {
-      // Don't call ensureAttached() - we want to list tabs even if none attached
-      const result = await context.sendSocketMessage(
+      // Aggregate across every registered extension. With multiple extensions
+      // (ben's main Chrome + container chromiums launched via
+      // browser_launch_isolated_chrome) callers see the union of attached tabs,
+      // each tagged with the owning extensionId. Partial failures are surfaced
+      // rather than dropped so a broken connection is visible.
+      const results = await context.broadcastSocketMessage(
         "browser_list_attached_tabs",
-        {}
+        {} as any,
       );
 
-      if (!result.tabs || result.tabs.length === 0) {
-        return jsonResponse({ tabs: [], message: "No tabs currently attached" }, true, max_tokens);
+      const tabs: any[] = [];
+      const errors: Array<{ extensionId: string; error: string }> = [];
+      for (const r of results) {
+        if (r.error) {
+          errors.push({ extensionId: r.extensionId, error: r.error });
+          continue;
+        }
+        for (const t of (r.result?.tabs ?? [])) {
+          tabs.push({ ...t, extensionId: r.extensionId });
+        }
       }
-      // Clean JSON shape so callers can read tab.reservation.owner /
-      // tab.reservation.history programmatically. The narrative summary is
-      // kept in `message` for log surfaces that prefer one-liners.
-      const summary = `Attached tabs (${result.tabs.length}):\n` +
-        result.tabs.map((tab: any) => {
+
+      if (tabs.length === 0) {
+        const message = errors.length
+          ? `No tabs attached. Extension errors: ${errors.map(e => `${e.extensionId}: ${e.error}`).join("; ")}`
+          : "No tabs currently attached";
+        return jsonResponse({ tabs: [], extensions: results.map(r => r.extensionId), errors, message }, true, max_tokens);
+      }
+
+      const summary = `Attached tabs (${tabs.length} across ${results.length} extension${results.length === 1 ? "" : "s"}):\n` +
+        tabs.map((tab: any) => {
           const res = tab.reservation
             ? ` [reserved: ${tab.reservation.owner} since ${new Date(tab.reservation.claimedAt).toISOString()}]`
             : "";
-          return `- Tab ${tab.tabId} (${tab.label}): ${tab.title}${res}\n  URL: ${tab.url}\n  Last used: ${new Date(tab.lastUsedAt).toLocaleString()}`;
+          const ext = ` [ext: ${tab.extensionId}]`;
+          return `- Tab ${tab.tabId} (${tab.label}): ${tab.title}${ext}${res}\n  URL: ${tab.url}\n  Last used: ${new Date(tab.lastUsedAt).toLocaleString()}`;
         }).join("\n");
-      return jsonResponse({ tabs: result.tabs, message: summary }, true, max_tokens);
+      return jsonResponse({ tabs, extensions: results.map(r => r.extensionId), errors, message: summary }, true, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(

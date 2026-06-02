@@ -46,6 +46,9 @@ services:
     volumes:
       # Mount for development (optional - remove in production)
       - ./dist:/app/dist:ro
+      # Extension code mounted read-only so changes to extension/*.js take
+      # effect on the next container chromium relaunch — no rebuild needed.
+      - ./extension:/app/extension:ro
       # Persistent video recordings storage
       - ./recordings:/app/recordings
 
