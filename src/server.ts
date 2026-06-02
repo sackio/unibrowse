@@ -23,6 +23,28 @@ type Options = {
 // Shared context for all servers (WebSocket and HTTP)
 const globalContext = new Context();
 
+// MCP `instructions` field — surfaced to clients via the initialize handshake.
+// Documents the multi-agent shared-server model that confused several callers
+// (ha, shopping, storybook all hit it in one day). Agents that read this on
+// connect will know that "multiple extensions" isn't a fault but the normal
+// shape, and have a clear recovery path before they trip into the error.
+const MULTI_AGENT_INSTRUCTIONS = `Unibrowse is a multi-agent browser MCP server.
+
+Multiple extensions may be connected at once (e.g. ben's host Chrome plus container chromiums spawned by browser_launch_isolated_chrome for isolated work). Multiple agents share the server simultaneously.
+
+Routing model:
+- Each extension has a stable extensionId — find them via browser_list_attached_tabs (response.extensions array) or the return value of browser_launch_isolated_chrome.
+- Pin a specific extension by passing extensionId on every tool call. This is the explicit path.
+- Alternatively, attach a tab first (browser_attach_tab with autoOpenUrl or tabId) — the server records tabId→extensionId so subsequent calls with tabTarget alone route to the right extension automatically.
+- When only one extension is connected, no routing fields are required (single-extension fallback). Multi-extension mode requires either extensionId or an attached tabTarget.
+
+Tab reservations (multi-agent etiquette):
+- Pass agent:"<your name>" on browser_create_tab/browser_attach_tab to reserve a tab to yourself; other agents calling control tools on it will get a tab-reserved error.
+- Pass takeover:true when you genuinely need to claim a tab from a dead agent.
+- Use browser_list_attached_tabs to see who owns what (response.tabs[].reservation).
+
+If a tool errors with "Multiple extensions are connected" it includes a prescriptive recovery path: pass extensionId, or attach a tab and use tabTarget. If your MCP client's tool schema doesn't show extensionId, your client cached tools/list before the schema bump — refresh with /mcp or session respawn.`;
+
 // Create server with WebSocket for browser extension
 export async function createServerWithTools(options: Options): Promise<Server> {
   const { name, version, tools, resources, wss: providedWss } = options;
@@ -33,7 +55,8 @@ export async function createServerWithTools(options: Options): Promise<Server> {
         tools: {},
         resources: {},
       },
-    },
+      instructions: MULTI_AGENT_INSTRUCTIONS,
+    } as any,
   );
 
   // Helper to handle WebSocket messages manually (browser extension uses custom protocol)

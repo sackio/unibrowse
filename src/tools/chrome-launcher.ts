@@ -17,6 +17,133 @@ const __dirname = path.dirname(__filename);
 const launchedProcesses = new Map<number, ChildProcess>();
 
 /**
+ * Track spawned Xvfb processes alongside their chromiums so we can reap them
+ * together on shutdown — orphan Xvfb's leave stale /tmp/.X11-unix/X* sockets
+ * that block display-number reuse.
+ */
+const launchedXvfbs = new Map<number, ChildProcess>();
+
+/**
+ * SIGTERM/SIGINT handler — when docker compose restart sends SIGTERM, give
+ * each spawned chromium up to 5s to shut down gracefully so the persistent
+ * profile gets `exit_type: Normal` (no Restore Pages dialog next launch).
+ * Without this, docker's 10s grace expires and the cgroup gets SIGKILL'd,
+ * leaving every profile with `exit_type: Crashed`. Idempotent: only the
+ * first signal triggers cleanup.
+ */
+let shuttingDown = false;
+const installSignalHandlers = () => {
+  const shutdown = (sig: NodeJS.Signals) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[chrome-launcher] Received ${sig}, gracefully closing ${launchedProcesses.size} spawned chromium(s)...`);
+    for (const [pid, proc] of launchedProcesses) {
+      try {
+        // SIGTERM to chromium triggers its own clean-shutdown path (writes
+        // Normal exit_type, flushes session). Give it up to 5s.
+        proc.kill("SIGTERM");
+        console.log(`[chrome-launcher] SIGTERM → chromium pid ${pid}`);
+      } catch (e) {
+        console.warn(`[chrome-launcher] Failed to SIGTERM chromium pid ${pid}:`, (e as Error).message);
+      }
+    }
+    for (const [pid, proc] of launchedXvfbs) {
+      try { proc.kill("SIGTERM"); } catch { /* best-effort */ }
+      console.log(`[chrome-launcher] SIGTERM → Xvfb pid ${pid}`);
+    }
+    // Don't process.exit here — let the parent node process complete its
+    // own shutdown. Chromiums get up to ~5s before docker's SIGKILL anyway.
+  };
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => shutdown("SIGINT"));
+};
+installSignalHandlers();
+
+/**
+ * One-time startup cleanup — wipe stale state from previous container
+ * incarnations that may block this launcher's first use:
+ *  - Stale SingletonLock / SingletonSocket / SingletonCookie symlinks in
+ *    each profile dir, left behind when chromium was SIGKILL'd. The lock
+ *    points at a hostname:pid that no longer exists, but chromium will
+ *    refuse to launch ("profile is in use") until the lock is gone.
+ *  - Stale /tmp/.X11-unix/X* sockets from killed Xvfb's, which can collide
+ *    with newly-picked display numbers.
+ */
+let startupCleanupDone = false;
+const runStartupCleanup = () => {
+  if (startupCleanupDone) return;
+  startupCleanupDone = true;
+  const cleaned: string[] = [];
+  // Profiles live next to extension dir; probe candidate roots.
+  const profileRoots = [
+    "/app/.chrome-profiles",
+    path.resolve(__dirname, "..", "..", ".chrome-profiles"),
+  ];
+  for (const root of profileRoots) {
+    if (!fs.existsSync(root)) continue;
+    try {
+      for (const profile of fs.readdirSync(root)) {
+        for (const lock of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
+          const p = path.join(root, profile, lock);
+          try {
+            if (fs.lstatSync(p)) {
+              fs.unlinkSync(p);
+              cleaned.push(p);
+            }
+          } catch { /* not present, skip */ }
+        }
+      }
+    } catch { /* root unreadable, skip */ }
+  }
+  // Stale X11 sockets
+  const xUnixDir = "/tmp/.X11-unix";
+  if (fs.existsSync(xUnixDir)) {
+    try {
+      for (const f of fs.readdirSync(xUnixDir)) {
+        if (!/^X\d+$/.test(f)) continue;
+        const p = path.join(xUnixDir, f);
+        try { fs.unlinkSync(p); cleaned.push(p); } catch { /* socket in use */ }
+      }
+    } catch { /* skip */ }
+  }
+  if (cleaned.length) {
+    console.log(`[chrome-launcher] Startup cleanup: removed ${cleaned.length} stale lock/socket(s): ${cleaned.slice(0, 5).join(", ")}${cleaned.length > 5 ? "…" : ""}`);
+  }
+};
+
+/**
+ * Profile self-heal: chromium writes `exit_type: "Crashed"` to
+ * Default/Preferences if it didn't shut down cleanly. On next launch it
+ * shows a "Restore pages?" infobar on the FIRST page load — which can
+ * dismiss programmatic navigations and hide auth forms. Patch the marker
+ * to "Normal" before chromium starts, so the user-visible page is the
+ * one we asked for.
+ */
+const selfHealProfile = (profileDir: string) => {
+  const prefsPath = path.join(profileDir, "Default", "Preferences");
+  if (!fs.existsSync(prefsPath)) return;
+  try {
+    const raw = fs.readFileSync(prefsPath, "utf8");
+    const prefs = JSON.parse(raw);
+    let dirty = false;
+    if (prefs?.profile?.exit_type && prefs.profile.exit_type !== "Normal") {
+      prefs.profile.exit_type = "Normal";
+      dirty = true;
+    }
+    if (prefs?.profile?.exited_cleanly === false) {
+      prefs.profile.exited_cleanly = true;
+      dirty = true;
+    }
+    if (dirty) {
+      fs.writeFileSync(prefsPath, JSON.stringify(prefs));
+      console.log(`[chrome-launcher] Self-healed profile exit markers at ${prefsPath}`);
+    }
+  } catch (e) {
+    console.warn(`[chrome-launcher] Profile self-heal failed (${prefsPath}):`, (e as Error).message);
+  }
+};
+
+/**
  * Find Chrome executable on the system
  */
 function findChromeExecutable(): string | null {
@@ -74,6 +201,10 @@ export const launchIsolatedChrome: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
+      // Lazy startup-time cleanup on first launch after process start.
+      // Wipes stale SingletonLock + X11 sockets left from prior incarnations.
+      runStartupCleanup();
+
       const validatedParams = LaunchIsolatedChromeTool.shape.arguments.parse(params);
 
       // Snapshot the currently-registered extensionIds before spawn. After
@@ -136,6 +267,14 @@ export const launchIsolatedChrome: Tool = {
 
       if (!fs.existsSync(profileDir)) {
         fs.mkdirSync(profileDir, { recursive: true });
+      }
+
+      // Profile self-heal: patch any "Crashed" exit_type to "Normal" so
+      // chromium doesn't show the Restore Pages infobar over the first
+      // navigation. Only matters for non-fresh profiles that previously
+      // exited dirty (covers the entire fleet that was SIGKILL'd today).
+      if (!freshProfile) {
+        selfHealProfile(profileDir);
       }
 
       // Determine URLs to open
@@ -227,9 +366,18 @@ export const launchIsolatedChrome: Tool = {
       // Unref the process so it doesn't keep the Node.js process alive
       chromeProcess.unref();
 
-      // Track the process
+      // Track the process for shutdown-time graceful close.
       if (chromeProcess.pid) {
         launchedProcesses.set(chromeProcess.pid, chromeProcess);
+        // Also clean up the map entry when the chromium dies on its own,
+        // so shutdown doesn't try to signal a corpse pid that may have been
+        // reused by a different process by then.
+        chromeProcess.once("exit", () => launchedProcesses.delete(chromeProcess.pid!));
+      }
+      // Pair the Xvfb with the chromium so the SIGTERM handler also reaps it.
+      if (xvfbProcess?.pid) {
+        launchedXvfbs.set(xvfbProcess.pid, xvfbProcess);
+        xvfbProcess.once("exit", () => launchedXvfbs.delete(xvfbProcess.pid!));
       }
 
       // Wait for the freshly-spawned chromium's extension to register so we

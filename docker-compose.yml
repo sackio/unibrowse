@@ -26,6 +26,12 @@ services:
       dockerfile: Dockerfile
     container_name: unibrowse-mcp-server
     restart: unless-stopped
+    # tini as PID 1 reaps zombies + propagates SIGTERM to children, so child
+    # chromium processes get a graceful close window before docker's 10s
+    # SIGKILL deadline. Without this, docker compose restart silently
+    # SIGKILL'd every spawned chromium when node's main process didn't
+    # forward signals down the tree (observed 8 chromium deaths today).
+    init: true
     ports:
       - "127.0.0.1:9010:9010"  # localhost
       - "192.168.1.199:9010:9010"  # LAN access from server4/server5
@@ -49,6 +55,12 @@ services:
       # Extension code mounted read-only so changes to extension/*.js take
       # effect on the next container chromium relaunch — no rebuild needed.
       - ./extension:/app/extension:ro
+      # Chromium profiles persist across container recreates (e.g. compose
+      # changes). Without this, `/app/.chrome-profiles` lives in the writable
+      # layer and gets wiped on `up -d --force-recreate`, taking accumulated
+      # Auth0 / login session cookies with it. Bind-mounting to host preserves
+      # them and lets host-side tooling (backups, rsync) reach them too.
+      - ./chrome-profiles:/app/.chrome-profiles
       # Persistent video recordings storage
       - ./recordings:/app/recordings
 
