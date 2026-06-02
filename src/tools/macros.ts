@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from "uuid";
 import {
   StoreMacroTool,
   ListMacrosTool,
+  GetMacroTool,
   ExecuteMacroTool,
   UpdateMacroTool,
   DeleteMacroTool,
@@ -187,6 +188,43 @@ export const listMacros: Tool = {
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to list macros: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+/**
+ * Fetch a stored macro's full source by id.
+ * Read-only complement to listMacros (which excludes code) and updateMacro
+ * (which patches it). Lets an agent inspect a macro before iterating on it
+ * without having to read off-MCP filesystem backups (which were the only
+ * inspection path before this tool existed — shopping flagged the gap on
+ * 2026-06-02).
+ */
+export const getMacro: Tool = {
+  schema: {
+    name: GetMacroTool.shape.name.value,
+    description: GetMacroTool.shape.description.value,
+    inputSchema: zodToJsonSchema(GetMacroTool.shape.arguments),
+  },
+  handle: async (_context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      if (!mongodb.isConnected()) {
+        await mongodb.connect();
+      }
+      const validatedParams = GetMacroTool.shape.arguments.parse(params || {});
+      const macros = mongodb.getMacrosCollection();
+      const macro = await macros.findOne(
+        { id: validatedParams.id },
+        { projection: { _id: 0 } },
+      );
+      if (!macro) {
+        return errorResponse(`Macro with ID "${validatedParams.id}" not found`, true, undefined, max_tokens);
+      }
+      return jsonResponse(macro, true, max_tokens);
+    } catch (error) {
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to get macro: ${error.message}`, false, error, max_tokens);
     }
   },
 };

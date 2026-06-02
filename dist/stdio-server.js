@@ -43,6 +43,7 @@ import {
   getFormValues,
   getHistoryVisits,
   getInteractions,
+  getMacro,
   getNetworkLogs,
   getNetworkState,
   getPageMetadata,
@@ -93,7 +94,7 @@ import {
   type,
   updateMacro,
   wait
-} from "./chunk-T66K6Q4Q.js";
+} from "./chunk-PJ36JW7O.js";
 import "./chunk-HZXH4WRF.js";
 
 // src/stdio-server.ts
@@ -205,6 +206,7 @@ var extensionTools = [
 var macroTools = [
   storeMacro,
   listMacros,
+  getMacro,
   executeMacro,
   updateMacro,
   deleteMacro

@@ -48,6 +48,7 @@ import {
   getFormValues,
   getHistoryVisits,
   getInteractions,
+  getMacro,
   getNetworkLogs,
   getNetworkState,
   getPageMetadata,
@@ -104,7 +105,7 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-T66K6Q4Q.js";
+} from "./chunk-PJ36JW7O.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -434,6 +435,7 @@ var extensionTools = [
 var macroTools = [
   storeMacro,
   listMacros,
+  getMacro,
   executeMacro,
   updateMacro,
   deleteMacro

@@ -1093,6 +1093,14 @@ export const ListMacrosTool = z.object({
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
+export const GetMacroTool = z.object({
+  name: z.literal("browser_get_macro"),
+  description: z.literal("Fetch a stored macro's full source by id, including the JavaScript code body, parameter schema, description, usage statistics, and reliability rating. Read-only — use this to inspect or iterate on a macro before patching with browser_update_macro. Complements browser_list_macros (which returns metadata only)."),
+  arguments: z.object({
+    id: z.string().describe("Macro ID to fetch"),
+  }).merge(MaxTokensSchema),
+});
+
 export const ExecuteMacroTool = z.object({
   name: z.literal("browser_execute_macro"),
   description: z.literal("Execute a stored macro by ID with provided parameters. The macro runs in the page context and returns the result. Pass timeout_ms (default 30000, max 120000) to extend the WebSocket-level wait for long-running macros — the previous default 30s ceiling could not be overridden from the caller."),

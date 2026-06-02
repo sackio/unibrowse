@@ -265,31 +265,31 @@ class OffscreenManager {
             // storage read in case the connect path didn't carry it.
             let extensionId = conn.extensionId || null;
             let profileHint = null;
-            if (!extensionId) {
+            // Background.js owns the extension identity (singleton ensureExtensionId
+            // populates chrome.storage.local exactly once). Offscreen reads it,
+            // never mints. If storage is still empty when we get here, RETRY a
+            // few times — background's writer may not have landed yet (typical
+            // race on container chromium first boot). The retry window is small
+            // (~1.5s total) but enough to let the SW's first storage round-trip
+            // complete. If it still isn't there, fall back to letting the
+            // server use its ws-owner lookup (omit extensionId from payload).
+            const tryRead = async () => {
+              if (!chrome?.storage?.local?.get) return;
               try {
-                if (chrome?.storage?.local?.get) {
-                  const s = await chrome.storage.local.get(['__unibrowseExtensionId', '__unibrowseProfileHint']);
-                  extensionId = s.__unibrowseExtensionId || null;
-                  profileHint = s.__unibrowseProfileHint || null;
-                }
+                const s = await chrome.storage.local.get(['__unibrowseExtensionId', '__unibrowseProfileHint']);
+                if (s.__unibrowseExtensionId) extensionId = s.__unibrowseExtensionId;
+                if (s.__unibrowseProfileHint) profileHint = s.__unibrowseProfileHint;
               } catch {}
-            }
-            // First-run fallback: storage was empty AND background.js's
-            // ensureExtensionId() hadn't completed in time (race on container
-            // spinup, since the WS auto-reconnect can fire before the SW's
-            // top-level await resolves). Mint a UUID here so the very first
-            // EXTENSION_REGISTER carries a unique id, and persist it so future
-            // reconnects stay stable.
+            };
             if (!extensionId) {
-              try {
-                const minted = 'ext_' + (crypto && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
-                extensionId = minted;
-                conn.extensionId = minted;
-                if (chrome?.storage?.local?.set) {
-                  chrome.storage.local.set({ __unibrowseExtensionId: minted }).catch(() => {});
-                }
-                console.log(`[Offscreen][${conn.wsId}] Minted extensionId in offscreen fallback: ${minted}`);
-              } catch {}
+              for (let i = 0; i < 8 && !extensionId; i++) {
+                await tryRead();
+                if (extensionId) break;
+                await new Promise(r => setTimeout(r, 200));
+              }
+              if (!extensionId) {
+                console.log(`[Offscreen][${conn.wsId}] storage still empty after retries; relying on server ws-owner fallback`);
+              }
             }
             const payload = JSON.stringify({
               type: 'EXTENSION_REGISTER',

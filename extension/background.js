@@ -10,24 +10,42 @@ importScripts('config.js', 'utils/server-resolver.js', 'utils/websocket-offscree
 // server in EXTENSION_REGISTER so the server can route per-tab tool calls back
 // to the right extension when multiple are connected (e.g. ben's main Chrome
 // vs a container chromium spawned by browser_launch_isolated_chrome).
+//
+// Singleton pattern: ensureExtensionId() returns the same in-flight promise on
+// every call, so concurrent callers can `await` it without each triggering a
+// fresh storage round-trip. This is load-bearing for the split-brain bug fix
+// — without it, background.js's startup probe and the WS-manager's connect()
+// could race, and the offscreen's first OFFSCREEN_CONNECT could arrive before
+// `self.__unibrowseExtensionId` was set. With it, the FIRST resolution writes
+// storage exactly once; all later callers see the same id.
+let _extIdPromise = null;
 async function ensureExtensionId() {
-  try {
-    const stored = await chrome.storage.local.get(['__unibrowseExtensionId', '__unibrowseProfileHint']);
-    let id = stored.__unibrowseExtensionId;
-    if (!id) {
-      id = 'ext_' + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
-      await chrome.storage.local.set({ __unibrowseExtensionId: id });
+  if (_extIdPromise) return _extIdPromise;
+  _extIdPromise = (async () => {
+    try {
+      const stored = await chrome.storage.local.get(['__unibrowseExtensionId', '__unibrowseProfileHint']);
+      let id = stored.__unibrowseExtensionId;
+      if (!id) {
+        id = 'ext_' + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
+        await chrome.storage.local.set({ __unibrowseExtensionId: id });
+      }
+      self.__unibrowseExtensionId = id;
+      self.__unibrowseProfileHint = stored.__unibrowseProfileHint || null;
+      return id;
+    } catch (err) {
+      // Extension context invalidated etc. Fall back to a per-process id so the
+      // server can still distinguish connections during reload windows.
+      const fb = self.__unibrowseExtensionId || ('ext_eph_' + Math.random().toString(36).slice(2));
+      self.__unibrowseExtensionId = fb;
+      // Don't memoize the fallback — next non-error call should retry storage.
+      _extIdPromise = null;
+      return fb;
     }
-    self.__unibrowseExtensionId = id;
-    self.__unibrowseProfileHint = stored.__unibrowseProfileHint || null;
-    return id;
-  } catch (err) {
-    // Extension context invalidated etc. Fall back to a per-process id so the
-    // server can still distinguish connections during reload windows.
-    self.__unibrowseExtensionId = self.__unibrowseExtensionId || ('ext_eph_' + Math.random().toString(36).slice(2));
-    return self.__unibrowseExtensionId;
-  }
+  })();
+  return _extIdPromise;
 }
+// Fire the probe at module load so storage gets populated as early as
+// possible; concurrent callers reuse the promise (idempotent).
 ensureExtensionId().catch(() => {});
 
 // Global state for auto-connect
@@ -949,6 +967,13 @@ class BackgroundController {
    */
   isRestrictedUrl(url) {
     if (!url) return true;
+    // about:blank is the one about: URL that IS debuggable — CDP attach
+    // works fine on it. Excluding it from the restriction list lets
+    // callers use attach_tab({autoOpenUrl:"about:blank"}) as a "give me
+    // a blank attached tab I'll navigate later" idiom. Everything else
+    // under about: (about:settings, about:flags, about:version) does
+    // remain restricted.
+    if (url === 'about:blank' || url === 'about:blank#blocked') return false;
 
     return (
       url.startsWith('chrome://') ||

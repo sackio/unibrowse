@@ -155,6 +155,7 @@ const extensionTools: Tool[] = [
 const macroTools: Tool[] = [
   macros.storeMacro,
   macros.listMacros,
+  macros.getMacro,
   macros.executeMacro,
   macros.updateMacro,
   macros.deleteMacro,
