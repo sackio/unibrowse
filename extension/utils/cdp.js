@@ -441,8 +441,35 @@ class CDPHelper {
     // add an explicit `return` so callers get back the value (e.g. `document.title` → "Page Title").
     // Multi-statement scripts (any `;`) and explicit-return statements are used as-is — wrapping
     // `let x = 5; x + 1` in `return (...)` would produce a SyntaxError.
-    const isExpression = !expression.includes('\n') && !expression.includes(';') && !/^\s*return\b/.test(expression);
-    const body = isExpression ? `return (${expression});` : expression;
+    // Decide how to wrap the expression so its value comes back to the caller.
+    // Three cases:
+    //   A) Caller explicitly wrote `return ...`           → use as-is.
+    //   B) Single-line/single-statement expression        → wrap as `return (expr);`.
+    //   C) Multi-statement that visually IS an expression (an IIFE wrapped in
+    //      outer parens, like `(async () => { ... })()`) → also wrap with
+    //      `return (\n...\n);` so the IIFE's return value bubbles out instead
+    //      of being silently discarded. This was the ha-reported null-on-IIFE
+    //      bug — Promise-returning IIFEs evaluated but the outer wrapper
+    //      returned undefined → caller saw `null`.
+    //   D) Anything else (raw multi-statement script with `let`, declarations,
+    //      bare statements)                               → use as-is; caller
+    //      must include their own `return` if they want a value.
+    const hasExplicitReturn = /^\s*return\b/.test(expression);
+    const isSingleStatement = !expression.includes('\n') && !expression.includes(';');
+    const trimmed = expression.trim();
+    const looksLikeWrappedExpression =
+      trimmed.startsWith('(') && trimmed.endsWith(')') && !hasExplicitReturn;
+
+    let body;
+    if (hasExplicitReturn) {
+      body = expression;
+    } else if (isSingleStatement) {
+      body = `return (${expression});`;
+    } else if (looksLikeWrappedExpression) {
+      body = `return (\n${expression}\n);`;
+    } else {
+      body = expression;
+    }
     const wrapped = `(async function() {\n${body}\n})()`;
     try {
       const result = await this.sendCommand('Runtime.evaluate', {
