@@ -26,7 +26,7 @@ export const fillForm: Tool = {
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = FillFormTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_fill_form", validatedParams);
       return textResponse(`Filled ${validatedParams.fields.length} form fields`, max_tokens);
@@ -52,7 +52,7 @@ export const submitForm: Tool = {
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = SubmitFormTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_submit_form", validatedParams);
       return textResponse(`Submitted form "${validatedParams.element}"`, max_tokens);

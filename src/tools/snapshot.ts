@@ -29,7 +29,7 @@ export const snapshot: Tool = {
   handle: async (context: Context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = SnapshotTool.shape.arguments.parse(params);
       return await captureAriaSnapshot(context, "", validatedParams.tabTarget, max_tokens, validatedParams.interactiveOnly, validatedParams.maxDepth);
     } catch (error) {
@@ -53,7 +53,7 @@ export const click: Tool = {
   handle: async (context: Context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = ClickTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_click", validatedParams);
       return textResponse(`Clicked "${validatedParams.element}"`, max_tokens);
@@ -78,7 +78,7 @@ export const drag: Tool = {
   handle: async (context: Context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = DragTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_drag", validatedParams);
       return textResponse(`Dragged "${validatedParams.startElement}" to "${validatedParams.endElement}"`, max_tokens);
@@ -103,7 +103,7 @@ export const hover: Tool = {
   handle: async (context: Context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = HoverTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_hover", validatedParams);
       return textResponse(`Hovered over "${validatedParams.element}"`, max_tokens);
@@ -128,7 +128,7 @@ export const type: Tool = {
   handle: async (context: Context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = TypeTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_type", validatedParams);
       return textResponse(`Typed "${validatedParams.text}" into "${validatedParams.element}"`, max_tokens);
@@ -153,7 +153,7 @@ export const selectOption: Tool = {
   handle: async (context: Context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = SelectOptionTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_select_option", validatedParams);
       return textResponse(`Selected option in "${validatedParams.element}"`, max_tokens);

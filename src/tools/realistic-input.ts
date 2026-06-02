@@ -23,7 +23,7 @@ export const realisticMouseMove: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = RealisticMouseMoveTool.shape.arguments.parse(params);
 
       const result = await context.sendSocketMessage("browser_realistic_mouse_move", validatedParams);
@@ -50,7 +50,7 @@ export const realisticClick: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = RealisticClickTool.shape.arguments.parse(params);
 
       const result = await context.sendSocketMessage("browser_realistic_click", validatedParams);
@@ -77,7 +77,7 @@ export const realisticType: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = RealisticTypeTool.shape.arguments.parse(params);
 
       const result = await context.sendSocketMessage("browser_realistic_type", validatedParams);

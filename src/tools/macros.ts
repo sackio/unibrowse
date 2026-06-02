@@ -208,7 +208,7 @@ export const executeMacro: Tool = {
         await mongodb.connect();
       }
 
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
 
       const validatedParams = ExecuteMacroTool.shape.arguments.parse(params);
       const macros = mongodb.getMacrosCollection();

@@ -55,7 +55,7 @@ export const switchTab: Tool = {
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = SwitchTabTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_switch_tab", validatedParams);
       return textResponse(`Switched to tab ${validatedParams.tabId}`, max_tokens);
@@ -81,7 +81,7 @@ export const createTab: Tool = {
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = CreateTabTool.shape.arguments.parse(params);
       const result: any = await context.sendSocketMessage(
         "browser_create_tab",
@@ -118,7 +118,7 @@ export const closeTab: Tool = {
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = CloseTabTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_close_tab", validatedParams);
       return textResponse(`Closed tab ${validatedParams.tabId}`, max_tokens);

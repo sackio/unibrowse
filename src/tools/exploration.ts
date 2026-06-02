@@ -32,7 +32,7 @@ export const queryDOM: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = QueryDOMTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_query_dom", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -58,7 +58,7 @@ export const getVisibleText: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetVisibleTextTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_visible_text", validatedParams);
       return typeof result === "string" ? textResponse(result, max_tokens) : jsonResponse(result, true, max_tokens);
@@ -84,7 +84,7 @@ export const getComputedStyles: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetComputedStylesTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_computed_styles", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -110,7 +110,7 @@ export const checkVisibility: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = CheckVisibilityTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_check_visibility", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -136,7 +136,7 @@ export const getAttributes: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetAttributesTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_attributes", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -162,7 +162,7 @@ export const countElements: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = CountElementsTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_count_elements", validatedParams);
       return textResponse(`Found ${result} elements matching selector "${validatedParams.selector}"`, max_tokens);
@@ -188,7 +188,7 @@ export const getPageMetadata: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetPageMetadataTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_page_metadata", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -214,7 +214,7 @@ export const getFilteredAriaTree: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetFilteredAriaTreeTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_filtered_aria_tree", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -240,7 +240,7 @@ export const findByText: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = FindByTextTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_find_by_text", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -266,7 +266,7 @@ export const getFormValues: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetFormValuesTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_form_values", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -292,7 +292,7 @@ export const checkElementState: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = CheckElementStateTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_check_element_state", validatedParams);
       return jsonResponse(result, true, max_tokens);

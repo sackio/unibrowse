@@ -156,20 +156,26 @@ export const getRecording: Tool = {
         return errorResponse(`Recording with ID "${p.id}" not found`, true, undefined, max_tokens);
       }
 
-      const result: any = { recording };
+      const { pages: recordingPages, ...recordingMeta } = recording as any;
+      const result: any = { recording: recordingMeta };
 
       const wantInteractions = p.includeInteractions || p.includeEvents;
       const wantNetwork = p.includeNetwork || p.includeEvents;
 
       if (wantInteractions || wantNetwork || p.includeStats) {
         const recordingEvents = mongodb.getRecordingEventsCollection();
-        const events = await recordingEvents.findOne(
-          { recordingId: p.id },
-          { projection: { _id: 0, recordingId: 0, rrwebEvents: 0 } }
-        );
+        // Aggregate all chunks (recordings >16MB are split across multiple docs).
+        const chunks = await recordingEvents
+          .find({ recordingId: p.id }, { projection: { _id: 0, recordingId: 0, rrwebEvents: 0 } })
+          .sort({ chunkIndex: 1 })
+          .toArray();
 
-        const allInteractions: any[] = events?.interactions || [];
-        const allNetwork: any[] = events?.networkEntries || [];
+        const allInteractions: any[] = [];
+        const allNetwork: any[] = [];
+        for (const ch of chunks) {
+          if (ch.interactions) allInteractions.push(...ch.interactions);
+          if (ch.networkEntries) allNetwork.push(...ch.networkEntries);
+        }
 
         if (p.includeStats) {
           const kindCounts: Record<string, number> = {};
@@ -177,9 +183,9 @@ export const getRecording: Tool = {
             const k = i.kind ?? "unknown";
             kindCounts[k] = (kindCounts[k] || 0) + 1;
           }
-          const networkErrors = allNetwork.filter(n => n.status >= 400 || n.error).length;
+          const networkErrors = allNetwork.filter(n => (n.responseStatus ?? 0) >= 400 || n.error).length;
           const timestamps = allInteractions.map(i => i.timestamp).filter(Boolean);
-          const pages = (recording.pages as any[] | undefined) ?? [];
+          const pages = (recordingPages as any[] | undefined) ?? [];
           const topUrls = pages
             .filter(pg => pg.url && !pg.url.startsWith("about:") && !pg.url.includes("js.stripe.com") && !pg.url.includes("stripe.network"))
             .map(pg => ({ url: pg.url, title: pg.title }));
@@ -225,8 +231,8 @@ export const getRecording: Tool = {
             const method = p.networkMethod.toUpperCase();
             items = items.filter(n => n.method?.toUpperCase() === method);
           }
-          if (p.networkStatusMin != null) items = items.filter(n => (n.status ?? 0) >= p.networkStatusMin!);
-          if (p.networkStatusMax != null) items = items.filter(n => (n.status ?? 0) <= p.networkStatusMax!);
+          if (p.networkStatusMin != null) items = items.filter(n => (n.responseStatus ?? 0) >= p.networkStatusMin!);
+          if (p.networkStatusMax != null) items = items.filter(n => (n.responseStatus ?? 0) <= p.networkStatusMax!);
           const limit = p.limit ?? 100;
           const offset = p.offset ?? 0;
           result.networkEntries = items.slice(offset, offset + limit);
@@ -422,16 +428,18 @@ export const getRecordingScreenshot: Tool = {
       }
 
       // ── rrweb DOM replay via browser tab ──────────────────────────────────
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
 
       const label = `rrweb-frame-${Date.now()}`;
       const playerUrl = `http://localhost:9010/rrweb-player?id=${p.id}&t=${targetTs}${p.selector ? "&selector=" + encodeURIComponent(p.selector) : ""}`;
 
-      await context.sendSocketMessage("browser_create_tab", { label });
+      // Create the player tab directly at the URL. Creating a blank tab and then
+      // navigating doesn't work: an about:blank tab is "restricted", so it never
+      // attaches and the label is never registered — leaving every subsequent
+      // tabTarget lookup (navigate/evaluate/screenshot/close) unresolvable.
+      await context.sendSocketMessage("browser_create_tab", { url: playerUrl, label });
 
       try {
-        await context.sendSocketMessage("browser_navigate", { url: playerUrl, tabTarget: label });
-
         // Poll until __playerReady (up to 15s)
         const ready = await context.sendSocketMessage("browser_evaluate", {
           expression: `new Promise((resolve, reject) => {

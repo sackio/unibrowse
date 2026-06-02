@@ -25,7 +25,7 @@ export const searchHistory: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = SearchHistoryTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_search_history", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -51,7 +51,7 @@ export const getHistoryVisits: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetHistoryVisitsTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_history_visits", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -77,7 +77,7 @@ export const deleteHistory: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = DeleteHistoryTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_delete_history", validatedParams);
       return textResponse(`Deleted ${validatedParams.urls.length} URL(s, max_tokens) from history`);
@@ -103,7 +103,7 @@ export const clearHistory: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = ClearHistoryTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_clear_history", validatedParams);
       const startDate = new Date(validatedParams.startTime).toISOString();

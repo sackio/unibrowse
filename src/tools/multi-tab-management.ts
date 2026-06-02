@@ -128,7 +128,7 @@ export const detachTab: Tool = {
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = DetachTabTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage(
         "browser_detach_tab",
@@ -161,10 +161,11 @@ export const getActiveTab: Tool = {
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
     try {
-      // Don't call ensureAttached() - we want to gracefully return no active tab
+      // Don't call ensureAttached() - we want to gracefully return no active tab.
+      // Pass params through so multi-ext routing picks up extensionId/tabTarget.
       const result = await context.sendSocketMessage(
         "browser_get_active_tab",
-        {}
+        params || {}
       );
 
       if (!result.hasActiveTab) {

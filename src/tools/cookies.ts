@@ -24,7 +24,7 @@ export const getCookies: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetCookiesTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_cookies", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -50,7 +50,7 @@ export const setCookie: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = SetCookieTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_set_cookie", validatedParams);
       return textResponse(`Cookie "${validatedParams.name}" set for ${validatedParams.url}`, max_tokens);
@@ -76,7 +76,7 @@ export const deleteCookie: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = DeleteCookieTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_delete_cookie", validatedParams);
       return textResponse(`Cookie "${validatedParams.name}" deleted from ${validatedParams.url}`, max_tokens);
@@ -102,7 +102,7 @@ export const clearCookies: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = ClearCookiesTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_clear_cookies", validatedParams);
       return textResponse(`Cleared ${result.count} cookie(s, max_tokens)`);

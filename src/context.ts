@@ -198,6 +198,21 @@ export class Context {
     return result;
   }
 
+  /**
+   * Convenience wrapper: take a raw params blob (post-zod-parse), extract the
+   * routing-relevant fields (extensionId, tabTarget), and call ensureAttached
+   * with the right options. Lets handlers avoid the boilerplate of pulling
+   * fields out individually — they just `await context.ensureAttachedFromParams(validatedParams)`.
+   */
+  async ensureAttachedFromParams(params: any): Promise<{ tabId: number; label: string }> {
+    const tabTarget = params?.tabTarget;
+    return this.ensureAttached({
+      extensionId: params?.extensionId,
+      tabId: typeof tabTarget === "number" ? tabTarget : undefined,
+      label: typeof tabTarget === "string" ? tabTarget : undefined,
+    });
+  }
+
   async sendSocketMessage<T extends MessageType<SocketMessageMap>>(
     type: T,
     payload: MessagePayload<SocketMessageMap, T>,

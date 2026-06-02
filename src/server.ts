@@ -69,13 +69,25 @@ export async function createServerWithTools(options: Options): Promise<Server> {
     // tool calls to the right WebSocket without round-tripping to every
     // extension. Sent in pairs around TabManager.attachTab/detachTab.
     if (type === 'TAB_ATTACHED' || type === 'TAB_DETACHED') {
-      const extensionId = (payload?.extensionId as string) || (message?.wsId as string);
+      let extensionId = (payload?.extensionId as string) || (message?.wsId as string);
+      // Fallback: container chromiums whose SW didn't complete ensureExtensionId
+      // before TabManager.attachTab fired send TAB_ATTACHED with no extensionId
+      // (self.__unibrowseExtensionId was still undefined). Look up which
+      // registered extension owns this ws and use that — guaranteed to be the
+      // sender, since each ws maps to exactly one extension.
+      if (!extensionId) {
+        for (const conn of globalContext.listExtensions()) {
+          if (conn.ws === ws) { extensionId = conn.extensionId; break; }
+        }
+      }
       const tabId = payload?.tabId as number;
       if (tabId != null && extensionId) {
         if (type === 'TAB_ATTACHED') {
           globalContext.recordTabOwner(tabId, extensionId);
+          console.log(`[Server] TAB_ATTACHED: tab=${tabId} ext=${extensionId}`);
         } else {
           globalContext.forgetTabOwner(tabId);
+          console.log(`[Server] TAB_DETACHED: tab=${tabId} ext=${extensionId}`);
         }
       }
       return;

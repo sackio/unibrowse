@@ -19,7 +19,7 @@ export const listFrames: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = ListFramesTool.shape.arguments.parse(params || {});
       const result = await context.sendSocketMessage("browser_list_frames", validatedParams);
       return jsonResponse(result, true, max_tokens);

@@ -104,7 +104,7 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-3L6HTTH6.js";
+} from "./chunk-JI2IDQPA.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -281,7 +281,7 @@ var listFrames = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = ListFramesTool.shape.arguments.parse(params || {});
       const result = await context.sendSocketMessage("browser_list_frames", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -302,7 +302,7 @@ var getErrors = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetErrorsTool.shape.arguments.parse(params || {});
       const result = await context.sendSocketMessage("browser_get_errors", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -320,7 +320,7 @@ var reloadExtension = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const result = await context.sendSocketMessage("browser_reload_extension", {});
       return jsonResponse(result, true, max_tokens);
     } catch (error) {

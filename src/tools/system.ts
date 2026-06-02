@@ -21,7 +21,7 @@ export const getVersion: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetVersionTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_version", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -47,7 +47,7 @@ export const getSystemInfo: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetSystemInfoTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_system_info", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -73,7 +73,7 @@ export const getBrowserInfo: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetBrowserInfoTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_browser_info", validatedParams);
       return jsonResponse(result, true, max_tokens);

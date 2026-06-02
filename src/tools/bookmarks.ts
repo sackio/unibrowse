@@ -23,7 +23,7 @@ export const getBookmarks: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetBookmarksTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_bookmarks", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -49,7 +49,7 @@ export const createBookmark: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = CreateBookmarkTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_create_bookmark", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -74,7 +74,7 @@ export const deleteBookmark: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = DeleteBookmarkTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_delete_bookmark", validatedParams);
       return textResponse(`Bookmark deleted successfully (ID: ${validatedParams.id})`, max_tokens);
@@ -100,7 +100,7 @@ export const searchBookmarks: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = SearchBookmarksTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_search_bookmarks", validatedParams);
       return jsonResponse(result, true, max_tokens);

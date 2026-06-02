@@ -27,7 +27,7 @@ export const getConsoleLogs: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const consoleLogs = await context.sendSocketMessage(
         "browser_get_console_logs",
         {},
@@ -57,7 +57,7 @@ export const screenshot: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = ScreenshotTool.shape.arguments.parse(params);
       const screenshot = await context.sendSocketMessage(
         "browser_screenshot",
@@ -86,7 +86,7 @@ export const segmentedScreenshot: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = SegmentedScreenshotTool.shape.arguments.parse(params);
 
       const result = await context.sendSocketMessage(
@@ -174,7 +174,7 @@ export const evaluate: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = EvaluateTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage(
         "browser_evaluate",
@@ -202,7 +202,7 @@ export const getNetworkLogs: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetNetworkLogsTool.shape.arguments.parse(params);
       const networkLogs = await context.sendSocketMessage(
         "browser_get_network_logs",

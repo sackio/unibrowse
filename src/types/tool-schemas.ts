@@ -1219,7 +1219,7 @@ export const SetTabLabelTool = z.object({
       .union([z.number(), z.string()])
       .describe("Tab identifier (tab ID or current label) of the tab to update"),
     label: z.string().describe("The new label for the tab"),
-  }).merge(MaxTokensSchema),
+  }).merge(ExtensionIdSchema).merge(MaxTokensSchema),
 });
 
 export const DetachTabTool = z.object({
@@ -1285,7 +1285,7 @@ export const ReserveTabTool = z.object({
     tabTarget: z.union([z.number(), z.string()]).describe("Tab ID or label to reserve"),
     agent: z.string().describe("Your agent identifier"),
     takeover: z.boolean().optional().describe("Forcibly take over from the current owner"),
-  }).merge(MaxTokensSchema),
+  }).merge(ExtensionIdSchema).merge(MaxTokensSchema),
 });
 
 export const ReleaseTabTool = z.object({
@@ -1297,7 +1297,7 @@ export const ReleaseTabTool = z.object({
   arguments: z.object({
     tabTarget: z.union([z.number(), z.string()]).describe("Tab ID or label to release"),
     agent: z.string().optional().describe("Your agent identifier (must match the current owner unless omitted)"),
-  }).merge(MaxTokensSchema),
+  }).merge(ExtensionIdSchema).merge(MaxTokensSchema),
 });
 
 // ==================== RECORDINGS TOOLS ====================

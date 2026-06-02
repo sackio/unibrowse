@@ -25,7 +25,7 @@ export const downloadFile: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = DownloadFileTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_download_file", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -51,7 +51,7 @@ export const getDownloads: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetDownloadsTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_downloads", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -76,7 +76,7 @@ export const cancelDownload: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = CancelDownloadTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_cancel_download", validatedParams);
       return textResponse(`Download ${validatedParams.downloadId} cancelled`, max_tokens);
@@ -101,7 +101,7 @@ export const openDownload: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = OpenDownloadTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_open_download", validatedParams);
       return textResponse(`Opened download ${validatedParams.downloadId}`, max_tokens);

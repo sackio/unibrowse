@@ -29,7 +29,7 @@ export const navigate: ToolFactory = (snapshot) => ({
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = NavigateTool.shape.arguments.parse(params);
       const result: any = await context.sendSocketMessage("browser_navigate", validatedParams);
       if (snapshot) {
@@ -65,7 +65,7 @@ export const goBack: ToolFactory = (snapshot) => ({
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GoBackTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_go_back", validatedParams);
       if (snapshot) {
@@ -93,7 +93,7 @@ export const goForward: ToolFactory = (snapshot) => ({
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GoForwardTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_go_forward", validatedParams);
       if (snapshot) {
@@ -149,7 +149,7 @@ export const pressKey: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = PressKeyTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_press_key", validatedParams);
       return textResponse(`Pressed key ${validatedParams.key}`, max_tokens);
@@ -174,7 +174,7 @@ export const scroll: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = ScrollTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_scroll", validatedParams);
       const x = validatedParams.x ?? 0;
@@ -201,7 +201,7 @@ export const scrollToElement: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = ScrollToElementTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_scroll_to_element", validatedParams);
       return textResponse(`Scrolled to "${validatedParams.element}"`, max_tokens);

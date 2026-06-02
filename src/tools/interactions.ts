@@ -25,7 +25,7 @@ export const getInteractions: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetInteractionsTool.shape.arguments.parse(params);
 
       const result = await context.sendSocketMessage("browser_get_interactions", validatedParams);
@@ -115,7 +115,7 @@ export const pruneInteractions: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = PruneInteractionsTool.shape.arguments.parse(params);
 
       const result = await context.sendSocketMessage("browser_prune_interactions", validatedParams);
@@ -188,7 +188,7 @@ export const searchInteractions: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = SearchInteractionsTool.shape.arguments.parse(params);
 
       const result = await context.sendSocketMessage("browser_search_interactions", validatedParams);

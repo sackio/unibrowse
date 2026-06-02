@@ -14,7 +14,7 @@ export const getErrors: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetErrorsTool.shape.arguments.parse(params || {});
       const result = await context.sendSocketMessage("browser_get_errors", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -33,7 +33,7 @@ export const reloadExtension: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const result = await context.sendSocketMessage("browser_reload_extension", {});
       return jsonResponse(result, true, max_tokens);
     } catch (error) {

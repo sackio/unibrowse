@@ -21,7 +21,7 @@ export const requestUserAction: ToolFactory = (snapshot) => ({
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const { request, timeout } = RequestUserActionTool.shape.arguments.parse(params);
 
       // Calculate WebSocket timeout: use user's timeout if specified, otherwise 5 minutes default

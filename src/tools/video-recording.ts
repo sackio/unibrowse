@@ -24,7 +24,7 @@ export const startVideoRecording: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = StartVideoRecordingTool.shape.arguments.parse(params);
 
       const result = await context.sendSocketMessage("browser_start_video_recording", validatedParams);

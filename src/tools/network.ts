@@ -22,7 +22,7 @@ export const getNetworkState: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetNetworkStateTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_network_state", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -48,7 +48,7 @@ export const setNetworkConditions: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = SetNetworkConditionsTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_set_network_conditions", validatedParams);
       return textResponse("Network conditions updated successfully", max_tokens);
@@ -74,7 +74,7 @@ export const clearCache: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = ClearCacheTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_clear_cache", validatedParams);
       return textResponse("Cache cleared successfully", max_tokens);

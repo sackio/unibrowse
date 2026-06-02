@@ -22,7 +22,7 @@ export const getClipboard: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetClipboardTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_clipboard", validatedParams);
       return textResponse(result.text, max_tokens);
@@ -48,7 +48,7 @@ export const setClipboard: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = SetClipboardTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_set_clipboard", validatedParams);
       return textResponse(`Clipboard set to: ${validatedParams.text.substring(0, 50)}${validatedParams.text.length > 50 ? '...' : ''}`, max_tokens);

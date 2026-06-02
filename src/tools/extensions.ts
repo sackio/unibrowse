@@ -23,7 +23,7 @@ export const listExtensions: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = ListExtensionsTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_list_extensions", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -49,7 +49,7 @@ export const getExtensionInfo: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = GetExtensionInfoTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_extension_info", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -74,7 +74,7 @@ export const enableExtension: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = EnableExtensionTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_enable_extension", validatedParams);
       return textResponse(`Extension enabled successfully (ID: ${validatedParams.id}, max_tokens)`);
@@ -99,7 +99,7 @@ export const disableExtension: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttached();
+      await context.ensureAttachedFromParams(params);
       const validatedParams = DisableExtensionTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_disable_extension", validatedParams);
       return textResponse(`Extension disabled successfully (ID: ${validatedParams.id}, max_tokens)`);
