@@ -105,7 +105,7 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-PJ36JW7O.js";
+} from "./chunk-GQNASY4R.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -527,6 +527,13 @@ async function main() {
   });
   app.get("/install", installLandingHandler);
   app.get("/install/extension.zip", installZipHandler);
+  app.get("/__unibrowse_seed", (req, res) => {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.end(
+      `<!doctype html><meta charset=utf-8><title>unibrowse seed</title><body>seeding\u2026</body>`
+    );
+  });
   if (!fs2.existsSync(RECORDINGS_DIR)) {
     fs2.mkdirSync(RECORDINGS_DIR, { recursive: true });
   }

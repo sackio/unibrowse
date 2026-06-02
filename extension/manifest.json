@@ -38,6 +38,14 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["*://*/__unibrowse_seed*"],
+      "js": ["unibrowse-seed.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

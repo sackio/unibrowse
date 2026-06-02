@@ -144,6 +144,94 @@ const selfHealProfile = (profileDir: string) => {
 };
 
 /**
+ * Chromium-host sidecar client. POSTs the launch request to the side
+ * container's HTTP RPC, then polls the local extension registry (same as
+ * the in-process path) for the newly-registered extensionId so the caller
+ * can pin subsequent tool calls. Server URL is passed as `serverHint` so
+ * the sidecar can write a managed-server.json into the profile and the
+ * extension's resolver knows where to reach this mcp-server.
+ */
+async function launchViaChromiumHost(
+  context: any,
+  params: any,
+  hostUrl: string,
+  max_tokens: number | undefined,
+): Promise<any> {
+  const validatedParams = LaunchIsolatedChromeTool.shape.arguments.parse(params);
+  const preLaunchExtensionIds = new Set(
+    context.listExtensions?.().map((e: any) => e.extensionId) ?? [],
+  );
+
+  // The sidecar shares the chrome-profiles bind mount so profileName resolves
+  // the same on both sides; we just hand it the validated args.
+  // Prepend the seed bootstrap URL so the extension's unibrowse-seed.js
+  // content script writes the right server config to chrome.storage BEFORE
+  // background.js's resolveServerConfig probes for it. Without this, the
+  // sidecar chromium would default to localhost:9010 (its own container,
+  // not the mcp-server). The HTTP route at /__unibrowse_seed is served by
+  // the same mcp-server we want the extension to connect to.
+  const wsHint = process.env.UNIBROWSE_CHROMIUM_SERVER_HINT
+    || "ws://mcp-server:9010/ws";
+  const httpHint = wsHint.replace(/^ws/, "http").replace(/\/ws$/, "");
+  const seedUrl = `${httpHint}/__unibrowse_seed?ws=${encodeURIComponent(wsHint)}&http=${encodeURIComponent(httpHint)}`;
+  const userUrls = validatedParams.url
+    ? (Array.isArray(validatedParams.url) ? validatedParams.url : [validatedParams.url])
+    : ["chrome://extensions/"];
+  const reqBody = {
+    profileName: validatedParams.profileName,
+    urls: [seedUrl, ...userUrls],
+    freshProfile: validatedParams.freshProfile !== false,
+    headless: !!validatedParams.headless,
+    width: validatedParams.width,
+    height: validatedParams.height,
+    serverHint: wsHint,
+  };
+  const launchResp = await fetch(`${hostUrl.replace(/\/$/, "")}/launch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(reqBody),
+  });
+  if (!launchResp.ok) {
+    const text = await launchResp.text().catch(() => "");
+    return errorResponse(
+      `chromium-host /launch returned ${launchResp.status}: ${text}`,
+      false, undefined, max_tokens,
+    );
+  }
+  const { pid, display, profileDir } = await launchResp.json() as any;
+
+  // Poll for the newcomer extension (same logic as the in-process path).
+  let spawnedExtensionId: string | null = null;
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const current = context.listExtensions?.() ?? [];
+    const newcomers = current.filter((e: any) => !preLaunchExtensionIds.has(e.extensionId));
+    if (newcomers.length > 0) { spawnedExtensionId = newcomers[newcomers.length - 1].extensionId; break; }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  const fresh = validatedParams.freshProfile !== false;
+  let message = `✓ Chrome launched via chromium-host sidecar\n`;
+  message += `  Profile: ${validatedParams.profileName} ${fresh ? "(fresh - no cookies/history)" : "(persistent)"}\n`;
+  message += `  Profile Directory: ${profileDir}\n`;
+  message += `  Display: ${display || "(headless)"}\n`;
+  message += `  PID (in chromium-host): ${pid}\n`;
+  message += `  URLs: ${reqBody.urls.join(", ")}\n`;
+  if (spawnedExtensionId) {
+    message += `  Extension ID: ${spawnedExtensionId}\n`;
+    message += `\nPass extensionId=${spawnedExtensionId} on subsequent tool calls to pin them to this chromium.`;
+  } else {
+    message += `\n(Extension id not seen within 15s — check browser_list_attached_tabs.)`;
+  }
+  return jsonResponse({
+    pid, profileDir, urls: reqBody.urls, display,
+    extensionId: spawnedExtensionId,
+    via: "chromium-host",
+    message,
+  }, true, max_tokens);
+}
+
+/**
  * Find Chrome executable on the system
  */
 function findChromeExecutable(): string | null {
@@ -201,6 +289,17 @@ export const launchIsolatedChrome: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
+      // Chromium-host sidecar path: when UNIBROWSE_CHROMIUM_HOST is set,
+      // delegate the spawn to the sidecar via HTTP RPC instead of spawning
+      // in-process. The chromium then survives mcp-server restarts (its
+      // lifecycle is bound to chromium-host, not mcp-server). The extension
+      // still registers back to the mcp-server's WebSocket the same way,
+      // so the post-spawn poll for the new extensionId is unchanged.
+      const chromiumHost = process.env.UNIBROWSE_CHROMIUM_HOST;
+      if (chromiumHost) {
+        return await launchViaChromiumHost(context, params, chromiumHost, max_tokens);
+      }
+
       // Lazy startup-time cleanup on first launch after process start.
       // Wipes stale SingletonLock + X11 sockets left from prior incarnations.
       runStartupCleanup();

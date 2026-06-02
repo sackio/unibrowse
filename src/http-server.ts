@@ -282,6 +282,21 @@ async function main() {
   app.get("/install", installLandingHandler);
   app.get("/install/extension.zip", installZipHandler);
 
+  // Chromium-host sidecar bootstrap. The chromium-host service spawns each
+  // new chromium with this URL as the first tab (carrying ws/http/key as
+  // query params). The extension's unibrowse-seed.js content script picks
+  // up the params on document_start and writes them to chrome.storage.local
+  // so resolveServerConfig finds a non-localhost default on first connect.
+  // Public route (no API key) since the page itself contains no secrets;
+  // the key in the URL is what the page is meant to seed.
+  app.get("/__unibrowse_seed", (req, res) => {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.end(
+      `<!doctype html><meta charset=utf-8><title>unibrowse seed</title><body>seeding…</body>`,
+    );
+  });
+
   // ── Session Recording API ───────────────────────────────────────────────────
 
   // Ensure recordings directory exists

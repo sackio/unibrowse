@@ -44,6 +44,13 @@ services:
       # Comma-separated list of valid API keys. Empty/unset = open mode (auth disabled).
       # When set, /mcp + WebSocket upgrade + /install/extension.zip all require a valid key.
       UNIBROWSE_API_KEYS: ${UNIBROWSE_API_KEYS:-}
+      # When set, browser_launch_isolated_chrome POSTs to the chromium-host
+      # sidecar instead of spawning chromium in-process. Decouples chromium
+      # lifecycle from mcp-server lifecycle — restarts of this service no
+      # longer touch running chromiums. Unset = legacy in-process spawn
+      # (still supported as fallback during the rollout). Set to e.g.
+      # http://chromium-host:9020 after `docker compose --profile chromium-host up`.
+      UNIBROWSE_CHROMIUM_HOST: ${UNIBROWSE_CHROMIUM_HOST:-}
     depends_on:
       mongodb:
         condition: service_healthy
@@ -63,6 +70,33 @@ services:
       - ./chrome-profiles:/app/.chrome-profiles
       # Persistent video recordings storage
       - ./recordings:/app/recordings
+
+  # Chromium-host sidecar — opt-in via `docker compose --profile chromium-host up`.
+  # Hosts spawned chromiums in a SEPARATE container so mcp-server lifecycle
+  # (restart, recreate, code reload) never touches running chromiums. Filed as
+  # the architectural fix on 2026-06-02 after 8 chromium SIGKILL events from
+  # mcp-server restarts. Plan author: Plan agent. See chromium-host/server.js.
+  chromium-host:
+    profiles: ["chromium-host"]
+    build:
+      context: ./chromium-host
+      dockerfile: Dockerfile
+    container_name: unibrowse-chromium-host
+    restart: unless-stopped
+    init: true
+    environment:
+      PORT: 9020
+      PROFILES_DIR: /app/.chrome-profiles
+      EXTENSION_DIR: /app/extension
+    networks:
+      - unibrowse-network
+    volumes:
+      # Same bind mounts as mcp-server so profiles and extension code are
+      # shared. The chromium-host is the WRITER of profiles (mcp-server only
+      # reads or, when in legacy mode, also writes — but with the side-container
+      # active, the launcher delegates writes here).
+      - ./chrome-profiles:/app/.chrome-profiles
+      - ./extension:/app/extension:ro
 
 networks:
   unibrowse-network:
