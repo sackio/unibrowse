@@ -1509,7 +1509,23 @@ export const LaunchIsolatedChromeTool = z.object({
     headless: z
       .boolean()
       .optional()
-      .describe("Launch in headless mode (default: false)"),
+      .describe(
+        "Launch in headless / no-user-window-pollution mode (default: false). " +
+        "When the chromium-host sidecar is active (UNIBROWSE_CHROMIUM_HOST set on the server), " +
+        "`headless: true` routes through the sidecar with Xvfb-headful rendering — giving you " +
+        "a fully isolated chromium (no user-Chrome interaction) AND a real-browser fingerprint " +
+        "that defeats Auth0/Cloudflare/Akamai anti-bot gates. If you specifically need the " +
+        "lighter --headless=new flag (faster, but detectable, suitable only for pure scraping " +
+        "where anti-bot doesn't matter), pass `realHeadless: true` as well."
+      ),
+    realHeadless: z
+      .boolean()
+      .optional()
+      .describe(
+        "Opt into chromium's `--headless=new` flag instead of Xvfb-headful when `headless: true` " +
+        "is set and the sidecar is active. Lighter / faster, but anti-bot detectable. Only useful " +
+        "for pure scraping where the target doesn't fingerprint headless Chrome."
+      ),
     freshProfile: z
       .boolean()
       .optional()

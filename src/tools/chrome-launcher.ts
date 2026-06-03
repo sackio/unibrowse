@@ -177,11 +177,23 @@ async function launchViaChromiumHost(
   const userUrls = validatedParams.url
     ? (Array.isArray(validatedParams.url) ? validatedParams.url : [validatedParams.url])
     : ["chrome://extensions/"];
+  // Semantic upgrade when routing through the sidecar: `headless: true`
+  // historically meant `--headless=new` (lightweight but anti-bot-detectable).
+  // For the sidecar, treat `headless: true` as "isolated, no user window
+  // pollution" instead — which the sidecar already provides via its own
+  // container. Inside the sidecar we spin up Xvfb-headful so the chromium
+  // looks like a real browser to Auth0/Cloudflare/Akamai. Callers who
+  // genuinely need the lighter --headless=new path can pass
+  // `realHeadless: true` to opt back into it. This makes
+  // `browser_launch_isolated_chrome({headless: true})` the right default
+  // for headless-mode agents without them having to know about Xvfb.
+  const useXvfbForHeadless = !(validatedParams as any).realHeadless;
+  const innerHeadless = !!validatedParams.headless && !useXvfbForHeadless;
   const reqBody = {
     profileName: validatedParams.profileName,
     urls: [seedUrl, ...userUrls],
     freshProfile: validatedParams.freshProfile !== false,
-    headless: !!validatedParams.headless,
+    headless: innerHeadless,
     width: validatedParams.width,
     height: validatedParams.height,
     serverHint: wsHint,
@@ -200,13 +212,28 @@ async function launchViaChromiumHost(
   }
   const { pid, display, profileDir } = await launchResp.json() as any;
 
-  // Poll for the newcomer extension (same logic as the in-process path).
+  // Poll for the newcomer extension. Side-container path is slower than the
+  // in-process path because the new chromium has to fully boot AND its
+  // extension has to discover the mcp-server URL via the seed content
+  // script BEFORE its background can register. Cold-boot + dirty-profile
+  // restore can push past the legacy 15s window — bump to 30s. Also wait
+  // a minimum of 3s before declaring success to absorb ben's-Chrome-style
+  // reconnect races (where a pre-existing extension reconnects to mcp-server
+  // and shows up as a newcomer briefly).
   let spawnedExtensionId: string | null = null;
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 30_000;
+  const startedAt = Date.now();
   while (Date.now() < deadline) {
     const current = context.listExtensions?.() ?? [];
     const newcomers = current.filter((e: any) => !preLaunchExtensionIds.has(e.extensionId));
-    if (newcomers.length > 0) { spawnedExtensionId = newcomers[newcomers.length - 1].extensionId; break; }
+    if (newcomers.length > 0 && Date.now() - startedAt > 3_000) {
+      // Pick the most-recently-registered newcomer (max registeredAt) rather
+      // than the last in iteration order — guarantees the actual freshly-
+      // spawned chromium wins over a coincidental concurrent reconnect.
+      newcomers.sort((a: any, b: any) => (b.registeredAt ?? 0) - (a.registeredAt ?? 0));
+      spawnedExtensionId = newcomers[0].extensionId;
+      break;
+    }
     await new Promise((r) => setTimeout(r, 200));
   }
 
