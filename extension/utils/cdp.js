@@ -1080,8 +1080,16 @@ class CDPHelper {
       duration = 500,
       currentX = 0,
       currentY = 0,
-      steps = 20
+      steps = 5,
     } = options;
+
+    // Page.bringToFront ensures CDP Input.dispatchMouseEvent lands on THIS tab
+    // even if another window/tab currently has OS focus (common when running
+    // a chromium-host sidecar chromium under Xvfb — its windows may not have
+    // focus relative to the host's main display). Without this, Input events
+    // observed leaking to a different focused tab. Best-effort: don't fail
+    // the whole move if bringToFront errors (some targets don't support it).
+    try { await this.sendCommand('Page.bringToFront', {}); } catch { /* best-effort */ }
 
     const points = this.generateBezierCurve(currentX, currentY, targetX, targetY, steps);
     const delayPerStep = duration / steps;
@@ -1121,11 +1129,29 @@ class CDPHelper {
       button = 'left',
       clickCount = 1,
       downDelay = 50 + Math.random() * 50,
-      moveFirst = true,
+      // Default flipped to false — the 20-step bezier loop hangs in
+      // chromium-host sidecar chromiums under Xvfb, with each Input.dispatchMouseEvent
+      // serializing through the debugger session and the cumulative latency
+      // exceeding the WebSocket response timeout (30s). Callers that want a
+      // human-like move-then-click can pass `moveFirst: true` explicitly, OR
+      // call `browser_realistic_mouse_move` separately first. For 99% of
+      // click-the-button workflows, the move was decoration anyway — what
+      // matters is the actual OS-level press/release pair landing on the
+      // target coordinates.
+      moveFirst = false,
       moveDuration = 300,
       currentX = 0,
       currentY = 0
     } = options;
+
+    // Page.bringToFront — see moveMouseRealistic above. CDP Input.dispatchMouseEvent
+    // dispatches to whichever tab currently has OS focus, NOT the tab whose
+    // debugger session we're calling through (verified 2026-06-03 by scripts
+    // session during the office→admin OAuth swap — clicks were landing on
+    // ben's main Chrome's focused tab instead of the sidecar chromium's
+    // unfocused tab). bringToFront takes the debugger-attached tab to
+    // foreground, making subsequent Input commands land on it.
+    try { await this.sendCommand('Page.bringToFront', {}); } catch { /* best-effort */ }
 
     // Move mouse to position first if requested
     if (moveFirst) {
