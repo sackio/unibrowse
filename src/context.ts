@@ -156,10 +156,16 @@ export class Context {
     }
     // Ambiguous: more than one extension is registered AND we don't know which
     // one owns the target. Surface the situation so the caller can pick.
+    // Message is prescriptive so an agent whose MCP client may have a stale
+    // schema (no extensionId field cached) has a fallback path: attach to a
+    // tab first, then route by tabTarget instead of extensionId.
     const ids = Array.from(this._extensions.keys());
     throw new Error(
-      `Multiple extensions are connected (${ids.length}). ` +
-      `Pass an explicit extensionId (one of: ${ids.join(", ")}) or a tabTarget that uniquely identifies the tab.`,
+      `Multiple extensions are connected (${ids.length}). To target a specific browser, ` +
+      `EITHER pass extensionId (one of: ${ids.join(", ")}) on this call, ` +
+      `OR first attach to a tab (browser_list_tabs → browser_attach_tab({tabId} or {autoOpenUrl})) ` +
+      `and then pass tabTarget=<tabId-or-label> on subsequent calls — the server routes attached tabs to their owning extension automatically. ` +
+      `If your MCP client's tool schema doesn't show extensionId, refresh it via /mcp (or session respawn).`,
     );
   }
 
@@ -185,12 +191,20 @@ export class Context {
     autoOpenUrl?: string;
     extensionId?: string;
   }): Promise<{ tabId: number; label: string }> {
-    // Send message to extension to ensure attachment
+    // Forward both extensionId AND a routing-equivalent tabTarget into
+    // sendSocketMessage's wsFor() — without the tabTarget, the multi-extension
+    // disambiguation throws "Multiple extensions are connected" even when the
+    // tab IS in the tabId→extension map. Bug surfaced 2026-06-04 by finance
+    // calling execute_macro({tabTarget:1980049709}) without extensionId — the
+    // execute_macro handler calls ensureAttachedFromParams BEFORE sending the
+    // actual macro, so the pre-flight ensure_attached was hitting wsFor with
+    // neither field and failing fast.
+    const tabTarget = options?.tabId ?? options?.label;
     const result = await this.sendSocketMessage("browser_ensure_attached", {
       tabId: options?.tabId ?? null,
       label: options?.label ?? null,
       autoOpenUrl: options?.autoOpenUrl ?? null,
-    }, { extensionId: options?.extensionId });
+    }, { extensionId: options?.extensionId, tabTarget });
 
     // Update our cached active tab ID (for backwards compatibility)
     this._activeTabId = result.tabId;
