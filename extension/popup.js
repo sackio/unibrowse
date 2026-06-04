@@ -91,8 +91,15 @@ class PopupController {
         btn.classList.remove('recording');
         btn.disabled = false;
         this.elements.sessionRecordStats.classList.remove('visible');
+        // NOTE: background.js auto-opens the review tab now (it survives
+        // popup closure during the multi-second chunked upload — the MV3
+        // popup may close before sendMessage's response arrives). Leaving
+        // this branch as a defensive no-op for the case where the popup
+        // IS still open (background's open + this one would race; popup's
+        // is fine since it just shows the same URL). Either way, the user
+        // gets the review tab.
         if (response && response.success && response.reviewUrl) {
-          chrome.tabs.create({ url: response.reviewUrl });
+          // background already opened it; no-op here
         } else if (response && response.error) {
           this.showError(response.error);
         }

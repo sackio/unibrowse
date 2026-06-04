@@ -1884,6 +1884,41 @@ class BackgroundController {
       // has the right id from the very first round-trip.
       try { await ensureExtensionId(); } catch {}
 
+      // chromium-host sidecar bootstrap: scan open tabs for a
+      // /__unibrowse_seed?ws=…&http=…&key=… URL. The chromium-host service
+      // opens this URL as the first tab of every new chromium specifically
+      // so we can discover where to connect. We do this in background.js
+      // (not just via the content script) because in headful mode the seed
+      // tab can finish loading BEFORE the extension is ready to attach
+      // content scripts, so the content-script path silently no-ops. This
+      // tab-scan path is the deterministic backstop.
+      try {
+        const tabs = await chrome.tabs.query({});
+        for (const t of tabs) {
+          if (!t.url) continue;
+          const m = t.url.match(/\/__unibrowse_seed\?(.+)$/);
+          if (!m) continue;
+          const params = new URLSearchParams(m[1]);
+          const wsUrl = params.get('ws');
+          const httpUrl = params.get('http');
+          const apiKey = params.get('key') || '';
+          if (!wsUrl) continue;
+          const existing = await chrome.storage.local.get(['unibrowse_server_config']);
+          if (existing.unibrowse_server_config?.WS_URL) break;
+          await chrome.storage.local.set({
+            unibrowse_server_config: {
+              SERVER_URL: httpUrl || '',
+              WS_URL: wsUrl,
+              API_KEY: apiKey,
+            },
+          });
+          console.log(`[Background] Picked up sidecar seed from tab ${t.id}: ${wsUrl}`);
+          break;
+        }
+      } catch (e) {
+        // Tabs query can fail during very early SW startup; non-fatal.
+      }
+
       // Resolve the active server URL (storage override → baked config → localhost)
       // before kicking off the WebSocket. URL carries ?key=<api_key> when set.
       try {
@@ -3762,6 +3797,20 @@ class BackgroundController {
 
       const reviewUrl = `${SERVER_BASE}/review/${recordingId}`;
       sendResponse({ success: true, recordingId, reviewUrl, eventsUploadStatus });
+
+      // Open the review tab from BACKGROUND — popup.js used to do this on
+      // sendMessage response, but MV3 popups close on focus loss and the
+      // upload + chunking takes several seconds for a real session. The
+      // sendResponse fires into a dead popup → chrome.tabs.create never runs
+      // → ben sees "recording done" toast but no review window opens
+      // (observed 2026-06-04). Background's chrome.tabs.create is unaffected
+      // by popup lifecycle. Wrapped in try/catch since this is best-effort
+      // and shouldn't break the upload path if the tab creation API errors.
+      try {
+        await chrome.tabs.create({ url: reviewUrl, active: true });
+      } catch (e) {
+        console.warn('[Background] Failed to auto-open review tab:', e?.message || e);
+      }
     } catch (err) {
       console.error('[Background] Failed to save session recording:', err);
       sendResponse({ success: false, error: err.message });
