@@ -54,6 +54,7 @@ import {
   getPageMetadata,
   getRecording,
   getRecordingScreenshot,
+  getSessionRecordingState,
   getSystemInfo,
   getVersion,
   getVisibleText,
@@ -105,7 +106,7 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-PKXS2UCB.js";
+} from "./chunk-VBAEASTX.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -380,6 +381,7 @@ var recordingTools = [
   deleteRecording,
   startSessionRecording,
   stopSessionRecording,
+  getSessionRecordingState,
   getRecordingScreenshot
 ];
 var interactionTools = [

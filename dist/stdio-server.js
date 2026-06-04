@@ -48,6 +48,7 @@ import {
   getNetworkState,
   getPageMetadata,
   getRecording,
+  getSessionRecordingState,
   getSystemInfo,
   getVersion,
   getVisibleText,
@@ -94,7 +95,7 @@ import {
   type,
   updateMacro,
   wait
-} from "./chunk-PKXS2UCB.js";
+} from "./chunk-VBAEASTX.js";
 import "./chunk-HZXH4WRF.js";
 
 // src/stdio-server.ts
@@ -151,7 +152,8 @@ var recordingTools = [
   getRecording,
   deleteRecording,
   startSessionRecording,
-  stopSessionRecording
+  stopSessionRecording,
+  getSessionRecordingState
 ];
 var interactionTools = [
   getInteractions,

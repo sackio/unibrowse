@@ -1462,21 +1462,43 @@ export const GetRecordingScreenshotTool = z.object({
 export const StartSessionRecordingTool = z.object({
   name: z.literal("browser_start_session_recording"),
   description: z.literal(
-    "Start a rich session recording on the active browser tab. Captures: full DOM mutations (rrweb), " +
-    "all XHR/fetch network traffic with request/response bodies, and tab video. " +
-    "Survives cross-domain navigation. Returns a sessionId. " +
-    "Use browser_stop_session_recording when done — the review URL will be returned."
+    "Start a rich session recording on the targeted browser tab. Captures: full DOM mutations (rrweb), " +
+    "all XHR/fetch network traffic with request/response bodies, mouse interactions, and tab video. " +
+    "Survives cross-domain navigation — if the recorded tab navigates, the recording follows it. " +
+    "Returns a sessionId. Use browser_stop_session_recording when done — the review URL is returned " +
+    "and a review tab opens automatically (pass openReview:false on stop to suppress). " +
+    "Pin to a specific browser via extensionId in multi-extension mode; use tabTarget to record a " +
+    "non-active tab. Agents can use this to show ben what they did during a multi-step flow."
   ),
-  arguments: z.object({}).merge(MaxTokensSchema),
+  arguments: z.object({}).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const StopSessionRecordingTool = z.object({
   name: z.literal("browser_stop_session_recording"),
   description: z.literal(
     "Stop the active session recording, save all captured data (DOM events, network traffic, video) " +
-    "to the server, and return the review URL. Opens the review page at http://localhost:9010/review/:id."
+    "to the server, and return the review URL. By default a review tab opens automatically; pass " +
+    "openReview:false to suppress (useful for headless agent flows where opening a tab in the sidecar " +
+    "would just be noise). Review URL is always returned in the response regardless."
   ),
-  arguments: z.object({}).merge(MaxTokensSchema),
+  arguments: z.object({
+    openReview: z.boolean().optional().describe(
+      "Whether to auto-open the review page in a new tab when the recording stops (default: true). " +
+      "Pass false for headless / programmatic flows that just want the reviewUrl back without polluting " +
+      "the browser with a new tab."
+    ),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+});
+
+export const GetSessionRecordingStateTool = z.object({
+  name: z.literal("browser_get_session_recording_state"),
+  description: z.literal(
+    "Check whether a session recording is currently in progress on the targeted browser. Returns " +
+    "{ isRecording, sessionId?, startedAt?, primaryTabId?, rrwebEventCount?, networkEntryCount? } so " +
+    "agents can decide whether to start, stop, or extend. Useful at the start of a flow to avoid " +
+    "double-starting, or before stop to know whether a stop call would actually do anything."
+  ),
+  arguments: z.object({}).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 // ==================== CHROME LAUNCHER TOOL ====================

@@ -1767,10 +1767,32 @@ class BackgroundController {
 
     // Session recording handlers (rrweb + network + video)
     this.handlers['browser_start_session_recording'] = async (params) => {
-      return new Promise((resolve) => this.handleStartSessionRecording(resolve));
+      return new Promise((resolve) => this.handleStartSessionRecording(resolve, params || {}));
     };
     this.handlers['browser_stop_session_recording'] = async (params) => {
-      return new Promise((resolve) => this.handleStopSessionRecording(resolve));
+      return new Promise((resolve) => this.handleStopSessionRecording(resolve, params || {}));
+    };
+    this.handlers['browser_get_session_recording_state'] = async (params) => {
+      // Mirror the popup's get_session_recording_state shape so agents can
+      // query "am I recording? on which tab? for how long?" without having
+      // to start/stop or poll storage themselves.
+      if (!this.sessionRecording) {
+        return { isRecording: false };
+      }
+      const r = this.sessionRecording;
+      return {
+        isRecording: true,
+        sessionId: r.sessionId,
+        startedAt: r.startTime,
+        elapsedMs: Date.now() - r.startTime,
+        primaryTabId: r.tabId,
+        recordedTabIds: r.recordedTabIds || [],
+        startUrl: r.startUrl,
+        rrwebEventCount: (r.rrwebEvents || []).length,
+        networkEntryCount: (r.networkEntries || []).length,
+        interactionCount: (r.interactions || []).length,
+        pageCount: (r.pages || []).length,
+      };
     };
 
     // Tab management handlers
@@ -3564,19 +3586,38 @@ class BackgroundController {
    * Start a session recording: rrweb DOM capture + network interceptor + video
    * Survives cross-domain navigation via chrome.storage.session.
    */
-  async handleStartSessionRecording(sendResponse) {
+  async handleStartSessionRecording(sendResponse, params = {}) {
     if (this.sessionRecording) {
       sendResponse({ success: false, error: 'A session recording is already in progress' });
       return;
     }
 
-    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (!activeTab || !activeTab.id) {
-      sendResponse({ success: false, error: 'No active tab found' });
-      return;
+    // When called from the popup with no params, fall back to the legacy
+    // "active tab in last-focused window" behavior. When an agent calls with
+    // tabTarget, target that specific tab — this is how an agent recording
+    // its own sidecar chromium's flow gets the right tab (since the sidecar's
+    // chromium has no OS focus, "active+lastFocusedWindow" picks up nothing
+    // or the wrong tab).
+    let tabId = null;
+    let startUrl = '';
+    const explicitTarget = params.tabTarget;
+    if (explicitTarget !== undefined && explicitTarget !== null && explicitTarget !== '') {
+      const tabInfo = this.tabManager.resolveTab(explicitTarget);
+      if (!tabInfo) {
+        sendResponse({ success: false, error: `Tab ${explicitTarget} not found in attached tabs. Use browser_attach_tab first.` });
+        return;
+      }
+      tabId = tabInfo.tabId;
+      startUrl = tabInfo.url || '';
+    } else {
+      const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (!activeTab || !activeTab.id) {
+        sendResponse({ success: false, error: 'No active tab found. In multi-extension mode or for headless sidecar chromiums, pass tabTarget explicitly (e.g. tabTarget: <tabId> or a labeled tab).' });
+        return;
+      }
+      tabId = activeTab.id;
+      startUrl = activeTab.url || '';
     }
-
-    const tabId = activeTab.id;
     const sessionId = `sr-${Date.now()}`;
     const startTime = Date.now();
 
@@ -3587,7 +3628,7 @@ class BackgroundController {
       recordedTabIds: [], // Tabs that have an active video recording
       videoStartTimes: {}, // tabId → epoch ms when video started
       startTime,
-      startUrl: activeTab.url || '',
+      startUrl,
       rrwebEvents: [],
       networkEntries: [],
       interactions: [],
@@ -3658,11 +3699,17 @@ class BackgroundController {
   /**
    * Stop a session recording: finalize video, upload everything to server, open review.
    */
-  async handleStopSessionRecording(sendResponse) {
+  async handleStopSessionRecording(sendResponse, params = {}) {
     if (!this.sessionRecording) {
       sendResponse({ success: false, error: 'No session recording in progress' });
       return;
     }
+    // Agents driving headless sidecar chromiums often don't want a review tab
+    // auto-opening in their own pool (it's just noise — they get the reviewUrl
+    // back in the response and share it with the user). Default true so popup
+    // / user-initiated stops still get the auto-open. Pass openReview:false
+    // from agent tool calls.
+    const shouldOpenReview = params.openReview !== false;
 
     const recording = this.sessionRecording;
     this.sessionRecording = null;
@@ -3806,10 +3853,12 @@ class BackgroundController {
       // (observed 2026-06-04). Background's chrome.tabs.create is unaffected
       // by popup lifecycle. Wrapped in try/catch since this is best-effort
       // and shouldn't break the upload path if the tab creation API errors.
-      try {
-        await chrome.tabs.create({ url: reviewUrl, active: true });
-      } catch (e) {
-        console.warn('[Background] Failed to auto-open review tab:', e?.message || e);
+      if (shouldOpenReview) {
+        try {
+          await chrome.tabs.create({ url: reviewUrl, active: true });
+        } catch (e) {
+          console.warn('[Background] Failed to auto-open review tab:', e?.message || e);
+        }
       }
     } catch (err) {
       console.error('[Background] Failed to save session recording:', err);

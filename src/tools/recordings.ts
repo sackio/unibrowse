@@ -18,6 +18,7 @@ import {
   DeleteRecordingTool,
   StartSessionRecordingTool,
   StopSessionRecordingTool,
+  GetSessionRecordingStateTool,
   GetRecordingScreenshotTool,
 } from "@/types/tool-schemas";
 import { jsonResponse, errorResponse, imageResponse } from "@/utils/response-helpers";
@@ -324,10 +325,37 @@ export const stopSessionRecording: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      const result = await context.sendSocketMessage("browser_stop_session_recording", params || {});
+      // Allow longer timeout — chunked rrweb/network/video upload for a long
+      // session can take 30+ seconds. Without this override the WS-level 30s
+      // timeout fires while uploads are still in flight, the agent sees a
+      // tool error, but the upload may still complete (background continues
+      // after we've given up).
+      const result = await context.sendSocketMessage("browser_stop_session_recording", params || {}, { timeoutMs: 120000 });
       return jsonResponse(result, max_tokens);
     } catch (error) {
       return errorResponse(`Failed to stop session recording: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+/**
+ * Query whether a session recording is currently in progress on the targeted browser.
+ * Delegates to extension's get_session_recording_state internal handler so agents can
+ * inspect state without having to start/stop or guess.
+ */
+export const getSessionRecordingState: Tool = {
+  schema: {
+    name: GetSessionRecordingStateTool.shape.name.value,
+    description: GetSessionRecordingStateTool.shape.description.value,
+    inputSchema: zodToJsonSchema(GetSessionRecordingStateTool.shape.arguments),
+  },
+  handle: async (context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      const result = await context.sendSocketMessage("browser_get_session_recording_state", params || {});
+      return jsonResponse(result, max_tokens);
+    } catch (error) {
+      return errorResponse(`Failed to get session recording state: ${error.message}`, false, error, max_tokens);
     }
   },
 };
