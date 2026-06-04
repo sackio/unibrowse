@@ -189,9 +189,18 @@ async function launchViaChromiumHost(
   // for headless-mode agents without them having to know about Xvfb.
   const useXvfbForHeadless = !(validatedParams as any).realHeadless;
   const innerHeadless = !!validatedParams.headless && !useXvfbForHeadless;
+  // Default autoAttach behavior: when caller supplied a URL (or array of URLs),
+  // open them via browser_create_tab AFTER the extension registers — this gives
+  // each user URL an auto-attached debugger session that the agent can drive
+  // immediately. The seed URL is the ONLY thing on chrome's command line so
+  // it can run the bootstrap content script + write the server config to
+  // chrome.storage before the user URLs land. Old behavior (everything on
+  // cmd line, no auto-attach) is preserved when autoAttach:false is passed.
+  const autoAttach = (validatedParams as any).autoAttach !== false;
+  const cmdLineUrls = autoAttach ? [seedUrl] : [seedUrl, ...userUrls];
   const reqBody = {
     profileName: validatedParams.profileName,
-    urls: [seedUrl, ...userUrls],
+    urls: cmdLineUrls,
     freshProfile: validatedParams.freshProfile !== false,
     headless: innerHeadless,
     width: validatedParams.width,
@@ -237,22 +246,53 @@ async function launchViaChromiumHost(
     await new Promise((r) => setTimeout(r, 200));
   }
 
+  // Auto-attach: for each user URL, open via browser_create_tab on the
+  // sidecar's extension. That handler creates the tab AND attaches the
+  // debugger AND records the reservation if `agent` is supplied. The result
+  // gives us the attached tabId which the agent can use immediately.
+  const attachedTabIds: number[] = [];
+  if (autoAttach && spawnedExtensionId && userUrls.length > 0) {
+    for (const url of userUrls) {
+      try {
+        const createRes: any = await context.sendSocketMessage(
+          "browser_create_tab",
+          { url, agent: (validatedParams as any).agent },
+          { extensionId: spawnedExtensionId, timeoutMs: 20_000 },
+        );
+        if (createRes?.tabId) attachedTabIds.push(createRes.tabId);
+      } catch (e: any) {
+        console.warn(`[chrome-launcher] auto-attach failed for ${url}: ${e?.message || e}`);
+      }
+    }
+  }
+
   const fresh = validatedParams.freshProfile !== false;
   let message = `✓ Chrome launched via chromium-host sidecar\n`;
   message += `  Profile: ${validatedParams.profileName} ${fresh ? "(fresh - no cookies/history)" : "(persistent)"}\n`;
   message += `  Profile Directory: ${profileDir}\n`;
   message += `  Display: ${display || "(headless)"}\n`;
   message += `  PID (in chromium-host): ${pid}\n`;
-  message += `  URLs: ${reqBody.urls.join(", ")}\n`;
+  message += `  URLs requested: ${userUrls.length > 0 ? userUrls.join(", ") : "(none)"}\n`;
   if (spawnedExtensionId) {
     message += `  Extension ID: ${spawnedExtensionId}\n`;
-    message += `\nPass extensionId=${spawnedExtensionId} on subsequent tool calls to pin them to this chromium.`;
+    if (attachedTabIds.length > 0) {
+      message += `  Attached tabs: ${attachedTabIds.join(", ")}\n`;
+      message += `\nReady to drive — pass extensionId=${spawnedExtensionId} and tabTarget=${attachedTabIds[0]} on subsequent tool calls.`;
+    } else if (autoAttach && userUrls.length > 0) {
+      message += `\nExtension registered but auto-attach failed — call browser_attach_tab({autoOpenUrl, extensionId=${spawnedExtensionId}}) manually.`;
+    } else {
+      message += `\nPass extensionId=${spawnedExtensionId} on subsequent tool calls to pin them to this chromium.`;
+    }
   } else {
-    message += `\n(Extension id not seen within 15s — check browser_list_attached_tabs.)`;
+    message += `\n(Extension id not seen within 30s — check browser_list_attached_tabs.)`;
   }
   return jsonResponse({
-    pid, profileDir, urls: reqBody.urls, display,
+    pid, profileDir,
+    urls: userUrls,
+    display,
     extensionId: spawnedExtensionId,
+    tabId: attachedTabIds[0] ?? null,
+    tabIds: attachedTabIds,
     via: "chromium-host",
     message,
   }, true, max_tokens);
@@ -386,9 +426,29 @@ export const launchIsolatedChrome: Tool = {
       // Default to fresh profile (delete existing data)
       const freshProfile = validatedParams.freshProfile !== false;
 
-      // Delete existing profile if freshProfile is true
+      // Delete existing profile if freshProfile is true. NFS-resilient: when
+      // the chrome that previously owned this profile exited recently, NFS
+      // may have sillyrenamed open files (.nfsXXXX) that can't be unlinked
+      // immediately — rmSync throws EBUSY. Fall back to renaming the whole
+      // profile dir aside (.dead-${ts}) so the fresh launch never blocks on
+      // the previous chrome's lingering file handles. The renamed dir is
+      // left for an external sweep to reap when the kernel finally lets go.
       if (freshProfile && fs.existsSync(profileDir)) {
-        fs.rmSync(profileDir, { recursive: true, force: true });
+        try {
+          fs.rmSync(profileDir, { recursive: true, force: true });
+        } catch (rmErr: any) {
+          if (rmErr?.code === "EBUSY" || rmErr?.code === "ENOTEMPTY") {
+            const aside = `${profileDir}.dead-${Date.now()}`;
+            try {
+              fs.renameSync(profileDir, aside);
+              console.warn(`[chrome-launcher] rmSync EBUSY (NFS sillyrename?); renamed ${profileDir} → ${aside}`);
+            } catch (mvErr: any) {
+              console.error(`[chrome-launcher] could not clear ${profileDir}: rm failed (${rmErr.message}) and rename failed (${mvErr.message}). Launching with stale profile.`);
+            }
+          } else {
+            throw rmErr;
+          }
+        }
       }
 
       if (!fs.existsSync(profileDir)) {

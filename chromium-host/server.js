@@ -95,7 +95,27 @@ const launchChromium = ({
   if (!profileName) throw new Error("profileName is required");
   if (!fs.existsSync(PROFILES_DIR)) fs.mkdirSync(PROFILES_DIR, { recursive: true });
   const profileDir = path.join(PROFILES_DIR, profileName);
-  if (freshProfile && fs.existsSync(profileDir)) fs.rmSync(profileDir, { recursive: true, force: true });
+  // NFS-resilient cleanup — see chrome-launcher.ts for the rationale.
+  // .nfsXXXX sillyrenames from the previous chromium can throw EBUSY on
+  // unlink; fall back to renaming the dir aside so the fresh launch isn't
+  // blocked. External sweep reaps *.dead-* later.
+  if (freshProfile && fs.existsSync(profileDir)) {
+    try {
+      fs.rmSync(profileDir, { recursive: true, force: true });
+    } catch (rmErr) {
+      if (rmErr?.code === "EBUSY" || rmErr?.code === "ENOTEMPTY") {
+        const aside = `${profileDir}.dead-${Date.now()}`;
+        try {
+          fs.renameSync(profileDir, aside);
+          console.warn(`[chromium-host] rmSync EBUSY (NFS sillyrename?); renamed ${profileDir} → ${aside}`);
+        } catch (mvErr) {
+          console.error(`[chromium-host] could not clear ${profileDir}: rm=${rmErr.message} rename=${mvErr.message}. Launching with stale profile.`);
+        }
+      } else {
+        throw rmErr;
+      }
+    }
+  }
   if (!fs.existsSync(profileDir)) fs.mkdirSync(profileDir, { recursive: true });
   if (!freshProfile) selfHealProfile(profileDir);
   writeServerSeed(profileDir, serverHint);

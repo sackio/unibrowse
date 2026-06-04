@@ -1411,6 +1411,19 @@ export const GetRecordingTool = z.object({
     // pagination
     limit: z.number().optional().describe("Max interactions or network entries to return (default: 100)."),
     offset: z.number().optional().describe("Skip first N results for pagination (default: 0)."),
+    // body size controls — finance reported a single 80KB+ response body blowing
+    // past MCP's 25k-token cap even with limit=30. Two knobs:
+    bodyMaxBytes: z.number().optional().describe(
+      "Truncate each request/response body to this many bytes (default: no truncation). " +
+      "When applied, the truncated body has `...[truncated N more bytes]` appended so the " +
+      "consumer knows it's incomplete. Use this to inspect many entries without hitting the " +
+      "MCP response token cap (~25k)."
+    ),
+    excludeBodies: z.boolean().optional().describe(
+      "When true, requestBody and responseBody are dropped entirely from network entries; " +
+      "headers, status, URL, method, and timing are preserved. Use for metadata-only sweeps " +
+      "(find candidate URLs/methods first, then re-fetch with bodyMaxBytes for specific ones)."
+    ),
   }).merge(MaxTokensSchema),
 });
 
@@ -1547,6 +1560,24 @@ export const LaunchIsolatedChromeTool = z.object({
         "Opt into chromium's `--headless=new` flag instead of Xvfb-headful when `headless: true` " +
         "is set and the sidecar is active. Lighter / faster, but anti-bot detectable. Only useful " +
         "for pure scraping where the target doesn't fingerprint headless Chrome."
+      ),
+    autoAttach: z
+      .boolean()
+      .optional()
+      .describe(
+        "After spawn, automatically attach the URL tab(s) to the unibrowse debugger so the agent " +
+        "can immediately drive them with browser_navigate/evaluate/click/etc without a separate " +
+        "browser_attach_tab call. Default true. When true, the response includes `tabId` (first url) " +
+        "and `tabIds` (all urls). When false (or when no url was provided), only `extensionId` is " +
+        "returned and the caller must attach explicitly."
+      ),
+    agent: z
+      .string()
+      .optional()
+      .describe(
+        "Your agent identifier. When supplied, attached tabs are reserved to you so other agents " +
+        "can't drive them without takeover. Forwarded to the implicit browser_create_tab calls " +
+        "that auto-attach the launch URLs."
       ),
     freshProfile: z
       .boolean()

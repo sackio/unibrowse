@@ -236,7 +236,29 @@ export const getRecording: Tool = {
           if (p.networkStatusMax != null) items = items.filter(n => (n.responseStatus ?? 0) <= p.networkStatusMax!);
           const limit = p.limit ?? 100;
           const offset = p.offset ?? 0;
-          result.networkEntries = items.slice(offset, offset + limit);
+          let sliced = items.slice(offset, offset + limit);
+          // Body size controls — finance flagged that a single 80KB+ body
+          // can blow past MCP's 25k-token response cap even with limit set.
+          // excludeBodies wins over bodyMaxBytes when both are passed.
+          if ((p as any).excludeBodies) {
+            sliced = sliced.map((n: any) => {
+              const { requestBody: _rb, responseBody: _rsb, ...rest } = n;
+              return { ...rest, bodyOmittedReason: "excludeBodies" };
+            });
+          } else if (typeof (p as any).bodyMaxBytes === "number") {
+            const cap = Math.max(0, (p as any).bodyMaxBytes as number);
+            const truncate = (s: any) => {
+              if (typeof s !== "string") return s;
+              if (s.length <= cap) return s;
+              return s.slice(0, cap) + `...[truncated ${s.length - cap} more bytes]`;
+            };
+            sliced = sliced.map((n: any) => ({
+              ...n,
+              requestBody: truncate(n.requestBody),
+              responseBody: truncate(n.responseBody),
+            }));
+          }
+          result.networkEntries = sliced;
           result.networkMeta = { total: items.length, limit, offset, returned: result.networkEntries.length };
         }
 
