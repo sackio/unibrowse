@@ -290,14 +290,23 @@
         }
       }
       // Compute overlap area per target (intersection of bbox with element's
-      // boundingClientRect) and rank.
+      // boundingClientRect) and rank. Filter out root containers (html, body)
+      // and any element whose bounding rect covers >80% of the viewport area —
+      // those are layout containers, not what the user is pointing at. They
+      // sweep up the highest overlap-area ranks otherwise and bury the actual
+      // target elements (verified 2026-06-07 by a driver test where <html>
+      // outranked the <h1> the user actually highlighted).
+      const viewportArea = window.innerWidth * window.innerHeight;
       const ranked = targets.map(el => {
         const r = el.getBoundingClientRect();
         const ix = Math.max(0, Math.min(bbox.x + bbox.w, r.right) - Math.max(bbox.x, r.left));
         const iy = Math.max(0, Math.min(bbox.y + bbox.h, r.bottom) - Math.max(bbox.y, r.top));
         const area = ix * iy;
+        const tag = el.tagName.toLowerCase();
+        const elArea = r.width * r.height;
+        const tooLarge = viewportArea > 0 && elArea > 0.8 * viewportArea;
         return {
-          tag: el.tagName.toLowerCase(),
+          tag,
           id: el.id || null,
           classes: el.classList.length ? Array.from(el.classList).slice(0, 6) : null,
           text: (el.textContent || '').trim().slice(0, 200) || null,
@@ -305,8 +314,11 @@
           css: this._cssPath(el),
           rect: { x: r.left, y: r.top, w: r.width, h: r.height },
           overlapArea: Math.round(area),
+          _isRoot: tag === 'html' || tag === 'body',
+          _tooLarge: tooLarge,
         };
-      }).filter(t => t.overlapArea > 0)
+      }).filter(t => t.overlapArea > 0 && !t._isRoot && !t._tooLarge)
+        .map(t => { delete t._isRoot; delete t._tooLarge; return t; })
         .sort((a, b) => b.overlapArea - a.overlapArea)
         .slice(0, 12);
       return ranked;
