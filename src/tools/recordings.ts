@@ -265,6 +265,25 @@ export const getRecording: Tool = {
         result.reviewUrl = `http://localhost:9010/review/${p.id}`;
       }
 
+      // Annotations live in their own collection (recording_annotations) — one
+      // doc per annotation because each carries a base64 PNG. Pull them on demand.
+      if ((p as any).includeAnnotations) {
+        const col = mongodb.getRecordingAnnotationsCollection();
+        const docs = await col
+          .find({ recordingId: p.id }, { projection: { _id: 0, recordingId: 0 } })
+          .sort({ timestamp: 1 })
+          .toArray();
+        let annotations = docs as any[];
+        if ((p as any).annotationStripScreenshots) {
+          annotations = annotations.map(a => {
+            const { screenshotPng: _s1, fullViewportPng: _s2, ...rest } = a;
+            return { ...rest, screenshotPng: null };
+          });
+        }
+        result.annotations = annotations;
+        result.annotationsMeta = { total: annotations.length };
+      }
+
       return jsonResponse(result, max_tokens);
     } catch (error) {
       return errorResponse(`Failed to get recording: ${error.message}`, false, error, max_tokens);

@@ -106,7 +106,7 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-646UPMUR.js";
+} from "./chunk-P3DCADH3.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -609,6 +609,22 @@ async function main() {
         updatedAt: /* @__PURE__ */ new Date()
       });
       res.json({ success: true, chunkIndex, rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, interactionCount: interactions.length });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  app.post("/api/v1/recordings/:id/annotations", requireApiKey, async (req, res) => {
+    try {
+      await ensureMongoConnected();
+      const { id } = req.params;
+      const annotation = req.body;
+      const col = mongodb.getRecordingAnnotationsCollection();
+      await col.updateOne(
+        { recordingId: id, id: annotation.id },
+        { $set: { ...annotation, recordingId: id, updatedAt: /* @__PURE__ */ new Date() } },
+        { upsert: true }
+      );
+      res.json({ success: true, annotationId: annotation.id });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

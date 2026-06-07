@@ -76,7 +76,17 @@ class MongoDB {
     await recordings.createIndex({ title: "text", description: "text" });
 
     const recordingEvents = this.db.collection("recording_events");
-    await recordingEvents.createIndex({ recordingId: 1 }, { unique: true });
+    // Recordings are chunked across multiple docs to bypass Mongo's 16MB-per-doc
+    // limit. Drop a stale unique-on-recordingId index from older deployments,
+    // then create the compound (recordingId, chunkIndex) index.
+    try {
+      const existing = await recordingEvents.indexes();
+      const stale = existing.find(
+        (idx: any) => idx.unique && idx.key && idx.key.recordingId === 1 && Object.keys(idx.key).length === 1
+      );
+      if (stale) await recordingEvents.dropIndex(stale.name);
+    } catch {}
+    await recordingEvents.createIndex({ recordingId: 1, chunkIndex: 1 }, { unique: true });
 
     console.log("[MongoDB] Indexes created successfully");
   }
@@ -109,6 +119,19 @@ class MongoDB {
       throw new Error("MongoDB not connected. Call connect() first.");
     }
     return this.db.collection("recording_events");
+  }
+
+  /**
+   * Get recording_annotations collection — one doc per user-drawn annotation
+   * captured during a session recording. Separate collection because each doc
+   * carries a base64 PNG screenshot (~100-300KB) and we want fast indexed
+   * lookup by recordingId for the review UI / browser_get_recording tool.
+   */
+  public getRecordingAnnotationsCollection(): Collection {
+    if (!this.db) {
+      throw new Error("MongoDB not connected. Call connect() first.");
+    }
+    return this.db.collection("recording_annotations");
   }
 
   /**

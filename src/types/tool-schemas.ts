@@ -1397,6 +1397,18 @@ export const GetRecordingTool = z.object({
     includeInteractions: z.boolean().optional().describe("Include user interaction events (clicks, scrolls, inputs, navigations)."),
     includeNetwork: z.boolean().optional().describe("Include network request/response entries."),
     includeStats: z.boolean().optional().describe("Include summary statistics: counts by interaction type, top URLs, network error rate, time span."),
+    includeAnnotations: z.boolean().optional().describe(
+      "Include user-drawn annotations (pencil / rectangle / lasso) captured during the recording. " +
+      "Each annotation has: id, timestamp, tool, shape, bbox, viewport, domTargets (ranked list of " +
+      "DOM elements under the shape — xpath + css + text), note, pageUrl, pageTitle, and " +
+      "screenshotPng (base64 PNG of the cropped area, often 100-300KB). Agents use this to understand " +
+      "what ben highlighted + what he wants done."
+    ),
+    annotationStripScreenshots: z.boolean().optional().describe(
+      "When includeAnnotations is true, drop the base64 screenshot PNGs from each annotation (keep " +
+      "only metadata + shape + note + domTargets). Use this when you just want the annotation list for " +
+      "navigation and don't need the visuals — saves response token budget."
+    ),
     // time range
     startTime: z.number().optional().describe("Filter events at or after this Unix timestamp (ms)."),
     endTime: z.number().optional().describe("Filter events at or before this Unix timestamp (ms)."),

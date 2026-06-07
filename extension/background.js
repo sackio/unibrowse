@@ -1282,10 +1282,12 @@ class BackgroundController {
             if (session) {
               console.log('[Background] Re-injecting overlay and content script after navigation');
 
-              // Re-inject overlay first
+              // Re-inject overlay first (with annotation tool alongside — both
+              // load into the same isolated world, recording-overlay exposes
+              // window.RecordingOverlay, annotation-tool exposes window.AnnotationTool)
               chrome.scripting.executeScript({
                 target: { tabId: this.state.tabId },
-                files: ['recording-overlay.js']
+                files: ['recording-overlay.js', 'annotation-tool.js']
               }).then(() => {
                 // Restore the overlay with its current state
                 const overlayState = {
@@ -1582,6 +1584,80 @@ class BackgroundController {
             frameId: sender.frameId || 0,
           });
           return false;
+        }
+        if (message.type === 'SR_ANNOTATION_CREATE') {
+          // Async: capture viewport screenshot, crop to bbox, persist into the
+          // active sessionRecording. Reply with {success, annotationId} so
+          // the overlay can flash a success state.
+          (async () => {
+            try {
+              const annotationId = `ann-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+              const p = message.payload || {};
+              const tabId = sender.tab?.id;
+              const windowId = sender.tab?.windowId;
+              let screenshotDataUrl = null;
+              try {
+                screenshotDataUrl = await new Promise((resolve, reject) => {
+                  chrome.tabs.captureVisibleTab(windowId, { format: 'png' }, (dataUrl) => {
+                    const err = chrome.runtime.lastError;
+                    if (err) return reject(err);
+                    resolve(dataUrl);
+                  });
+                });
+              } catch (capErr) {
+                console.warn('[Background] captureVisibleTab failed for annotation:', capErr?.message || capErr);
+              }
+              // Crop to bbox via OffscreenCanvas, preserving viewport DPR.
+              let croppedDataUrl = screenshotDataUrl;
+              if (screenshotDataUrl && p.bbox && p.viewport) {
+                try {
+                  const img = await fetch(screenshotDataUrl).then(r => r.blob()).then(b => createImageBitmap(b));
+                  // captureVisibleTab returns a screenshot at the viewport's
+                  // actual pixel resolution (img.width × img.height). Map our
+                  // CSS-pixel bbox to image pixels.
+                  const sx = img.width / p.viewport.width;
+                  const sy = img.height / p.viewport.height;
+                  const cx = Math.max(0, Math.floor(p.bbox.x * sx));
+                  const cy = Math.max(0, Math.floor(p.bbox.y * sy));
+                  const cw = Math.max(1, Math.floor(p.bbox.w * sx));
+                  const ch = Math.max(1, Math.floor(p.bbox.h * sy));
+                  const canvas = new OffscreenCanvas(cw, ch);
+                  const ctx = canvas.getContext('2d');
+                  ctx.drawImage(img, cx, cy, cw, ch, 0, 0, cw, ch);
+                  const blob = await canvas.convertToBlob({ type: 'image/png' });
+                  croppedDataUrl = await new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result);
+                    reader.readAsDataURL(blob);
+                  });
+                } catch (cropErr) {
+                  console.warn('[Background] Annotation screenshot crop failed:', cropErr?.message || cropErr);
+                }
+              }
+              const annotation = {
+                id: annotationId,
+                timestamp: p.timestamp || Date.now(),
+                tabId,
+                tool: p.tool || 'pencil',
+                shape: p.shape || null,
+                bbox: p.bbox || null,
+                viewport: p.viewport || null,
+                domTargets: p.domTargets || [],
+                note: p.note || '',
+                pageUrl: p.pageUrl || null,
+                pageTitle: p.pageTitle || null,
+                screenshotPng: croppedDataUrl || null,
+                fullViewportPng: screenshotDataUrl || null,
+              };
+              this.sessionRecording.annotations.push(annotation);
+              console.log(`[Background] Annotation ${annotationId} captured (${annotation.tool}, note=${(annotation.note || '').slice(0, 40)})`);
+              sendResponse({ success: true, annotationId });
+            } catch (e) {
+              console.error('[Background] SR_ANNOTATION_CREATE failed:', e);
+              sendResponse({ success: false, error: e?.message || String(e) });
+            }
+          })();
+          return true; // async response
         }
       }
 
@@ -3632,6 +3708,7 @@ class BackgroundController {
       rrwebEvents: [],
       networkEntries: [],
       interactions: [],
+      annotations: [],    // user-drawn shapes + notes + screenshots (SR_ANNOTATION_CREATE flow)
       pages: [],
       videoStarted: false,
     };
@@ -3655,6 +3732,18 @@ class BackgroundController {
       });
     } catch (err) {
       console.warn('[Background] Could not inject session recorder:', err.message);
+    }
+
+    // Inject annotation tooling + the floating session-record overlay (with
+    // "✏️ Annotate" button) into the primary tab only — agents can annotate
+    // on the main flow tab; child iframes don't need the UI.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['annotation-tool.js', 'session-record-overlay.js'],
+      });
+    } catch (err) {
+      console.warn('[Background] Could not inject session-record overlay/annotation:', err.message);
     }
 
     // Start tab capture video for primary tab
@@ -3718,6 +3807,16 @@ class BackgroundController {
     chrome.action.setBadgeText({ text: '' });
     chrome.storage.session.remove('sessionRecording').catch(() => {});
 
+    // Tear down the floating "Recording / ✏️ Annotate" overlay in every
+    // recorded tab so the user doesn't see a stale indicator while the
+    // upload pipeline finishes.
+    for (const tabId of new Set([recording.tabId, ...(recording.recordedTabIds || [])])) {
+      if (tabId == null) continue;
+      try {
+        chrome.tabs.sendMessage(tabId, { type: 'SR_OVERLAY_DESTROY' }).catch(() => {});
+      } catch { /* tab may have closed */ }
+    }
+
     // Close last page entry
     const endTime = Date.now();
     const lastPage = recording.pages[recording.pages.length - 1];
@@ -3754,6 +3853,7 @@ class BackgroundController {
       rrwebEventCount: recording.rrwebEvents.length,
       networkEntryCount: recording.networkEntries.length,
       interactionCount: (recording.interactions || []).length,
+      annotationCount: (recording.annotations || []).length,
       status: 'complete',
       primaryTabId: recording.tabId,
       recordedTabIds: recording.recordedTabIds || [],
@@ -3814,6 +3914,28 @@ class BackgroundController {
       const allRrweb = recording.rrwebEvents || [];
       const allNetwork = recording.networkEntries || [];
       const allInteractions = recording.interactions || [];
+      const allAnnotations = recording.annotations || [];
+      // Annotations carry base64 PNG screenshots (often 100-300KB each) so
+      // they can't ride along with the other event chunks without blowing
+      // past the 12MB chunk cap unpredictably. Upload them on their own
+      // endpoint, one per request, so each one stays under the Mongo doc
+      // limit even with high-DPI viewport screenshots.
+      for (let i = 0; i < allAnnotations.length; i++) {
+        const a = allAnnotations[i];
+        try {
+          const resp = await fetch(`${SERVER_BASE}/api/v1/recordings/${recordingId}/annotations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders },
+            body: JSON.stringify(a),
+          });
+          if (!resp.ok) {
+            const text = await resp.text().catch(() => '');
+            throw new Error(`HTTP ${resp.status}: ${text.slice(0, 200)}`);
+          }
+        } catch (err) {
+          console.error(`[Background] Annotation ${i + 1}/${allAnnotations.length} upload failed:`, err.message);
+        }
+      }
       if (allRrweb.length > 0 || allNetwork.length > 0 || allInteractions.length > 0) {
         const chunks = chunkEventsBySize(allRrweb, allNetwork, allInteractions, CHUNK_BYTES);
         console.log(`[Background] Uploading session events: ${chunks.length} chunks, ${allRrweb.length} rrweb / ${allNetwork.length} network / ${allInteractions.length} interactions`);

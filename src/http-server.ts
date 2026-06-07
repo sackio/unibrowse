@@ -392,6 +392,29 @@ async function main() {
     }
   });
 
+  // POST /api/v1/recordings/:id/annotations — append a single user annotation.
+  // Annotations carry base64 PNG screenshots (~100-300KB each) so they're
+  // uploaded one-per-request rather than chunked with events. Each becomes
+  // a separate doc in the recordingAnnotations collection.
+  app.post("/api/v1/recordings/:id/annotations", requireApiKey, async (req: any, res: any) => {
+    try {
+      await ensureMongoConnected();
+      const { id } = req.params;
+      const annotation = req.body as any;
+      const col = mongodb.getRecordingAnnotationsCollection();
+      // Idempotency: if the same annotationId is re-uploaded (resume / retry),
+      // replace rather than insert duplicate.
+      await col.updateOne(
+        { recordingId: id, id: annotation.id },
+        { $set: { ...annotation, recordingId: id, updatedAt: new Date() } },
+        { upsert: true },
+      );
+      res.json({ success: true, annotationId: annotation.id });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // GET /api/v1/recordings — list recordings
   app.get("/api/v1/recordings", async (req: any, res: any) => {
     try {
