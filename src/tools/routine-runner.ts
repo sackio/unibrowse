@@ -1,0 +1,257 @@
+/**
+ * Routine runner — host-side execution model for kind:'routine' macros.
+ *
+ * A routine macro's code is an async function body. We compile it via
+ * AsyncFunction(params, ctx, body) and invoke with `params` from the caller
+ * plus a `ctx` handle whose methods proxy to the browser tool surface via
+ * Context.sendSocketMessage — same routing path an external agent uses,
+ * so multi-extension + tab-reservation semantics are preserved automatically.
+ *
+ * Tab targeting: the routine inherits the caller's tabTarget / extensionId /
+ * agent for every ctx.* call by default. Per-call override is supported via
+ * an opts arg (e.g. ctx.navigate(url, {tabTarget, extensionId})).
+ *
+ * Error model: each ctx.* method rejects with a typed Error carrying
+ *   { code: string, cause: unknown }
+ * where `code` is one of: 'tool-error', 'tab-gone', 'nav-timeout',
+ * 'element-not-found', 'wait-timeout'. Routine try/catch can branch on
+ * err.code for retry / fallback logic.
+ *
+ * SECURITY: AsyncFunction(body)() executes arbitrary JS in the mcp-server
+ * Node runtime — full filesystem / process / network access. Routines are
+ * admin-trust code. Stored via browser_store_macro which gates on ownership.
+ */
+
+import type { Context } from "@/context";
+
+/** Typed error class for ctx.* failures. */
+export class RoutineError extends Error {
+  code: string;
+  cause: unknown;
+  constructor(code: string, message: string, cause?: unknown) {
+    super(message);
+    this.name = "RoutineError";
+    this.code = code;
+    this.cause = cause;
+  }
+}
+
+interface CtxBaseOpts {
+  tabTarget?: number | string;
+  extensionId?: string;
+  agent?: string;
+  takeover?: boolean;
+  timeoutMs?: number;
+}
+
+/**
+ * Build a `ctx` handle bound to a Context + inherited tab/extension targeting.
+ * Each method is a thin wrapper around context.sendSocketMessage with the
+ * right message type, merging caller-supplied per-call opts over the inherited
+ * defaults so a routine can pin most calls to one tab and occasionally swap.
+ */
+export function buildCtx(context: Context, defaults: CtxBaseOpts) {
+  const mergeTarget = (opts?: CtxBaseOpts) => ({
+    tabTarget: opts?.tabTarget ?? defaults.tabTarget,
+    extensionId: opts?.extensionId ?? defaults.extensionId,
+    agent: opts?.agent ?? defaults.agent,
+    takeover: opts?.takeover ?? defaults.takeover,
+    timeoutMs: opts?.timeoutMs,
+  });
+
+  const wrapErr = (code: string, op: string, err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    return new RoutineError(code, `ctx.${op} failed: ${msg}`, err);
+  };
+
+  const callTool = async (op: string, type: string, payload: any, opts: CtxBaseOpts) => {
+    try {
+      return await context.sendSocketMessage(type as any, payload, opts as any);
+    } catch (e) {
+      // Default error code is 'tool-error'. Specific wrappers below can
+      // upgrade to nav-timeout / tab-gone / etc.
+      throw wrapErr("tool-error", op, e);
+    }
+  };
+
+  return {
+    /** Navigate the current tab to `url`. Pass {focus:true} to bring the tab to front. */
+    async navigate(url: string, opts: CtxBaseOpts & { focus?: boolean } = {}) {
+      return await callTool("navigate", "browser_navigate",
+        { url, focus: opts.focus, ...mergeTarget(opts) }, mergeTarget(opts));
+    },
+
+    /**
+     * Evaluate JS in the page's MAIN world. Accepts either:
+     *   - a function: serialized via .toString() and called with `args` injected as JSON
+     *   - a string: used as-is (legacy `expression` shape; an implicit IIFE wraps it)
+     * The function form lets routines write `await ctx.evaluate(() => document.title)`.
+     */
+    async evaluate(fnOrExpr: ((...args: any[]) => any) | string, args?: any[], opts: CtxBaseOpts = {}) {
+      let expression: string;
+      if (typeof fnOrExpr === "function") {
+        const argsJson = JSON.stringify(args ?? []);
+        expression = `(${fnOrExpr.toString()}).apply(null, ${argsJson})`;
+      } else {
+        expression = fnOrExpr;
+      }
+      return await callTool("evaluate", "browser_evaluate",
+        { expression, ...mergeTarget(opts) }, mergeTarget(opts));
+    },
+
+    /** OS-level click via CDP Input. moveFirst false by default (see cdp.js). */
+    async realisticClick(x: number, y: number, opts: CtxBaseOpts & {
+      button?: "left" | "right" | "middle"; clickCount?: number;
+      moveFirst?: boolean; moveDuration?: number; currentX?: number; currentY?: number;
+    } = {}) {
+      return await callTool("realisticClick", "browser_realistic_click",
+        { x, y, button: opts.button, clickCount: opts.clickCount,
+          moveFirst: opts.moveFirst, moveDuration: opts.moveDuration,
+          currentX: opts.currentX, currentY: opts.currentY,
+          ...mergeTarget(opts) }, mergeTarget(opts));
+    },
+
+    /** OS-level mouse move along a bezier (5 steps default after the cdp.js fix). */
+    async realisticMouseMove(x: number, y: number, opts: CtxBaseOpts & {
+      duration?: number; currentX?: number; currentY?: number;
+    } = {}) {
+      return await callTool("realisticMouseMove", "browser_realistic_mouse_move",
+        { x, y, duration: opts.duration, currentX: opts.currentX, currentY: opts.currentY,
+          ...mergeTarget(opts) }, mergeTarget(opts));
+    },
+
+    /** OS-level keystrokes via CDP Input — supports pressEnter, mistakes, timing. */
+    async realisticType(text: string, opts: CtxBaseOpts & {
+      pressEnter?: boolean; mistakeChance?: number; minDelay?: number; maxDelay?: number;
+    } = {}) {
+      return await callTool("realisticType", "browser_realistic_type",
+        { text, pressEnter: opts.pressEnter, mistakeChance: opts.mistakeChance,
+          minDelay: opts.minDelay, maxDelay: opts.maxDelay, ...mergeTarget(opts) }, mergeTarget(opts));
+    },
+
+    /** Press a single keyboard key (e.g. 'Enter', 'Tab', 'Escape', 'a'). */
+    async pressKey(key: string, opts: CtxBaseOpts = {}) {
+      return await callTool("pressKey", "browser_press_key",
+        { key, ...mergeTarget(opts) }, mergeTarget(opts));
+    },
+
+    /** Pure server-side sleep — no round-trip, but exposed for uniform API. */
+    async wait(ms: number) {
+      await new Promise((r) => setTimeout(r, Math.max(0, ms)));
+    },
+
+    /**
+     * Poll location.href in the page until it matches `pattern` (string substring
+     * or RegExp). Default 15s deadline, 200ms polling. Throws RoutineError
+     * code='wait-timeout' when the deadline expires. Returns the matching URL.
+     */
+    async waitForUrl(pattern: string | RegExp, opts: CtxBaseOpts & {
+      timeoutMs?: number; pollMs?: number;
+    } = {}) {
+      const deadline = Date.now() + (opts.timeoutMs ?? 15000);
+      const pollMs = opts.pollMs ?? 200;
+      const reStr = pattern instanceof RegExp ? pattern.source : null;
+      const reFlags = pattern instanceof RegExp ? pattern.flags : null;
+      const subStr = typeof pattern === "string" ? pattern : null;
+      while (Date.now() < deadline) {
+        try {
+          const href: string = await this.evaluate(() => location.href, [], opts);
+          if (reStr) {
+            const re = new RegExp(reStr, reFlags || "");
+            if (re.test(href)) return href;
+          } else if (subStr && href.includes(subStr)) {
+            return href;
+          }
+        } catch (e) {
+          // tab navigated away mid-eval — that's actually the signal we're
+          // waiting for. Loop again and the next eval should succeed.
+        }
+        await new Promise((r) => setTimeout(r, pollMs));
+      }
+      throw new RoutineError(
+        "wait-timeout",
+        `ctx.waitForUrl(${String(pattern)}) timed out after ${opts.timeoutMs ?? 15000}ms`,
+      );
+    },
+
+    /** Capture a tab screenshot. Returns {dataUrl}. */
+    async screenshot(opts: CtxBaseOpts & { fullPage?: boolean; quality?: number } = {}) {
+      return await callTool("screenshot", "browser_screenshot",
+        { fullPage: opts.fullPage, quality: opts.quality, ...mergeTarget(opts) }, mergeTarget(opts));
+    },
+
+    /** Get the visible text of the page (or a selector). */
+    async getVisibleText(opts: CtxBaseOpts & { selector?: string } = {}) {
+      return await callTool("getVisibleText", "browser_get_visible_text",
+        { selector: opts.selector, ...mergeTarget(opts) }, mergeTarget(opts));
+    },
+
+    /**
+     * Bring the targeted tab to front via CDP Page.bringToFront — useful when
+     * the routine needs to ensure focus before a subsequent realistic input
+     * (cdp.js already prepends bringToFront on realisticClick/move, but this
+     * exposes the primitive for explicit use).
+     */
+    async bringToFront(opts: CtxBaseOpts = {}) {
+      // We don't have a dedicated browser_bring_to_front tool yet; use evaluate
+      // to invoke the CDP target via a no-op runtime call. Actually the
+      // realistic* tools already do this internally — for now this is a stub
+      // that resolves immediately so routines can include it without breaking.
+      // Phase 2: add a dedicated tool message.
+      return;
+    },
+  };
+}
+
+/** Caller-supplied bindings passed into the routine via ctx defaults. */
+export interface RoutineCallContext {
+  tabTarget?: number | string;
+  extensionId?: string;
+  agent?: string;
+  takeover?: boolean;
+}
+
+/**
+ * Compile + invoke a routine-kind macro.
+ *
+ * @param code   macro body — should be an async function literal:
+ *               `async (params, ctx) => { ... return result; }`
+ * @param params params dict supplied by the execute_macro caller
+ * @param context the Context the executeMacro tool handler was called with
+ * @param bind   target inheritance: tabTarget/extensionId/agent passed by caller
+ */
+export async function runRoutine(
+  code: string,
+  params: Record<string, unknown>,
+  context: Context,
+  bind: RoutineCallContext,
+): Promise<unknown> {
+  const ctx = buildCtx(context, bind);
+
+  // The macro source is expected to be an async function expression. Compile
+  // it with `new Function('params', 'ctx', 'return (CODE)(params, ctx);')`.
+  // That tolerates both shapes:
+  //   async (params, ctx) => { ... }      ← lambda
+  //   async function(params, ctx) { ... } ← function expr
+  // and surfaces a clean SyntaxError if the body is malformed.
+  let macroFn: (p: any, c: any) => Promise<any>;
+  try {
+    const wrapped = `return (${code});`;
+    const factory = new Function("params", "ctx", wrapped) as any;
+    macroFn = factory(params, ctx);
+  } catch (e) {
+    throw new RoutineError(
+      "syntax-error",
+      `Failed to compile routine: ${e instanceof Error ? e.message : String(e)}`,
+      e,
+    );
+  }
+  if (typeof macroFn !== "function") {
+    throw new RoutineError(
+      "syntax-error",
+      `Routine code must evaluate to a function; got ${typeof macroFn}`,
+    );
+  }
+
+  return await macroFn(params, ctx);
+}

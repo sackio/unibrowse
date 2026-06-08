@@ -11,6 +11,7 @@ import {
 } from "@/types/tool-schemas";
 import { textResponse, jsonResponse, errorResponse } from "@/utils/response-helpers";
 import { mongodb } from "@/utils/mongodb";
+import { runRoutine } from "./routine-runner";
 
 import { Tool } from "./tool";
 
@@ -48,6 +49,7 @@ export const storeMacro: Tool = {
           description: validatedParams.description,
           parameters: validatedParams.parameters,
           code: validatedParams.code,
+          kind: (validatedParams as any).kind || existing.kind || "page",
           returnType: validatedParams.returnType,
           updatedAt: now,
           reliability: validatedParams.reliability || existing.reliability,
@@ -89,6 +91,7 @@ export const storeMacro: Tool = {
         description: validatedParams.description,
         parameters: validatedParams.parameters,
         code: validatedParams.code,
+        kind: (validatedParams as any).kind || "page",
         returnType: validatedParams.returnType,
         version: "1.0.0",
         createdAt: now,
@@ -246,8 +249,6 @@ export const executeMacro: Tool = {
         await mongodb.connect();
       }
 
-      await context.ensureAttachedFromParams(params);
-
       const validatedParams = ExecuteMacroTool.shape.arguments.parse(params);
       const macros = mongodb.getMacrosCollection();
 
@@ -257,6 +258,72 @@ export const executeMacro: Tool = {
       if (!macro) {
         return errorResponse(`Macro with ID "${validatedParams.id}" not found`, true, undefined, max_tokens);
       }
+
+      // ── Routine-kind macros: host-side execution with ctx tool handle. ──
+      // Skip the page-eval path entirely. routine-runner compiles the macro
+      // source as an async function, builds a `ctx` bound to this Context +
+      // the caller's tab/extension targeting, and invokes it. The macro can
+      // sequence ctx.navigate / ctx.evaluate / ctx.realisticClick / etc.
+      // inline with normal async control flow. Existing page-kind macros
+      // (no `kind` field or kind:'page') still go through the legacy IIFE
+      // eval below for back-compat.
+      if ((macro as any).kind === "routine") {
+        try {
+          const result = await runRoutine(
+            macro.code as string,
+            (validatedParams.params || {}) as Record<string, unknown>,
+            context,
+            {
+              tabTarget: validatedParams.tabTarget,
+              extensionId: validatedParams.extensionId,
+              agent: (validatedParams as any).agent,
+              takeover: (validatedParams as any).takeover,
+            },
+          );
+          // Bump usage / success stats — mirror the page-kind path below.
+          await macros.updateOne(
+            { id: validatedParams.id },
+            {
+              $set: {
+                usageCount: (macro.usageCount || 0) + 1,
+                lastVerified: new Date(),
+                successRate: macro.usageCount > 0
+                  ? (macro.successRate * macro.usageCount + 1) / (macro.usageCount + 1)
+                  : 1.0,
+              },
+            },
+          );
+          return jsonResponse({
+            success: true,
+            macro: { id: macro.id, name: macro.name, site: macro.site, kind: "routine" },
+            result,
+          });
+        } catch (e: any) {
+          await macros.updateOne(
+            { id: validatedParams.id },
+            {
+              $set: {
+                usageCount: (macro.usageCount || 0) + 1,
+                lastVerified: new Date(),
+                successRate: macro.usageCount > 0
+                  ? (macro.successRate * macro.usageCount) / (macro.usageCount + 1)
+                  : 0.0,
+              },
+            },
+          );
+          // Surface typed routine errors with full discriminator so the caller
+          // (or another routine via ctx.runMacro later) can branch on err.code.
+          return errorResponse(
+            `Routine execution failed (${e?.code || "unknown"}): ${e?.message || String(e)}`,
+            false,
+            { code: e?.code, cause: e?.cause, stack: e?.stack },
+            max_tokens,
+          );
+        }
+      }
+
+      // ── Page-kind (legacy) execution path ─────────────────────────────────
+      await context.ensureAttachedFromParams(params);
 
       // Wrap the macro code in an async IIFE and pass params
       // Supports both function expressions (async (params) => {...}) and
@@ -394,6 +461,10 @@ export const updateMacro: Tool = {
 
       if (validatedParams.tags !== undefined) {
         updateDoc.tags = validatedParams.tags;
+      }
+
+      if ((validatedParams as any).kind !== undefined) {
+        updateDoc.kind = (validatedParams as any).kind;
       }
 
       // Update macro

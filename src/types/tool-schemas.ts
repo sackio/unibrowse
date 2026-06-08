@@ -1061,7 +1061,18 @@ export const DisableExtensionTool = z.object({
 // Macro Management Tools
 export const StoreMacroTool = z.object({
   name: z.literal("browser_store_macro"),
-  description: z.literal("Store a new executable JavaScript macro for site-specific automation. Macros are reusable functions that encapsulate common workflows like searching, extracting data, or interacting with specific sites."),
+  description: z.literal(
+    "Store a new executable JavaScript macro for site-specific automation. " +
+    "Macros are reusable routines that encapsulate common workflows. Two kinds: " +
+    "`page` macros (default) run in the page's MAIN-world context via Runtime.evaluate — " +
+    "they can do DOM work but can't trigger real OS input or call other browser_* tools. " +
+    "`routine` macros run host-side in the mcp-server Node runtime with a `ctx` handle " +
+    "that exposes the browser tool surface as awaitable calls (ctx.navigate, ctx.evaluate, " +
+    "ctx.realisticClick, ctx.waitForUrl, ...). Routines can sequence real CDP input + " +
+    "navigation + page-JS into a single reusable flow. SECURITY NOTE: routine macros " +
+    "execute with full mcp-server process privileges (filesystem, network, env). Treat " +
+    "routine-kind authoring as admin-equivalent — only store routines you'd run as the server."
+  ),
   arguments: z.object({
     site: z.string().describe("Site domain (e.g., 'amazon.com') or '*' for universal macros"),
     category: z.string().describe("Macro category: 'search', 'extraction', 'navigation', 'interaction', 'form', 'util'"),
@@ -1073,7 +1084,15 @@ export const StoreMacroTool = z.object({
       required: z.boolean().describe("Whether this parameter is required"),
       default: z.any().optional().describe("Default value if not provided"),
     })).describe("Macro parameters schema"),
-    code: z.string().describe("JavaScript function code: (params) => { /* your code */ return result; }"),
+    code: z.string().describe(
+      "JavaScript function code. Page-kind: `(params) => { /* page-JS, DOM only */ return result; }`. " +
+      "Routine-kind: `async (params, ctx) => { /* sequence ctx.* tool calls + JS */ return result; }`."
+    ),
+    kind: z.enum(["page", "routine"]).optional().describe(
+      "Execution model. 'page' (default) = legacy in-page eval, DOM-only, no real input. " +
+      "'routine' = host-side runner with ctx tool handle (navigate/evaluate/realisticClick/" +
+      "waitForUrl/etc.) composable inside the macro. Routines are admin-trust code."
+    ),
     returnType: z.string().describe("Description of what the macro returns"),
     reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Reliability rating (default: untested)"),
     tags: z.array(z.string()).optional().describe("Tags for filtering and search"),
@@ -1124,6 +1143,9 @@ export const UpdateMacroTool = z.object({
       default: z.any().optional(),
     })).optional().describe("Updated parameters schema"),
     code: z.string().optional().describe("Updated JavaScript code"),
+    kind: z.enum(["page", "routine"]).optional().describe(
+      "Promote/demote between execution kinds (see browser_store_macro for semantics). Omit to leave unchanged."
+    ),
     returnType: z.string().optional().describe("Updated return type description"),
     reliability: z.enum(["high", "medium", "low", "untested"]).optional().describe("Updated reliability rating"),
     tags: z.array(z.string()).optional().describe("Updated tags"),
