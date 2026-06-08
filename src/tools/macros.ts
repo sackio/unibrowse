@@ -323,6 +323,32 @@ export const executeMacro: Tool = {
       }
 
       // ── Page-kind (legacy) execution path ─────────────────────────────────
+      // Footgun guard: detect routine-signature macros that were silently
+      // stored as kind:'page' because the storing client's cached
+      // browser_store_macro schema didn't expose the `kind` field. Without
+      // this check, the page-eval IIFE invokes macroFunction(params) with
+      // ctx undefined → cryptic 'Cannot read properties of undefined' the
+      // first time the routine touches ctx.evaluate. agents hit this at
+      // 14:18:45 EDT 2026-06-08; surfacing a clear error here saves the
+      // next author the same debugging trip.
+      const looksLikeRoutine = /^\s*(?:async\s+)?(?:function\s*\(\s*\w+\s*,\s*\w+\s*\)|\(\s*\w+\s*,\s*\w+\s*\)\s*=>)/.test(
+        macro.code || ""
+      );
+      if (looksLikeRoutine) {
+        return errorResponse(
+          `Macro "${macro.name}" (id ${macro.id}) has a two-argument signature ` +
+          `(params, ctx) but is stored as kind:'${macro.kind || 'page'}'. ` +
+          `The page-eval path invokes the macro with one argument only, so ctx will be undefined ` +
+          `and any ctx.* call will throw "Cannot read properties of undefined". ` +
+          `Either: (a) update the macro to kind:'routine' via browser_update_macro({id, kind: 'routine'}), ` +
+          `OR (b) remove the ctx parameter from the macro signature and use only DOM-side JS. ` +
+          `If browser_update_macro's schema doesn't show a 'kind' field in your MCP client, your ` +
+          `client cached tools/list before the field was added — respawn your session to refresh ` +
+          `(or pass kind:'routine' as an out-of-schema arg; the server accepts it).`,
+          true, undefined, max_tokens,
+        );
+      }
+
       await context.ensureAttachedFromParams(params);
 
       // Wrap the macro code in an async IIFE and pass params
