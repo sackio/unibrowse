@@ -106,14 +106,21 @@
           chrome.runtime.sendMessage(
             { type: 'SR_ANNOTATION_CREATE', payload },
             (resp) => {
-              this.activeAnnotation?.finish();
-              this.activeAnnotation = null;
               if (resp?.success) {
                 this.annotationCount++;
                 this._updateCount();
                 this._setBadge('saved ✓');
                 setTimeout(() => this._setBadge(''), 1200);
+                // Keep the palette open for chained annotations — just clear
+                // the canvas + note so the user can draw the next shape
+                // without re-clicking "Annotate". Done button on the palette
+                // is the explicit "close annotation mode" affordance.
+                this.activeAnnotation?.resetForNext();
+                this.activeAnnotation?.incrementSavedCount(this.annotationCount);
               } else {
+                // On error, tear down — they probably want a fresh start.
+                this.activeAnnotation?.finish();
+                this.activeAnnotation = null;
                 this._setBadge(`fail: ${resp?.error || 'no response'}`);
                 setTimeout(() => this._setBadge(''), 3500);
               }
@@ -123,7 +130,7 @@
         onCancel: () => {
           this.activeAnnotation?.finish();
           this.activeAnnotation = null;
-          this._setBadge('cancelled');
+          this._setBadge('done');
           setTimeout(() => this._setBadge(''), 1200);
         },
       });

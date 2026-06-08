@@ -1867,6 +1867,7 @@ class BackgroundController {
         rrwebEventCount: (r.rrwebEvents || []).length,
         networkEntryCount: (r.networkEntries || []).length,
         interactionCount: (r.interactions || []).length,
+        annotationCount: (r.annotations || []).length,
         pageCount: (r.pages || []).length,
       };
     };

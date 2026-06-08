@@ -78,6 +78,7 @@
       this.palette.innerHTML = `
         <div style="font-weight:600;display:flex;align-items:center;gap:8px;">
           <span>✏️</span><span>Annotate</span>
+          <span data-role="saved-count" style="margin-left:auto;font-size:11px;opacity:0.75;font-weight:500;"></span>
         </div>
         <div data-row="tools" style="display:flex;gap:4px;">
           <button data-tool="pencil" style="${btnCss(true)}">✏️ Pencil</button>
@@ -87,11 +88,11 @@
         <textarea data-field="note" placeholder="Add a note (what should the agent do?)..." rows="3" style="${textareaCss()}"></textarea>
         <div style="display:flex;gap:6px;">
           <button data-act="clear" style="${secondaryBtnCss()}">Clear drawing</button>
-          <button data-act="cancel" style="${secondaryBtnCss()}">Cancel</button>
-          <button data-act="save" style="${primaryBtnCss()}">Save annotation</button>
+          <button data-act="done"  style="${secondaryBtnCss()}">Done</button>
+          <button data-act="save"  style="${primaryBtnCss()}">Save + next</button>
         </div>
         <div data-status="" style="font-size:11px;opacity:0.7;line-height:1.3;">
-          Draw on the page. Save adds it to the active recording.
+          Draw on the page. Save adds it to the recording and clears for the next one. Done closes the palette.
         </div>
       `;
       document.documentElement.appendChild(this.palette);
@@ -116,7 +117,7 @@
         this.shape = null;
         this._setStatus('Cleared. Draw again.');
       });
-      this.palette.querySelector('button[data-act="cancel"]').addEventListener('click', () => {
+      this.palette.querySelector('button[data-act="done"]').addEventListener('click', () => {
         this._teardown();
         this.onCancel();
       });
@@ -396,6 +397,28 @@
       };
       this._setStatus('Saving + capturing screenshot…');
       this.onSave(payload);
+    }
+
+    /**
+     * Reset for another annotation without tearing down — clears the canvas
+     * and the note input, keeps the palette open so the user can immediately
+     * draw the next shape. Called externally by the caller (SessionRecordOverlay)
+     * after the server confirms a successful save so the user can chain
+     * multiple annotations in one session without re-clicking "Annotate".
+     */
+    resetForNext() {
+      this._clearCanvas();
+      this.shape = null;
+      this.drawing = false;
+      this.note = '';
+      const ta = this.palette?.querySelector('textarea[data-field="note"]');
+      if (ta) ta.value = '';
+    }
+
+    /** Bump the saved-count indicator visible in the palette header. */
+    incrementSavedCount(n) {
+      const el = this.palette?.querySelector('[data-role="saved-count"]');
+      if (el) el.textContent = `${n} saved`;
     }
 
     _teardown() {

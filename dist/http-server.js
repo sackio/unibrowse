@@ -613,6 +613,17 @@ async function main() {
       res.status(500).json({ error: err.message });
     }
   });
+  app.get("/api/v1/recordings/:id/annotations", async (req, res) => {
+    try {
+      await ensureMongoConnected();
+      const { id } = req.params;
+      const col = mongodb.getRecordingAnnotationsCollection();
+      const docs = await col.find({ recordingId: id }, { projection: { _id: 0, recordingId: 0 } }).sort({ timestamp: 1 }).toArray();
+      res.json({ annotations: docs });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
   app.post("/api/v1/recordings/:id/annotations", requireApiKey, async (req, res) => {
     try {
       await ensureMongoConnected();

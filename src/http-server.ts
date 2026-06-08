@@ -392,6 +392,24 @@ async function main() {
     }
   });
 
+  // GET /api/v1/recordings/:id/annotations — fetch all user-drawn annotations
+  // for a recording, sorted by timestamp. Used by the review viewer to render
+  // them on the timeline + side panel. Read-only.
+  app.get("/api/v1/recordings/:id/annotations", async (req: any, res: any) => {
+    try {
+      await ensureMongoConnected();
+      const { id } = req.params;
+      const col = mongodb.getRecordingAnnotationsCollection();
+      const docs = await col
+        .find({ recordingId: id }, { projection: { _id: 0, recordingId: 0 } })
+        .sort({ timestamp: 1 })
+        .toArray();
+      res.json({ annotations: docs });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // POST /api/v1/recordings/:id/annotations — append a single user annotation.
   // Annotations carry base64 PNG screenshots (~100-300KB each) so they're
   // uploaded one-per-request rather than chunked with events. Each becomes
