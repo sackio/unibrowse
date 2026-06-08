@@ -40,6 +40,12 @@ export interface SocketMessageMap {
   browser_wait: { time: number };
   browser_press_key: { key: string; tabTarget?: number | string };
 
+  // Navigation observer — routine ctx.observeNavigations() backing primitives.
+  // Subscription owns a regex + tabTarget; matches buffer onCommitted events.
+  browser_observe_navigations_start: { pattern: string; flags?: string; tabTarget?: number | string };
+  browser_observe_navigations_first: { subscriptionId: string; timeoutMs?: number };
+  browser_observe_navigations_dispose: { subscriptionId: string };
+
   // Information tools
   browser_get_console_logs: Record<string, never>;
   browser_screenshot: { tabTarget?: number | string };

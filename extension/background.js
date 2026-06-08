@@ -1822,6 +1822,28 @@ class BackgroundController {
     this.handlers['browser_go_forward'] = this.handleGoForward.bind(this);
     this.handlers['browser_wait'] = this.handleWait.bind(this);
 
+    // Navigation observer — buffer per-tab webNavigation.onCommitted events
+    // matching a regex pattern. Used by routine macros via ctx.observeNavigations
+    // for transient-redirect capture (e.g. OAuth callback URLs that bounce
+    // through faster than a polling waitForUrl can catch).
+    this.navObservers = new Map(); // subId -> {regex, tabId, matches:[], pendingResolvers:[]}
+    this._navObserverListener = (details) => {
+      if (details.frameId !== 0) return; // top frame only
+      for (const [subId, sub] of this.navObservers) {
+        if (sub.tabId != null && sub.tabId !== details.tabId) continue;
+        if (!sub.regex.test(details.url)) continue;
+        const match = { url: details.url, timestamp: Date.now(), transitionType: details.transitionType };
+        sub.matches.push(match);
+        // Wake any waiter currently in `first()`.
+        const resolvers = sub.pendingResolvers.splice(0);
+        for (const r of resolvers) r(match);
+      }
+    };
+    chrome.webNavigation.onCommitted.addListener(this._navObserverListener);
+    this.handlers['browser_observe_navigations_start'] = this.handleObserveNavStart.bind(this);
+    this.handlers['browser_observe_navigations_first'] = this.handleObserveNavFirst.bind(this);
+    this.handlers['browser_observe_navigations_dispose'] = this.handleObserveNavDispose.bind(this);
+
     // Interaction handlers
     this.handlers['browser_click'] = this.handleClick.bind(this);
     this.handlers['browser_type'] = this.handleType.bind(this);
@@ -4047,6 +4069,74 @@ class BackgroundController {
   async handleWait({ time }) {
     await new Promise(resolve => setTimeout(resolve, time * 1000));
     return { success: true, time };
+  }
+
+  /**
+   * Start a navigation observer scoped to a tab + regex pattern. Returns a
+   * subscriptionId the caller uses for subsequent first/dispose calls. The
+   * observer buffers webNavigation.onCommitted events whose URL matches the
+   * pattern from arm-time onward, so the caller can ARM BEFORE a click that
+   * triggers a transient redirect and reliably retrieve the matching URL
+   * even if the page redirected onward in <50ms. Resolves the polling race
+   * that bit ctx.waitForUrl on re-consent OAuth callbacks.
+   */
+  async handleObserveNavStart({ pattern, flags, tabTarget }) {
+    if (!pattern) throw new Error('pattern is required');
+    // Resolve tabTarget to a concrete tabId. tabTarget may be a label
+    // (string) or a numeric id; the existing TabManager.resolveTab handles
+    // both. Null tabTarget = observe across all tabs (rare; usually scoped).
+    let tabId = null;
+    if (tabTarget != null && tabTarget !== '') {
+      const info = this.tabManager.resolveTab(tabTarget);
+      if (!info) throw new Error(`Tab ${tabTarget} not found in attached tabs`);
+      tabId = info.tabId;
+    }
+    let regex;
+    try { regex = new RegExp(pattern, flags || ''); }
+    catch (e) { throw new Error(`Invalid pattern regex: ${e.message}`); }
+    const subId = `nav-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    this.navObservers.set(subId, {
+      regex, tabId,
+      matches: [],
+      pendingResolvers: [],
+      createdAt: Date.now(),
+    });
+    return { subscriptionId: subId, armed: true, tabId };
+  }
+
+  /**
+   * Wait for the first navigation match on the subscription. If a match has
+   * ALREADY arrived between start and now, returns it immediately. Otherwise
+   * blocks until the next match OR the per-call timeout (default 15s). The
+   * subscription remains active after first() returns — caller may invoke
+   * first() multiple times to drain in arrival order, then dispose().
+   */
+  async handleObserveNavFirst({ subscriptionId, timeoutMs }) {
+    const sub = this.navObservers.get(subscriptionId);
+    if (!sub) throw new Error(`Unknown subscriptionId: ${subscriptionId}`);
+    // Already have a match? Return the oldest unread.
+    if (sub.matches.length > 0) {
+      const m = sub.matches.shift();
+      return { matched: true, ...m };
+    }
+    const deadlineMs = Math.max(100, Math.min(timeoutMs || 15000, 120000));
+    return await new Promise((resolve) => {
+      let settled = false;
+      const settle = (val) => { if (!settled) { settled = true; resolve(val); } };
+      const onMatch = (m) => settle({ matched: true, ...m });
+      sub.pendingResolvers.push(onMatch);
+      setTimeout(() => {
+        // Pull the resolver back out of the queue so it can't fire later
+        const idx = sub.pendingResolvers.indexOf(onMatch);
+        if (idx >= 0) sub.pendingResolvers.splice(idx, 1);
+        settle({ matched: false, timeoutMs: deadlineMs });
+      }, deadlineMs);
+    });
+  }
+
+  async handleObserveNavDispose({ subscriptionId }) {
+    const existed = this.navObservers.delete(subscriptionId);
+    return { success: true, existed };
   }
 
   async handleClick({ element, ref, tabTarget, frameTarget }) {

@@ -200,6 +200,69 @@ export function buildCtx(context: Context, defaults: CtxBaseOpts) {
       // Phase 2: add a dedicated tool message.
       return;
     },
+
+    /**
+     * Arm a navigation observer on the inherited (or overridden) tab. Returns
+     * an object with `first({timeoutMs?})` and `dispose()` methods. The
+     * observer captures webNavigation.onCommitted events whose top-frame URL
+     * matches `pattern` from arm-time onward — so the routine can call this
+     * BEFORE a click that triggers a transient redirect (e.g. OAuth callback
+     * that auto-bounces in <50ms) and reliably retrieve the matched URL.
+     *
+     * Usage:
+     *   const sub = await ctx.observeNavigations({ pattern: /callback/ });
+     *   await ctx.realisticClick(x, y);
+     *   const { url } = await sub.first({ timeoutMs: 8000 });
+     *   await sub.dispose();
+     *
+     * `pattern` may be a string (treated as a regex source) or a RegExp.
+     */
+    async observeNavigations(opts: CtxBaseOpts & { pattern: string | RegExp } = { pattern: '' }) {
+      const pattern = opts.pattern;
+      if (!pattern) throw new RoutineError('bad-args', 'ctx.observeNavigations requires opts.pattern');
+      const patternStr = pattern instanceof RegExp ? pattern.source : String(pattern);
+      const flagsStr = pattern instanceof RegExp ? pattern.flags : '';
+      const targetOpts = mergeTarget(opts);
+      const startRes: any = await callTool(
+        'observeNavigations.start',
+        'browser_observe_navigations_start',
+        { pattern: patternStr, flags: flagsStr, ...targetOpts },
+        targetOpts,
+      );
+      const subId = startRes.subscriptionId;
+      let disposed = false;
+      return {
+        subscriptionId: subId,
+        /** Resolve with the first matched navigation, or reject on timeout. */
+        async first(firstOpts: { timeoutMs?: number } = {}) {
+          if (disposed) throw new RoutineError('disposed', 'observeNavigations: already disposed');
+          const res: any = await callTool(
+            'observeNavigations.first',
+            'browser_observe_navigations_first',
+            { subscriptionId: subId, timeoutMs: firstOpts.timeoutMs },
+            { ...targetOpts, timeoutMs: (firstOpts.timeoutMs ?? 15000) + 2000 },
+          );
+          if (res?.matched) return { url: res.url, timestamp: res.timestamp, transitionType: res.transitionType };
+          throw new RoutineError(
+            'wait-timeout',
+            `observeNavigations.first timed out after ${res?.timeoutMs ?? '?'}ms (no match for ${patternStr})`,
+          );
+        },
+        /** Tear down the subscription. Safe to call multiple times. */
+        async dispose() {
+          if (disposed) return;
+          disposed = true;
+          try {
+            await callTool(
+              'observeNavigations.dispose',
+              'browser_observe_navigations_dispose',
+              { subscriptionId: subId },
+              targetOpts,
+            );
+          } catch {/* best-effort */}
+        },
+      };
+    },
   };
 }
 
