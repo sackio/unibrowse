@@ -39,6 +39,14 @@ export interface SocketMessageMap {
   browser_go_forward: { tabTarget?: number | string };
   browser_wait: { time: number };
   browser_press_key: { key: string; tabTarget?: number | string };
+  browser_set_device_metrics: {
+    width?: number;
+    height?: number;
+    deviceScaleFactor?: number;
+    mobile?: boolean;
+    reset?: boolean;
+    tabTarget?: number | string;
+  };
 
   // Navigation observer — routine ctx.observeNavigations() backing primitives.
   // Subscription owns a regex + tabTarget; matches buffer onCommitted events.

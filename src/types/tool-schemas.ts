@@ -193,6 +193,37 @@ export const ScrollToElementTool = z.object({
   arguments: ElementSchema.merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
+export const SetDeviceMetricsTool = z.object({
+  name: z.literal("browser_set_device_metrics"),
+  description: z.literal(
+    "Override the attached tab's viewport size and mobile flag via CDP " +
+    "(Emulation.setDeviceMetricsOverride). Useful for multi-breakpoint UI " +
+    "audits without relaunching chromium — e.g. step through 390x844 / " +
+    "768x1024 / 1280x800 in one session. Pass `reset:true` to clear the " +
+    "override and restore the renderer's natural size. Width/height/mobile " +
+    "are ignored when reset is true."
+  ),
+  arguments: z.object({
+    width: z.number().int().min(1).optional().describe(
+      "Viewport width in CSS pixels (1+). Required unless `reset: true`."
+    ),
+    height: z.number().int().min(1).optional().describe(
+      "Viewport height in CSS pixels (1+). Required unless `reset: true`."
+    ),
+    deviceScaleFactor: z.number().min(0).default(1).describe(
+      "Device pixel ratio (0 = use system default). Default: 1."
+    ),
+    mobile: z.boolean().default(false).describe(
+      "Whether to emulate as a mobile device. Affects @media queries, " +
+      "touch-event firing, viewport meta-tag handling. Default: false."
+    ),
+    reset: z.boolean().default(false).describe(
+      "Clear any active device-metrics override (Emulation.clearDeviceMetricsOverride). " +
+      "When true, width/height/deviceScaleFactor/mobile are ignored."
+    ),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+});
+
 export const ListTabsTool = z.object({
   name: z.literal("browser_list_tabs"),
   description: z.literal("List all open Chrome browser tabs. NOTE: The tabIds returned here are Chrome tab IDs, only usable with browser_switch_tab and browser_close_tab. For targeting tabs in operations like browser_navigate/browser_snapshot, use browser_list_attached_tabs instead."),

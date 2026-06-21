@@ -9,7 +9,8 @@ RUN apk add --no-cache \
       ffmpeg \
       chromium \
       nss freetype freetype-dev harfbuzz ca-certificates ttf-freefont \
-      font-noto-emoji
+      font-noto-emoji \
+      xvfb
 
 # Tell the launcher (and anything else that honors this) where Chrome lives,
 # and skip any Puppeteer self-download — the apk install gave us the binary.

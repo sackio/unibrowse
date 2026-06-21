@@ -379,7 +379,15 @@
         return;
       }
       const bbox = this._computeBbox();
-      if (!bbox || bbox.w < 4 || bbox.h < 4) {
+      // Reject only when both dims are tiny (a single-click dot). A thin
+      // horizontal pencil stroke has h≈0 but is a perfectly valid mark, so
+      // require min size in BOTH axes only for filled shapes (rect); for
+      // point-based shapes (pencil/lasso), accept anything past a dot.
+      const isPointBased = this.shape.type === 'pencil' || this.shape.type === 'lasso';
+      const tooSmall = !bbox || (isPointBased
+        ? (bbox.w < 4 && bbox.h < 4)
+        : (bbox.w < 4 || bbox.h < 4));
+      if (tooSmall) {
         this._setStatus('Shape too small. Try again.');
         return;
       }

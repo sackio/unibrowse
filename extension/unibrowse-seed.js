@@ -31,6 +31,23 @@
     });
     document.body && (document.body.textContent = `seeded ws=${wsUrl}`);
     console.log(`[unibrowse-seed] Seeded default server: ${wsUrl}`);
+    // Critical: background's WSManager resolves the server URL ONCE at
+    // connect() time and then auto-reconnects to that URL forever. If the
+    // background already started connecting to localhost (because seed
+    // hadn't written yet), it'll never pick up the new config. Send the
+    // RECONNECT_WS message so background re-resolves + reconnects to the
+    // newly-seeded URL. Without this, the sidecar chromium's extension
+    // gets stuck retrying localhost:9010 (which has nothing listening).
+    try {
+      chrome.runtime.sendMessage({ type: "RECONNECT_WS" }, () => {
+        // Swallow lastError — message may fail if SW is still spinning up
+        // (the SW will resolve config itself on its initial connect anyway).
+        void chrome.runtime.lastError;
+      });
+      console.log(`[unibrowse-seed] sent RECONNECT_WS to background`);
+    } catch (e) {
+      console.warn(`[unibrowse-seed] RECONNECT_WS dispatch failed:`, e?.message || e);
+    }
   } catch (e) {
     console.warn(`[unibrowse-seed] Failed:`, e?.message || e);
   }

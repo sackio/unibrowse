@@ -45,6 +45,7 @@ const commonTools: Tool[] = [
   common.pressKey,
   common.scroll,
   common.scrollToElement,
+  common.setDeviceMetrics,
   common.wait,
 ];
 

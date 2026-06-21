@@ -70,6 +70,74 @@ const selfHealProfile = (profileDir) => {
   } catch (e) { console.warn(`[chromium-host] self-heal failed (${prefs}): ${e.message}`); }
 };
 
+/* ---------- Stale extension state cleanup (freshProfile:false) -------- */
+// Diagnosed 2026-06-11 (ha + ben): launching with freshProfile:false against
+// a profile whose prior chromium was killed mid-flight (e.g. dead PID 19
+// holding the ecobee-broker profile) causes the new chromium to die during
+// service-worker startup — extension never registers, upstream sees
+// `extensionId: None`. Wiping the whole profile fixes it but loses auth
+// cookies (Auth0 SSO, OAuth refresh tokens, etc.), which the ecobee_silent
+// broker depends on (freshProfile:false is by design).
+//
+// Intermediate tier: wipe ONLY the directories tied to extension/runtime
+// state that go stale across launches, while preserving Cookies / Login
+// Data / Local Storage / IndexedDB / page-side persistent storage.
+//
+// Wiped:
+//   Singleton{Lock,Socket,Cookie}        — point at the dead chromium's PID
+//   Default/Service Worker               — chromium's SW database (extension
+//                                          SW + page SWs; page SWs reinstall
+//                                          themselves cheaply on next visit)
+//   Default/Extension State              — chromium's per-extension state
+//   Default/Local Extension Settings     — extension's chrome.storage.local
+//                                          (incl. stable __unibrowseExtensionId,
+//                                          stale server_config). Seed CS
+//                                          re-populates on next load.
+//   Default/Extension Scripts            — chromium's extension script cache
+//   Default/Extension Rules              — declarativeNetRequest rules cache
+//
+// Preserved (the whole point — Auth0 cookies live here):
+//   Default/Cookies + Cookies-journal    — login session
+//   Default/Login Data + journal         — saved passwords
+//   Default/Local Storage                — page-side localStorage
+//   Default/Session Storage              — page-side sessionStorage
+//   Default/IndexedDB                    — page-side IndexedDB
+//   Default/Web Data                     — autofill / forms
+const STALE_EXTENSION_DIRS = [
+  "Default/Service Worker",
+  "Default/Extension State",
+  "Default/Local Extension Settings",
+  "Default/Extension Scripts",
+  "Default/Extension Rules",
+];
+const STALE_SINGLETON_FILES = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
+const wipeStaleExtensionData = (profileDir) => {
+  const removed = [];
+  for (const f of STALE_SINGLETON_FILES) {
+    const p = path.join(profileDir, f);
+    try { fs.lstatSync(p); fs.unlinkSync(p); removed.push(f); } catch {}
+  }
+  for (const rel of STALE_EXTENSION_DIRS) {
+    const p = path.join(profileDir, rel);
+    if (!fs.existsSync(p)) continue;
+    try {
+      fs.rmSync(p, { recursive: true, force: true });
+      removed.push(rel);
+    } catch (e) {
+      // NFS sillyrename / EBUSY: profiles dir is bind-mounted host-side. If
+      // unlink fails, rename aside so the next launch isn't blocked.
+      if (e?.code === "EBUSY" || e?.code === "ENOTEMPTY") {
+        const aside = `${p}.dead-${Date.now()}`;
+        try { fs.renameSync(p, aside); removed.push(`${rel} (→ ${path.basename(aside)})`); }
+        catch (mvErr) { console.warn(`[chromium-host] wipeStale ${rel} failed: rm=${e.message} rename=${mvErr.message}`); }
+      } else {
+        console.warn(`[chromium-host] wipeStale ${rel} failed: ${e.message}`);
+      }
+    }
+  }
+  if (removed.length) console.log(`[chromium-host] wipeStale ${profileDir}: ${removed.join(", ")}`);
+};
+
 /* ---------- Managed server seed --------------------------------------- */
 // Write a tiny JSON file into each profile telling the extension which MCP
 // server URL to connect to. The extension's server-resolver checks here
@@ -82,8 +150,86 @@ const writeServerSeed = (profileDir, serverHint) => {
   } catch (e) { console.warn(`[chromium-host] failed to write managed-server.json: ${e.message}`); }
 };
 
+/* ---------- Reap pre-existing chromium for same profile ---------------- */
+// If a chromium is still alive for this profile, SIGTERM it before we wipe
+// the profile or spawn a new one. Without this, the new chromium tries to
+// acquire SingletonLock against a running peer using the same user-data-dir
+// and either dies silently or comes up degraded — its extension never
+// connects to mcp-server, which surfaces upstream as `extensionId: None`
+// from browser_launch_isolated_chrome. (Diagnosed 2026-06-11: ha's
+// ecobee_silent broker had been hitting a 16-day-old container PID 19
+// holding the ecobee-broker profile after a recent extension-reload nuked
+// its WS registration.)
+//
+// We look in TWO places: (1) our own launchedProcesses tracking map, and
+// (2) raw `ps` for any chromium with `--user-data-dir=<that profile>`.
+// (2) catches chromiums that survived a chromium-host process restart
+// (they keep running but the tracking map is empty after our reboot).
+const reapExistingForProfile = async (profileName) => {
+  const profileDir = path.join(PROFILES_DIR, profileName);
+  const tracked = []; // {pid, proc}
+  for (const [pid, v] of launchedProcesses) {
+    if (v.profileName === profileName) tracked.push({ pid, proc: v.proc });
+  }
+  // ps-scan for untracked chromiums using the same profile dir.
+  const untrackedPids = [];
+  try {
+    const out = execSync(
+      // -ww: don't truncate the arg list; we need the full --user-data-dir match
+      `ps -eww -o pid=,args= | grep -F -- "--user-data-dir=${profileDir}" | grep -v grep || true`,
+      { encoding: "utf8" }
+    );
+    for (const line of out.split("\n")) {
+      const m = line.trim().match(/^(\d+)\s+(.*)$/);
+      if (!m) continue;
+      const pid = parseInt(m[1], 10);
+      const args = m[2];
+      // Skip helper procs (zygote/gpu/utility/renderer) — only the main
+      // chromium process holds the SingletonLock.
+      if (/--type=(zygote|gpu-process|utility|renderer)/.test(args)) continue;
+      if (tracked.some((t) => t.pid === pid)) continue;
+      untrackedPids.push(pid);
+    }
+  } catch (e) { console.warn(`[chromium-host] ps scan failed: ${e.message}`); }
+
+  if (!tracked.length && !untrackedPids.length) return;
+  console.log(`[chromium-host] reaping for profile ${profileName}: tracked=[${tracked.map(t=>t.pid).join(",")}] untracked=[${untrackedPids.join(",")}]`);
+
+  for (const t of tracked) {
+    try { t.proc.kill("SIGTERM"); }
+    catch (e) { console.warn(`[chromium-host] SIGTERM tracked pid=${t.pid} failed: ${e.message}`); }
+  }
+  for (const pid of untrackedPids) {
+    try { process.kill(pid, "SIGTERM"); }
+    catch (e) { console.warn(`[chromium-host] SIGTERM untracked pid=${pid} failed: ${e.message}`); }
+  }
+
+  // Wait up to 3s for all to die. Tracked drop out of launchedProcesses via
+  // their exit handler; untracked we re-check with kill(0).
+  const allPids = [...tracked.map(t => t.pid), ...untrackedPids];
+  const deadline = Date.now() + 3000;
+  const isAlive = (pid) => {
+    if (launchedProcesses.has(pid)) return true;
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+  while (Date.now() < deadline) {
+    if (!allPids.some(isAlive)) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  for (const pid of allPids) {
+    if (!isAlive(pid)) continue;
+    try {
+      console.warn(`[chromium-host] pid=${pid} did not exit on SIGTERM; SIGKILL`);
+      process.kill(pid, "SIGKILL");
+    } catch (e) { console.warn(`[chromium-host] SIGKILL pid=${pid} failed: ${e.message}`); }
+  }
+  // Final settle for the kernel to release file handles on the profile dir
+  // so the imminent rmSync succeeds first time.
+  await new Promise((r) => setTimeout(r, 200));
+};
+
 /* ---------- Launch a chromium ------------------------------------------ */
-const launchChromium = ({
+const launchChromium = async ({
   profileName,
   urls = ["chrome://extensions/"],
   freshProfile = true,
@@ -95,6 +241,11 @@ const launchChromium = ({
   if (!profileName) throw new Error("profileName is required");
   if (!fs.existsSync(PROFILES_DIR)) fs.mkdirSync(PROFILES_DIR, { recursive: true });
   const profileDir = path.join(PROFILES_DIR, profileName);
+  // Reap any tracked chromium for this profileName first — fresh-launch
+  // semantics require we don't co-exist with a stale instance holding the
+  // SingletonLock. This runs whether or not freshProfile is set, because the
+  // collision happens regardless of whether the dir is wiped.
+  await reapExistingForProfile(profileName);
   // NFS-resilient cleanup — see chrome-launcher.ts for the rationale.
   // .nfsXXXX sillyrenames from the previous chromium can throw EBUSY on
   // unlink; fall back to renaming the dir aside so the fresh launch isn't
@@ -117,7 +268,16 @@ const launchChromium = ({
     }
   }
   if (!fs.existsSync(profileDir)) fs.mkdirSync(profileDir, { recursive: true });
-  if (!freshProfile) selfHealProfile(profileDir);
+  if (!freshProfile) {
+    // Intermediate cleanup tier for persistent-profile launches: wipe
+    // extension/SW state that goes stale across launches while preserving
+    // Cookies / Login Data / IndexedDB. Required because brokers like
+    // ecobee_silent hardcode freshProfile:false to keep Auth0 cookies but
+    // need a clean extension-side slate. See wipeStaleExtensionData() for
+    // full diagnosis.
+    wipeStaleExtensionData(profileDir);
+    selfHealProfile(profileDir);
+  }
   writeServerSeed(profileDir, serverHint);
 
   const args = [
@@ -204,7 +364,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "POST" && req.url === "/launch") {
       const body = JSON.parse(await readBody(req) || "{}");
-      const result = launchChromium(body);
+      const result = await launchChromium(body);
       return send(res, 200, result);
     }
     const delMatch = req.method === "DELETE" && req.url?.match(/^\/processes\/(\d+)$/);

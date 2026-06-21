@@ -217,6 +217,59 @@
     .timeline-event.active { background: #f0ebff; border-left-color: #6f42c1; }
     .timeline-event.page-start { border-left-color: #28a745; }
     .timeline-event.ev-network { color: #0055aa; }
+    .timeline-event.ev-rich-annotation { border-left-color: #ef4444; background: #fef2f2; }
+    .timeline-event.ev-rich-annotation:hover { background: #fee2e2; }
+
+    /* ── Rich annotation panel (drawing+screenshot+note+dom targets) ── */
+    .rich-annot-panel {
+      border-top: 2px solid #ef4444;
+      padding: 10px 12px;
+      background: #fef9f9;
+      flex-shrink: 0;
+      max-height: 50vh;
+      overflow-y: auto;
+    }
+    .rich-annot-panel h3 {
+      font-size: 13px; font-weight: 600; color: #b91c1c; margin: 0 0 8px 0;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .rich-annot-panel .close-x {
+      margin-left: auto; cursor: pointer; color: #999; font-size: 18px; line-height: 1;
+      background: none; border: none; padding: 0;
+    }
+    .rich-annot-panel .close-x:hover { color: #333; }
+    .rich-annot-panel img.shot {
+      max-width: 100%; max-height: 280px;
+      border: 1px solid #ddd; border-radius: 4px; display: block;
+      background: #f8f8f8;
+    }
+    .rich-annot-panel .note {
+      font-size: 13px; color: #1f2937; padding: 6px 10px;
+      background: #fff; border: 1px solid #fcd34d; border-radius: 4px;
+      margin: 8px 0; white-space: pre-wrap;
+    }
+    .rich-annot-panel .targets { margin-top: 8px; }
+    .rich-annot-panel .targets h4 {
+      font-size: 11px; font-weight: 600; color: #555; margin: 0 0 4px 0;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .rich-annot-panel .targets ol { margin: 0; padding-left: 20px; font-size: 12px; }
+    .rich-annot-panel .targets li { margin: 3px 0; }
+    .rich-annot-panel .targets .tag {
+      display: inline-block; background: #dbeafe; color: #1e40af;
+      padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 11px;
+      margin-right: 4px;
+    }
+    .rich-annot-panel .targets .selectors {
+      font-family: monospace; font-size: 11px; color: #555; word-break: break-all;
+    }
+    .rich-annot-panel .targets .preview-text {
+      font-size: 11px; color: #444; font-style: italic;
+    }
+    .rich-annot-panel .meta {
+      font-size: 11px; color: #999; margin-bottom: 6px;
+      display: flex; gap: 12px;
+    }
     .timeline-event.ev-dom { color: #7f8c8d; opacity: 0.7; }
     .timeline-event.ev-interaction { color: #333; }
     .timeline-event.selected { background: #e8dfff; }
@@ -353,11 +406,23 @@
           <button class="filter-btn" data-filter="page" onclick="setFilter('page',this)">Pages</button>
           <button class="filter-btn" data-filter="network" onclick="setFilter('network',this)">Network</button>
           <button class="filter-btn" data-filter="actions" onclick="setFilter('actions',this)">Actions</button>
+          <button class="filter-btn" data-filter="annotations" onclick="setFilter('annotations',this)" title="User-drawn annotations (pencil/rect/lasso)">✏️ Annot.</button>
           <button class="filter-btn mouse-btn" data-filter="mouse" onclick="setFilter('mouse',this)" title="Mouse movements (hidden by default)">Mouse</button>
           <button class="filter-btn" data-filter="dom" onclick="setFilter('dom',this)" title="DOM mutations">DOM</button>
         </div>
       </div>
       <div class="timeline" id="timeline"></div>
+      <div class="rich-annot-panel" id="rich-annot-panel" style="display:none">
+        <h3>
+          <span id="rich-annot-tool-icon">✏️</span>
+          <span id="rich-annot-title">Annotation</span>
+          <button class="close-x" onclick="closeRichAnnotPanel()" title="Close">×</button>
+        </h3>
+        <div class="meta" id="rich-annot-meta"></div>
+        <img class="shot" id="rich-annot-shot" alt="annotation screenshot">
+        <div class="note" id="rich-annot-note"></div>
+        <div class="targets" id="rich-annot-targets"></div>
+      </div>
       <div class="annotation-panel" id="annotation-panel" style="display:none">
         <label>Annotation for selected event</label>
         <textarea id="annotation-text" placeholder="Add a note about this event..."></textarea>
@@ -375,6 +440,7 @@
     let rrwebEvents = [];
     let networkEntries = [];
     let interactions = [];
+    let richAnnotations = [];  // [{id,timestamp,tool,shape,bbox,note,domTargets,screenshotPng,pageUrl,...}]
     let allTimelineItems = [];
     let selectedEventIndex = null;
     let annotations = {};
@@ -417,6 +483,17 @@
         rrwebEvents = eventsData.rrwebEvents || [];
         networkEntries = eventsData.networkEntries || [];
         interactions = eventsData.interactions || [];
+
+        // Load rich annotations (pencil/rect/lasso drawings + screenshots + notes
+        // captured by the user during the recording). Empty-array OK if none.
+        try {
+          const annotResp = await fetch(`/api/v1/recordings/${recordingId}/annotations`);
+          const annotData = await annotResp.json();
+          richAnnotations = annotData.annotations || [];
+        } catch (e) {
+          console.warn('Failed to load rich annotations:', e);
+          richAnnotations = [];
+        }
 
         // Set up video
         setupVideo();
@@ -577,6 +654,7 @@
       form_submit:  { icon: '▶', label: 'submit',   cls: 'kind-form'      },
       scroll:       { icon: '↕', label: 'scroll',   cls: 'kind-mouse'     },
       mousemove:    { icon: '·', label: 'move',     cls: 'kind-mouse'     },
+      hover:        { icon: '◐', label: 'hover',    cls: 'kind-selection' },
       rrweb_click:      { icon: '⬤', label: 'click',    cls: 'kind-click'     },
       dom_mutation:     { icon: '◈', label: 'dom',      cls: 'kind-dom'       },
       spa_navigate:     { icon: '⇒', label: 'navigate', cls: 'kind-nav'       },
@@ -595,6 +673,22 @@
     function buildTimeline() {
       allTimelineItems = [];
       const startTime = recording.startTime;
+
+      // Rich annotations (pencil/rect/lasso) — each becomes a timeline item
+      // with the annotation's own offset so it sits in chronological order.
+      // We index them with `annotIndex` so the click handler can look up the
+      // full record from richAnnotations[].
+      richAnnotations.forEach((a, idx) => {
+        allTimelineItems.push({
+          type: 'rich-annotation',
+          tabId: a.tabId || null,
+          absTimestamp: a.timestamp,
+          offsetMs: (a.timestamp || startTime) - startTime,
+          annotIndex: idx,
+          tool: a.tool,
+          shortLabel: a.note || `(${a.tool} annotation)`,
+        });
+      });
 
       // Page starts
       (recording.pages || []).forEach(page => {
@@ -666,6 +760,10 @@
         } else if (action.kind === 'click' || action.kind === 'contextmenu' || action.kind === 'middle_click' || action.kind === 'auxclick') {
           label = `${action.selector || action.tagName || 'element'}`;
           if (action.text) label += `  "${action.text.slice(0, 60)}"`;
+        } else if (action.kind === 'hover') {
+          const ctxText = action.context?.container?.text || action.context?.target?.text || action.text || '';
+          const sel = action.context?.target?.selector || action.selector || action.tagName || 'element';
+          label = `${sel}${ctxText ? `  "${ctxText.slice(0, 80)}"` : ''}`;
         } else if (action.kind === 'input_change') {
           const target = action.id ? `#${action.id}` : (action.name ? `[name=${action.name}]` : action.selector || 'input');
           label = `${target}: "${action.value?.slice(0, 60)}"`;
@@ -744,6 +842,7 @@
         if (currentFilter === 'actions' && (item.type !== 'interaction' || isMouseKind || isDomMutation)) return;
         if (currentFilter === 'mouse' && !isMouseKind) return;
         if (currentFilter === 'dom' && !isDomMutation) return;
+        if (currentFilter === 'annotations' && item.type !== 'rich-annotation') return;
         count++;
 
         const ms = Math.max(0, item.offsetMs);
@@ -756,13 +855,19 @@
         if (item.type === 'page') cls += ' page-start';
         if (item.type === 'network') cls += ' ev-network';
         if (item.type === 'interaction') cls += (item.kind === 'mousemove' || item.kind === 'scroll') ? ' ev-mouse' : item.kind === 'dom_mutation' ? ' ev-dom' : ' ev-interaction';
+        if (item.type === 'rich-annotation') cls += ' ev-rich-annotation';
         if (selectedEventIndex === i) cls += ' selected';
         div.className = cls;
         div.id = `te-${i}`;
 
         let icon, iconCls = '', label = '', badgeHtml = '', detailHtml = '';
 
-        if (item.type === 'page') {
+        if (item.type === 'rich-annotation') {
+          icon = item.tool === 'rect' ? '▭' : item.tool === 'lasso' ? '🪢' : '✏️';
+          iconCls = 'kind-rich-annot';
+          label = item.shortLabel || `(${item.tool})`;
+          badgeHtml = `<span class="event-badge badge-kind" style="background:#fee2e2;color:#b91c1c">${item.tool}</span>`;
+        } else if (item.type === 'page') {
           icon = '◉';
           iconCls = 'kind-page';
           label = item.url;
@@ -849,11 +954,75 @@
 
       seekVideo(item.absTimestamp, item.tabId);
 
-      // Show annotation panel
+      // Rich annotation? Show the dedicated drawing+screenshot+DOM panel.
+      if (item.type === 'rich-annotation') {
+        showRichAnnotPanel(richAnnotations[item.annotIndex]);
+        document.getElementById('annotation-panel').style.display = 'none';
+        return;
+      }
+      document.getElementById('rich-annot-panel').style.display = 'none';
+
+      // Show per-event text-annotation panel (legacy text notes)
       document.getElementById('annotation-panel').style.display = 'block';
       const ta = document.getElementById('annotation-text');
       ta.value = annotations[item.absTimestamp] || '';
       ta.dataset.timestamp = item.absTimestamp;
+    }
+
+    function showRichAnnotPanel(a) {
+      if (!a) return;
+      const panel = document.getElementById('rich-annot-panel');
+      panel.style.display = 'block';
+      document.getElementById('rich-annot-tool-icon').textContent =
+        a.tool === 'rect' ? '▭' : a.tool === 'lasso' ? '🪢' : '✏️';
+      document.getElementById('rich-annot-title').textContent = `Annotation — ${a.tool}`;
+      // Meta line: timestamp + pageUrl + bbox
+      const ts = new Date(a.timestamp).toLocaleString();
+      const b = a.bbox || {};
+      const metaParts = [
+        ts,
+        a.pageUrl ? `<a href="${escAttr(a.pageUrl)}" target="_blank" style="color:inherit">${escHtml(truncate(a.pageUrl, 60))}</a>` : null,
+        b.w ? `bbox ${Math.round(b.w)}×${Math.round(b.h)} @ (${Math.round(b.x)},${Math.round(b.y)})` : null,
+      ].filter(Boolean).join(' · ');
+      document.getElementById('rich-annot-meta').innerHTML = metaParts;
+      const shot = document.getElementById('rich-annot-shot');
+      if (a.screenshotPng) {
+        shot.src = a.screenshotPng;
+        shot.style.display = 'block';
+      } else {
+        shot.removeAttribute('src');
+        shot.style.display = 'none';
+      }
+      const noteEl = document.getElementById('rich-annot-note');
+      if (a.note && a.note.trim()) {
+        noteEl.textContent = a.note;
+        noteEl.style.display = 'block';
+      } else {
+        noteEl.textContent = '(no note)';
+        noteEl.style.color = '#999';
+        noteEl.style.fontStyle = 'italic';
+      }
+      // DOM targets list
+      const tEl = document.getElementById('rich-annot-targets');
+      if (a.domTargets && a.domTargets.length) {
+        const lis = a.domTargets.map((t, i) => {
+          const tagSpan = `<span class="tag">&lt;${escHtml(t.tag || '?')}&gt;</span>`;
+          const sel = t.css || t.xpath || '';
+          const text = (t.text || '').slice(0, 80);
+          return `<li>${tagSpan}<span class="selectors">${escHtml(sel)}</span>${text ? `<div class="preview-text">${escHtml(text)}${(t.text || '').length > 80 ? '…' : ''}</div>` : ''}</li>`;
+        }).join('');
+        tEl.innerHTML = `<h4>DOM targets (${a.domTargets.length}, ranked by overlap)</h4><ol>${lis}</ol>`;
+      } else {
+        tEl.innerHTML = `<h4>DOM targets</h4><div style="font-size:11px;color:#999;font-style:italic">(none)</div>`;
+      }
+    }
+
+    function closeRichAnnotPanel() {
+      document.getElementById('rich-annot-panel').style.display = 'none';
+    }
+
+    function escAttr(s) {
+      return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     async function saveAnnotation() {

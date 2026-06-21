@@ -1358,6 +1358,20 @@ class BackgroundController {
           console.warn('[Background] Could not re-inject session recorder:', err.message);
         });
 
+        // Re-inject the annotation tool + floating "Recording / ✏️ Annotate"
+        // overlay on the primary tab only. Without this the pill vanishes on
+        // page reload (reported by ben 2026-06-10): network/rrweb keep working
+        // but the user has no UI affordance to add new annotations until the
+        // recording is stopped.
+        if (tabId === this.sessionRecording.tabId) {
+          chrome.scripting.executeScript({
+            target: { tabId },
+            files: ['annotation-tool.js', 'session-record-overlay.js'],
+          }).catch(err => {
+            console.warn('[Background] Could not re-inject session overlay/annotation:', err.message);
+          });
+        }
+
         // Start video for this tab if it hasn't been recorded yet
         if (!this.sessionRecording.recordedTabIds?.includes(tabId)) {
           this.startSessionTabVideo(tabId);
@@ -1853,6 +1867,7 @@ class BackgroundController {
     this.handlers['browser_press_key'] = this.handlePressKey.bind(this);
     this.handlers['browser_scroll'] = this.handleScroll.bind(this);
     this.handlers['browser_scroll_to_element'] = this.handleScrollToElement.bind(this);
+    this.handlers['browser_set_device_metrics'] = this.handleSetDeviceMetrics.bind(this);
 
     // Realistic input handlers (CDP-based)
     this.handlers['browser_realistic_mouse_move'] = this.handleRealisticMouseMove.bind(this);
@@ -2124,7 +2139,14 @@ class BackgroundController {
     // Set connected to false FIRST to prevent event listeners from re-adding indicators
     this.state.connected = false;
     chrome.storage.session.set({ swShouldReconnect: false });
-    chrome.alarms.clear('sw-keepalive');
+    // INTENTIONALLY do NOT clear the 'sw-keepalive' alarm here. The alarm
+    // handler already checks `swShouldReconnect` and skips the reconnect when
+    // false (see chrome.alarms.onAlarm listener below). Keeping the alarm
+    // running is the ONLY mechanism that wakes a dormant MV3 SW periodically;
+    // clearing it means the SW goes dormant after explicit disconnect and
+    // never wakes itself again — the user has to bounce the extension by
+    // hand. Diagnosed 2026-06-14 after ben's main Chrome got stuck dormant
+    // post-yesterday's reload cascade.
 
     // Stop keepalive mechanism
     this.stopKeepalive();
@@ -4287,6 +4309,32 @@ class BackgroundController {
       throw new Error(result.error || 'Failed to scroll to element');
     }
     return { success: true, element, ref };
+  }
+
+  /**
+   * Override the attached tab's viewport via CDP Emulation. Wraps
+   * setDeviceMetricsOverride (or clearDeviceMetricsOverride when reset).
+   * Lets agents step through breakpoints (390/768/1280…) on a single
+   * chromium instance without relaunching — the renderer paints at the
+   * requested dimensions regardless of the OS window size, which matters
+   * for Xvfb-headful sidecars whose chromium has a ~500px window minimum.
+   */
+  async handleSetDeviceMetrics({ width, height, deviceScaleFactor, mobile, reset, tabTarget }) {
+    const cdp = await this.tabManager.requireCDP(tabTarget);
+    if (reset) {
+      await cdp.sendCommand('Emulation.clearDeviceMetricsOverride', {});
+      return { success: true, reset: true };
+    }
+    if (typeof width !== 'number' || typeof height !== 'number') {
+      throw new Error('width and height are required unless reset:true');
+    }
+    await cdp.sendCommand('Emulation.setDeviceMetricsOverride', {
+      width,
+      height,
+      deviceScaleFactor: typeof deviceScaleFactor === 'number' ? deviceScaleFactor : 1,
+      mobile: !!mobile,
+    });
+    return { success: true, width, height, deviceScaleFactor: deviceScaleFactor ?? 1, mobile: !!mobile };
   }
 
   async handleRealisticMouseMove({ x, y, duration, currentX, currentY, tabTarget }) {
@@ -6457,8 +6505,10 @@ async function autoConnect() {
   } catch (error) {
     console.error('[Background] Auto-connect failed:', error);
     autoConnectAttempted = false; // Allow retry
-    // Retry after 3 seconds
-    setTimeout(autoConnect, 3000);
+    // Don't bother with setTimeout — MV3 SWs unload aggressively and the
+    // setTimeout dies with the SW. The always-on `sw-keepalive` alarm
+    // (created at module load) will retry on its next tick whether the SW
+    // is alive or dormant. Single recovery mechanism > two unreliable ones.
   }
 }
 
@@ -6508,6 +6558,16 @@ chrome.runtime.onInstalled.addListener((details) => {
   autoConnectAttempted = false;
   autoConnect();
 });
+
+// Always-on keepalive alarm — created at SW module load, NEVER cleared.
+// This is the only reliable mechanism that wakes a dormant MV3 SW without
+// human action. The alarm handler (chrome.alarms.onAlarm above) is gated
+// by `swShouldReconnect`, so it's safe to leave running across explicit
+// disconnects — it won't reconnect when the user doesn't want it to, but
+// IT WILL keep the SW periodically alive, ready to act on a future
+// reconnect intent. Removing this line is how we got into the
+// disconnect-and-stay-stuck-forever bug fixed 2026-06-14.
+chrome.alarms.create('sw-keepalive', { periodInMinutes: 0.5 });
 
 // Start auto-connect on extension load
 autoConnect();

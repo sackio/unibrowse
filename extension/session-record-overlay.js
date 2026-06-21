@@ -36,7 +36,17 @@
     _build() {
       this.container = document.createElement('div');
       this.container.id = '__unibrowse_sr_overlay';
-      this.container.style.cssText = 'all: initial; position: fixed; bottom: 16px; right: 16px; z-index: 2147483646;';
+      // Initial anchor: bottom-right unless we have a saved drag position.
+      // Position persists in localStorage so it survives page reloads, which
+      // also re-mount this overlay. Use left/top once dragged (anchors
+      // bottom/right would otherwise have to be inverted on drag).
+      const saved = this._readSavedPos();
+      const baseCss = 'all: initial; position: fixed; z-index: 2147483646;';
+      if (saved) {
+        this.container.style.cssText = `${baseCss} left: ${saved.x}px; top: ${saved.y}px;`;
+      } else {
+        this.container.style.cssText = `${baseCss} bottom: 16px; right: 16px;`;
+      }
       this.shadow = this.container.attachShadow({ mode: 'closed' });
       this.shadow.innerHTML = `
         <style>
@@ -47,9 +57,15 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             font-size: 13px; font-weight: 500;
             box-shadow: 0 6px 20px rgba(0,0,0,0.4);
-            cursor: default;
+            cursor: grab;
             user-select: none;
             border: 2px solid rgba(255,255,255,0.15);
+            touch-action: none;
+          }
+          .pill.dragging { cursor: grabbing; box-shadow: 0 10px 28px rgba(0,0,0,0.55); }
+          .grip {
+            width: 10px; opacity: 0.55; line-height: 1; font-size: 14px;
+            letter-spacing: -2px; padding-right: 2px;
           }
           .dot {
             width: 10px; height: 10px; border-radius: 50%;
@@ -81,7 +97,8 @@
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
           }
         </style>
-        <div class="pill" part="pill">
+        <div class="pill" part="pill" data-role="pill" title="Drag to move">
+          <div class="grip" aria-hidden="true">⋮⋮</div>
           <div class="dot"></div>
           <div class="label">Recording</div>
           <div class="badge" data-role="count">0</div>
@@ -92,6 +109,106 @@
       document.documentElement.appendChild(this.container);
       const annotateBtn = this.shadow.querySelector('[data-role="annotate"]');
       annotateBtn.addEventListener('click', () => this._openAnnotation());
+      this._wireDrag();
+    }
+
+    /**
+     * Make the pill draggable. The drag starts on pointerdown anywhere in the
+     * pill EXCEPT the Annotate button (so the click still registers). We
+     * snap into left/top coordinates on first drag and persist them so the
+     * position survives reloads (which re-mount this overlay).
+     */
+    _wireDrag() {
+      const pill = this.shadow.querySelector('[data-role="pill"]');
+      if (!pill) return;
+      let drag = null;       // {startX, startY, originLeft, originTop, moved}
+      const DRAG_THRESH = 3; // px before we consider it a real drag (vs click)
+
+      pill.addEventListener('pointerdown', (e) => {
+        // Don't start a drag from inside the Annotate button.
+        if (e.target?.closest?.('[data-role="annotate"]')) return;
+        // Snap to left/top so future moves can update them directly. If we're
+        // still on bottom-right anchors, convert from current rect.
+        const rect = this.container.getBoundingClientRect();
+        this.container.style.left = `${Math.round(rect.left)}px`;
+        this.container.style.top = `${Math.round(rect.top)}px`;
+        this.container.style.right = 'auto';
+        this.container.style.bottom = 'auto';
+        drag = {
+          startX: e.clientX,
+          startY: e.clientY,
+          originLeft: rect.left,
+          originTop: rect.top,
+          moved: false,
+        };
+        try { pill.setPointerCapture(e.pointerId); } catch {}
+      });
+
+      pill.addEventListener('pointermove', (e) => {
+        if (!drag) return;
+        const dx = e.clientX - drag.startX;
+        const dy = e.clientY - drag.startY;
+        if (!drag.moved && Math.abs(dx) + Math.abs(dy) < DRAG_THRESH) return;
+        drag.moved = true;
+        pill.classList.add('dragging');
+        const margin = 4;
+        const w = this.container.offsetWidth;
+        const h = this.container.offsetHeight;
+        const maxX = Math.max(margin, window.innerWidth  - w - margin);
+        const maxY = Math.max(margin, window.innerHeight - h - margin);
+        const nx = Math.min(Math.max(margin, drag.originLeft + dx), maxX);
+        const ny = Math.min(Math.max(margin, drag.originTop  + dy), maxY);
+        this.container.style.left = `${Math.round(nx)}px`;
+        this.container.style.top  = `${Math.round(ny)}px`;
+      });
+
+      const finish = (e) => {
+        if (!drag) return;
+        pill.classList.remove('dragging');
+        try { pill.releasePointerCapture(e.pointerId); } catch {}
+        if (drag.moved) {
+          const rect = this.container.getBoundingClientRect();
+          this._writeSavedPos({ x: Math.round(rect.left), y: Math.round(rect.top) });
+        }
+        drag = null;
+      };
+      pill.addEventListener('pointerup', finish);
+      pill.addEventListener('pointercancel', finish);
+
+      // Keep the saved position inside the viewport on resize so the pill
+      // never gets stranded off-screen.
+      this._resizeClamp = () => {
+        if (!this.container) return;
+        const left = parseFloat(this.container.style.left);
+        const top = parseFloat(this.container.style.top);
+        if (Number.isNaN(left) || Number.isNaN(top)) return;
+        const w = this.container.offsetWidth;
+        const h = this.container.offsetHeight;
+        const margin = 4;
+        const maxX = Math.max(margin, window.innerWidth - w - margin);
+        const maxY = Math.max(margin, window.innerHeight - h - margin);
+        const nx = Math.min(Math.max(margin, left), maxX);
+        const ny = Math.min(Math.max(margin, top), maxY);
+        if (nx !== left || ny !== top) {
+          this.container.style.left = `${Math.round(nx)}px`;
+          this.container.style.top = `${Math.round(ny)}px`;
+          this._writeSavedPos({ x: Math.round(nx), y: Math.round(ny) });
+        }
+      };
+      window.addEventListener('resize', this._resizeClamp);
+    }
+
+    _readSavedPos() {
+      try {
+        const raw = localStorage.getItem('__unibrowse_sr_overlay_pos');
+        if (!raw) return null;
+        const p = JSON.parse(raw);
+        if (typeof p?.x !== 'number' || typeof p?.y !== 'number') return null;
+        return p;
+      } catch { return null; }
+    }
+    _writeSavedPos(pos) {
+      try { localStorage.setItem('__unibrowse_sr_overlay_pos', JSON.stringify(pos)); } catch {}
     }
 
     _openAnnotation() {
@@ -148,6 +265,7 @@
     destroy() {
       try { this.activeAnnotation?.finish(); } catch {}
       try { chrome.runtime?.onMessage?.removeListener?.(this._msgListener); } catch {}
+      try { if (this._resizeClamp) window.removeEventListener('resize', this._resizeClamp); } catch {}
       if (this.container?.parentNode) this.container.parentNode.removeChild(this.container);
       window.__unibrowseSessionRecordOverlay = null;
     }

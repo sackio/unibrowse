@@ -7,6 +7,7 @@ import {
   PressKeyTool,
   ScrollTool,
   ScrollToElementTool,
+  SetDeviceMetricsTool,
   WaitTool,
 } from "@/types/tool-schemas";
 
@@ -208,6 +209,47 @@ export const scrollToElement: Tool = {
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to scroll to element: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+/**
+ * Override the attached tab's viewport size + mobile flag via CDP
+ * Emulation.setDeviceMetricsOverride. Standard DevTools-style emulation —
+ * the renderer paints at the requested dimensions regardless of the actual
+ * window size, so it works even on Xvfb-headful sidecar chromiums whose
+ * window has a real minimum width. Pass `reset: true` to clear the override.
+ */
+export const setDeviceMetrics: Tool = {
+  schema: {
+    name: SetDeviceMetricsTool.shape.name.value,
+    description: SetDeviceMetricsTool.shape.description.value,
+    inputSchema: zodToJsonSchema(SetDeviceMetricsTool.shape.arguments),
+  },
+  handle: async (context, params) => {
+    try {
+      const { max_tokens } = params || {};
+      await context.ensureAttachedFromParams(params);
+      const validatedParams = SetDeviceMetricsTool.shape.arguments.parse(params);
+      if (!validatedParams.reset && (validatedParams.width === undefined || validatedParams.height === undefined)) {
+        return errorResponse(
+          "width and height are required unless reset:true",
+          false, undefined, max_tokens,
+        );
+      }
+      await context.sendSocketMessage("browser_set_device_metrics", validatedParams);
+      if (validatedParams.reset) {
+        return textResponse("Device metrics override cleared", max_tokens);
+      }
+      const dpr = validatedParams.deviceScaleFactor ?? 1;
+      const mob = validatedParams.mobile ? " (mobile)" : "";
+      return textResponse(
+        `Device metrics overridden: ${validatedParams.width}×${validatedParams.height} @ ${dpr}x${mob}`,
+        max_tokens,
+      );
+    } catch (error) {
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to set device metrics: ${error.message}`, false, error, max_tokens);
     }
   },
 };

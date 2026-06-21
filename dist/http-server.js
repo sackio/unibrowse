@@ -92,6 +92,7 @@ import {
   selectOption,
   setClipboard,
   setCookie,
+  setDeviceMetrics,
   setNetworkConditions,
   setTabLabel,
   snapshot,
@@ -106,7 +107,7 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-DJWOWZO5.js";
+} from "./chunk-TO7A5RDW.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -339,6 +340,7 @@ var commonTools = [
   pressKey,
   scroll,
   scrollToElement,
+  setDeviceMetrics,
   wait
 ];
 var customTools = [
