@@ -23,6 +23,7 @@
  */
 
 import type { Context } from "@/context";
+import { mongodb } from "@/utils/mongodb";
 
 /** Typed error class for ctx.* failures. */
 export class RoutineError extends Error {
@@ -262,6 +263,56 @@ export function buildCtx(context: Context, defaults: CtxBaseOpts) {
           } catch {/* best-effort */}
         },
       };
+    },
+
+    /**
+     * Scroll the page by a pixel delta (wraps browser_scroll).
+     * `y` is required (positive = down, negative = up); `x` optional (default 0).
+     */
+    async scroll(y: number, opts: CtxBaseOpts & { x?: number } = {}) {
+      return await callTool("scroll", "browser_scroll",
+        { x: opts.x ?? 0, y, ...mergeTarget(opts) }, mergeTarget(opts));
+    },
+
+    /**
+     * Execute a stored macro by id from within this routine and return its
+     * result — lets a routine COMPOSE existing extraction/util macros instead
+     * of inlining their code. `page`-kind macros are wrapped + evaluated in the
+     * routine's target tab (identical path to browser_execute_macro's page
+     * branch, so the macro sees `params` and returns its normal value).
+     * `routine`-kind macros run nested via runRoutine, sharing this Context +
+     * target binding. NOTE: nested routine-kind calls are unguarded against
+     * self-recursion — don't have a routine executeMacro itself.
+     */
+    async executeMacro(id: string, macroParams: Record<string, any> = {}, opts: CtxBaseOpts = {}) {
+      if (!mongodb.isConnected()) await mongodb.connect();
+      const macro: any = await mongodb.getMacrosCollection().findOne({ id });
+      if (!macro) throw new RoutineError("macro-not-found", `ctx.executeMacro: no macro with id "${id}"`);
+      const targetOpts = mergeTarget(opts);
+      if (macro.kind === "routine") {
+        return await runRoutine(macro.code as string, macroParams, context, {
+          tabTarget: targetOpts.tabTarget, extensionId: targetOpts.extensionId,
+          agent: targetOpts.agent, takeover: targetOpts.takeover,
+        });
+      }
+      // page-kind: wrap + eval in the page, mirroring executeMacro's legacy IIFE path.
+      const wrapped = `
+        return (async function() {
+          const macroFunction = ${macro.code};
+          const params = ${JSON.stringify(macroParams || {})};
+          const result = typeof macroFunction === 'function' ? await macroFunction(params) : await macroFunction;
+          return result;
+        })()
+      `;
+      try {
+        return await context.sendSocketMessage(
+          "browser_evaluate",
+          { expression: wrapped } as any,
+          targetOpts as any,
+        );
+      } catch (e) {
+        throw wrapErr("macro-eval-error", "executeMacro", e);
+      }
     },
   };
 }
