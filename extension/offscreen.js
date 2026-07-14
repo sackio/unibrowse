@@ -18,6 +18,16 @@ class OffscreenManager {
     // Tab capture recording state — one recorder per tab (keyed by tabId or 'default')
     this.recorders = new Map();
 
+    // Holding pen for stopped recordings' base64 — keyed by tabId. Lives just
+    // long enough for the SW to fetch all chunks via OFFSCREEN_GET_VIDEO_CHUNK
+    // then call OFFSCREEN_RELEASE_VIDEO. The chunked transfer exists because
+    // chrome.runtime.sendMessage hard-caps at 64 MiB per response payload —
+    // a single ~5min recording at 1280×720 24fps regularly clears that
+    // (diagnosed 2026-06-27 by ben from the offscreen error log).
+    this.pendingVideos = new Map(); // tabId -> { videoBase64, mimeType, byteLength, createdAt }
+    // 32 MiB of base64 ≈ 24 MiB raw — comfortably under chrome's per-message cap.
+    this.VIDEO_CHUNK_SIZE = 32 * 1024 * 1024;
+
     console.log('[Offscreen] OffscreenManager constructing...');
 
     try {
@@ -198,14 +208,73 @@ class OffscreenManager {
           break;
 
         case 'OFFSCREEN_STOP_TAB_RECORDING': {
-          const videoData = await this.stopTabRecording(message.tabId ?? 'default');
+          const tabKey = message.tabId ?? 'default';
+          const videoData = await this.stopTabRecording(tabKey);
           const bytes = new Uint8Array(videoData.arrayBuffer);
           let binary = '';
-          const chunkSize = 8192;
-          for (let i = 0; i < bytes.byteLength; i += chunkSize) {
-            binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + chunkSize, bytes.byteLength)));
+          const stringifyChunkSize = 8192; // avoid String.fromCharCode stack overflow
+          for (let i = 0; i < bytes.byteLength; i += stringifyChunkSize) {
+            binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + stringifyChunkSize, bytes.byteLength)));
           }
-          sendResponse({ success: true, videoBase64: btoa(binary), mimeType: videoData.mimeType, byteLength: videoData.arrayBuffer.byteLength });
+          const videoBase64 = btoa(binary);
+          // Inline path for small recordings — still works the same as before.
+          // Cuts off well below chrome's 64 MiB cap so we never hit it.
+          if (videoBase64.length <= this.VIDEO_CHUNK_SIZE) {
+            sendResponse({
+              success: true,
+              videoBase64,
+              mimeType: videoData.mimeType,
+              byteLength: videoData.arrayBuffer.byteLength,
+              chunked: false,
+            });
+          } else {
+            // Big recording: stash + return metadata; caller pulls chunks.
+            this.pendingVideos.set(tabKey, {
+              videoBase64,
+              mimeType: videoData.mimeType,
+              byteLength: videoData.arrayBuffer.byteLength,
+              createdAt: Date.now(),
+            });
+            const totalLen = videoBase64.length;
+            const chunkCount = Math.ceil(totalLen / this.VIDEO_CHUNK_SIZE);
+            console.log(`[Offscreen] Tab ${tabKey} video too large (${totalLen} b64 chars) — sending in ${chunkCount} chunks of ${this.VIDEO_CHUNK_SIZE}`);
+            sendResponse({
+              success: true,
+              chunked: true,
+              tabId: tabKey,
+              mimeType: videoData.mimeType,
+              byteLength: videoData.arrayBuffer.byteLength,
+              totalBase64Length: totalLen,
+              chunkSize: this.VIDEO_CHUNK_SIZE,
+              chunkCount,
+            });
+          }
+          break;
+        }
+
+        case 'OFFSCREEN_GET_VIDEO_CHUNK': {
+          const tabKey = message.tabId ?? 'default';
+          const pending = this.pendingVideos.get(tabKey);
+          if (!pending) {
+            sendResponse({ success: false, error: 'No pending video for tab (already released or never stopped)' });
+            break;
+          }
+          const idx = message.chunkIndex | 0;
+          const start = idx * this.VIDEO_CHUNK_SIZE;
+          if (start >= pending.videoBase64.length) {
+            sendResponse({ success: false, error: 'chunkIndex out of range' });
+            break;
+          }
+          const chunk = pending.videoBase64.slice(start, start + this.VIDEO_CHUNK_SIZE);
+          const isLast = (start + chunk.length) >= pending.videoBase64.length;
+          sendResponse({ success: true, chunk, chunkIndex: idx, isLast });
+          break;
+        }
+
+        case 'OFFSCREEN_RELEASE_VIDEO': {
+          const tabKey = message.tabId ?? 'default';
+          const had = this.pendingVideos.delete(tabKey);
+          sendResponse({ success: true, released: had });
           break;
         }
 

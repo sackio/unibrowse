@@ -19,6 +19,7 @@ class PopupController {
       sessionRecordSection: document.getElementById('session-record-section'),
       sessionRecordBtn: document.getElementById('session-record-btn'),
       sessionRecordStats: document.getElementById('session-record-stats'),
+      attachCurrentTabBtn: document.getElementById('attach-current-tab-btn'),
     };
 
     this.currentState = null;
@@ -57,6 +58,89 @@ class PopupController {
     this.elements.sessionRecordBtn.addEventListener('click', () => {
       this.handleSessionRecordClick();
     });
+
+    this.elements.attachCurrentTabBtn.addEventListener('click', () => {
+      this.handleAttachCurrentTabClick();
+    });
+  }
+
+  /**
+   * "Attach this tab" — one-click attach the currently focused tab.
+   * Skips the find-it-in-the-list grind. Catches un-attachable-tab errors
+   * (chrome-extension:// owned by other extensions, chrome://, etc.) and
+   * shows a useful hint instead of the raw chrome.debugger error.
+   */
+  async handleAttachCurrentTabClick() {
+    const btn = this.elements.attachCurrentTabBtn;
+    try {
+      btn.disabled = true;
+      const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (!tab) {
+        this.showError('No active tab found.');
+        btn.disabled = false;
+        return;
+      }
+      if (this._isUnattachableUrl(tab.url)) {
+        this.showError(this._unattachableHint(tab.url));
+        btn.disabled = false;
+        return;
+      }
+      await this.attachToTab(tab.id);
+    } catch (error) {
+      console.error('Attach current tab failed:', error);
+      this.showError(this._friendlyAttachError(error));
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  /**
+   * Tabs at these URL schemes can't be debugged by any extension — chrome blocks
+   * chrome.debugger.attach on them. chrome-extension:// is allowed only when
+   * the URL is in OUR extension's own namespace; any other extension's pages
+   * (New Tab overrides like Momentum/Notion, PDF viewer, other extensions'
+   * options pages) are blocked with "Cannot access a chrome-extension:// URL
+   * of different extension".
+   */
+  _isUnattachableUrl(url) {
+    if (!url) return true;
+    const blocked = ['chrome://', 'chrome-search://', 'chrome-untrusted://', 'devtools://', 'view-source://', 'about:'];
+    if (blocked.some(p => url.startsWith(p))) return true;
+    if (url.startsWith('chrome-extension://')) {
+      // Allow our own extension pages (popup, options, review.html) — but those
+      // shouldn't be in the attach list anyway since the popup itself isn't a tab.
+      const ourPrefix = `chrome-extension://${chrome.runtime.id}/`;
+      return !url.startsWith(ourPrefix);
+    }
+    return false;
+  }
+
+  _unattachableHint(url) {
+    if (!url) return 'This tab has no URL — navigate it to a real page first.';
+    if (url.startsWith('chrome-extension://')) {
+      return 'This tab is owned by another extension (likely a New Tab override or PDF viewer). Chrome blocks debugging other extensions’ pages — navigate this tab to a regular URL (e.g. https://example.com) first.';
+    }
+    if (url.startsWith('chrome://') || url.startsWith('chrome-search://') || url.startsWith('chrome-untrusted://')) {
+      return 'Chrome’s built-in pages (chrome://...) can’t be debugged by extensions. Navigate to a regular URL first.';
+    }
+    if (url.startsWith('devtools://') || url.startsWith('view-source://') || url.startsWith('about:')) {
+      return 'This kind of page can’t be attached. Navigate to a regular URL first.';
+    }
+    return 'This tab can’t be attached.';
+  }
+
+  _friendlyAttachError(error) {
+    const msg = error?.message || String(error || 'Failed to attach to tab');
+    if (/Cannot access a chrome-extension:\/\/ URL of different extension/i.test(msg)) {
+      return 'This tab is owned by another extension (likely a New Tab override or PDF viewer). Chrome blocks debugging other extensions’ pages — navigate this tab to a regular URL (e.g. https://example.com) first.';
+    }
+    if (/cannot access (?:a )?chrome[:\/]/i.test(msg)) {
+      return 'Chrome’s built-in pages can’t be debugged by extensions. Navigate to a regular URL first.';
+    }
+    if (/No tab with given id/i.test(msg)) {
+      return 'That tab is no longer open. Refresh the tab list.';
+    }
+    return msg;
   }
 
   /**
@@ -198,8 +282,14 @@ class PopupController {
     const attachedTabIds = new Set(this.attachedTabs.map(t => t.tabId));
 
     this.windows.forEach((window, index) => {
-      // Filter out attached tabs
-      const unattachedTabs = window.tabs.filter(tab => !attachedTabIds.has(tab.id));
+      // Filter out attached tabs AND tabs we can't attach to anyway
+      // (chrome://, other extensions' chrome-extension://, devtools://, etc.).
+      // chrome.debugger.attach throws "Cannot access a chrome-extension:// URL
+      // of different extension" for New Tab overrides (Momentum/Notion) + the
+      // PDF viewer; hiding them upfront beats a confusing error after click.
+      const unattachedTabs = window.tabs
+        .filter(tab => !attachedTabIds.has(tab.id))
+        .filter(tab => !this._isUnattachableUrl(tab.url));
 
       // Skip windows with no unattached tabs
       if (unattachedTabs.length === 0) {
@@ -284,11 +374,11 @@ class PopupController {
         // Refresh UI
         await this.loadState();
       } else {
-        this.showError(response.error || 'Failed to attach to tab');
+        this.showError(this._friendlyAttachError({ message: response.error }) || 'Failed to attach to tab');
       }
     } catch (error) {
       console.error('Failed to attach to tab:', error);
-      this.showError(error.message);
+      this.showError(this._friendlyAttachError(error));
     }
   }
 
@@ -488,10 +578,12 @@ class PopupController {
       this.elements.attachedTabsSection.style.display = 'block';
       this.elements.tabsSection.style.display = 'block';
       this.elements.sessionRecordSection.style.display = 'block';
+      this.elements.attachCurrentTabBtn.style.display = 'block';
     } else {
       this.elements.attachedTabsSection.style.display = 'none';
       this.elements.tabsSection.style.display = 'none';
       this.elements.sessionRecordSection.style.display = 'none';
+      this.elements.attachCurrentTabBtn.style.display = 'none';
     }
 
     // Update session record button state

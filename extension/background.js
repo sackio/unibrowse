@@ -446,6 +446,29 @@ class TabManager {
    */
   async attachTab(tabId, url, title, options = {}) {
     try {
+      // Bail early on URLs we KNOW chrome will reject. Prevents the cascade
+      // of [CDP] / [TabManager] / [Background] error logs ben pasted on
+      // 2026-06-27 when a tab was an other-extension's New Tab override.
+      // Without this guard cdp.attach() throws "Cannot access a
+      // chrome-extension:// URL of different extension", which the retry
+      // path then eats 5x before giving up — and on every keepalive
+      // pass after that.
+      if (url && (url.startsWith('chrome-extension://') ||
+                  url.startsWith('chrome://') ||
+                  url.startsWith('chrome-search://') ||
+                  url.startsWith('chrome-untrusted://') ||
+                  url.startsWith('devtools://') ||
+                  url.startsWith('view-source://') ||
+                  url.startsWith('edge://') ||
+                  (url.startsWith('about:') && url !== 'about:blank' && url !== 'about:blank#blocked'))) {
+        const friendly = url.startsWith('chrome-extension://')
+          ? 'This tab is owned by another extension (likely a New Tab override or PDF viewer). Chrome blocks debugging other extensions\' pages — navigate to a regular URL first.'
+          : `This page (${url}) can't be debugged by extensions. Navigate to a regular URL first.`;
+        const err = new Error(friendly);
+        err.code = 'UNATTACHABLE_URL';
+        throw err;
+      }
+
       // Reservation: when an `agent` is supplied, claim ownership before
       // anything else. Throws `tab-reserved` if another agent already owns
       // it and takeover isn't set, leaving the tab state untouched.
@@ -1031,20 +1054,21 @@ class BackgroundController {
 
         // Check if tab is at a restricted URL (another extension interfering)
         if (this.isRestrictedUrl(currentTab.url)) {
-          console.log(`[Background] Tab at restricted URL (${currentTab.url}), attempt ${attemptNumber + 1}/${maxAttempts}`);
-
-          if (attemptNumber < maxAttempts - 1) {
-            console.log(`[Background] Will retry reattachment in ${delay * 2}ms...`);
+          // chrome-extension:// (other extensions' pages) is permanently
+          // un-attachable — bail immediately instead of cycling 5 retries.
+          // Only the transient "page is still loading and currently routes
+          // through chrome://" pattern deserves a single retry, and that
+          // resolves within the first 500ms backoff, so cap at 1 retry max.
+          const isPermanentBlock = currentTab.url.startsWith('chrome-extension://');
+          const remainingRetries = isPermanentBlock ? 0 : (1 - attemptNumber);
+          console.log(`[Background] Tab at restricted URL (${currentTab.url}), giving up${isPermanentBlock ? ' (other extension owns it)' : ''}`);
+          if (remainingRetries > 0) {
             this.attemptReattachWithRetry(tabId, attemptNumber + 1, maxAttempts);
             return;
-          } else {
-            console.error('[Background] Max reattachment attempts reached while tab at restricted URL');
-            this.isReattaching = false;
-            // Don't disconnect - keep WebSocket alive even without attached tabs
-            console.log('[Background] Keeping WebSocket connected despite tab detachment');
-            this.state.temporarilyDetached = true;
-            return;
           }
+          this.isReattaching = false;
+          this.state.temporarilyDetached = true;
+          return;
         }
 
         // Tab is at a normal URL, attempt reattachment
@@ -1057,24 +1081,21 @@ class BackgroundController {
       } catch (error) {
         const errorMsg = error.message || '';
 
-        // Check if error is due to restricted URL
+        // Check if error is due to restricted URL.
+        // "Cannot access a chrome-extension:// URL of different extension" =
+        // permanent; bail immediately. Plain "Cannot access" without
+        // chrome-extension hint MIGHT be transient (e.g. a redirect through
+        // chrome://) so allow ONE retry.
         if (errorMsg.includes('chrome-extension://') || errorMsg.includes('Cannot access')) {
-          console.log(`[Background] Reattachment blocked by extension interference (attempt ${attemptNumber + 1}/${maxAttempts})`);
-
-          // Retry if we haven't exceeded max attempts
-          if (attemptNumber < maxAttempts - 1) {
-            const nextDelay = baseDelay * Math.pow(2, attemptNumber + 1);
-            console.log(`[Background] Will retry reattachment in ${nextDelay}ms...`);
+          const isPermanent = errorMsg.includes('chrome-extension://');
+          if (!isPermanent && attemptNumber < 1) {
             this.attemptReattachWithRetry(tabId, attemptNumber + 1, maxAttempts);
             return;
-          } else {
-            console.error('[Background] Max reattachment attempts reached, giving up');
-            this.isReattaching = false;
-            // Don't disconnect - keep WebSocket alive even without attached tabs
-            console.log('[Background] Keeping WebSocket connected despite tab detachment');
-            this.state.temporarilyDetached = true;
-            return;
           }
+          console.warn('[Background] Reattachment blocked' + (isPermanent ? ' (other extension owns tab)' : ' (restricted URL)') + ' — giving up');
+          this.isReattaching = false;
+          this.state.temporarilyDetached = true;
+          return;
         }
 
         // Check if tab was actually closed
@@ -1125,8 +1146,20 @@ class BackgroundController {
         }
 
         if (this.isRestrictedUrl(currentTab.url)) {
-          if (attempt < maxAttempts - 1) {
-            console.log(`[Background] TabManager tab ${tabId} on restricted URL, retrying...`);
+          // For an other-extension chrome-extension:// URL, the situation
+          // will never resolve — chrome won't let us debug it ever. Stop
+          // retrying AND drop the tab from the attached-tabs map so future
+          // keepalive ticks don't re-discover it and fire the same chain
+          // of errors. (Diagnosed 2026-06-27 from ben's MacBook log spam.)
+          if (currentTab.url.startsWith('chrome-extension://')) {
+            console.warn(`[Background] TabManager tab ${tabId} owned by another extension (${currentTab.url}); removing from attached-tabs`);
+            this.tabManager.attachedTabs.delete(tabId);
+            if (this.tabManager.lastUsedTabId === tabId) this.tabManager.lastUsedTabId = null;
+            return;
+          }
+          // For chrome:// / devtools:// / etc., a single retry covers transient
+          // navigation; beyond that, stop.
+          if (attempt < 1) {
             this._attemptTabManagerReattach(tabId, tabInfo, attempt + 1, maxAttempts);
           } else {
             console.warn(`[Background] TabManager tab ${tabId} reattach gave up (restricted URL)`);
@@ -2515,22 +2548,54 @@ class BackgroundController {
           return { tabId: targetTabId, label: tabInfo.label, url: tabInfo.url };
         }
 
-        // CDP session died (navigation killed it, retry exhausted) — re-attach now
+        // CDP session died (navigation killed it, retry exhausted, or the tab
+        // was closed while the SW was dormant so chrome.tabs.onRemoved never
+        // fired). Verify the underlying tab still exists before re-attaching.
+        const liveTab = await chrome.tabs.get(targetTabId).catch(() => null);
+
+        if (!liveTab) {
+          // The tab is gone. If we don't prune the stale entry here, it remains
+          // the last-used pointer and every untargeted ensure_attached (e.g. the
+          // create_tab / navigate pre-flight) falls back to it and throws
+          // "No tab with id: <dead>" — wedging the whole extension until manually
+          // cleared. Prune it (detachTab also advances lastUsedTabId off this id),
+          // then re-resolve a live target instead of throwing.
+          console.warn('[Background] Attached tab', targetTabId, 'no longer exists; pruning stale registry entry');
+          await this.tabManager.detachTab(targetTabId).catch(() => {
+            // Best-effort: guarantee the map entry is gone even if detach throws
+            this.tabManager.attachedTabs.delete(targetTabId);
+            if (this.tabManager.lastUsedTabId === targetTabId) this.tabManager.lastUsedTabId = null;
+          });
+          if (this.state.tabId === targetTabId) {
+            this.state.tabId = null;
+            this.state.tabUrl = null;
+            this.state.tabTitle = null;
+            this.state.originalTabTitle = null;
+          }
+          if (tabId != null && targetTabId === tabId) {
+            // Caller explicitly asked for this now-dead tab — registry is clean
+            // now, so surface the not-found error rather than silently retargeting.
+            throw new Error(`No tab with id: ${targetTabId}`);
+          }
+          // targetTabId came from the last-used fallback; re-resolve from scratch.
+          return await this.handleEnsureAttached({ tabId: null, label: null, autoOpenUrl: null });
+        }
+
+        // Tab still exists — re-attach now (unless it navigated to a restricted URL)
         console.log('[Background] Tab in map but CDP disconnected, re-attaching:', targetTabId);
         try {
-          const tab = await chrome.tabs.get(targetTabId).catch(() => null);
-          if (tab && !this.isRestrictedUrl(tab.url)) {
+          if (!this.isRestrictedUrl(liveTab.url)) {
             await tabInfo.cdp.attach(targetTabId);
-            tabInfo.url = tab.url;
-            tabInfo.title = tab.title;
+            tabInfo.url = liveTab.url;
+            tabInfo.title = liveTab.title;
             tabInfo.lastUsedAt = Date.now();
             this.tabManager.markUsed(targetTabId);
             this.state.tabId = targetTabId;
-            this.state.tabUrl = tab.url;
-            this.state.tabTitle = tab.title;
+            this.state.tabUrl = liveTab.url;
+            this.state.tabTitle = liveTab.title;
             await this.injectBackgroundCapture(targetTabId).catch(() => {});
             console.log('[Background] Re-attached to tab after dead session:', targetTabId);
-            return { tabId: targetTabId, label: tabInfo.label, url: tab.url };
+            return { tabId: targetTabId, label: tabInfo.label, url: liveTab.url };
           }
         } catch (reattachErr) {
           console.warn('[Background] Re-attach failed, removing from map for fresh attach:', reattachErr.message);
@@ -3739,6 +3804,26 @@ class BackgroundController {
       tabId = activeTab.id;
       startUrl = activeTab.url || '';
     }
+
+    // Auto-attach the debugger to the recording tab if it isn't already.
+    // Without this, popup-driven recording works for rrweb (script injection
+    // is debugger-independent) but agent tools targeting the same tab can't
+    // act on it. Doing it here removes the "click Attach, then click Record"
+    // grind ben hit on 2026-06-27.
+    if (!this.tabManager.attachedTabs.has(tabId)) {
+      try {
+        await this.handleEnsureAttached({ tabId });
+      } catch (attachErr) {
+        sendResponse({
+          success: false,
+          error: `Couldn't attach to the recording tab: ${attachErr?.message || attachErr}. ` +
+            'If this tab is owned by another extension (e.g. a New Tab override), ' +
+            'navigate to a regular URL first then retry.'
+        });
+        return;
+      }
+    }
+
     const sessionId = `sr-${Date.now()}`;
     const startTime = Date.now();
 
@@ -3867,13 +3952,41 @@ class BackgroundController {
     const lastPage = recording.pages[recording.pages.length - 1];
     if (lastPage && !lastPage.endTime) lastPage.endTime = endTime;
 
-    // Stop all tab videos
+    // Stop all tab videos. For recordings whose base64 is small enough to fit
+    // in a single chrome.runtime.sendMessage response (<32 MiB), the offscreen
+    // returns videoBase64 inline. For larger recordings (which previously
+    // blew up with "Message exceeded maximum allowed size of 64MiB"), the
+    // offscreen returns metadata + holds the data, and we fetch it in chunks.
     const tabVideos = []; // { tabId, videoBase64, mimeType }
     for (const recordedTabId of (recording.recordedTabIds || [])) {
       try {
         const videoResponse = await chrome.runtime.sendMessage({ type: 'OFFSCREEN_STOP_TAB_RECORDING', tabId: recordedTabId });
-        if (videoResponse?.success && videoResponse.videoBase64) {
-          tabVideos.push({ tabId: recordedTabId, videoBase64: videoResponse.videoBase64, mimeType: videoResponse.mimeType || 'video/webm' });
+        if (!videoResponse?.success) {
+          console.warn(`[Background] Video stop returned no success for tab ${recordedTabId}`);
+          continue;
+        }
+        let videoBase64 = videoResponse.videoBase64;
+        if (videoResponse.chunked) {
+          const { chunkCount, totalBase64Length, tabId: tabKey } = videoResponse;
+          console.log(`[Background] Tab ${recordedTabId} video chunked: ${chunkCount} chunks, total ${totalBase64Length} b64 chars`);
+          const parts = new Array(chunkCount);
+          for (let i = 0; i < chunkCount; i++) {
+            const chunkResp = await chrome.runtime.sendMessage({
+              type: 'OFFSCREEN_GET_VIDEO_CHUNK',
+              tabId: tabKey,
+              chunkIndex: i,
+            });
+            if (!chunkResp?.success) {
+              throw new Error(`Chunk ${i} fetch failed: ${chunkResp?.error || 'no response'}`);
+            }
+            parts[i] = chunkResp.chunk;
+          }
+          // Release the holding pen so memory frees regardless of upload outcome.
+          await chrome.runtime.sendMessage({ type: 'OFFSCREEN_RELEASE_VIDEO', tabId: tabKey }).catch(() => {});
+          videoBase64 = parts.join('');
+        }
+        if (videoBase64) {
+          tabVideos.push({ tabId: recordedTabId, videoBase64, mimeType: videoResponse.mimeType || 'video/webm' });
           console.log(`[Background] Video stopped for tab ${recordedTabId}:`, videoResponse.byteLength, 'bytes');
         }
       } catch (err) {
@@ -4428,10 +4541,26 @@ class BackgroundController {
     if (!response?.success) {
       throw new Error(response?.error || 'No active video recording to stop');
     }
-    // Offscreen now sends videoBase64 directly (avoids ArrayBuffer deserialization issues in MV3)
+    // Big-recording path: chunked transfer to dodge chrome's 64 MiB sendMessage cap.
+    let videoBase64 = response.videoBase64;
+    if (response.chunked) {
+      const { chunkCount, tabId: tabKey } = response;
+      const parts = new Array(chunkCount);
+      for (let i = 0; i < chunkCount; i++) {
+        const chunkResp = await chrome.runtime.sendMessage({
+          type: 'OFFSCREEN_GET_VIDEO_CHUNK',
+          tabId: tabKey,
+          chunkIndex: i,
+        });
+        if (!chunkResp?.success) throw new Error(`Chunk ${i}: ${chunkResp?.error || 'no response'}`);
+        parts[i] = chunkResp.chunk;
+      }
+      await chrome.runtime.sendMessage({ type: 'OFFSCREEN_RELEASE_VIDEO', tabId: tabKey }).catch(() => {});
+      videoBase64 = parts.join('');
+    }
     return {
       success: true,
-      videoBase64: response.videoBase64,
+      videoBase64,
       mimeType: response.mimeType || 'video/webm',
       byteLength: response.byteLength || 0,
     };
