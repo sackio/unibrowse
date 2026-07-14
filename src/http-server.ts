@@ -726,10 +726,14 @@ async function main() {
   // Connect MCP server to transport
   await httpMcpServer.connect(transport);
 
-  // MCP endpoint — LAN clients are always allowed; remote clients need a
-  // valid API key when UNIBROWSE_API_KEYS is set (same policy as /ws,
-  // /install/extension.zip, and /api/v1/recordings/*).
-  app.post("/mcp", requireApiKey, (req, res) => {
+  // MCP endpoint — LAN-ONLY, no remote access even with a valid API key.
+  // The MCP control plane can drive browsers (code execution), so it must
+  // never be reachable from the public internet when the server is
+  // reverse-proxied (browser.pushbuild.com). Remote off-LAN clients are the
+  // EXTENSION plane only (/ws + /install + recordings), which stay on
+  // requireApiKey. requireLan reads the effective client IP (XFF-aware behind
+  // the loopback/docker-bridge proxy) and 403s anything non-LAN.
+  app.post("/mcp", requireLan, (req, res) => {
     console.log(`[HTTP] New MCP request from ${req.ip}`);
     transport.handleRequest(req, res, req.body);
   });
@@ -746,6 +750,28 @@ async function main() {
   // Create WebSocket server on the same HTTP server
   const { createWebSocketServerFromHTTP } = await import("@/ws");
   const wss = createWebSocketServerFromHTTP(httpServer);
+
+  // WebSocket keepalive heartbeat. REMOTE extensions connect through a reverse
+  // proxy (browser.pushbuild.com → server4 nginx → here), which drops an IDLE
+  // WS at proxy_read_timeout (600s) → ~10-min reconnect churn (only remote/
+  // proxied extensions are affected; LAN-direct ones aren't). A server ping
+  // every 30s keeps frames flowing well under that window (the browser's WS
+  // auto-replies pong at the protocol level, so no extension change needed) AND
+  // reaps genuinely-dead peers (no pong within an interval → terminate).
+  const WS_HEARTBEAT_MS = 30_000;
+  wss.on("connection", (ws: any) => {
+    ws.isAlive = true;
+    ws.on("pong", () => { ws.isAlive = true; });
+  });
+  const wsHeartbeat = setInterval(() => {
+    for (const client of wss.clients) {
+      const ws = client as any;
+      if (ws.isAlive === false) { try { ws.terminate(); } catch { /* ignore */ } continue; }
+      ws.isAlive = false;
+      try { ws.ping(); } catch { /* ignore */ }
+    }
+  }, WS_HEARTBEAT_MS);
+  wss.on("close", () => clearInterval(wsHeartbeat));
 
   // Create MCP server with WebSocket for Chrome extension
   await createServerWithTools({

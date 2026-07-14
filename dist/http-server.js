@@ -107,15 +107,16 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-TO7A5RDW.js";
+} from "./chunk-TNIELSQE.js";
 import {
   extractKey,
   getEffectiveClientIP,
   isAuthEnabled,
   isLocalClient,
   isValidKey,
-  requireApiKey
-} from "./chunk-HZXH4WRF.js";
+  requireApiKey,
+  requireLan
+} from "./chunk-VESOCJNI.js";
 
 // src/http-server.ts
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -879,7 +880,7 @@ async function main() {
     // Stateless mode
   });
   await httpMcpServer.connect(transport);
-  app.post("/mcp", requireApiKey, (req, res) => {
+  app.post("/mcp", requireLan, (req, res) => {
     console.log(`[HTTP] New MCP request from ${req.ip}`);
     transport.handleRequest(req, res, req.body);
   });
@@ -890,8 +891,33 @@ async function main() {
     console.log(`[HTTP] Install page:  http://localhost:${port}/install`);
     console.log(`[HTTP] Auth policy:   ${isAuthEnabled() ? "LAN open, remote requires API key (UNIBROWSE_API_KEYS set)" : "open (no UNIBROWSE_API_KEYS \u2014 all clients allowed)"}`);
   });
-  const { createWebSocketServerFromHTTP } = await import("./ws-KEK7CW26.js");
+  const { createWebSocketServerFromHTTP } = await import("./ws-COLB2S7L.js");
   const wss = createWebSocketServerFromHTTP(httpServer);
+  const WS_HEARTBEAT_MS = 3e4;
+  wss.on("connection", (ws) => {
+    ws.isAlive = true;
+    ws.on("pong", () => {
+      ws.isAlive = true;
+    });
+  });
+  const wsHeartbeat = setInterval(() => {
+    for (const client of wss.clients) {
+      const ws = client;
+      if (ws.isAlive === false) {
+        try {
+          ws.terminate();
+        } catch {
+        }
+        continue;
+      }
+      ws.isAlive = false;
+      try {
+        ws.ping();
+      } catch {
+      }
+    }
+  }, WS_HEARTBEAT_MS);
+  wss.on("close", () => clearInterval(wsHeartbeat));
   await createServerWithTools({
     name: appConfig.name,
     version: package_default.version,

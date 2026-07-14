@@ -47,3 +47,14 @@ backups/macros_backup_*.json
 
 # Chrome isolated profiles (for testing)
 .chrome-profiles/
+# Chromium profile bind-mount (host dir) — contains live login/session cookies, NEVER commit
+chrome-profiles/
+
+# Runtime / scratch artifacts
+.claude/scheduled_tasks.lock
+.nfs*
+**/.nfs*
+*.backup-*
+
+# Session video recordings (runtime output, large binaries)
+recordings/

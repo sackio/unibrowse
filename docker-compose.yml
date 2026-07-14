@@ -42,8 +42,15 @@ services:
       NODE_ENV: production
       RECORDINGS_DIR: /app/recordings
       # Comma-separated list of valid API keys. Empty/unset = open mode (auth disabled).
-      # When set, /mcp + WebSocket upgrade + /install/extension.zip all require a valid key.
+      # When set: /ws + /install/extension.zip + /api/v1/recordings/* require a valid
+      # key for REMOTE clients (LAN clients never need one). /mcp is LAN-only (403 for
+      # remote, even with a key). See src/utils/auth.ts.
       UNIBROWSE_API_KEYS: ${UNIBROWSE_API_KEYS:-}
+      # Extra reverse-proxy peer IPs to trust for X-Forwarded-For (comma-separated).
+      # Required when the public TLS proxy is on another host (server4 nginx →
+      # office:9010): the container sees server4's LAN NIC as the peer, so it must be
+      # trusted here or its XFF (which marks the traffic remote) is ignored.
+      UNIBROWSE_TRUSTED_PROXIES: ${UNIBROWSE_TRUSTED_PROXIES:-}
       # When set, browser_launch_isolated_chrome POSTs to the chromium-host
       # sidecar instead of spawning chromium in-process. Decouples chromium
       # lifecycle from mcp-server lifecycle — restarts of this service no

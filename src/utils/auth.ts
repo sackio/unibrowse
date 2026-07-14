@@ -106,10 +106,26 @@ export function isLocalIP(ip: string | null | undefined): boolean {
  * peers are NOT trusted, so a remote client can't spoof XFF=192.168.x.x to
  * impersonate a LAN client.
  */
+// Extra reverse-proxy peer IPs to trust, declared via UNIBROWSE_TRUSTED_PROXIES
+// (comma-separated). Needed when the public TLS reverse proxy runs on a
+// DIFFERENT host than unibrowse (e.g. server4 nginx → office:9010): the
+// container then sees the proxy host's LAN NIC IP (e.g. 192.168.0.109) as the
+// peer, which is private but not loopback/docker-bridge, so without this it
+// would be treated as a LAN CLIENT and its X-Forwarded-For ignored — defeating
+// remote/key gating. Only the specific proxy IP(s) are trusted, never a whole
+// subnet.
+const EXTRA_TRUSTED_PROXIES = new Set(
+  (process.env.UNIBROWSE_TRUSTED_PROXIES || "")
+    .split(",")
+    .map(s => stripIPv4Mapped(s.trim()))
+    .filter(Boolean)
+);
+
 function isTrustedProxyPeer(ip: string): boolean {
   const n = stripIPv4Mapped(ip);
   if (n.startsWith("127.") || n === "::1" || n === "0.0.0.0") return true;
   if (/^172\.(1[6-9]|2\d|3[01])\./.test(n)) return true;
+  if (EXTRA_TRUSTED_PROXIES.has(n)) return true;
   return false;
 }
 

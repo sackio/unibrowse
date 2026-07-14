@@ -266,6 +266,31 @@ export function buildCtx(context: Context, defaults: CtxBaseOpts) {
     },
 
     /**
+     * Search browser history (chrome.history.search) for `text`, returned
+     * NEWEST-FIRST as [{ url, title, lastVisitTime, visitCount }]. This is a
+     * RELIABLE fallback for capturing a transient navigation the tab has already
+     * bounced away from — e.g. an OAuth callback URL that flashes through in <1s
+     * and forwards to the app. observeNavigations can miss such a cross-origin
+     * main-frame swap (the frame target is torn down mid-redirect), but history
+     * records the visit durably. `text` is a free-text query matched against URL
+     * + title substrings (e.g. "oauth/code/callback"). Pass {startTime} (epoch
+     * ms) to only return visits at/after a moment you stamped before the click,
+     * so a stale code from a prior run can't be mistaken for the fresh one. NOTE:
+     * history is browser-wide, not tab-scoped — filter/parse in the routine.
+     */
+    async searchHistory(text: string, opts: CtxBaseOpts & { maxResults?: number; startTime?: number } = {}) {
+      const targetOpts = mergeTarget(opts);
+      const res: any = await callTool(
+        "searchHistory",
+        "browser_search_history",
+        { text, maxResults: opts.maxResults ?? 20, startTime: opts.startTime, ...targetOpts },
+        targetOpts,
+      );
+      const items = (res?.results ?? []) as Array<{ url: string; title?: string; lastVisitTime?: number; visitCount?: number }>;
+      return items.slice().sort((a, b) => (b.lastVisitTime ?? 0) - (a.lastVisitTime ?? 0));
+    },
+
+    /**
      * Scroll the page by a pixel delta (wraps browser_scroll).
      * `y` is required (positive = down, negative = up); `x` optional (default 0).
      */
