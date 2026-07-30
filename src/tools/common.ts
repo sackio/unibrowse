@@ -277,8 +277,9 @@ export const setFileInput: Tool = {
         validatedParams,
       );
       const count = result?.count ?? validatedParams.paths.length;
+      const note = result?.note ? ` — NOTE: ${result.note}` : "";
       return textResponse(
-        `Set ${count} file(s) on ${validatedParams.selector}: ${validatedParams.paths.join(", ")}`,
+        `Set ${count} file(s) on ${validatedParams.selector}: ${validatedParams.paths.join(", ")}${note}`,
         max_tokens,
       );
     } catch (error) {

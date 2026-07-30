@@ -4499,10 +4499,13 @@ class BackgroundController {
       }
 
       // Set the files. This fires a trusted input+change on the element.
+      // Success = this call does not throw; CDP rejects if the input refuses the files.
       await cdp.sendCommand('DOM.setFileInputFiles', { files: paths, objectId });
 
-      // Read back how many files the input actually holds (and their names) so
-      // the caller gets confirmation rather than a blind success.
+      // Read back what the input holds NOW — INFORMATIONAL ONLY. React/controlled
+      // forms synchronously consume the File into component state and CLEAR
+      // input.files inside their change handler, so a 0 here is NOT a failure
+      // (observed live on united.com — 3/3 uploads succeeded while files.length read 0).
       const backRes = await cdp.sendCommand('Runtime.callFunctionOn', {
         objectId,
         functionDeclaration: 'function(){ const f = this.files; return JSON.stringify({ count: f ? f.length : 0, names: f ? Array.from(f).map(x => x.name) : [] }); }',
@@ -4511,13 +4514,22 @@ class BackgroundController {
       let back = { count: 0, names: [] };
       try { back = JSON.parse(backRes?.result?.value || '{}'); } catch (e) { /* ignore */ }
 
+      // `count`/`names` reflect what we SET (authoritative). `landed` is the
+      // possibly-React-cleared read-back — surface a note when it went to 0.
+      const requestedNames = paths.map(p => p.split(/[\\/]/).pop());
+      const cleared = back.count === 0 && paths.length > 0;
       return {
         success: true,
         selector,
         requested: paths.length,
-        count: back.count,
-        names: back.names,
+        count: paths.length,
+        names: requestedNames,
+        landed: back.count,
+        landedNames: back.names,
         multiple: !!meta.multiple,
+        note: cleared
+          ? 'input.files reads 0 after set — normal for React/controlled forms (they consume the File into state and clear the input). NOT a failure: verify via the form\'s own filename chip/UI, not files.length.'
+          : undefined,
       };
     } finally {
       try { await cdp.sendCommand('Runtime.releaseObject', { objectId }); } catch (e) { /* best-effort */ }

@@ -641,7 +641,7 @@ var SetDeviceMetricsTool = z.object({
 var SetFileInputTool = z.object({
   name: z.literal("browser_set_file_input"),
   description: z.literal(
-    "Attach local file(s) to an <input type=file> via CDP DOM.setFileInputFiles \u2014 the ONLY way to programmatically populate a file input (JS cannot set input.files for security). Resolves the input by CSS selector, sets its files, and fires 'input'+'change' so the page/form reacts. CRITICAL: the paths must be ABSOLUTE and exist ON THE BROWSER'S HOST filesystem \u2014 for isolated chromes that's the chromium-host sidecar container, where the bind-mounted profiles dir is visible at /app/.chrome-profiles/... (stage files there so the sidecar chrome can read them). For a multi-file input pass several paths; for single-file inputs pass one. Selector must match exactly one <input type=file>."
+    "Attach local file(s) to an <input type=file> via CDP DOM.setFileInputFiles \u2014 the ONLY way to programmatically populate a file input (JS cannot set input.files for security). Resolves the input by CSS selector, sets its files, and fires 'input'+'change' so the page/form reacts. CRITICAL: the paths must be ABSOLUTE and exist ON THE BROWSER'S HOST filesystem \u2014 for isolated chromes that's the chromium-host sidecar container, where the bind-mounted profiles dir is visible at /app/.chrome-profiles/... (stage files there so the sidecar chrome can read them). For a multi-file input pass several paths; for single-file inputs pass one. Selector must match exactly one <input type=file>. VERIFYING SUCCESS: do NOT rely on input.files afterward \u2014 React/controlled forms consume the File into state and CLEAR input.files synchronously, so files.length==0 is NORMAL and NOT a failure (the tool returns `count`=what was set, plus `landed`+a `note` when the input was cleared); confirm via the form's own filename chip/UI. SELECTORS on framework forms: the real <input type=file> is often hidden behind a styled dropzone/button and keyed by `id` (which may contain dots/brackets) rather than `name` \u2014 target the underlying input via input[id=\"...\"], not the visible button."
   ),
   arguments: z.object({
     selector: z.string().describe(
@@ -2084,8 +2084,9 @@ var setFileInput = {
         validatedParams
       );
       const count = result?.count ?? validatedParams.paths.length;
+      const note = result?.note ? ` \u2014 NOTE: ${result.note}` : "";
       return textResponse(
-        `Set ${count} file(s) on ${validatedParams.selector}: ${validatedParams.paths.join(", ")}`,
+        `Set ${count} file(s) on ${validatedParams.selector}: ${validatedParams.paths.join(", ")}${note}`,
         max_tokens
       );
     } catch (error) {
