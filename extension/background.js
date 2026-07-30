@@ -1901,6 +1901,7 @@ class BackgroundController {
     this.handlers['browser_scroll'] = this.handleScroll.bind(this);
     this.handlers['browser_scroll_to_element'] = this.handleScrollToElement.bind(this);
     this.handlers['browser_set_device_metrics'] = this.handleSetDeviceMetrics.bind(this);
+    this.handlers['browser_set_file_input'] = this.handleSetFileInput.bind(this);
 
     // Realistic input handlers (CDP-based)
     this.handlers['browser_realistic_mouse_move'] = this.handleRealisticMouseMove.bind(this);
@@ -4448,6 +4449,79 @@ class BackgroundController {
       mobile: !!mobile,
     });
     return { success: true, width, height, deviceScaleFactor: deviceScaleFactor ?? 1, mobile: !!mobile };
+  }
+
+  /**
+   * Attach local file(s) to an <input type=file> via CDP DOM.setFileInputFiles.
+   * JS cannot set input.files (security), so this is the only programmatic path.
+   * `paths` must exist on the BROWSER HOST filesystem (the chromium-host sidecar
+   * container for isolated chromes). CDP setFileInputFiles fires a TRUSTED
+   * 'input'+'change' on the input, so React/framework forms react correctly.
+   * DOM domain is enabled on attach (see cdp.js enableDomains), so no enable here.
+   */
+  async handleSetFileInput({ selector, paths, tabTarget }) {
+    const cdp = await this.tabManager.requireCDP(tabTarget);
+    if (!selector || typeof selector !== 'string') {
+      throw new Error('selector (CSS string) is required');
+    }
+    if (!Array.isArray(paths) || paths.length === 0) {
+      throw new Error('paths (non-empty array of absolute host file paths) is required');
+    }
+
+    // Resolve the element to a Runtime objectId (a live handle CDP DOM ops accept).
+    const evalRes = await cdp.sendCommand('Runtime.evaluate', {
+      expression: `document.querySelector(${JSON.stringify(selector)})`,
+      returnByValue: false,
+    });
+    if (evalRes && evalRes.exceptionDetails) {
+      const d = evalRes.exceptionDetails;
+      throw new Error(`Selector evaluation failed: ${d.exception?.description || d.text || 'unknown error'}`);
+    }
+    const objectId = evalRes?.result?.objectId;
+    if (!objectId) {
+      throw new Error(`No element matched selector: ${selector}`);
+    }
+
+    try {
+      // Guard: confirm it's actually an <input type=file>; capture `multiple`.
+      const metaRes = await cdp.sendCommand('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: 'function(){ return JSON.stringify({ tag: this.tagName, type: (this.type || ""), multiple: !!this.multiple }); }',
+        returnByValue: true,
+      });
+      let meta = {};
+      try { meta = JSON.parse(metaRes?.result?.value || '{}'); } catch (e) { /* ignore */ }
+      if ((meta.tag || '').toUpperCase() !== 'INPUT' || (meta.type || '').toLowerCase() !== 'file') {
+        throw new Error(`Selector "${selector}" matched <${(meta.tag || '?').toLowerCase()} type="${meta.type || '?'}">, not an <input type=file>`);
+      }
+      if (paths.length > 1 && !meta.multiple) {
+        throw new Error(`Selector "${selector}" is a single-file input but ${paths.length} paths were given; set one file at a time or target a [multiple] input`);
+      }
+
+      // Set the files. This fires a trusted input+change on the element.
+      await cdp.sendCommand('DOM.setFileInputFiles', { files: paths, objectId });
+
+      // Read back how many files the input actually holds (and their names) so
+      // the caller gets confirmation rather than a blind success.
+      const backRes = await cdp.sendCommand('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: 'function(){ const f = this.files; return JSON.stringify({ count: f ? f.length : 0, names: f ? Array.from(f).map(x => x.name) : [] }); }',
+        returnByValue: true,
+      });
+      let back = { count: 0, names: [] };
+      try { back = JSON.parse(backRes?.result?.value || '{}'); } catch (e) { /* ignore */ }
+
+      return {
+        success: true,
+        selector,
+        requested: paths.length,
+        count: back.count,
+        names: back.names,
+        multiple: !!meta.multiple,
+      };
+    } finally {
+      try { await cdp.sendCommand('Runtime.releaseObject', { objectId }); } catch (e) { /* best-effort */ }
+    }
   }
 
   async handleRealisticMouseMove({ x, y, duration, currentX, currentY, tabTarget }) {

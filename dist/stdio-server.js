@@ -83,6 +83,7 @@ import {
   setClipboard,
   setCookie,
   setDeviceMetrics,
+  setFileInput,
   setNetworkConditions,
   setTabLabel,
   snapshot,
@@ -96,7 +97,7 @@ import {
   type,
   updateMacro,
   wait
-} from "./chunk-TNIELSQE.js";
+} from "./chunk-LXWJKDCW.js";
 import "./chunk-VESOCJNI.js";
 
 // src/stdio-server.ts
@@ -114,6 +115,7 @@ var commonTools = [
   scroll,
   scrollToElement,
   setDeviceMetrics,
+  setFileInput,
   wait
 ];
 var customTools = [

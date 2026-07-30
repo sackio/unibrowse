@@ -50,6 +50,7 @@ const commonTools: Tool[] = [
   common.scroll,
   common.scrollToElement,
   common.setDeviceMetrics,
+  common.setFileInput,
   common.wait,
 ];
 

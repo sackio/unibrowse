@@ -47,6 +47,12 @@ export interface SocketMessageMap {
     reset?: boolean;
     tabTarget?: number | string;
   };
+  browser_set_file_input: {
+    selector: string;
+    paths: string[];
+    tabTarget?: number | string;
+    extensionId?: string;
+  };
 
   // Navigation observer — routine ctx.observeNavigations() backing primitives.
   // Subscription owns a regex + tabTarget; matches buffer onCommitted events.

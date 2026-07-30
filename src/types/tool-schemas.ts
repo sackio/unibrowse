@@ -224,6 +224,32 @@ export const SetDeviceMetricsTool = z.object({
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
+export const SetFileInputTool = z.object({
+  name: z.literal("browser_set_file_input"),
+  description: z.literal(
+    "Attach local file(s) to an <input type=file> via CDP DOM.setFileInputFiles — " +
+    "the ONLY way to programmatically populate a file input (JS cannot set input.files " +
+    "for security). Resolves the input by CSS selector, sets its files, and fires " +
+    "'input'+'change' so the page/form reacts. CRITICAL: the paths must be ABSOLUTE and " +
+    "exist ON THE BROWSER'S HOST filesystem — for isolated chromes that's the chromium-host " +
+    "sidecar container, where the bind-mounted profiles dir is visible at " +
+    "/app/.chrome-profiles/... (stage files there so the sidecar chrome can read them). " +
+    "For a multi-file input pass several paths; for single-file inputs pass one. " +
+    "Selector must match exactly one <input type=file>."
+  ),
+  arguments: z.object({
+    selector: z.string().describe(
+      "CSS selector for the target <input type=file> (e.g. 'input[type=file]', " +
+      "'#idFront', 'input[name=\"receipt\"]'). Must resolve to exactly one file input."
+    ),
+    paths: z.array(z.string()).min(1).describe(
+      "Absolute file path(s) on the BROWSER HOST (the chromium-host sidecar container for " +
+      "isolated chromes), e.g. ['/app/.chrome-profiles/_uploads/foo/id-front.jpg']. Order preserved. " +
+      "One path for a normal input; multiple for a `multiple` input."
+    ),
+  }).merge(TabTargetSchema).merge(ExtensionIdSchema).merge(MaxTokensSchema),
+});
+
 export const ListTabsTool = z.object({
   name: z.literal("browser_list_tabs"),
   description: z.literal("List all open Chrome browser tabs. NOTE: The tabIds returned here are Chrome tab IDs, only usable with browser_switch_tab and browser_close_tab. For targeting tabs in operations like browser_navigate/browser_snapshot, use browser_list_attached_tabs instead."),

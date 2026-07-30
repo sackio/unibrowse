@@ -8,6 +8,7 @@ import {
   ScrollTool,
   ScrollToElementTool,
   SetDeviceMetricsTool,
+  SetFileInputTool,
   WaitTool,
 } from "@/types/tool-schemas";
 
@@ -250,6 +251,39 @@ export const setDeviceMetrics: Tool = {
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to set device metrics: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+/**
+ * Attach local file(s) to an <input type=file> via CDP DOM.setFileInputFiles —
+ * the only programmatic way to populate a file input (JS can't set input.files).
+ * Paths must exist on the browser host (the chromium-host sidecar container for
+ * isolated chromes; stage into the bind-mounted /app/.chrome-profiles/...).
+ */
+export const setFileInput: Tool = {
+  schema: {
+    name: SetFileInputTool.shape.name.value,
+    description: SetFileInputTool.shape.description.value,
+    inputSchema: zodToJsonSchema(SetFileInputTool.shape.arguments),
+  },
+  handle: async (context, params) => {
+    try {
+      const { max_tokens } = params || {};
+      await context.ensureAttachedFromParams(params);
+      const validatedParams = SetFileInputTool.shape.arguments.parse(params);
+      const result: any = await context.sendSocketMessage(
+        "browser_set_file_input",
+        validatedParams,
+      );
+      const count = result?.count ?? validatedParams.paths.length;
+      return textResponse(
+        `Set ${count} file(s) on ${validatedParams.selector}: ${validatedParams.paths.join(", ")}`,
+        max_tokens,
+      );
+    } catch (error) {
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to set file input: ${error.message}`, false, error, max_tokens);
     }
   },
 };
