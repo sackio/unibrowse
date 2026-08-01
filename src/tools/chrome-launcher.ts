@@ -220,6 +220,16 @@ async function launchViaChromiumHost(
   });
   if (!launchResp.ok) {
     const text = await launchResp.text().catch(() => "");
+    // 409 = persistent-profile refusal, not a fault. Surface the sidecar's
+    // message verbatim rather than wrapping it in HTTP noise — it names the
+    // safe alternative, the reset cost, the owner to ask, and the override,
+    // in that order, and that ordering is the whole point.
+    if (launchResp.status === 409) {
+      try {
+        const body = JSON.parse(text);
+        if (body?.message) return errorResponse(body.message, false, undefined, max_tokens);
+      } catch { /* fall through to the generic form */ }
+    }
     return errorResponse(
       `chromium-host /launch returned ${launchResp.status}: ${text}`,
       false, undefined, max_tokens,

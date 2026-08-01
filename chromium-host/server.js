@@ -661,6 +661,14 @@ const server = http.createServer(async (req, res) => {
     }
     send(res, 404, { error: "no route", method: req.method, url: req.url });
   } catch (e) {
+    // A policy refusal is not a server fault. Without this the launch guard
+    // returned 500, which is indistinguishable from "the sidecar broke" — so
+    // a caller couldn't tell a deliberate refusal from an outage, and would
+    // reasonably retry it. 409 matches the DELETE refusal path.
+    if (e?.code === "EPERSISTENT") {
+      console.warn(`[chromium-host] refused (EPERSISTENT): ${String(e.message).split("\n")[0]}`);
+      return send(res, 409, { error: "EPERSISTENT", message: e.message });
+    }
     console.error(`[chromium-host] handler error:`, e);
     send(res, 500, { error: e.message });
   }
