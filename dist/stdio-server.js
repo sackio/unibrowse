@@ -9,6 +9,7 @@ import {
   clearCookies,
   clearHistory,
   click,
+  closeIsolatedChrome,
   closeTab,
   countElements,
   createBookmark,
@@ -97,7 +98,7 @@ import {
   type,
   updateMacro,
   wait
-} from "./chunk-VI3PJOEG.js";
+} from "./chunk-HD2U76GY.js";
 import "./chunk-VESOCJNI.js";
 
 // src/stdio-server.ts
@@ -190,7 +191,8 @@ var systemTools = [
   getVersion,
   getSystemInfo,
   getBrowserInfo,
-  launchIsolatedChrome
+  launchIsolatedChrome,
+  closeIsolatedChrome
 ];
 var networkTools = [
   getNetworkState,

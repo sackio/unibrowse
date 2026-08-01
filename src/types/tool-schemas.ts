@@ -1680,7 +1680,52 @@ export const LaunchIsolatedChromeTool = z.object({
     freshProfile: z
       .boolean()
       .optional()
-      .describe("Always start with a fresh profile, deleting any existing data (cookies, history, etc.). " +
-               "Default: true. Set to false to persist profile data between sessions."),
+      .describe("Always start with a fresh profile, DELETING any existing data (cookies, history, auth). " +
+               "Default: TRUE — note the destructive value is the default. Set to false to persist " +
+               "profile data between sessions. Profiles on the sidecar's persistent allowlist refuse " +
+               "to be wiped by this flag alone; see forceProfileName."),
+    forceProfileName: z
+      .string()
+      .optional()
+      .describe("Override for wiping a PERSISTENT profile with freshProfile:true. Must equal profileName " +
+               "verbatim, which is deliberate friction: a plain boolean force flag gets set once in a " +
+               "wrapper and silently inherited by every later call. Persistent profiles hold long-lived " +
+               "auth that is expensive to rebuild — prefer a freshProfile:false restart, which reuses the " +
+               "profile and self-heals. Overrides are logged and the owning session is DM'd."),
+  }).merge(MaxTokensSchema),
+});
+
+export const CloseIsolatedChromeTool = z.object({
+  name: z.literal("browser_close_isolated_chrome"),
+  description: z.literal(
+    "Shut down an isolated chromium launched by browser_launch_isolated_chrome, freeing its processes " +
+    "and its paired Xvfb display. This is the destroy counterpart to that tool — without it every " +
+    "launched instance leaks until someone reaps it by hand (browser_close_tab only reaps renderers " +
+    "and returns success while the browser lives on). PROCESS-ONLY: never deletes the profile " +
+    "directory, so auth state survives and the instance can be relaunched with freshProfile:false."
+  ),
+  arguments: z.object({
+    extensionId: z
+      .string()
+      .optional()
+      .describe("extensionId of the instance to close, as returned by browser_launch_isolated_chrome " +
+               "or browser_list_attached_tabs. Either this or profileName is required."),
+    profileName: z
+      .string()
+      .optional()
+      .describe("Profile name of the instance to close (e.g. 'swap-ben'). More reliable than " +
+               "extensionId for instances launched before the current mcp-server started. " +
+               "Either this or extensionId is required."),
+    forceProfileName: z
+      .string()
+      .optional()
+      .describe("Required to close an instance whose profile is on the persistent allowlist. Must equal " +
+               "the profile name verbatim. Persistent profiles are long-lived on purpose (e.g. auth " +
+               "brokers that look idle by design); closing one is cheap to recover from but should be " +
+               "deliberate. The owning session is notified."),
+    caller: z
+      .string()
+      .optional()
+      .describe("Your agent identifier, recorded in the override audit line and the owner notification."),
   }).merge(MaxTokensSchema),
 });

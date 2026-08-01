@@ -139,6 +139,7 @@ const systemTools: Tool[] = [
   system.getSystemInfo,
   system.getBrowserInfo,
   chromeLauncher.launchIsolatedChrome,
+  chromeLauncher.closeIsolatedChrome,
 ];
 
 const networkTools: Tool[] = [

@@ -3,7 +3,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import * as path from "path";
 import * as fs from "fs";
 import { fileURLToPath } from "url";
-import { LaunchIsolatedChromeTool } from "@/types/tool-schemas";
+import { LaunchIsolatedChromeTool, CloseIsolatedChromeTool } from "@/types/tool-schemas";
 import { textResponse, errorResponse, jsonResponse } from "@/utils/response-helpers";
 import type { Tool } from "./tool";
 
@@ -206,6 +206,12 @@ async function launchViaChromiumHost(
     width: validatedParams.width,
     height: validatedParams.height,
     serverHint: wsHint,
+    // Persistent-profile override. The sidecar refuses to wipe a profileDir
+    // on the persistent allowlist unless this NAMES the profile verbatim — a
+    // bare boolean would get set once in a wrapper and inherited by every
+    // later call, silently dissolving the friction it exists to create.
+    forceProfileName: (validatedParams as any).forceProfileName,
+    caller: (validatedParams as any).caller,
   };
   const launchResp = await fetch(`${hostUrl.replace(/\/$/, "")}/launch`, {
     method: "POST",
@@ -244,6 +250,21 @@ async function launchViaChromiumHost(
       break;
     }
     await new Promise((r) => setTimeout(r, 200));
+  }
+
+  // Tell the sidecar which extensionId belongs to this pid, so
+  // browser_close_isolated_chrome({extensionId}) can resolve it later. Stored
+  // sidecar-side deliberately: mcp-server restarts are exactly when you need
+  // to find an orphaned instance, so the mapping must outlive this process.
+  // Best-effort — a failure here costs discoverability, not correctness.
+  if (spawnedExtensionId && pid) {
+    try {
+      await fetch(`${hostUrl.replace(/\/$/, "")}/processes/${pid}/extension`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ extensionId: spawnedExtensionId }),
+      });
+    } catch { /* non-fatal */ }
   }
 
   // Auto-attach: for each user URL, open via browser_create_tab on the
@@ -616,6 +637,93 @@ export const launchIsolatedChrome: Tool = {
       return errorResponse(
         `Failed to launch isolated Chrome: ${error.message}`, false, error
       , max_tokens);
+    }
+  },
+};
+
+/**
+ * Shut down an isolated chromium — the destroy counterpart to
+ * browser_launch_isolated_chrome.
+ *
+ * Why this exists: until now `launch` had no opposite. The sidecar has always
+ * exposed DELETE /processes/:pid, but :9020 is docker-network-only and
+ * mcp-server never called it, so no MCP caller could reach it. Meanwhile
+ * browser_close_tab reaps only the renderers and RETURNS SUCCESS, so callers
+ * believed they had cleaned up. Result: every isolated chromium ever launched
+ * leaked (26 found resident on 2026-08-01, oldest 10 days).
+ *
+ * PROCESS-ONLY by design — this never deletes profileDir. Killing the process
+ * costs a cheap relaunch onto surviving auth state; deleting the profile can
+ * cost a full credential re-seed. We are reclaiming RAM, not disk.
+ */
+export const closeIsolatedChrome: Tool = {
+  schema: {
+    name: CloseIsolatedChromeTool.shape.name.value,
+    description: CloseIsolatedChromeTool.shape.description.value,
+    inputSchema: zodToJsonSchema(CloseIsolatedChromeTool.shape.arguments),
+  },
+  handle: async (_context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      const args = CloseIsolatedChromeTool.shape.arguments.parse(params || {});
+      const { extensionId, profileName, forceProfileName, caller } = args as any;
+      if (!extensionId && !profileName) {
+        return errorResponse("Either extensionId or profileName is required.", false, undefined, max_tokens);
+      }
+      const hostUrl = process.env.UNIBROWSE_CHROMIUM_HOST;
+      if (!hostUrl) {
+        return errorResponse(
+          "browser_close_isolated_chrome requires the chromium-host sidecar (UNIBROWSE_CHROMIUM_HOST unset). " +
+          "Instances launched in-process are not tracked by the sidecar and cannot be closed this way.",
+          false, undefined, max_tokens,
+        );
+      }
+      const base = hostUrl.replace(/\/$/, "");
+
+      const listResp = await fetch(`${base}/processes`);
+      if (!listResp.ok) {
+        return errorResponse(`chromium-host /processes returned ${listResp.status}`, false, undefined, max_tokens);
+      }
+      const { processes } = (await listResp.json()) as any;
+      const match = (processes || []).find((p: any) =>
+        (extensionId && p.extensionId === extensionId) ||
+        (profileName && p.profileName === profileName));
+      if (!match) {
+        return errorResponse(
+          `No tracked isolated chromium matches ${extensionId ? `extensionId=${extensionId}` : `profileName=${profileName}`}. ` +
+          `Currently tracked: ${(processes || []).map((p: any) => p.profileName).join(", ") || "(none)"}.`,
+          false, undefined, max_tokens,
+        );
+      }
+
+      const qs = new URLSearchParams();
+      if (forceProfileName) qs.set("forceProfileName", forceProfileName);
+      if (caller) qs.set("caller", caller);
+      const delUrl = `${base}/processes/${match.pid}${qs.toString() ? `?${qs}` : ""}`;
+      const delResp = await fetch(delUrl, { method: "DELETE" });
+      const body = await delResp.json().catch(() => ({}) as any);
+
+      if (delResp.status === 409) {
+        // Persistent-profile refusal. Surface the sidecar's message verbatim —
+        // it names the safe alternative, the per-profile reset cost, the owner
+        // to ask, and the override, in that order.
+        return errorResponse((body as any).message || "Refused: profile is persistent.", false, undefined, max_tokens);
+      }
+      if (!delResp.ok) {
+        return errorResponse(`chromium-host DELETE returned ${delResp.status}: ${JSON.stringify(body)}`, false, undefined, max_tokens);
+      }
+      const freed = (body as any).freed || {};
+      return jsonResponse({
+        closed: true,
+        pid: match.pid,
+        profileName: match.profileName,
+        extensionId: match.extensionId || null,
+        display: freed.display ?? null,
+        xvfbReaped: freed.xvfbPid ?? null,
+        note: "Process-only: the profile directory was NOT deleted. Relaunch with freshProfile:false to reuse its auth state.",
+      }, max_tokens);
+    } catch (error: any) {
+      return errorResponse(`Failed to close isolated Chrome: ${error.message}`, false, error, max_tokens);
     }
   },
 };

@@ -12,6 +12,7 @@ import {
   clearCookies,
   clearHistory,
   click,
+  closeIsolatedChrome,
   closeTab,
   countElements,
   createBookmark,
@@ -108,7 +109,7 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-VI3PJOEG.js";
+} from "./chunk-HD2U76GY.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -420,7 +421,8 @@ var systemTools = [
   getVersion,
   getSystemInfo,
   getBrowserInfo,
-  launchIsolatedChrome
+  launchIsolatedChrome,
+  closeIsolatedChrome
 ];
 var networkTools = [
   getNetworkState,
