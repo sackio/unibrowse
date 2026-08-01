@@ -109,6 +109,21 @@ const persistentRefusal = (entry, action) => [
 // reap or an override is ALWAYS announced — but a notify failure must never
 // break or block the operation it is reporting.
 const ATC_URL = process.env.ATC_URL || "http://192.168.1.168:3030/messages";
+
+// ⚠️ DRILL MARKING (ha, 2026-08-01, after a live routing test). A rehearsal and
+// a real incident were indistinguishable by priority — both `critical`, with
+// only the content differing. The failure mode is the INVERSE of alert fatigue:
+// a drill that looks identical to the real thing teaches the recipient that
+// this alert is usually a drill, so the one that isn't gets pattern-matched
+// away. An allowlist entry with `drill: true` therefore marks its notifications
+// structurally, not just by wording, and drops them to `info`.
+const drillTag = (entry) => (entry?.drill ? "[DRILL] " : "");
+const drillPriority = (entry, real) => (entry?.drill ? "info" : real);
+// Point the reader at where to look, not just what happened — matters for
+// whoever reads this cold, which is the likely case for a rare alert.
+const WHERE_TO_LOOK =
+  "\n\nInspect current state: GET /reaper on chromium-host — lists every tracked " +
+  "instance with persistent / owner / wouldReap, without waiting for a sweep.";
 const notifyOwner = (owner, subject, content, priority = "warning") => {
   if (!owner || owner === "unknown") return;
   try {
@@ -367,9 +382,10 @@ const launchChromium = async ({
       const who = caller || "unknown caller";
       console.warn(`[chromium-host] PERSISTENT OVERRIDE: "${profileName}" wiped by ${who} at ${new Date().toISOString()} (forceProfileName matched)`);
       notifyOwner(pe.owner,
-        `⚠️ persistent profile "${profileName}" was force-wiped`,
-        `chromium-host: profileDir for "${profileName}" was deliberately wiped via forceProfileName by ${who} at ${new Date().toISOString()}.\n\nReset cost you declared: ${pe.resetCost}\n\nIf this wasn't you, the auth state is already gone — begin your re-seed procedure.`,
-        "critical");
+        `${drillTag(pe)}⚠️ persistent profile "${profileName}" was force-wiped`,
+        `${pe.drill ? "*** THIS IS A DRILL — a rehearsal, not a real incident. ***\n\n" : ""}` +
+        `chromium-host: profileDir for "${profileName}" was deliberately wiped via forceProfileName by ${who} at ${new Date().toISOString()}.\n\nReset cost you declared: ${pe.resetCost}\n\nIf this wasn't you, the auth state is already gone — begin your re-seed procedure.${WHERE_TO_LOOK}`,
+        drillPriority(pe, "critical"));
     }
   }
   if (freshProfile && fs.existsSync(profileDir)) {
@@ -633,9 +649,10 @@ const server = http.createServer(async (req, res) => {
       if (pe) {
         console.warn(`[chromium-host] PERSISTENT OVERRIDE: destroying "${entry.profileName}" pid=${pid} by ${caller} at ${new Date().toISOString()}`);
         notifyOwner(pe.owner,
-          `persistent profile "${entry.profileName}" was force-destroyed`,
-          `chromium-host: the chromium for "${entry.profileName}" (pid ${pid}) was deliberately destroyed via forceProfileName by ${caller} at ${new Date().toISOString()}.\n\nThis is PROCESS-ONLY — profileDir was NOT touched, so your auth state survives and a relaunch with freshProfile:false should self-heal.`,
-          "warning");
+          `${drillTag(pe)}persistent profile "${entry.profileName}" was force-destroyed`,
+          `${pe.drill ? "*** THIS IS A DRILL — a rehearsal, not a real incident. ***\n\n" : ""}` +
+          `chromium-host: the chromium for "${entry.profileName}" (pid ${pid}) was deliberately destroyed via forceProfileName by ${caller} at ${new Date().toISOString()}.\n\nThis is PROCESS-ONLY — profileDir was NOT touched, so your auth state survives and a relaunch with freshProfile:false should self-heal.${WHERE_TO_LOOK}`,
+          drillPriority(pe, "warning"));
       }
       const r = destroyInstance(pid, { reason: pe ? `explicit override by ${caller}` : `explicit request by ${caller}` });
       return r.ok ? send(res, 200, { ok: true, freed: r.freed }) : send(res, 500, { error: r.error });
