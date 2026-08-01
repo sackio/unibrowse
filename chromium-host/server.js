@@ -287,9 +287,18 @@ const reapExistingForProfile = async (profileName) => {
   // ps-scan for untracked chromiums using the same profile dir.
   const untrackedPids = [];
   try {
+    // ⚠️ MUST be `ps -o pid,args`. This previously used `ps -eww -o pid=,args=`
+    // — but this container is BUSYBOX, whose ps rejects `-w` outright
+    // ("ps: unrecognized option: w"). execSync therefore threw, the catch below
+    // logged a warning nobody read, and untrackedPids stayed EMPTY. So this
+    // entire fallback — whose stated job is catching chromiums that survived a
+    // chromium-host restart, i.e. exactly when launchedProcesses is empty and
+    // this is the ONLY defence — has never once worked.
+    // Verified 2026-08-01: with a chromium provably holding ecobee-broker, the
+    // -eww form matched 0 processes and this form matched 1.
+    // busybox ps prints full args (not truncated), so -ww was never needed.
     const out = execSync(
-      // -ww: don't truncate the arg list; we need the full --user-data-dir match
-      `ps -eww -o pid=,args= | grep -F -- "--user-data-dir=${profileDir}" | grep -v grep || true`,
+      `ps -o pid,args | grep -F -- "--user-data-dir=${profileDir}" | grep -v grep || true`,
       { encoding: "utf8" }
     );
     for (const line of out.split("\n")) {
