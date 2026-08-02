@@ -5538,14 +5538,116 @@ class BackgroundController {
     return cdp.evaluate(queryScript);
   }
 
+  /**
+   * Read a page's visible text.
+   *
+   * ⚠️ CONFIRMED BUG, and the reason for most of this method:
+   *
+   *   `text.substring(0, maxLength)`  ->  SILENT truncation at 5000 chars
+   *
+   * The old implementation cut at maxLength and returned the prefix with no
+   * indication anything had been removed. A caller reading past the cut sees
+   * content simply absent, which is indistinguishable from a page that doesn't
+   * have it. Truncation is now reported explicitly.
+   *
+   * ⛔ SPECULATIVE, DO NOT TREAT AS DIAGNOSED — the innerText fallback below.
+   * I originally justified it with "innerText returns '' for hidden documents,
+   * so every headless tab reads as blank." **That is FALSE and I measured it
+   * false on 2026-08-02**: a backgrounded tab reporting
+   * `visibilityState=hidden, hidden=true` returned innerText=129, not ''.
+   * The case that prompted it — an ecobee SPA showing innerText=0 while
+   * textContent=3578 — turned out to be a page whose textContent was ENTIRELY
+   * <script> text (script+style chars = 3679, i.e. non-script text was
+   * negative). innerText=0 was simply CORRECT there.
+   *
+   * So the fallback is kept as cheap defence-in-depth, NOT as a fix for a known
+   * fault: if innerText is empty while real non-script text nodes exist, we
+   * surface them rather than returning '' and letting a caller conclude the
+   * page is blank. `documentHidden` is reported as an OBSERVATION for whoever
+   * is debugging, not as the cause of anything.
+   *
+   * ⚑ STILL UNEXPLAINED: `storybook`'s user-tester described a dialog it had
+   * itself opened as "invisible, no visible content" when it was 480x828 with
+   * 583 characters in it. This method does not explain that, and the tempting
+   * story above was wrong. Do not close that case with this code.
+   *
+   * The happy path still returns a plain string exactly as before; only
+   * truncation and the fallback return an object, so a caller can always tell
+   * it was reading something other than a clean render.
+   */
   async handleGetVisibleText({ selector, maxLength = 5000, tabTarget }) {
     const cdp = this.tabManager.requireCDP(tabTarget);
-    const script = selector
-      ? `document.querySelector('${selector.replace(/'/g, "\\'")}')?.innerText || ''`
-      : 'document.body.innerText || ""';
+    const rootExpr = selector
+      ? `document.querySelector('${selector.replace(/'/g, "\\'")}')`
+      : 'document.body';
 
-    const text = await cdp.evaluate(script);
-    return text.substring(0, maxLength);
+    const script = `(function(){
+      var root = ${rootExpr};
+      if (!root) return JSON.stringify({ notFound: true });
+      var rendered = root.innerText || '';
+      if (rendered.trim()) return JSON.stringify({ text: rendered, source: 'innerText' });
+      // innerText empty. Either genuinely blank, or the document isn't rendered.
+      // Walk text nodes directly — no layout required — skipping non-content
+      // elements and anything explicitly hidden by computed style (which IS
+      // available without layout).
+      var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode: function(n) {
+          var p = n.parentElement;
+          if (!p) return NodeFilter.FILTER_REJECT;
+          var t = p.tagName;
+          if (t === 'SCRIPT' || t === 'STYLE' || t === 'NOSCRIPT' || t === 'TEMPLATE') return NodeFilter.FILTER_REJECT;
+          if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+          var cs = getComputedStyle(p);
+          if (cs.display === 'none' || cs.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+      var parts = [], n;
+      while ((n = walker.nextNode())) parts.push(n.nodeValue.trim());
+      return JSON.stringify({
+        text: parts.join('\\n'),
+        source: 'textWalk',
+        documentHidden: document.visibilityState === 'hidden'
+      });
+    })()`;
+
+    const raw = await cdp.evaluate(script);
+    let parsed;
+    try {
+      parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch {
+      // Don't swallow it — an unparseable result is exactly the silent-failure
+      // shape this method exists to stop doing.
+      return { error: 'VISIBLE_TEXT_UNREADABLE', detail: String(raw).slice(0, 200) };
+    }
+
+    if (parsed.notFound) {
+      return { error: 'SELECTOR_NOT_FOUND', selector: selector || null };
+    }
+
+    const full = parsed.text || '';
+    const truncated = full.length > maxLength;
+    const text = truncated ? full.substring(0, maxLength) : full;
+
+    // Unremarkable read → same plain string it always returned.
+    if (!truncated && parsed.source === 'innerText') return text;
+
+    return {
+      text,
+      ...(truncated && {
+        truncated: true,
+        returnedLength: text.length,
+        totalLength: full.length,
+        note: `Truncated to maxLength=${maxLength} of ${full.length} chars. Raise maxLength or pass a narrower selector — the rest is NOT absent, it was cut.`,
+      }),
+      ...(parsed.source === 'textWalk' && {
+        source: 'textWalk',
+        documentHidden: parsed.documentHidden,
+        note2: parsed.documentHidden
+          ? 'innerText was empty because this document is HIDDEN (background/headless tab), not because the page is blank. Text recovered by walking text nodes; visual ordering may differ slightly from a rendered read.'
+          : 'innerText was empty but text nodes exist; recovered by walking them.',
+      }),
+    };
   }
 
   async handleGetComputedStyles({ selector, properties, tabTarget }) {
