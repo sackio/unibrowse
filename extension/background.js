@@ -1428,7 +1428,9 @@ class BackgroundController {
         // page reload (reported by ben 2026-06-10): network/rrweb keep working
         // but the user has no UI affordance to add new annotations until the
         // recording is stopped.
-        if (tabId === this.sessionRecording.tabId) {
+        // ⛔ Not for auto-started recordings — the pill intercepts page clicks.
+        // See the long note at the injection site in handleStartSessionRecording.
+        if (tabId === this.sessionRecording.tabId && !this.sessionRecording.autoStarted) {
           chrome.scripting.executeScript({
             target: { tabId },
             files: ['annotation-tool.js', 'session-record-overlay.js'],
@@ -1437,8 +1439,14 @@ class BackgroundController {
           });
         }
 
-        // Start video for this tab if it hasn't been recorded yet
-        if (!this.sessionRecording.recordedTabIds?.includes(tabId)) {
+        // Start video for this tab if it hasn't been recorded yet.
+        // ⚠️ MUST honour autoStarted here too, not just at session start. This
+        // fires on every navigation of a recorded tab, so without the check an
+        // auto-started (deliberately DOM-only) session would silently acquire
+        // video the first time any page navigated — quietly reintroducing the
+        // exact always-on capture ben asked not to have.
+        if (!this.sessionRecording.recordedTabIds?.includes(tabId) &&
+            (!this.sessionRecording.autoStarted || SESSION_AUTO_CAPTURE_VIDEO)) {
           this.startSessionTabVideo(tabId);
         }
       }
@@ -4040,13 +4048,36 @@ class BackgroundController {
     // Inject annotation tooling + the floating session-record overlay (with
     // "✏️ Annotate" button) into the primary tab only — agents can annotate
     // on the main flow tab; child iframes don't need the UI.
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ['annotation-tool.js', 'session-record-overlay.js'],
-      });
-    } catch (err) {
-      console.warn('[Background] Could not inject session-record overlay/annotation:', err.message);
+    //
+    // ⛔ NEVER for an auto-started recording. The overlay is a fixed-position
+    // pill at z-index 2147483646 anchored bottom-right, and it EATS CLICKS on
+    // whatever sits underneath it. `storybook` lost an hour to this on
+    // 2026-08-02: `elementFromPoint()` at the centre of a real "Order print"
+    // button returned `__unibrowse_sr_overlay`, three controls were genuinely
+    // unclickable, and the clicks landed on glass.
+    //
+    // ⭐ The expensive part was the misdiagnosis, not the dead controls: the
+    // handler ran fine when invoked directly, so a TRUE tester report ("these
+    // three don't work") was retracted and the tester blamed. Verifying "does
+    // the handler work?" cannot detect a click that never arrives.
+    //
+    // The instrument was changing what it measured. Auto-capture makes that
+    // strictly worse — it puts the pill on the FIRST TAB ANY AGENT ATTACHES,
+    // fleet-wide, where previously it appeared only if a human deliberately
+    // started recording. The pill is a human affordance (drag, annotate); an
+    // agent driving a page needs none of it. So an implicit recording captures
+    // silently and paints nothing.
+    if (!this.sessionRecording.autoStarted) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['annotation-tool.js', 'session-record-overlay.js'],
+        });
+      } catch (err) {
+        console.warn('[Background] Could not inject session-record overlay/annotation:', err.message);
+      }
+    } else {
+      console.log('[Background] Auto-started session: overlay/annotation UI suppressed (would intercept page clicks)');
     }
 
     // Start tab capture video for primary tab.
