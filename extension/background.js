@@ -5638,7 +5638,15 @@ class BackgroundController {
         truncated: true,
         returnedLength: text.length,
         totalLength: full.length,
-        note: `Truncated to maxLength=${maxLength} of ${full.length} chars. Raise maxLength or pass a narrower selector — the rest is NOT absent, it was cut.`,
+        // ⚠️ Word this in terms of POSITION, not size. The trap is the OFFSET
+        // of what you're looking for, never its length: `storybook`'s tester
+        // missed a 684-char dialog because it began at character 12,387 of a
+        // 13,245-char page, so the default read returned 0–5000 and truthfully
+        // answered a different question. A 4,000-char block at the top comes
+        // back fine; a tiny modal late in the DOM does not. Reporting only a
+        // byte count invites exactly the comparison I got wrong myself —
+        // "684 is nowhere near 5000, so this isn't it."
+        note: `TRUNCATED: returned characters 0–${text.length} of ${full.length}. ⚠️ ANYTHING LATER IN THE DOCUMENT IS ABSENT FROM THIS RESULT REGARDLESS OF ITS SIZE — modals, dialogs, footers and late sections commonly sit past the cut even when they are small. Do not read this as "the page does not contain it". Pass a selector to target the element directly, or raise maxLength above ${full.length}.`,
       }),
       ...(parsed.source === 'textWalk' && {
         source: 'textWalk',
