@@ -5288,38 +5288,56 @@ class BackgroundController {
       );
     }
 
-    // ⚠️ A HIDDEN TAB CANNOT BE CAPTURED. Page.captureScreenshot waits for a
-    // compositor frame, and a backgrounded/occluded tab never produces one — so
-    // the call hangs and dies as "CDP command Page.captureScreenshot timed out
-    // after 10 seconds", which says nothing about the actual cause.
+    // ⚠️ NEVER PRE-BLOCK ON VISIBILITY — ALWAYS ATTEMPT THE CAPTURE FIRST.
     //
-    // This is not an edge case here: tabs in a container chromium on Xvfb come
-    // up HIDDEN by default. Measured 2026-08-02 on a fresh isolated chrome —
-    // visibilityState 'hidden' straight after launch, capture timed out; a
-    // single browser_switch_tab flipped it to 'visible' and the identical call
-    // returned a full 22KB image.
+    // Page.captureScreenshot waits for a compositor frame, and a hidden tab
+    // SOMETIMES never produces one: measured 2026-08-02, a fresh container
+    // chromium came up `visibilityState: hidden` and capture died on the 10s
+    // CDP timeout; one browser_switch_tab flipped it to 'visible' and the
+    // identical call returned a 22KB image.
     //
-    // Checked BEFORE capturing so the caller gets the cause and the remedy
-    // instead of a ten-second stall and a generic timeout. Best-effort: if the
-    // probe itself fails we fall through and attempt the capture anyway rather
-    // than inventing a reason to refuse.
+    // ⛔ But hidden is NOT sufficient for failure, and I shipped a hard
+    // precheck that assumed it was — on a single reproduction. `storybook`
+    // produced the counterexample within minutes: a HIDDEN tab, with an
+    // override mismatched to its window, captured 59,556 tokens of rich image.
+    // A precheck would have refused that and returned an authoritative
+    // explanation for a failure that was never going to happen — turning my
+    // diagnostic into a cause of the thing it describes.
+    //
+    // ⚠️ Then I reproduced their counterexample on my OWN setup, which is the
+    // part that settles it: a fresh container chromium, `visibilityState:
+    // hidden`, captured 22,328 chars successfully — the SAME scenario that had
+    // timed out for me an hour earlier. So my original reproduction was not
+    // reliable either, and the hard block I shipped would have rejected this
+    // very capture. The timeout is INTERMITTENT and its actual gate is UNKNOWN;
+    // hidden is correlated at best, and possibly incidental.
+    //
+    // So: attempt, and only explain AFTER a real failure. The cause is offered
+    // when it is consistent with the evidence, never used to predict.
+    // Whatever actually gates compositing here is still unknown; do not write
+    // a confident mechanism into this comment without measuring it.
     try {
-      const vis = await cdp.evaluate('document.visibilityState');
+      return await cdp.captureScreenshot(); // base64 string
+    } catch (err) {
+      if (!/timed out/i.test(err?.message || '')) throw err;
+
+      let vis = 'unknown';
+      try { vis = await cdp.evaluate('document.visibilityState'); } catch { /* keep 'unknown' */ }
+
       if (vis === 'hidden') {
         throw new Error(
-          'Cannot screenshot a HIDDEN tab — Page.captureScreenshot waits for a compositor frame ' +
-          'and a backgrounded tab never renders one. This is NOT a blank or broken page. ' +
-          `Foreground it first: browser_switch_tab({tabId: <id>}) on this tab, then retry. ` +
-          '(Tabs in container chromiums launched via browser_launch_isolated_chrome start hidden.)'
+          `Screenshot timed out, and this tab is HIDDEN (visibilityState: hidden). ` +
+          `Page.captureScreenshot waits for a compositor frame and a backgrounded tab may never ` +
+          `produce one. This is NOT evidence the page is blank or broken. ` +
+          `Try foregrounding it — browser_switch_tab({tabId: <id>}) — then retry. ` +
+          `Note: hidden tabs CAN capture successfully, so hidden is a likely contributor here, not a proven cause.`
         );
       }
-    } catch (probeErr) {
-      if (/HIDDEN tab/.test(probeErr.message)) throw probeErr;
-      console.warn('[Background] Screenshot visibility precheck failed, capturing anyway:', probeErr.message);
+      throw new Error(
+        `Screenshot timed out after 10s (tab visibilityState: ${vis}). The page may still be ` +
+        `painting, or the renderer is not producing frames. Retry, or check the tab is alive.`
+      );
     }
-
-    const data = await cdp.captureScreenshot();
-    return data; // Return base64 string directly
   }
 
   async handleSegmentedScreenshot({ selectors, includeLabels, tabTarget }) {
