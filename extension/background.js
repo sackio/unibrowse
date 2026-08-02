@@ -5,6 +5,38 @@
 
 importScripts('config.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js');
 
+// ─── Auto session-capture on attach (ben 2026-08-02) ────────────────────────
+// "Anytime we attach a tab we should be doing a session recording so that we
+// can record what I do or what an agent does or both … this helps us refine
+// what agents are doing and figure out what they did wrong what they did right."
+//
+// ⚠️ These live HERE and not in config.js on purpose: the server REPLACES
+// config.js wholesale when the extension is served via /install/extension.zip
+// (see the header of that file), so any behavioural default placed there is
+// silently reverted for every downloaded install.
+//
+// Video is deliberately NOT automatic — ben, same conversation: "we have tabs
+// attached for very long time so I don't want to just be recording endlessly …
+// video recording automatically only when specified but DOM capturing
+// everything I think is still good." Video stays opt-in via an explicit
+// browser_start_session_recording / the popup.
+const SESSION_AUTO_CAPTURE_ON_ATTACH = true;
+const SESSION_AUTO_CAPTURE_VIDEO = false;
+
+// Rolling-window caps. An auto-started recording has no natural end — it lives
+// as long as the tab stays attached, which for this fleet is measured in days —
+// so these bound service-worker memory, not just upload size.
+// ⚠️ rrweb's cap is enforced ONLY at FullSnapshot boundaries; see
+// _trimSessionBuffers(). The others are plain independent records and can be
+// head-dropped freely.
+const SESSION_MAX_RRWEB_EVENTS = 20000;
+const SESSION_MAX_NETWORK_ENTRIES = 5000;
+const SESSION_MAX_INTERACTIONS = 5000;
+
+// rrweb EventType values we depend on (rrweb doesn't expose the enum to us here).
+const RRWEB_TYPE_META = 4;
+const RRWEB_TYPE_FULL_SNAPSHOT = 2;
+
 // Stable extension identity for the multi-extension server pool. Generated once
 // per Chrome profile, persisted in chrome.storage.local, and shipped to the
 // server in EXTENSION_REGISTER so the server can route per-tab tool calls back
@@ -1592,6 +1624,7 @@ class BackgroundController {
       if (this.sessionRecording && this.sessionRecording.tabIds?.includes(sender?.tab?.id)) {
         if (message.type === 'SR_RRWEB') {
           this.sessionRecording.rrwebEvents.push(message.event);
+          this._trimSessionBuffers();
           return false;
         }
         if (message.type === 'SR_NETWORK') {
@@ -1599,6 +1632,7 @@ class BackgroundController {
             ...message.entry,
             frameId: sender.frameId || 0,
           });
+          this._trimSessionBuffers();
           return false;
         }
         if (message.type === 'SR_PAGE_START') {
@@ -2445,7 +2479,16 @@ class BackgroundController {
    * @param {Object} payload - { tabId?: number, label?: string, autoOpenUrl?: string }
    * @returns {Object} - { tabId: number, label: string }
    */
-  async handleEnsureAttached({ tabId, label, autoOpenUrl }) {
+  /**
+   * @param autoCapture - set FALSE to suppress auto session-capture.
+   *   ⚠️ LOAD-BEARING: handleStartSessionRecording() calls this method to
+   *   attach the tab it is about to record. Without this flag that call would
+   *   re-enter _maybeAutoCapture() → handleStartSessionRecording() → attach →
+   *   … and recurse without bound, because `this.sessionRecording` is not
+   *   assigned until AFTER that internal attach returns, so the usual
+   *   "already recording" guard is still null and cannot break the cycle.
+   */
+  async handleEnsureAttached({ tabId, label, autoOpenUrl, autoCapture = true }) {
     try {
       let targetTabId = tabId;
 
@@ -2546,6 +2589,7 @@ class BackgroundController {
           this.state.tabId = targetTabId;
           this.state.tabUrl = tabInfo.url;
           this.state.tabTitle = tabInfo.title;
+          await this._maybeAutoCapture(targetTabId, autoCapture);
           return { tabId: targetTabId, label: tabInfo.label, url: tabInfo.url };
         }
 
@@ -2579,7 +2623,7 @@ class BackgroundController {
             throw new Error(`No tab with id: ${targetTabId}`);
           }
           // targetTabId came from the last-used fallback; re-resolve from scratch.
-          return await this.handleEnsureAttached({ tabId: null, label: null, autoOpenUrl: null });
+          return await this.handleEnsureAttached({ tabId: null, label: null, autoOpenUrl: null, autoCapture });
         }
 
         // Tab still exists — re-attach now (unless it navigated to a restricted URL)
@@ -2596,6 +2640,7 @@ class BackgroundController {
             this.state.tabTitle = liveTab.title;
             await this.injectBackgroundCapture(targetTabId).catch(() => {});
             console.log('[Background] Re-attached to tab after dead session:', targetTabId);
+            await this._maybeAutoCapture(targetTabId, autoCapture);
             return { tabId: targetTabId, label: tabInfo.label, url: liveTab.url };
           }
         } catch (reattachErr) {
@@ -2646,6 +2691,8 @@ class BackgroundController {
       await this.injectBackgroundCapture(targetTabId);
 
       console.log('[Background] Successfully attached to tab:', targetTabId, 'with label:', tabInfo.label);
+
+      await this._maybeAutoCapture(targetTabId, autoCapture);
 
       return { tabId: targetTabId, label: tabInfo.label, url: tab.url };
     } catch (error) {
@@ -3773,6 +3820,122 @@ class BackgroundController {
    * Start a session recording: rrweb DOM capture + network interceptor + video
    * Survives cross-domain navigation via chrome.storage.session.
    */
+  /**
+   * Inject the capture scripts into a tab that is joining an in-flight session.
+   * Mirrors the injection in handleStartSessionRecording / the onUpdated
+   * re-injection path: MAIN world first (network interceptor bypasses CSP),
+   * then the isolated-world rrweb recorder.
+   * Deliberately NOT injecting annotation-tool/session-record-overlay — those
+   * are primary-tab UI affordances, not capture.
+   */
+  async _injectSessionRecorderInto(tabId) {
+    chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: 'MAIN',
+      files: ['lib/network-interceptor.js'],
+    }).catch(err => {
+      console.warn('[Background] Auto-capture: network interceptor inject failed:', err.message);
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ['lib/rrweb-record.min.js', 'session-recorder.js'],
+    }).catch(err => {
+      console.warn('[Background] Auto-capture: session recorder inject failed:', err.message);
+    });
+  }
+
+  /**
+   * Start or extend session capture when a tab is attached (ben 2026-08-02).
+   *
+   * Two cases: a recording is already running → fold this tab into it (one
+   * shared timeline, which is what makes a human's actions and an agent's
+   * appear in order in a single replay); nothing running → start one on this
+   * tab.
+   *
+   * ⛔ NEVER THROWS. Capture is a side benefit of attaching; attaching is the
+   * thing the caller actually asked for. A failure here (restricted URL, tab
+   * closed mid-flight, scripting permission) must not turn a working
+   * browser_attach_tab into an error.
+   */
+  async _maybeAutoCapture(tabId, enabled) {
+    if (!enabled || !SESSION_AUTO_CAPTURE_ON_ATTACH) return;
+    try {
+      if (this.sessionRecording) {
+        // Defensive: a recording rehydrated from chrome.storage.session after a
+        // service-worker restart can come back without its arrays.
+        if (!Array.isArray(this.sessionRecording.tabIds)) this.sessionRecording.tabIds = [];
+        if (!this.sessionRecording.tabIds.includes(tabId)) {
+          this.sessionRecording.tabIds.push(tabId);
+          await this._injectSessionRecorderInto(tabId);
+          console.log(`[Background] Auto-capture: tab ${tabId} joined session ${this.sessionRecording.sessionId}`);
+        }
+        return;
+      }
+      await new Promise((resolve) =>
+        this.handleStartSessionRecording(resolve, { tabTarget: tabId, autoStarted: true })
+      );
+      console.log(`[Background] Auto-capture: started session recording on attach of tab ${tabId}`);
+    } catch (err) {
+      console.warn('[Background] Auto-capture failed (the attach itself is unaffected):', err?.message || err);
+    }
+  }
+
+  /**
+   * Bound an auto-started recording's in-memory buffers.
+   *
+   * ⚠️ THE RRWEB BUFFER CANNOT BE HEAD-DROPPED. Its incremental events are
+   * DIFFS against the DOM built by a preceding FullSnapshot. Cutting at an
+   * arbitrary offset leaves events referencing nodes that were never created:
+   * the buffer is still non-empty, still uploads, still opens in the review
+   * UI — and replays as a blank or corrupt page. That failure is invisible
+   * until someone actually watches a recording, which is exactly when they
+   * need it. So we only ever cut back to a FullSnapshot boundary (paired with
+   * its preceding Meta event, which carries the viewport).
+   *
+   * Those boundaries exist only because session-recorder.js sets
+   * `checkoutEveryNms` — without it rrweb emits one FullSnapshot at index 0
+   * and NOTHING here can trim. If you ever see the buffer running far past
+   * SESSION_MAX_RRWEB_EVENTS, check that option first.
+   */
+  _trimSessionBuffers() {
+    const r = this.sessionRecording;
+    if (!r) return;
+
+    const ev = r.rrwebEvents;
+    if (ev && ev.length > SESSION_MAX_RRWEB_EVENTS) {
+      // Smallest cut index that gets us under the cap == keep the most data.
+      let cut = -1;
+      for (let i = 0; i < ev.length; i++) {
+        if (ev[i]?.type !== RRWEB_TYPE_FULL_SNAPSHOT) continue;
+        if (ev.length - i <= SESSION_MAX_RRWEB_EVENTS) { cut = i; break; }
+      }
+      if (cut > 0) {
+        // Keep the Meta immediately preceding the snapshot — rrweb emits
+        // Meta+FullSnapshot as a pair on checkout and the replayer needs the
+        // viewport dimensions from it.
+        if (cut - 1 >= 0 && ev[cut - 1]?.type === RRWEB_TYPE_META) cut -= 1;
+        const dropped = ev.splice(0, cut).length;
+        r.droppedRrwebEvents = (r.droppedRrwebEvents || 0) + dropped;
+        r.trimmedAt = Date.now();
+        console.log(
+          `[Background] Session buffer trimmed to snapshot boundary: dropped ${dropped} rrweb events ` +
+          `(${ev.length} retained, ${r.droppedRrwebEvents} dropped this session)`
+        );
+      }
+      // cut === -1 → no snapshot recent enough to cut to. Leave it: an
+      // oversized REPLAYABLE buffer beats a trimmed corrupt one. Self-corrects
+      // at the next checkout.
+    }
+
+    // Independent records — no replay dependency, safe to head-drop.
+    if (r.networkEntries && r.networkEntries.length > SESSION_MAX_NETWORK_ENTRIES) {
+      r.networkEntries.splice(0, r.networkEntries.length - SESSION_MAX_NETWORK_ENTRIES);
+    }
+    if (r.interactions && r.interactions.length > SESSION_MAX_INTERACTIONS) {
+      r.interactions.splice(0, r.interactions.length - SESSION_MAX_INTERACTIONS);
+    }
+  }
+
   async handleStartSessionRecording(sendResponse, params = {}) {
     if (this.sessionRecording) {
       sendResponse({ success: false, error: 'A session recording is already in progress' });
@@ -3813,7 +3976,10 @@ class BackgroundController {
     // grind ben hit on 2026-06-27.
     if (!this.tabManager.attachedTabs.has(tabId)) {
       try {
-        await this.handleEnsureAttached({ tabId });
+        // autoCapture:false breaks the attach → auto-capture → start-recording
+        // → attach cycle. `this.sessionRecording` is still null at this point,
+        // so the "already recording" guard above cannot stop the recursion.
+        await this.handleEnsureAttached({ tabId, autoCapture: false });
       } catch (attachErr) {
         sendResponse({
           success: false,
@@ -3842,6 +4008,12 @@ class BackgroundController {
       annotations: [],    // user-drawn shapes + notes + screenshots (SR_ANNOTATION_CREATE flow)
       pages: [],
       videoStarted: false,
+      // True when this recording was started implicitly by attaching a tab
+      // rather than by an explicit browser_start_session_recording / popup
+      // click. Gates video (ben: automatic recording is DOM-only) and marks
+      // the recording as long-lived, i.e. subject to the rolling-window trim.
+      autoStarted: params.autoStarted === true,
+      droppedRrwebEvents: 0,
     };
 
     // Inject network interceptor into page's MAIN world (bypasses CSP)
@@ -3877,8 +4049,19 @@ class BackgroundController {
       console.warn('[Background] Could not inject session-record overlay/annotation:', err.message);
     }
 
-    // Start tab capture video for primary tab
-    this.startSessionTabVideo(tabId);
+    // Start tab capture video for primary tab.
+    // ⛔ NOT for auto-started recordings. ben, 2026-08-02: "we have tabs
+    // attached for very long time so I don't want to just be recording
+    // endlessly … video recording automatically only when specified but DOM
+    // capturing everything I think is still good." Video is tab-capture — it
+    // costs real CPU/disk and shows a capture indicator on every tab — so an
+    // implicit, possibly-days-long recording must not start one. An explicit
+    // browser_start_session_recording or popup click still does.
+    if (!this.sessionRecording.autoStarted || SESSION_AUTO_CAPTURE_VIDEO) {
+      this.startSessionTabVideo(tabId);
+    } else {
+      console.log('[Background] Auto-started session: DOM+network only, video suppressed by design');
+    }
 
     // Set badge
     chrome.action.setBadgeText({ text: 'SR' });
@@ -4800,6 +4983,15 @@ class BackgroundController {
     }
     await this.injectTabIndicator(targetTabId);
     await this.injectBackgroundCapture(targetTabId);
+
+    // Auto session-capture. ⚠️ This path attaches via tabManager.attachTab()
+    // DIRECTLY and never goes through handleEnsureAttached, so it needs its own
+    // hook — hooking only ensure_attached silently misses it, and this is the
+    // BUSIER path: browser_launch_isolated_chrome's autoAttach and every
+    // browser_create_tab land here, not there. (Caught 2026-08-02 by launching
+    // a throwaway chromium and finding isRecording:false when the feature was
+    // supposedly done.)
+    await this._maybeAutoCapture(targetTabId, true);
 
     const result = { success: true, tabId: tab.id, label: tabInfo.label, url: tab.url };
     if (this.tabManager._currentAgent) result.reservedTo = this.tabManager._currentAgent;

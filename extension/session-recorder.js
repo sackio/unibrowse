@@ -281,6 +281,23 @@ if (window.__unibrowse_recording__) {
           media: 800,
           input: 'last',
         },
+        // ⚠️ LOAD-BEARING for the background's rolling-window trim — do not remove.
+        //
+        // Auto-capture (ben 2026-08-02) keeps a recording open for as long as a
+        // tab is attached, which can be days. The background therefore caps
+        // rrwebEvents and drops the oldest. But rrweb incremental events are
+        // DIFFS: they replay against the DOM established by a preceding
+        // FullSnapshot. Trim to an arbitrary offset and every remaining event
+        // references nodes that were never created — the buffer is retained,
+        // non-empty, and COMPLETELY UNREPLAYABLE, which looks like a working
+        // recording right up until someone opens it.
+        //
+        // Without this option rrweb emits exactly ONE FullSnapshot, at start —
+        // i.e. the only safe cut point is offset 0, so no trim is possible at
+        // all. A periodic checkout gives the trimmer a snapshot boundary to cut
+        // back to. 2 min is the granularity of what we can discard, so it also
+        // sets how far past the cap the buffer can transiently run.
+        checkoutEveryNms: 120000,
       });
       console.log('[SessionRecorder] rrweb recording started');
     } catch (err) {
