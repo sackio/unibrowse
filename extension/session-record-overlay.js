@@ -41,17 +41,28 @@
       // also re-mount this overlay. Use left/top once dragged (anchors
       // bottom/right would otherwise have to be inverted on drag).
       const saved = this._readSavedPos();
-      // ⚠️ `pointer-events: none` is LOAD-BEARING and must survive `all: initial`,
-      // which resets pointer-events back to `auto`. The container sits at
-      // z-index 2147483646, so any area of it that accepts pointer events eats
-      // clicks aimed at the page underneath — and the click silently lands on
-      // glass rather than erroring, so it reads as a broken page control.
-      // (`storybook`, 2026-08-02: elementFromPoint() over a real button returned
-      // this element; three controls were unclickable and a correct bug report
-      // about them was retracted as tester error.)
-      // The interactive `.pill` re-enables pointer events for itself below, so
-      // only the visible pill catches clicks — not its bounding box.
-      const baseCss = 'all: initial; position: fixed; z-index: 2147483646; pointer-events: none;';
+      // ⚠️ DO NOT add `pointer-events: none` here with a matching
+      // `pointer-events: auto` on `.pill`. It is the obvious fix for this
+      // overlay eating page clicks and it is WORSE THAN USELESS — measured
+      // 2026-08-02, not reasoned:
+      //
+      //   · The container SHRINK-WRAPS the pill (269x48 at the bottom-right
+      //     corner), so container-vs-pill is a distinction with no area
+      //     between them. Nothing becomes reachable that wasn't.
+      //   · The pill must stay clickable to be draggable/annotatable, so it
+      //     needs `auto` — and an explicit `auto` on `.pill` DEFEATS the
+      //     host-level escape hatch other agents rely on: with no rule here,
+      //     `el.style.pointerEvents='none'` on the host is inherited by the
+      //     pill and the whole overlay goes click-through. Add the rule and
+      //     that stops working, with no error.
+      //
+      // The real fix for agent-driven tabs is upstream: an auto-started
+      // recording never injects this file at all (see handleStartSessionRecording).
+      // For a human's explicit recording the pill occludes a small
+      // bottom-right region, which is the normal cost of any floating widget.
+      // Escape hatch if you are stuck on a stale extension: `el.remove()`, plus
+      // a MutationObserver, since the navigation path re-injects it.
+      const baseCss = 'all: initial; position: fixed; z-index: 2147483646;';
       if (saved) {
         this.container.style.cssText = `${baseCss} left: ${saved.x}px; top: ${saved.y}px;`;
       } else {
@@ -61,9 +72,6 @@
       this.shadow.innerHTML = `
         <style>
           .pill {
-            /* Re-enables clicks for the pill only; the host container is
-               pointer-events:none so the rest of the page stays reachable. */
-            pointer-events: auto;
             display: flex; align-items: center; gap: 8px;
             background: linear-gradient(135deg, #6f42c1 0%, #4c1d95 100%);
             color: white; padding: 10px 14px; border-radius: 999px;
