@@ -5287,6 +5287,37 @@ class BackgroundController {
           : 'No tabs currently attached. Please attach to a tab first.'
       );
     }
+
+    // ⚠️ A HIDDEN TAB CANNOT BE CAPTURED. Page.captureScreenshot waits for a
+    // compositor frame, and a backgrounded/occluded tab never produces one — so
+    // the call hangs and dies as "CDP command Page.captureScreenshot timed out
+    // after 10 seconds", which says nothing about the actual cause.
+    //
+    // This is not an edge case here: tabs in a container chromium on Xvfb come
+    // up HIDDEN by default. Measured 2026-08-02 on a fresh isolated chrome —
+    // visibilityState 'hidden' straight after launch, capture timed out; a
+    // single browser_switch_tab flipped it to 'visible' and the identical call
+    // returned a full 22KB image.
+    //
+    // Checked BEFORE capturing so the caller gets the cause and the remedy
+    // instead of a ten-second stall and a generic timeout. Best-effort: if the
+    // probe itself fails we fall through and attempt the capture anyway rather
+    // than inventing a reason to refuse.
+    try {
+      const vis = await cdp.evaluate('document.visibilityState');
+      if (vis === 'hidden') {
+        throw new Error(
+          'Cannot screenshot a HIDDEN tab — Page.captureScreenshot waits for a compositor frame ' +
+          'and a backgrounded tab never renders one. This is NOT a blank or broken page. ' +
+          `Foreground it first: browser_switch_tab({tabId: <id>}) on this tab, then retry. ` +
+          '(Tabs in container chromiums launched via browser_launch_isolated_chrome start hidden.)'
+        );
+      }
+    } catch (probeErr) {
+      if (/HIDDEN tab/.test(probeErr.message)) throw probeErr;
+      console.warn('[Background] Screenshot visibility precheck failed, capturing anyway:', probeErr.message);
+    }
+
     const data = await cdp.captureScreenshot();
     return data; // Return base64 string directly
   }

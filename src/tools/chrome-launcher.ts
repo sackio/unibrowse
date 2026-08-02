@@ -526,7 +526,17 @@ export const launchIsolatedChrome: Tool = {
         chromeArgs.push("--no-sandbox", "--disable-dev-shm-usage");
       }
 
-      // Add window dimensions if specified
+      // Add window dimensions if specified.
+      // ⚠️ This is the OS WINDOW size, NOT the viewport, and Chrome does not
+      // honour it exactly: it clamps to a platform minimum (~500px wide) and
+      // the window chrome eats more. `storybook` asked for 390x844 and measured
+      // 500x701; asked 768x1024 and measured 980x1307. Nothing is broken — the
+      // flag simply does not mean what a caller doing responsive work assumes.
+      // ⇒ For breakpoint testing use browser_set_device_metrics, which drives
+      // Emulation.setDeviceMetricsOverride and sets the REAL viewport. Verified
+      // 2026-08-02: 390x844 mobile:true emulates and screenshots correctly.
+      // Do not "fix" this by clamping here — the flag is right for sizing a
+      // window; it is the wrong tool for emulating a device.
       if (validatedParams.width && validatedParams.height) {
         chromeArgs.push(`--window-size=${validatedParams.width},${validatedParams.height}`);
       }

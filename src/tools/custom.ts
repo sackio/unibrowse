@@ -146,6 +146,18 @@ export const segmentedScreenshot: Tool = {
           failedSelectors: failedSelectors,
           outputDir: outputDir,
           timestamp: timestamp,
+          // ⚠️ These paths are INSIDE the mcp-server container, not on the
+          // caller's host. `storybook` (2026-08-02) had an agent hand back
+          // absolute paths for inspection and the directory did not exist on
+          // their machine — reported success, files unreachable. Saying so
+          // here because a path that looks ordinary is the whole trap: nothing
+          // about `/tmp/…png` signals which filesystem it lives on.
+          pathsAre: "container-local",
+          note:
+            `Files were written INSIDE the mcp-server container at ${outputDir} — they are NOT on your host filesystem. ` +
+            `Do not hand these paths to another session or a human expecting to open them. ` +
+            `Read them with: docker compose exec mcp-server cat <path>  (or copy out with docker cp). ` +
+            `To keep them, pass outputDir pointing at a bind-mounted directory.`,
         },
         max_tokens,
       );
