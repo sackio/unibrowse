@@ -35,6 +35,20 @@ export class Context {
   // Reverse-lookup: tabId → extensionId, so a tool call carrying tabTarget
   // can be routed to the right extension without walking the whole pool.
   private _tabToExtension = new Map<number, string>();
+  // Every extensionId seen since this process started, INCLUDING ones that have
+  // since disconnected. Without this, `unregisterExtensionById` erases the fact
+  // that a browser ever existed, and "the extension is dead" becomes
+  // byte-identical to "there was never such an extension".
+  //
+  // That cost a full day on 2026-08-06: ben's Chrome (`default`) crashed on
+  // 8/5 and Chrome disabled the extension. The server silently kept serving the
+  // two OTHER browsers still connected. Agents probed those, found Amazon
+  // genuinely signed out on them, and reported "Amazon is logged out" — while
+  // ben's Amazon session was fine the whole time. The browser we needed was
+  // ABSENT, not broken, and nothing in any response said so.
+  // `shopping` reported `default` missing and it was explained away as
+  // extension-id rotation, because nothing could distinguish the two.
+  private _seenExtensions = new Map<string, { lastSeenAt: number; firstSeenAt: number }>();
 
   get ws(): WebSocket {
     if (!this._ws) {
@@ -57,6 +71,11 @@ export class Context {
     const tabIds = prior?.tabIds ?? new Set<number>();
     const conn: ExtensionConn = { extensionId, ws, tabIds, meta: { ...prior?.meta, ...meta }, registeredAt: Date.now() };
     this._extensions.set(extensionId, conn);
+    const seen = this._seenExtensions.get(extensionId);
+    this._seenExtensions.set(extensionId, {
+      firstSeenAt: seen?.firstSeenAt ?? Date.now(),
+      lastSeenAt: Date.now(),
+    });
     // Keep _ws pointing at the most-recently-registered extension for backward
     // compat with any code path that still touches it directly.
     this._ws = ws;
@@ -69,6 +88,12 @@ export class Context {
     if (!conn) return;
     for (const tabId of conn.tabIds) this._tabToExtension.delete(tabId);
     this._extensions.delete(extensionId);
+    // Leave the _seenExtensions tombstone in place and stamp when we lost it.
+    // This is the whole point: a disconnected browser must stay VISIBLE as
+    // something that used to be here, or callers silently retarget the
+    // survivors and report findings about the wrong browser.
+    const seen = this._seenExtensions.get(extensionId);
+    if (seen) seen.lastSeenAt = Date.now();
     // If the dropped extension was the legacy default, pick another (first in map).
     if (this._ws === conn.ws) {
       const next = this._extensions.values().next();
@@ -94,6 +119,36 @@ export class Context {
   /** Iterate every registered extension. */
   listExtensions(): ExtensionConn[] {
     return Array.from(this._extensions.values());
+  }
+
+  /**
+   * Extensions this process has seen that are NOT currently connected.
+   * An empty pool and a pool whose browsers have all died look identical
+   * without this — see the `_seenExtensions` note above.
+   */
+  listAbsentExtensions(): Array<{ extensionId: string; lastSeenAt: number }> {
+    const absent: Array<{ extensionId: string; lastSeenAt: number }> = [];
+    for (const [id, seen] of this._seenExtensions) {
+      if (!this._extensions.has(id)) absent.push({ extensionId: id, lastSeenAt: seen.lastSeenAt });
+    }
+    return absent;
+  }
+
+  /** Human-readable "and by the way, these are missing" suffix for errors. */
+  private _absentSuffix(): string {
+    const absent = this.listAbsentExtensions();
+    if (absent.length === 0) return "";
+    const parts = absent.map((a) => {
+      const mins = Math.round((Date.now() - a.lastSeenAt) / 60000);
+      const ago = mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
+      return `${a.extensionId} (last seen ${ago})`;
+    });
+    return (
+      ` ⚠️ ALSO SEEN THIS SESSION BUT CURRENTLY ABSENT: ${parts.join(", ")}. ` +
+      `An absent extension means that browser is closed, or Chrome disabled/crashed its extension ` +
+      `(chrome://extensions will show a Reload button). If the browser you actually want is in that ` +
+      `list, DO NOT reason about the ones still connected — you would be measuring a different browser.`
+    );
   }
 
   /** Mark a tab as owned by an extension (called from TAB_ATTACHED handler). */
@@ -126,7 +181,24 @@ export class Context {
       const conn = this._extensions.get(opts.extensionId);
       if (!conn) {
         const available = Array.from(this._extensions.keys()).join(", ") || "(none)";
-        throw new Error(`Unknown extensionId "${opts.extensionId}". Registered: ${available}`);
+        const seen = this._seenExtensions.get(opts.extensionId);
+        if (seen) {
+          // Distinguish "you named a browser that DIED" from "you named a
+          // browser that never existed". These used to be the same message.
+          const mins = Math.round((Date.now() - seen.lastSeenAt) / 60000);
+          const ago = mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
+          throw new Error(
+            `Extension "${opts.extensionId}" was registered but is GONE (last seen ${ago}). ` +
+            `That browser is closed, or Chrome disabled/crashed its extension — chrome://extensions ` +
+            `will show a Reload button. This is NOT the same as a wrong id. ` +
+            `Do not fall back to another extension and report findings from it: that is a different browser ` +
+            `with different logins. Still registered: ${available}.`,
+          );
+        }
+        throw new Error(
+          `Unknown extensionId "${opts.extensionId}" — never seen by this server. Registered: ${available}.` +
+          this._absentSuffix(),
+        );
       }
       return conn.ws;
     }
@@ -152,7 +224,8 @@ export class Context {
     }
     if (this._extensions.size === 0) {
       if (this._ws) return this._ws; // legacy direct-assigned ws
-      throw new Error(noConnectionMessage);
+      // "Nothing connected" reads as "never set up" unless we say otherwise.
+      throw new Error(noConnectionMessage + this._absentSuffix());
     }
     // Ambiguous: more than one extension is registered AND we don't know which
     // one owns the target. Surface the situation so the caller can pick.
@@ -165,7 +238,12 @@ export class Context {
       `EITHER pass extensionId (one of: ${ids.join(", ")}) on this call, ` +
       `OR first attach to a tab (browser_list_tabs → browser_attach_tab({tabId} or {autoOpenUrl})) ` +
       `and then pass tabTarget=<tabId-or-label> on subsequent calls — the server routes attached tabs to their owning extension automatically. ` +
-      `If your MCP client's tool schema doesn't show extensionId, refresh it via /mcp (or session respawn).`,
+      `If your MCP client's tool schema doesn't show extensionId, refresh it via /mcp (or session respawn).` +
+      // ⚠️ Load-bearing: on 2026-08-06 this message listed the two surviving
+      // browsers and said nothing about the third having died. Agents picked
+      // from the list it offered, which is exactly what a list implies is
+      // complete. The absent ones belong in the same breath as the present.
+      this._absentSuffix(),
     );
   }
 
