@@ -504,8 +504,21 @@ class TabManager {
       // Reservation: when an `agent` is supplied, claim ownership before
       // anything else. Throws `tab-reserved` if another agent already owns
       // it and takeover isn't set, leaving the tab state untouched.
-      const { agent, takeover } = options;
+      const { agent, takeover, label: requestedLabel } = options;
       this.claimTab(tabId, agent, { takeover: takeover === true });
+
+      // A caller-supplied label must not collide with another tab's, or
+      // resolveTab() silently returns whichever it finds first.
+      if (requestedLabel) {
+        for (const [otherId, info] of this.attachedTabs) {
+          if (otherId !== tabId && info.label === requestedLabel) {
+            throw new Error(
+              `Label "${requestedLabel}" is already in use by tab ${otherId}. ` +
+              `Labels must be unique — pick another, or target by numeric tabId.`
+            );
+          }
+        }
+      }
 
       // Check if already attached
       let preservedLabel = null;
@@ -527,8 +540,15 @@ class TabManager {
 
       console.log('[TabManager] Attaching to tab:', tabId, url);
 
-      // Reuse preserved label if available, otherwise generate from URL
-      const label = preservedLabel || this.generateLabel(url);
+      // Caller's label wins, then a preserved custom label, then one derived
+      // from the URL. ⚠️ The caller's label used to be ACCEPTED AND DROPPED:
+      // browser_attach_tab({label}) only ever used `label` to RESOLVE an
+      // existing tab, never to name a new one, so the tab silently got a
+      // hostname label instead. The follow-up call targeting the requested
+      // label then failed with "No tab found with label" — correct, but for a
+      // reason invisible in the attach response that reported success.
+      // (assistant, 2026-08-06.)
+      const label = requestedLabel || preservedLabel || this.generateLabel(url);
 
       // Store original title (remove [MCP] prefix if it exists)
       const originalTitle = title.startsWith('🟢 [MCP] ')
@@ -2500,6 +2520,10 @@ class BackgroundController {
     try {
       let targetTabId = tabId;
 
+      // Did the caller NAME a tab? Substituting a different one is only ever
+      // acceptable when they didn't. See the restricted-URL branch below.
+      const explicitTarget = tabId != null || label != null;
+
       // Resolve label to tabId if provided
       if (!targetTabId && label) {
         const tabInfo = this.tabManager.resolveTab(label);
@@ -2665,6 +2689,27 @@ class BackgroundController {
 
       // Check if the target tab has a restricted URL
       if (this.isRestrictedUrl(tab.url)) {
+        // ⛔ NEVER substitute a tab the caller explicitly named. Retargeting is
+        // a convenience for "attach me to something sensible"; applied to an
+        // explicit tabId it returns SUCCESS naming a DIFFERENT tab, which the
+        // caller cannot distinguish from the attach they asked for.
+        // `assistant` (2026-08-06) passed a chrome://newtab/ id and landed on
+        // an unrelated tab in a browser they should not have been in — the
+        // response read as a normal successful attach. A wrong destination
+        // reported as success is worse than a failure.
+        // The dead-tab branch above already reasons this way ("surface the
+        // not-found error rather than silently retargeting"); this path was
+        // simply missed.
+        if (explicitTarget) {
+          const err = new Error(
+            `Cannot attach to tab ${targetTabId} (${tab.url}) — extensions cannot debug this URL. ` +
+            `Navigate it to a regular page first, or pass a different tabId. ` +
+            `Not retargeting automatically, because you asked for a specific tab.`
+          );
+          err.code = 'UNATTACHABLE_URL';
+          throw err;
+        }
+
         console.warn('[Background] Cannot attach to restricted URL:', tab.url);
         console.log('[Background] Searching for first valid tab...');
 
@@ -2683,6 +2728,8 @@ class BackgroundController {
       const tabInfo = await this.tabManager.attachTab(targetTabId, tab.url, tab.title, {
         agent: this.tabManager._currentAgent,
         takeover: this.tabManager._currentTakeover,
+        // `label` was accepted here and silently dropped — see attachTab().
+        label,
       });
 
       // Update state for backwards compatibility
