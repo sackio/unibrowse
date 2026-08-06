@@ -4940,32 +4940,38 @@ class BackgroundController {
       }
     }
 
-    let tab = await chrome.tabs.get(targetTabId);
+    const tab = await chrome.tabs.get(targetTabId);
 
-    // Check if the requested tab has a restricted URL
+    // ⛔ Never substitute. Unlike ensure_attached, this handler has NO
+    // untargeted path — it is unreachable without a tabId or tabTarget — so a
+    // substitution here is ALWAYS overriding a tab the caller named, and
+    // "switch" means focusing a window on someone's screen.
+    //
+    // This was the sibling of the ensure_attached bug fixed in c6cea0d: same
+    // decision (restricted URL → findFirstValidTab), same file, made twice.
+    // Found by grepping the other call sites of that decision rather than by
+    // hitting it — the correct branch gives no signal about the wrong one.
+    //
+    // It did disclose the swap via `message`, but that disclosure was broken
+    // in the direction that trains callers to ignore it: the condition was
+    // `targetTabId !== tabId`, and `tabId` is undefined whenever the caller
+    // targets by label — so EVERY label-targeted switch reported "switched to
+    // <url> instead" alongside success:true, even with no substitution at all.
+    // A warning that cries wolf on the common path is worse than none, because
+    // it is still there when it is true.
     if (this.isRestrictedUrl(tab.url)) {
-      console.warn('[Background] Cannot switch to restricted URL:', tab.url);
-      console.log('[Background] Finding first valid tab instead...');
-
-      // Find the first valid tab
-      const validTab = await this.findFirstValidTab();
-      targetTabId = validTab.id;
-      tab = validTab;
-
-      console.log('[Background] Switched to valid tab:', targetTabId, tab.url);
+      const err = new Error(
+        `Cannot switch to tab ${targetTabId} (${tab.url}) — extensions cannot drive this URL. ` +
+        `Not switching to a different tab, because you asked for a specific one.`
+      );
+      err.code = 'UNATTACHABLE_URL';
+      throw err;
     }
 
     await chrome.tabs.update(targetTabId, { active: true });
     await chrome.windows.update(tab.windowId, { focused: true });
 
-    return {
-      success: true,
-      tabId: targetTabId,
-      url: tab.url,
-      message: targetTabId !== tabId
-        ? `Requested tab has restricted URL, switched to ${tab.url} instead`
-        : undefined
-    };
+    return { success: true, tabId: targetTabId, url: tab.url };
   }
 
   async handleCreateTab({ url, incognito, label, focus }) {
