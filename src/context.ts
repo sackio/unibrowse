@@ -1,3 +1,5 @@
+import { readFileSync } from "fs";
+
 import { WebSocket } from "ws";
 
 import { mcpConfig } from "@/config/mcp.config";
@@ -37,11 +39,53 @@ export interface ExtensionConn {
   registeredAt: number;
 }
 
+/**
+ * The container's own default-gateway IP, read once from /proc/net/route.
+ *
+ * ⚠️ THIS IS THE WHOLE DISCRIMINATOR, and getting it wrong is why the first
+ * version of describeExtension() mislabelled ben's Chrome as a container.
+ * When this server runs in docker, a connection from a process on the HOST
+ * arrives SNAT'd as the bridge gateway (e.g. 172.27.0.1), while a sibling
+ * container arrives as its own address on the same subnet (172.27.0.3).
+ * Both are "in the docker range", so the range alone cannot tell a desktop
+ * browser from a sidecar — it labels the host as a container, which is
+ * exactly backwards from what the caller needs to know.
+ *
+ * Returns undefined off-Linux or if /proc is unreadable; callers must treat
+ * that as "cannot tell" rather than as either answer.
+ */
+let _cachedGateway: string | null | undefined;
+function dockerGatewayIp(): string | undefined {
+  if (_cachedGateway !== undefined) return _cachedGateway ?? undefined;
+  try {
+    // /proc/net/route: the default route has Destination 00000000. Gateway is
+    // a little-endian hex u32.
+    // ⚠️ A top-level import, NOT require(): package.json is "type": "module"
+    // and tsup emits ESM, so `require` is not defined at runtime — and tsup
+    // does not typecheck, so that would have shipped as a green build and
+    // thrown only when an extension registered.
+    const txt = readFileSync("/proc/net/route", "utf8");
+    for (const line of txt.split("\n").slice(1)) {
+      const f = line.trim().split(/\s+/);
+      if (f.length > 2 && f[1] === "00000000") {
+        const hex = f[2];
+        const octets = [6, 4, 2, 0].map((i) => parseInt(hex.slice(i, i + 2), 16));
+        if (octets.every((o) => Number.isFinite(o))) {
+          _cachedGateway = octets.join(".");
+          return _cachedGateway;
+        }
+      }
+    }
+  } catch { /* not linux, or /proc unavailable */ }
+  _cachedGateway = null;
+  return undefined;
+}
+
 /** A caller-facing description of WHICH browser an extensionId refers to. */
 export interface ExtensionIdentity {
   extensionId: string;
   label: string;
-  kind: "container-sidecar" | "local-desktop" | "lan-remote" | "unknown";
+  kind: "container-sidecar" | "local-desktop" | "docker-host-desktop" | "lan-remote" | "unknown";
   platform?: string;
   profileName?: string;
   hostname?: string;
@@ -175,9 +219,17 @@ export class Context {
     const addr = remoteAddress ?? "";
     const isLoopback = addr === "127.0.0.1" || addr === "::1" || addr === "localhost";
     const isDockerBridge = /^(172\.1[6-9]\.|172\.2\d\.|172\.3[01]\.)/.test(addr);
+    // ⚠️ Order matters and the gateway case MUST come first. A browser running
+    // on the docker host arrives as the bridge gateway, which is inside the
+    // docker range — so testing the range first labels ben's own Chrome a
+    // container. Caught within a minute of shipping the range-only version,
+    // and only because the raw peer address is printed beside the inference.
+    const gateway = dockerGatewayIp();
+    const isDockerHost = !!gateway && addr === gateway;
     const kind: ExtensionIdentity["kind"] =
-      isDockerBridge ? "container-sidecar"
-      : isLoopback ? "local-desktop"
+      isLoopback ? "local-desktop"
+      : isDockerHost ? "docker-host-desktop"
+      : isDockerBridge ? "container-sidecar"
       : addr ? "lan-remote"
       : "unknown";
 
@@ -186,6 +238,7 @@ export class Context {
     const bits = [
       kind === "container-sidecar" ? "container chromium (sidecar)"
         : kind === "local-desktop" ? "desktop browser on this host"
+        : kind === "docker-host-desktop" ? "desktop browser on the docker HOST (not a container)"
         : kind === "lan-remote" ? `browser on ${hostname || addr}`
         : "unidentified browser",
       profileName ? `profile "${profileName}"` : undefined,

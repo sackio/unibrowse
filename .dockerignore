@@ -14,3 +14,14 @@ extension/*.backup-*
 .idea
 coverage
 *.log
+
+# Isolated chromium profiles. These are RUNTIME state on a bind mount
+# (docker-compose.yml: ./chrome-profiles:/app/.chrome-profiles) and nothing in
+# the Dockerfile copies them — it takes only package*.json, dist and extension.
+# Leaving them in the build context sent ~53MB of live browser profiles,
+# including session cookies, to the daemon on every build. It also BROKE the
+# build outright: the container writes these as root, so
+#   failed to solve: error from sender: open .../ActorSafetyLists: permission denied
+# blocked a deploy on 2026-08-11.
+chrome-profiles
+.chrome-profiles
