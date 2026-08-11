@@ -23,8 +23,31 @@ export interface ExtensionConn {
   extensionId: string;
   ws: WebSocket;
   tabIds: Set<number>;
-  meta: { profileName?: string; hostname?: string; userAgent?: string };
+  meta: {
+    profileName?: string;
+    hostname?: string;
+    userAgent?: string;
+    // Peer address of the extension's websocket, captured server-side at
+    // registration. This is the ONE identity fact that needs no cooperation
+    // from the extension, and it is the one that separates a container from a
+    // desktop: a sidecar chromium connects from the docker bridge (172.x),
+    // ben's own Chrome from loopback or the office LAN address.
+    remoteAddress?: string;
+  };
   registeredAt: number;
+}
+
+/** A caller-facing description of WHICH browser an extensionId refers to. */
+export interface ExtensionIdentity {
+  extensionId: string;
+  label: string;
+  kind: "container-sidecar" | "local-desktop" | "lan-remote" | "unknown";
+  platform?: string;
+  profileName?: string;
+  hostname?: string;
+  remoteAddress?: string;
+  connectedForMs: number;
+  tabCount: number;
 }
 
 export class Context {
@@ -114,6 +137,79 @@ export class Context {
   /** Look up an extension by id. */
   getExtension(extensionId: string): ExtensionConn | undefined {
     return this._extensions.get(extensionId);
+  }
+
+  /**
+   * Describe WHICH browser an extensionId actually is, in terms a caller can
+   * act on.
+   *
+   * Ben, 2026-08-11: "you need to make it easier for agents to know which
+   * browse they are driving." That morning `agents` spent an hour debugging an
+   * incognito refusal in a container chromium while believing it was ben's
+   * desktop Chrome, and sent him to toggle a Chrome setting twice — in a
+   * browser that was never in play. Nothing in any response distinguished the
+   * two: the ids are opaque UUIDs and every listing returned bare strings.
+   *
+   * ⚠️ `kind` is INFERRED from the peer address, not asserted by the browser.
+   * A private-range peer is *consistent with* a container and does not prove
+   * one. It is a strong hint printed next to the raw evidence, deliberately —
+   * two of us burned an hour on probes whose confounds were invisible
+   * (host `ps` also lists container processes; a container's `localhost` is
+   * its own). Show the address so the reader can disagree with the label.
+   */
+  describeExtension(extensionId: string): ExtensionIdentity | undefined {
+    const conn = this._extensions.get(extensionId);
+    if (!conn) return undefined;
+    const { profileName, hostname, userAgent, remoteAddress } = conn.meta;
+
+    const platform = userAgent
+      ? (/Macintosh|Mac OS X/.test(userAgent) ? "macOS"
+        : /Windows/.test(userAgent) ? "Windows"
+        : /CrOS/.test(userAgent) ? "ChromeOS"
+        : /Linux/.test(userAgent) ? "Linux"
+        : undefined)
+      : undefined;
+
+    // Docker bridge ranges. Loopback means the browser is on the same host as
+    // this server; anything else on the LAN is a different machine.
+    const addr = remoteAddress ?? "";
+    const isLoopback = addr === "127.0.0.1" || addr === "::1" || addr === "localhost";
+    const isDockerBridge = /^(172\.1[6-9]\.|172\.2\d\.|172\.3[01]\.)/.test(addr);
+    const kind: ExtensionIdentity["kind"] =
+      isDockerBridge ? "container-sidecar"
+      : isLoopback ? "local-desktop"
+      : addr ? "lan-remote"
+      : "unknown";
+
+    // Prefer the most specific human handle available. profileName is set by
+    // browser_launch_isolated_chrome, so a sidecar usually names itself.
+    const bits = [
+      kind === "container-sidecar" ? "container chromium (sidecar)"
+        : kind === "local-desktop" ? "desktop browser on this host"
+        : kind === "lan-remote" ? `browser on ${hostname || addr}`
+        : "unidentified browser",
+      profileName ? `profile "${profileName}"` : undefined,
+      platform,
+    ].filter(Boolean);
+
+    return {
+      extensionId,
+      label: bits.join(" · "),
+      kind,
+      platform,
+      profileName,
+      hostname,
+      remoteAddress: remoteAddress || undefined,
+      connectedForMs: Date.now() - conn.registeredAt,
+      tabCount: conn.tabIds.size,
+    };
+  }
+
+  /** Describe every currently-registered extension. */
+  describeExtensions(): ExtensionIdentity[] {
+    return Array.from(this._extensions.keys())
+      .map((id) => this.describeExtension(id))
+      .filter((d): d is ExtensionIdentity => !!d);
   }
 
   /** Iterate every registered extension. */
@@ -233,9 +329,20 @@ export class Context {
     // schema (no extensionId field cached) has a fallback path: attach to a
     // tab first, then route by tabTarget instead of extensionId.
     const ids = Array.from(this._extensions.keys());
+    // Name the browsers, don't just list their UUIDs. This message fires at the
+    // exact moment a caller has to CHOOSE one, and until 2026-08-11 it offered
+    // three opaque ids with nothing to choose between them — so callers picked
+    // arbitrarily and then debugged the wrong machine. (Ben: "you need to make
+    // it easier for agents to know which browse they are driving.")
+    const described = ids
+      .map((id) => {
+        const d = this.describeExtension(id);
+        return d ? `  · ${id} — ${d.label}${d.remoteAddress ? ` [peer ${d.remoteAddress}]` : ""}` : `  · ${id}`;
+      })
+      .join("\n");
     throw new Error(
       `Multiple extensions are connected (${ids.length}). To target a specific browser, ` +
-      `EITHER pass extensionId (one of: ${ids.join(", ")}) on this call, ` +
+      `EITHER pass extensionId on this call — the connected browsers are:\n${described}\n` +
       `OR first attach to a tab (browser_list_tabs → browser_attach_tab({tabId} or {autoOpenUrl})) ` +
       `and then pass tabTarget=<tabId-or-label> on subsequent calls — the server routes attached tabs to their owning extension automatically. ` +
       `If your MCP client's tool schema doesn't show extensionId, refresh it via /mcp (or session respawn).` +

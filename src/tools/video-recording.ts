@@ -52,7 +52,14 @@ export const stopVideoRecording: Tool = {
     try {
       const validatedParams = StopVideoRecordingTool.shape.arguments.parse(params);
 
-      const result = await context.sendSocketMessage("browser_stop_video_recording", {});
+      // Route explicitly — see the note in custom.ts::getConsoleLogs. Without
+      // this, wsFor() has no target and a caller who passed a valid
+      // extensionId gets told to pass an extensionId.
+      const result = await context.sendSocketMessage(
+        "browser_stop_video_recording",
+        {},
+        { extensionId: validatedParams.extensionId, tabTarget: validatedParams.tabTarget },
+      );
 
       if (!result.videoBase64) {
         throw new Error("No video data returned from extension");

@@ -56,7 +56,10 @@ export const listAttachedTabs: Tool = {
         const message = errors.length
           ? `No tabs attached. Extension errors: ${errors.map(e => `${e.extensionId}: ${e.error}`).join("; ")}`
           : "No tabs currently attached";
-        return jsonResponse({ tabs: [], extensions: results.map(r => r.extensionId), errors, message }, true, max_tokens);
+        return jsonResponse({ tabs: [], // Identity, not bare ids. A caller cannot tell which machine an opaque
+      // UUID refers to, and on 2026-08-11 that cost an hour of debugging a
+      // container chromium in the belief it was ben's desktop Chrome.
+      extensions: results.map(r => context.describeExtension(r.extensionId) ?? { extensionId: r.extensionId, label: "unidentified browser", kind: "unknown" }), errors, message }, true, max_tokens);
       }
 
       const summary = `Attached tabs (${tabs.length} across ${results.length} extension${results.length === 1 ? "" : "s"}):\n` +
@@ -67,7 +70,10 @@ export const listAttachedTabs: Tool = {
           const ext = ` [ext: ${tab.extensionId}]`;
           return `- Tab ${tab.tabId} (${tab.label}): ${tab.title}${ext}${res}\n  URL: ${tab.url}\n  Last used: ${new Date(tab.lastUsedAt).toLocaleString()}`;
         }).join("\n");
-      return jsonResponse({ tabs, extensions: results.map(r => r.extensionId), errors, message: summary }, true, max_tokens);
+      return jsonResponse({ tabs, // Identity, not bare ids. A caller cannot tell which machine an opaque
+      // UUID refers to, and on 2026-08-11 that cost an hour of debugging a
+      // container chromium in the belief it was ben's desktop Chrome.
+      extensions: results.map(r => context.describeExtension(r.extensionId) ?? { extensionId: r.extensionId, label: "unidentified browser", kind: "unknown" }), errors, message: summary }, true, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(

@@ -1288,7 +1288,12 @@ export const StopVideoRecordingTool = z.object({
       .string()
       .optional()
       .describe("File path to save the video. Defaults to /tmp/unibrowse_video_<timestamp>.webm"),
-  }).merge(MaxTokensSchema),
+    // TabTargetSchema was missing here while browser_start_video_recording had
+    // it — so a caller could START a recording on a named extension and then
+    // have no way to say which browser to STOP. In a multi-extension setup
+    // wsFor() then threw "Multiple extensions are connected", and the schema
+    // offered no field to satisfy it. Additive and optional; nothing breaks.
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 // ==================== MULTI-TAB MANAGEMENT TOOLS ====================

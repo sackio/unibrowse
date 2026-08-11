@@ -66,7 +66,7 @@ export function extractKey(req: Request | IncomingMessage): string | null {
 // surfaces the real (possibly remote) client IP, while a direct LAN client
 // can't spoof XFF to look local from elsewhere.
 
-function stripIPv4Mapped(ip: string): string {
+export function stripIPv4Mapped(ip: string): string {
   // "::ffff:192.168.1.1" → "192.168.1.1"
   if (ip.startsWith("::ffff:")) return ip.slice(7);
   return ip;

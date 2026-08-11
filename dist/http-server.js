@@ -109,7 +109,7 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-QJQWCMF7.js";
+} from "./chunk-SWLGGXCK.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -118,7 +118,7 @@ import {
   isValidKey,
   requireApiKey,
   requireLan
-} from "./chunk-VESOCJNI.js";
+} from "./chunk-YYZQZXP6.js";
 
 // src/http-server.ts
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -895,7 +895,7 @@ async function main() {
     console.log(`[HTTP] Install page:  http://localhost:${port}/install`);
     console.log(`[HTTP] Auth policy:   ${isAuthEnabled() ? "LAN open, remote requires API key (UNIBROWSE_API_KEYS set)" : "open (no UNIBROWSE_API_KEYS \u2014 all clients allowed)"}`);
   });
-  const { createWebSocketServerFromHTTP } = await import("./ws-COLB2S7L.js");
+  const { createWebSocketServerFromHTTP } = await import("./ws-S7OJF7HG.js");
   const wss = createWebSocketServerFromHTTP(httpServer);
   const WS_HEARTBEAT_MS = 3e4;
   wss.on("connection", (ws) => {

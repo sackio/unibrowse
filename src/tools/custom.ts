@@ -28,9 +28,21 @@ export const getConsoleLogs: Tool = {
     const { max_tokens } = params || {};
     try {
       await context.ensureAttachedFromParams(params);
+      // Forward extensionId + tabTarget through options so multi-extension
+      // routing works. Without them wsFor() sees no target at all and throws
+      // "Multiple extensions are connected … EITHER pass extensionId on this
+      // call" — instructing the caller to do the exact thing they already did.
+      // The pre-flight ensureAttachedFromParams above consumed the routing and
+      // then this call threw it away, so a correct invocation read as a
+      // rejected extensionId. Cost `agents` the one diagnostic they needed
+      // while debugging a sign-in hang on 2026-08-11.
+      // ⚠️ macros.ts had this exact fix, with a comment naming this exact
+      // symptom, since before today — applied to one call site and never
+      // propagated. Check the siblings when you fix a routing bug here.
       const consoleLogs = await context.sendSocketMessage(
         "browser_get_console_logs",
         {},
+        { extensionId: params?.extensionId, tabTarget: params?.tabTarget },
       );
       const text: string = consoleLogs
         .map((log) => JSON.stringify(log))

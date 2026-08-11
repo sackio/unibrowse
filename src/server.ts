@@ -10,6 +10,7 @@ import type { WebSocketServer, WebSocket } from "ws";
 import { Context } from "@/context";
 import type { Resource } from "@/resources/resource";
 import type { Tool } from "@/tools/tool";
+import { stripIPv4Mapped } from "@/utils/auth";
 import { createWebSocketServer } from "@/ws";
 
 type Options = {
@@ -78,6 +79,12 @@ export async function createServerWithTools(options: Options): Promise<Server> {
         profileName: payload?.profileName as string | undefined,
         hostname: payload?.hostname as string | undefined,
         userAgent: payload?.userAgent as string | undefined,
+        // Server-side, so it is available even for an extension too old to
+        // report anything about itself. This is what tells a container
+        // chromium apart from a desktop Chrome — see Context.describeExtension.
+        remoteAddress: stripIPv4Mapped(
+          String((ws as any)?._socket?.remoteAddress || ""),
+        ) || undefined,
       };
       globalContext.registerExtension(extensionId, ws, meta);
       console.log(`[Server] Extension registered: extensionId=${extensionId} profile=${meta.profileName ?? '-'} totalConnected=${globalContext.listExtensions().length}`);

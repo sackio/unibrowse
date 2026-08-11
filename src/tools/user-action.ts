@@ -28,10 +28,15 @@ export const requestUserAction: ToolFactory = (snapshot) => ({
       const wsTimeoutMs = timeout ? timeout * 1000 : 300000; // 5 minutes default
 
       // Send request to browser and wait for user response
+      // Route explicitly — see the note in custom.ts::getConsoleLogs.
       const result = await context.sendSocketMessage(
         "browser_request_user_action",
         { request },
-        { timeoutMs: wsTimeoutMs }
+        {
+          timeoutMs: wsTimeoutMs,
+          extensionId: params?.extensionId,
+          tabTarget: params?.tabTarget,
+        }
       );
 
       // Format the result

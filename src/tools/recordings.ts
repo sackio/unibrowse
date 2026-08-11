@@ -506,7 +506,17 @@ export const getRecordingScreenshot: Tool = {
       // navigating doesn't work: an about:blank tab is "restricted", so it never
       // attaches and the label is never registered — leaving every subsequent
       // tabTarget lookup (navigate/evaluate/screenshot/close) unresolvable.
-      await context.sendSocketMessage("browser_create_tab", { url: playerUrl, label });
+      // Pin the player tab to the SAME extension the caller targeted. Without
+      // this the create lands on whichever browser wsFor() picks (or throws
+      // "Multiple extensions are connected"), and the label is then registered
+      // in a different browser than the evaluate/screenshot calls below expect
+      // — so the failure surfaces later, as an unresolvable tabTarget, rather
+      // than here. See custom.ts::getConsoleLogs for the same routing bug.
+      await context.sendSocketMessage(
+        "browser_create_tab",
+        { url: playerUrl, label },
+        { extensionId: params?.extensionId },
+      );
 
       try {
         // Poll until __playerReady (up to 15s)
@@ -521,7 +531,7 @@ export const getRecordingScreenshot: Tool = {
             poll();
           })`,
           tabTarget: label,
-        });
+        }, { extensionId: params?.extensionId, tabTarget: label });
 
         if (!ready) throw new Error("Player did not become ready");
 
