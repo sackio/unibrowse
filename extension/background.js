@@ -2663,14 +2663,28 @@ class BackgroundController {
       // acceptable when they didn't. See the restricted-URL branch below.
       const explicitTarget = tabId != null || label != null;
 
-      // Resolve label to tabId if provided
+      // Resolve label to tabId if provided.
+      // ⚠️ With autoOpenUrl ALSO supplied, a label that matches nothing is not
+      // an error — it is the NAME to give the tab we are about to create.
+      // Previously the lookup ran first and threw "No tab found with label: X"
+      // before the autoOpenUrl branch below could run, so
+      // attach_tab({autoOpenUrl, label}) could never succeed on a first call
+      // and created nothing. (ha, 2026-08-12.) The combination plainly means
+      // "open this URL and call it X"; only the ORDER said otherwise.
+      // (attachTab() below already honours options.label, so the name is
+      // applied by the normal attach path — nothing extra to carry.)
       if (!targetTabId && label) {
         const tabInfo = this.tabManager.resolveTab(label);
-        if (!tabInfo) {
+        if (tabInfo) {
+          targetTabId = tabInfo.tabId;
+          console.log('[Background] Resolved label', label, 'to tab', targetTabId);
+        } else if (autoOpenUrl) {
+          console.log('[Background] Label', label, 'is unused; the new tab will be named with it');
+        } else {
+          // No autoOpenUrl to fall back on — the caller named a tab that does
+          // not exist and gave us no way to make one.
           throw new Error(`No tab found with label: ${label}`);
         }
-        targetTabId = tabInfo.tabId;
-        console.log('[Background] Resolved label', label, 'to tab', targetTabId);
       }
 
       // If no target but autoOpenUrl provided, create new tab
