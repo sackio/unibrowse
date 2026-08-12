@@ -345,9 +345,83 @@ const reapExistingForProfile = async (profileName) => {
       process.kill(pid, "SIGKILL");
     } catch (e) { console.warn(`[chromium-host] SIGKILL pid=${pid} failed: ${e.message}`); }
   }
+
+  // ⚠️ TEAR DOWN THE PAIRED XVFBs TOO. destroyInstance() already does this and
+  // carries a comment explaining why: without it "a fix for the leak merely
+  // relocates it — the chromium dies, the Xvfb lingers, and a display number
+  // burns on every cycle." That fix was applied there and never propagated
+  // HERE, which is the path every RELAUNCH takes. Measured 2026-08-12: a caller
+  // relaunching `ecobee-broker` every ~75s leaked one Xvfb per cycle and
+  // consumed the whole :90-:189 range (100 live Xvfbs, host load 8) in a few
+  // hours, after which every launch landed on a random already-occupied
+  // display. The chromium reap above was working perfectly the entire time —
+  // which is exactly why nobody looked here.
+  const freedDisplays = new Set();
+  for (const p of allPids) {
+    const e = launchedProcesses.get(p);
+    if (e?.display) freedDisplays.add(e.display);
+  }
+  for (const [xpid, v] of launchedXvfbs) {
+    if (!v.display || !freedDisplays.has(v.display)) continue;
+    // Don't kill an Xvfb some OTHER still-live chromium is sharing.
+    const shared = Array.from(launchedProcesses.entries())
+      .some(([p, e2]) => !allPids.includes(p) && e2.display === v.display);
+    if (shared) { console.warn(`[chromium-host] display ${v.display} shared; leaving Xvfb ${xpid} up`); continue; }
+    try { v.proc.kill("SIGTERM"); launchedXvfbs.delete(xpid); } catch {}
+    console.log(`[chromium-host] reaped Xvfb ${xpid} (${v.display}) paired to ${profileName}`);
+  }
+
   // Final settle for the kernel to release file handles on the profile dir
   // so the imminent rmSync succeeds first time.
   await new Promise((r) => setTimeout(r, 200));
+};
+
+/* ---------- Relaunch-loop breaker -------------------------------------- */
+// A caller whose recovery for "my browser isn't working" is "relaunch it" will
+// relaunch forever, because relaunching is itself destructive: it wipes the
+// profile's extension storage and therefore the stable extensionId the caller
+// was looking for. The retry destroys the thing it is retrying for.
+//
+// Measured 2026-08-12: ha's `ecobee-broker` was relaunched 1,329 times in 26
+// hours — one every ~75s, sustained, each leaking an Xvfb until the whole
+// :90-:189 display range was gone and office sat at load 8. Nothing anywhere
+// in the path said "this is the 400th time."
+//
+// ⭐ The guard is a LOOP DETECTOR, not a cooldown. A fixed minimum interval
+// would punish legitimate rapid relaunches (a test harness, a human iterating)
+// while a 75s loop sails straight through it — 75s is already slower than any
+// cooldown worth setting. What distinguishes a loop is SUSTAINED repetition,
+// so that is what to measure.
+const LOOP_WINDOW_MS = parseInt(process.env.LOOP_WINDOW_MS || `${15 * 60 * 1000}`, 10);
+const LOOP_MAX_LAUNCHES = parseInt(process.env.LOOP_MAX_LAUNCHES || "8", 10);
+const launchHistory = new Map();   // profileName → [epochMs, ...]
+
+const detectRelaunchLoop = (profileName) => {
+  if (!profileName) return null;
+  const now = Date.now();
+  const hist = (launchHistory.get(profileName) || []).filter(t => now - t < LOOP_WINDOW_MS);
+  hist.push(now);
+  launchHistory.set(profileName, hist);
+  if (hist.length <= LOOP_MAX_LAUNCHES) return null;
+  const spanMin = Math.round((now - hist[0]) / 60000) || 1;
+  console.warn(
+    `[chromium-host] RELAUNCH LOOP: "${profileName}" launched ${hist.length}x in ${spanMin}min — refusing. ` +
+    `Relaunching wipes the profile's extension storage, so the extensionId changes every cycle; ` +
+    `if the caller is retrying because the id went missing, retrying is what removed it.`
+  );
+  return {
+    error: "ERELAUNCHLOOP",
+    profileName,
+    launches: hist.length,
+    windowMinutes: Math.round(LOOP_WINDOW_MS / 60000),
+    message:
+      `Refusing to relaunch "${profileName}": ${hist.length} launches in the last ${spanMin} minutes ` +
+      `looks like a retry loop. Each relaunch WIPES this profile's extension storage and mints a NEW ` +
+      `extensionId, so if you are relaunching because the extensionId you had stopped working, the ` +
+      `relaunch is the cause and not the cure. Attach to the existing instance instead ` +
+      `(browser_list_attached_tabs shows the current extensionId), or wait out the window. ` +
+      `Tune with LOOP_MAX_LAUNCHES / LOOP_WINDOW_MS.`,
+  };
 };
 
 /* ---------- Launch a chromium ------------------------------------------ */
@@ -629,6 +703,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "POST" && req.url === "/launch") {
       const body = JSON.parse(await readBody(req) || "{}");
+      const loop = detectRelaunchLoop(body.profileName);
+      if (loop) return send(res, 429, loop);
       const result = await launchChromium(body);
       return send(res, 200, result);
     }

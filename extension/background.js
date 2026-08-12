@@ -368,11 +368,77 @@ class TabManager {
 
   // ─── Reservation registry ──────────────────────────────────────────────
 
+  /**
+   * ⚠️ RESERVATIONS EXPIRE. They did not, and that was the bug behind a year of
+   * "the extension has crashed, I need to reload it."
+   *
+   * A reservation used to live in this Map until something explicitly released
+   * it — with no TTL, no liveness check, and no way for anyone but the owner to
+   * clear it. So an agent that took a tab and then died (a throwaway automation
+   * session, a crashed seat, a respawn) held that tab FOREVER. Every later
+   * operation on it was refused with a correct, well-formed, completely
+   * unactionable error naming an owner that no longer existed.
+   *
+   * Measured 2026-08-12: ben's claude.ai tab was held by "claude-login-auto"
+   * — a disposable session from an account swap the previous day — for 26
+   * HOURS. The only thing that clears the Map is reloading the extension, which
+   * is exactly the workaround he had been driven to, and which is why it kept
+   * coming back. ⭐ From outside, "the extension is broken" and "the extension
+   * is holding a stale lock" are indistinguishable: both look like a dead
+   * browser, and a reload fixes both. That is what hid this through two
+   * previous investigations that went looking for a crash.
+   *
+   * Expiry keys on LAST ACTIVITY, not claim time — a genuinely long task keeps
+   * refreshing its own claim just by working, so this cannot cut a live agent
+   * off mid-flight. It only reaps claims nobody is using.
+   */
+  static RESERVATION_TTL_MS = 30 * 60 * 1000;   // 30 min of INACTIVITY
+
+  /** Has this reservation gone stale (owner idle past the TTL)? */
+  _isStale(entry) {
+    if (!entry || !entry.owner) return false;
+    const last = entry.lastActivityAt || entry.claimedAt || 0;
+    return Date.now() - last > TabManager.RESERVATION_TTL_MS;
+  }
+
+  /** Drop a stale reservation in place. Returns true if one was reaped. */
+  _reapIfStale(tabId) {
+    const entry = this.reservations.get(tabId);
+    if (!this._isStale(entry)) return false;
+    const heldMs = Date.now() - (entry.lastActivityAt || entry.claimedAt);
+    console.log(
+      `[TabManager] Tab ${tabId} reservation by "${entry.owner}" EXPIRED after ` +
+      `${Math.round(heldMs / 60000)}min idle — auto-releasing`
+    );
+    this.releaseTab(tabId, `expired-after-${Math.round(heldMs / 60000)}min-idle`);
+    return true;
+  }
+
+  /** Mark the owner as alive so an in-progress task keeps its claim. */
+  touchReservation(tabId, agent) {
+    const entry = this.reservations.get(tabId);
+    if (!entry || !entry.owner || !agent) return;
+    if (entry.owner !== agent) return;
+    entry.lastActivityAt = Date.now();
+  }
+
+  /** Human-readable age, so a stale claim reads as stale. */
+  static _describeAge(ms) {
+    const m = Math.round(ms / 60000);
+    if (m < 60) return `${m}min ago`;
+    const h = Math.floor(m / 60);
+    if (h < 48) return `${h}h ${m % 60}min ago`;
+    return `${Math.floor(h / 24)}d ago`;
+  }
+
   /** Claim a tab for an agent. Throws `tab-reserved` if held by another and
    *  takeover is false. No-op if agent is empty (legacy free-for-all). */
   claimTab(tabId, agent, options = {}) {
     if (!agent) return null;
     const takeover = options.takeover === true;
+    // An idle-expired claim is not a claim. Reap before reading, so a caller
+    // never has to pass takeover:true to displace an owner that is already gone.
+    this._reapIfStale(tabId);
     const existing = this.reservations.get(tabId);
     if (existing && existing.owner && existing.owner !== agent) {
       if (!takeover) {
@@ -395,7 +461,7 @@ class TabManager {
         releaseReason: `taken-over-by:${agent}`,
       });
       while (history.length > 10) history.shift();
-      this.reservations.set(tabId, { owner: agent, claimedAt: Date.now(), history });
+      this.reservations.set(tabId, { owner: agent, claimedAt: Date.now(), lastActivityAt: Date.now(), history });
       console.log(`[TabManager] Tab ${tabId} forcibly taken over by "${agent}" from "${existing.owner}"`);
       return { taken: true, previousOwner: existing.owner };
     }
@@ -405,7 +471,7 @@ class TabManager {
     }
     // Unreserved → claim.
     const history = (existing && existing.history) || [];
-    this.reservations.set(tabId, { owner: agent, claimedAt: Date.now(), history });
+    this.reservations.set(tabId, { owner: agent, claimedAt: Date.now(), lastActivityAt: Date.now(), history });
     console.log(`[TabManager] Tab ${tabId} reserved by "${agent}"`);
     return { claimed: true };
   }
@@ -431,13 +497,27 @@ class TabManager {
    *  {blocked:true, owner, claimedAt} record when another agent owns it. */
   checkAccess(tabId, agent) {
     if (!agent) return null;
+    // Reap first: an idle-expired claim must not block a live caller. Without
+    // this the probe faithfully reports a reservation whose owner died
+    // yesterday — see the RESERVATION_TTL_MS note above.
+    this._reapIfStale(tabId);
     const existing = this.reservations.get(tabId);
     if (!existing || !existing.owner) return null;
     if (existing.owner === agent) return null;
-    return { blocked: true, owner: existing.owner, claimedAt: existing.claimedAt };
+    return {
+      blocked: true,
+      owner: existing.owner,
+      claimedAt: existing.claimedAt,
+      lastActivityAt: existing.lastActivityAt || existing.claimedAt,
+    };
   }
 
   getReservation(tabId) {
+    // Reap here too, so browser_list_attached_tabs never reports a phantom
+    // owner. The listing is where a human or agent goes to find out WHO holds
+    // a tab; showing them a 26-hour-old claim as if it were live is how this
+    // bug survived being looked at directly.
+    this._reapIfStale(tabId);
     return this.reservations.get(tabId) || null;
   }
 
@@ -826,13 +906,22 @@ class TabManager {
         if (takeover === true) {
           this.claimTab(tabInfo.tabId, agent, { takeover: true });
         } else {
+          // State the AGE, not just the timestamp. The old message gave an ISO
+          // string, which reads as an equally-valid claim whether it is 4
+          // minutes or 26 hours old — so a dead owner's lock looked exactly
+          // like a live colleague's. The age is the whole signal.
+          const idleMs = Date.now() - (block.lastActivityAt || block.claimedAt);
           const err = new Error(
-            `Tab ${tabInfo.label || tabInfo.tabId} is reserved by "${block.owner}" since ` +
-            `${new Date(block.claimedAt).toISOString()}. Pass takeover:true to forcibly transfer ownership.`
+            `Tab ${tabInfo.label || tabInfo.tabId} is reserved by "${block.owner}", ` +
+            `last active ${TabManager._describeAge(idleMs)} ` +
+            `(claimed ${new Date(block.claimedAt).toISOString()}). ` +
+            `Reservations auto-expire after ${Math.round(TabManager.RESERVATION_TTL_MS / 60000)}min idle; ` +
+            `pass takeover:true to claim it now.`
           );
           err.code = 'tab-reserved';
           err.owner = block.owner;
           err.claimedAt = block.claimedAt;
+          err.idleMs = idleMs;
           throw err;
         }
       } else if (!this.reservations.get(tabInfo.tabId)?.owner) {
@@ -840,6 +929,11 @@ class TabManager {
         // courtesy so future calls from other agents see the reservation.
         this.claimTab(tabInfo.tabId, agent);
       }
+      // The owner just did work on this tab — refresh the claim. This is what
+      // makes the TTL safe: a long-running task cannot be reaped out from
+      // under itself, because every operation it performs pushes the deadline
+      // out. Only claims nobody is exercising go stale.
+      this.touchReservation(tabInfo.tabId, agent);
     }
     this.markUsed(tabInfo.tabId);
     return tabInfo.cdp;
