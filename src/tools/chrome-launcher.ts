@@ -2,6 +2,7 @@ import { spawn, execSync, type ChildProcess } from "child_process";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import * as path from "path";
 import * as fs from "fs";
+import { randomUUID } from "crypto";
 import { fileURLToPath } from "url";
 import { LaunchIsolatedChromeTool, CloseIsolatedChromeTool } from "@/types/tool-schemas";
 import { textResponse, errorResponse, jsonResponse } from "@/utils/response-helpers";
@@ -10,6 +11,41 @@ import type { Tool } from "./tool";
 // __dirname is not defined in ESM bundles; recompute it from the module URL.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+/**
+ * Read (or mint) the stable extensionId for a profile.
+ *
+ * Stored at <profileDir>/.unibrowse-identity.json, deliberately a SIBLING of
+ * Default/ so that wipeStaleExtensionData — which clears Default/Local
+ * Extension Settings, i.e. chrome.storage.local — cannot reach it. Returns
+ * null rather than throwing: a missing or unwritable profiles mount must
+ * degrade to the old mint-on-first-run behaviour, never block a launch.
+ */
+function stableExtensionIdFor(profileName?: string | null): string | null {
+  if (!profileName) return null;
+  const roots = [
+    "/app/.chrome-profiles",
+    path.resolve(__dirname, "..", "..", ".chrome-profiles"),
+  ];
+  const root = roots.find(r => fs.existsSync(r));
+  if (!root) return null;
+  const file = path.join(root, profileName, ".unibrowse-identity.json");
+  try {
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (parsed?.extensionId) return String(parsed.extensionId);
+    }
+  } catch { /* corrupt → re-mint below */ }
+  try {
+    const id = `ext_${randomUUID()}`;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(
+      { extensionId: id, profileName, mintedAt: new Date().toISOString() }, null, 2));
+    return id;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Track spawned Chrome processes
@@ -173,7 +209,25 @@ async function launchViaChromiumHost(
   const wsHint = process.env.UNIBROWSE_CHROMIUM_SERVER_HINT
     || "ws://mcp-server:9010/ws";
   const httpHint = wsHint.replace(/^ws/, "http").replace(/\/ws$/, "");
-  const seedUrl = `${httpHint}/__unibrowse_seed?ws=${encodeURIComponent(wsHint)}&http=${encodeURIComponent(httpHint)}`;
+  // Carry a STABLE per-profile extensionId through the seed. Relaunching a
+  // profile wipes Default/Local Extension Settings (that is deliberate — stale
+  // extension state is what breaks a reused profile), but chrome.storage.local
+  // is exactly where the extension keeps __unibrowseExtensionId. So every
+  // relaunch minted a brand-new identity: measured 2026-08-12, ha's
+  // ecobee-broker produced 1,329 distinct extensionIds in 26 hours.
+  //
+  // ⭐ That turns a retry into a trap. ha's integration relaunched the broker
+  // whenever it could not find a registered broker extension — and the
+  // relaunch is what destroyed the id the next poll went looking for, so it
+  // could never converge. The wipe list's own comment claimed the seed
+  // "re-populates" this; the seed repopulated the SERVER config but never the
+  // identity, so "stable" held only until the next relaunch.
+  //
+  // The id lives at <profileDir>/.unibrowse-identity.json — a sibling of
+  // Default/, so the wipe cannot reach it.
+  const stableExtId = stableExtensionIdFor(validatedParams.profileName);
+  const seedUrl = `${httpHint}/__unibrowse_seed?ws=${encodeURIComponent(wsHint)}&http=${encodeURIComponent(httpHint)}`
+    + (stableExtId ? `&eid=${encodeURIComponent(stableExtId)}` : "");
   const userUrls = validatedParams.url
     ? (Array.isArray(validatedParams.url) ? validatedParams.url : [validatedParams.url])
     : ["chrome://extensions/"];

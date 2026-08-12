@@ -16,6 +16,34 @@
     const httpUrl = u.searchParams.get("http")
       || (wsUrl ? wsUrl.replace(/^ws/, "http").replace(/\/ws$/, "") : null);
     const apiKey = u.searchParams.get("key") || "";
+
+    // ── Stable identity ──────────────────────────────────────────────────
+    // The launcher passes a per-profile extensionId that it persists OUTSIDE
+    // the profile's wiped dirs. Adopt it before the background registers,
+    // otherwise this chromium mints a fresh UUID on every relaunch — which is
+    // how ha's ecobee-broker produced 1,329 distinct ids in 26h and could
+    // never converge, since the relaunch it did to find the id was the thing
+    // destroying it.
+    //
+    // Written unconditionally: after a profile wipe the SW may already have
+    // minted its own id, and the seeded one has to win. The SW re-reads
+    // storage on ADOPT_EXTENSION_ID, so the later registration uses this.
+    const seededId = u.searchParams.get("eid");
+    if (seededId) {
+      try {
+        const cur = await chrome.storage.local.get(["__unibrowseExtensionId"]);
+        if (cur.__unibrowseExtensionId !== seededId) {
+          await chrome.storage.local.set({ __unibrowseExtensionId: seededId });
+          console.log(`[unibrowse-seed] adopted stable extensionId ${seededId}`);
+        }
+        chrome.runtime.sendMessage({ type: "ADOPT_EXTENSION_ID", extensionId: seededId }, () => {
+          void chrome.runtime.lastError;
+        });
+      } catch (e) {
+        console.warn(`[unibrowse-seed] could not adopt extensionId:`, e?.message || e);
+      }
+    }
+
     if (!wsUrl) return;
     const existing = await chrome.storage.local.get(["unibrowse_server_config"]);
     if (existing.unibrowse_server_config?.WS_URL) {

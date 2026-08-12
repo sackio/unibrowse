@@ -1704,6 +1704,36 @@ class BackgroundController {
         return false;
       }
 
+      // The seed content script handing us the launcher's stable, per-profile
+      // extensionId. It arrives AFTER ensureExtensionId() may already have
+      // minted one (the SW starts before the first tab loads), so this has to
+      // be able to overwrite a freshly-minted id — otherwise the mint always
+      // wins the race and the identity rotates on every relaunch anyway.
+      if (message.type === 'ADOPT_EXTENSION_ID') {
+        (async () => {
+          try {
+            const id = message.extensionId;
+            if (!id || id === self.__unibrowseExtensionId) {
+              sendResponse({ ok: true, unchanged: true });
+              return;
+            }
+            const prev = self.__unibrowseExtensionId;
+            await chrome.storage.local.set({ __unibrowseExtensionId: id });
+            self.__unibrowseExtensionId = id;
+            _extIdPromise = Promise.resolve(id);
+            console.log(`[Background] adopted stable extensionId ${id} (was ${prev || 'unset'})`);
+            // Re-register under the adopted id, so the server does not keep
+            // the throwaway one this session minted a moment ago.
+            try { await this.ws.disconnect(); } catch {}
+            try { await this.ws.connect(); } catch {}
+            sendResponse({ ok: true, extensionId: id, previous: prev || null });
+          } catch (err) {
+            sendResponse({ ok: false, error: err?.message || String(err) });
+          }
+        })();
+        return true; // async response
+      }
+
       // Options page asked us to re-resolve server config and reconnect
       if (message.type === 'RECONNECT_WS') {
         (async () => {
