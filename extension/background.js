@@ -778,6 +778,12 @@ class TabManager {
 
     // Remove from map
     this.attachedTabs.delete(tabId);
+    // ⚠️ And drop the reservation with it. Nothing anywhere called
+    // reservations.delete() — releaseTab() only nulls the owner and keeps the
+    // entry — so the Map accumulated one entry per tab ever attached, forever,
+    // each still naming whoever last held it. A detached tab's reservation
+    // cannot be meaningful: the tab it refers to is gone.
+    this.reservations.delete(tabId);
 
     // Update lastUsedTabId if needed
     if (this.lastUsedTabId === tabId) {
@@ -1362,6 +1368,15 @@ class BackgroundController {
 
     // Tab closed/removed
     chrome.tabs.onRemoved.addListener((tabId) => {
+      // Release the reservation for ANY closed tab, not just the active one.
+      // A closed tab's reservation is pure garbage that can still block a
+      // caller: label resolution can land a later lookup on a stale entry, so
+      // "reserved by <long-dead agent>" outlives the tab it described.
+      if (this.tabManager?.reservations?.has(tabId)) {
+        const owner = this.tabManager.reservations.get(tabId)?.owner;
+        this.tabManager.reservations.delete(tabId);
+        if (owner) console.log(`[TabManager] Tab ${tabId} closed — reservation by "${owner}" dropped`);
+      }
       if (this.state.tabId === tabId) {
         console.log('[Background] Active tab closed');
         this.handleTabClosed(tabId);
