@@ -15,11 +15,23 @@ const __dirname = path.dirname(__filename);
 /**
  * Read (or mint) the stable extensionId for a profile.
  *
- * Stored at <profileDir>/.unibrowse-identity.json, deliberately a SIBLING of
- * Default/ so that wipeStaleExtensionData — which clears Default/Local
- * Extension Settings, i.e. chrome.storage.local — cannot reach it. Returns
- * null rather than throwing: a missing or unwritable profiles mount must
- * degrade to the old mint-on-first-run behaviour, never block a launch.
+ * ⛔ Stored OUTSIDE profileDir, in a sibling registry directory keyed by
+ * profile name. The first version of this put the file at
+ * <profileDir>/.unibrowse-identity.json, reasoning that the wipe only clears
+ * Default/* so a sibling of Default/ was safe. That is true of
+ * wipeStaleExtensionData — and false of freshProfile, which `rmSync`s the
+ * ENTIRE profileDir. freshProfile DEFAULTS TO TRUE, so the common path
+ * deleted the identity every launch and the id rotated exactly as before.
+ *
+ * Caught by launching the same profile twice and comparing the ids, which is
+ * the only check that would have caught it: the code was correct about the
+ * wipe it was written against, and there were two wipes.
+ *
+ * Keyed on profileName rather than on anything the browser generates —
+ * profileName is the stable handle a caller already uses to mean "this
+ * browser", so the id it addresses should track it. Returns null rather than
+ * throwing: a missing or unwritable mount degrades to mint-on-first-run and
+ * must never block a launch.
  */
 function stableExtensionIdFor(profileName?: string | null): string | null {
   if (!profileName) return null;
@@ -29,7 +41,9 @@ function stableExtensionIdFor(profileName?: string | null): string | null {
   ];
   const root = roots.find(r => fs.existsSync(r));
   if (!root) return null;
-  const file = path.join(root, profileName, ".unibrowse-identity.json");
+  // Flatten to a safe filename — profile names are caller-supplied.
+  const key = profileName.replace(/[^A-Za-z0-9._-]/g, "_");
+  const file = path.join(root, ".unibrowse-identities", `${key}.json`);
   try {
     if (fs.existsSync(file)) {
       const parsed = JSON.parse(fs.readFileSync(file, "utf8"));

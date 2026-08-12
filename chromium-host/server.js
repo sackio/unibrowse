@@ -280,9 +280,15 @@ const writeServerSeed = (profileDir, serverHint) => {
 // (they keep running but the tracking map is empty after our reboot).
 const reapExistingForProfile = async (profileName) => {
   const profileDir = path.join(PROFILES_DIR, profileName);
-  const tracked = []; // {pid, proc}
+  const tracked = []; // {pid, proc, display}
   for (const [pid, v] of launchedProcesses) {
-    if (v.profileName === profileName) tracked.push({ pid, proc: v.proc });
+    // ⚠️ Capture `display` HERE, before anything is killed. The first version
+    // of the Xvfb reap below read launchedProcesses AFTER the kill+3s wait —
+    // but each proc's own "exit" handler deletes its entry, so by then the
+    // displays were already gone and the reap matched nothing. It silently did
+    // nothing at all, and the leak looked fixed because the common path
+    // (destroyInstance) was reaping correctly on its own.
+    if (v.profileName === profileName) tracked.push({ pid, proc: v.proc, display: v.display });
   }
   // ps-scan for untracked chromiums using the same profile dir.
   const untrackedPids = [];
@@ -357,10 +363,7 @@ const reapExistingForProfile = async (profileName) => {
   // display. The chromium reap above was working perfectly the entire time —
   // which is exactly why nobody looked here.
   const freedDisplays = new Set();
-  for (const p of allPids) {
-    const e = launchedProcesses.get(p);
-    if (e?.display) freedDisplays.add(e.display);
-  }
+  for (const t of tracked) if (t.display) freedDisplays.add(t.display);
   for (const [xpid, v] of launchedXvfbs) {
     if (!v.display || !freedDisplays.has(v.display)) continue;
     // Don't kill an Xvfb some OTHER still-live chromium is sharing.
@@ -374,6 +377,68 @@ const reapExistingForProfile = async (profileName) => {
   // Final settle for the kernel to release file handles on the profile dir
   // so the imminent rmSync succeeds first time.
   await new Promise((r) => setTimeout(r, 200));
+};
+
+/* ---------- Orphan-Xvfb sweep ------------------------------------------ */
+// The backstop. Every targeted reap is keyed on knowing which Xvfb belongs to
+// which chromium — via launchedXvfbs, or the tracked entry's `display`. Both
+// fail for an instance that outlived a chromium-host restart, because the
+// tracking maps start empty and nothing reconstructs them. That is precisely
+// the population that accumulates.
+//
+// So instead of trusting bookkeeping, ask the kernel: an Xvfb whose display
+// has no chromium on it is garbage, however it got that way. This is what
+// would have caught the original 100-display exhaustion regardless of which
+// path leaked it.
+//
+// ⚠️ Age guard: an Xvfb we spawned seconds ago legitimately has no chromium
+// yet (we spawn it, wait for the socket, THEN spawn chromium). Untracked
+// Xvfbs need no guard — they predate this process, so they cannot be mid-launch.
+const XVFB_ORPHAN_GRACE_MS = 60_000;
+
+const scanProcs = () => {
+  const xvfbs = [];        // {pid, display}
+  const chromeDisplays = new Set();
+  let pids = [];
+  try { pids = fs.readdirSync("/proc").filter(n => /^\d+$/.test(n)); } catch { return { xvfbs, chromeDisplays }; }
+  for (const pid of pids) {
+    let cmd;
+    try { cmd = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8"); } catch { continue; }
+    if (!cmd) continue;
+    const parts = cmd.split("\0").filter(Boolean);
+    if (!parts.length) continue;
+    if (/(^|\/)Xvfb$/.test(parts[0])) {
+      const d = parts.find(a => /^:\d+$/.test(a));
+      if (d) xvfbs.push({ pid: parseInt(pid, 10), display: d });
+      continue;
+    }
+    if (!parts.some(a => a.startsWith("--user-data-dir="))) continue;
+    if (parts.some(a => /^--type=/.test(a))) continue;   // helper proc, not the browser
+    try {
+      const env = fs.readFileSync(`/proc/${pid}/environ`, "utf8");
+      const m = env.split("\0").find(v => v.startsWith("DISPLAY="));
+      if (m) chromeDisplays.add(m.slice("DISPLAY=".length));
+    } catch { /* raced with exit */ }
+  }
+  return { xvfbs, chromeDisplays };
+};
+
+const reapOrphanXvfbs = (reason = "sweep") => {
+  const { xvfbs, chromeDisplays } = scanProcs();
+  const now = Date.now();
+  let reaped = 0;
+  for (const { pid, display } of xvfbs) {
+    if (chromeDisplays.has(display)) continue;
+    const tracked = launchedXvfbs.get(pid);
+    if (tracked && now - (tracked.spawnedAt || 0) < XVFB_ORPHAN_GRACE_MS) continue;  // mid-launch
+    try {
+      process.kill(pid, "SIGTERM");
+      launchedXvfbs.delete(pid);
+      reaped++;
+    } catch { /* already gone */ }
+  }
+  if (reaped) console.log(`[chromium-host] orphan-Xvfb sweep (${reason}): reaped ${reaped} display(s) with no chromium`);
+  return reaped;
 };
 
 /* ---------- Relaunch-loop breaker -------------------------------------- */
@@ -523,6 +588,9 @@ const launchChromium = async ({
     // qf-dash-t014-specs both landed on :109), which puts two chromiums on one
     // Xvfb. Check both our own tracking map and the actual X11 sockets, since
     // instances can outlive a sidecar restart.
+    // Sweep orphans first — otherwise their stale X11 sockets still read as
+    // "taken" below and the range exhausts even though nothing is using them.
+    reapOrphanXvfbs("pre-launch");
     const taken = new Set();
     for (const [, v] of launchedXvfbs) if (v.display) taken.add(v.display);
     for (const [, v] of launchedProcesses) if (v.display) taken.add(v.display);
@@ -570,7 +638,7 @@ const launchChromium = async ({
   launchedProcesses.set(proc.pid, { proc, profileName, startedAt: Date.now(), display, extensionId: null });
   proc.once("exit", () => launchedProcesses.delete(proc.pid));
   if (xvfb?.pid) {
-    launchedXvfbs.set(xvfb.pid, { proc: xvfb, display });
+    launchedXvfbs.set(xvfb.pid, { proc: xvfb, display, spawnedAt: Date.now() });
     xvfb.once("exit", () => launchedXvfbs.delete(xvfb.pid));
   }
   return { pid: proc.pid, display, profileDir };
