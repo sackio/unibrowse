@@ -59,7 +59,13 @@ export const switchTab: Tool = {
       await context.ensureAttachedFromParams(params);
       const validatedParams = SwitchTabTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_switch_tab", validatedParams);
-      return textResponse(`Switched to tab ${validatedParams.tabId}`, max_tokens);
+      // Report what the CALLER actually named. These read `tabId`, but the
+      // schema also accepts `tabTarget` (a label or id) and that is what most
+      // callers pass — producing "Switched to tab undefined" on a call that
+      // fully succeeded. A success message that looks like a failure costs a
+      // reader the same investigation a real failure would.
+      const switched = (validatedParams as any).tabId ?? (validatedParams as any).tabTarget ?? "(active tab)";
+      return textResponse(`Switched to tab ${switched}`, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to switch tab: ${error.message}`, false, error, max_tokens);
@@ -122,7 +128,13 @@ export const closeTab: Tool = {
       await context.ensureAttachedFromParams(params);
       const validatedParams = CloseTabTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_close_tab", validatedParams);
-      return textResponse(`Closed tab ${validatedParams.tabId}`, max_tokens);
+      // Report what the CALLER actually named. These read `tabId`, but the
+      // schema also accepts `tabTarget` (a label or id) and that is what most
+      // callers pass — producing "Switched to tab undefined" on a call that
+      // fully succeeded. A success message that looks like a failure costs a
+      // reader the same investigation a real failure would.
+      const closed = (validatedParams as any).tabId ?? (validatedParams as any).tabTarget ?? "(active tab)";
+      return textResponse(`Closed tab ${closed}`, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to close tab: ${error.message}`, false, error, max_tokens);

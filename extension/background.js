@@ -4977,6 +4977,32 @@ class BackgroundController {
         throw new Error('Debugger detached before typing could start');
       }
 
+      // ⚠️ VERIFY BY EFFECT, DO NOT ASSERT SUCCESS.
+      // CDP Input events are delivered to the tab's focused element. When the
+      // target tab is not the browser's ACTIVE tab there may be no focused
+      // element at all — the keystrokes go nowhere, typeRealistic() resolves
+      // perfectly happily, and this returned `Typed "..."` over an empty
+      // field. ha hit exactly that on 2026-08-12 and reported success with an
+      // empty input; it is also the likely cause of the broken ecobee_login_full
+      // password step.
+      //
+      // ⭐ A false success is worse than a failure: the caller has no reason to
+      // re-check, so the error surfaces somewhere else entirely, much later.
+      // So: snapshot the focused element's value, type, and read it back.
+      const probe = async () => {
+        try {
+          const r = await cdp.sendCommand('Runtime.evaluate', {
+            expression: `(()=>{const e=document.activeElement;if(!e)return JSON.stringify({none:true});
+              const tag=e.tagName;const v=('value' in e)?String(e.value??''):(e.isContentEditable?String(e.textContent??''):null);
+              return JSON.stringify({tag,editable:v!==null,len:v===null?0:v.length});})()`,
+            returnByValue: true,
+          });
+          return JSON.parse(r?.result?.value ?? '{}');
+        } catch { return null; }   // probe must never break a working type
+      };
+
+      const before = safeText ? await probe() : null;
+
       await cdp.typeRealistic(safeText, {
         minDelay,
         maxDelay,
@@ -4984,11 +5010,30 @@ class BackgroundController {
         pressEnter
       });
 
+      // Only meaningful when we actually had text to type AND the focus target
+      // could hold it. pressEnter may navigate or clear the field, so a
+      // post-Enter read is not evidence of anything — skip the check then.
+      let verified = null;
+      if (safeText && !pressEnter && before && before.editable) {
+        const after = await probe();
+        if (after && after.editable && after.len === before.len) {
+          throw new Error(
+            `Typed ${safeText.length} character(s) but the focused ${String(after.tag || 'element').toLowerCase()} ` +
+            `did not change (still ${after.len} chars). CDP input goes to the tab's FOCUSED element, and a tab ` +
+            `that is not the browser's ACTIVE tab often has no focus — call browser_switch_tab on this tab first, ` +
+            `or click the field with browser_realistic_click, then retry.`
+          );
+        }
+        verified = after && after.editable ? after.len - before.len : null;
+      }
+
       return {
         success: true,
         text: safeText,
         length: safeText.length,
+        verifiedDelta: verified,
         message: `Typed "${safeText.substring(0, 50)}${safeText.length > 50 ? '...' : ''}"${pressEnter ? ' and pressed Enter' : ''}`
+          + (verified !== null ? ` (field grew by ${verified} chars)` : '')
       };
     } catch (error) {
       if (error.message && (error.message.includes('Detached') || error.message.includes('detached'))) {
