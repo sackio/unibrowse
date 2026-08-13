@@ -1748,6 +1748,32 @@ class BackgroundController {
       }
 
       // Options page asked us to re-resolve server config and reconnect
+      // Authoritative identity query for the offscreen document.
+      //
+      // ⛔ THE RACE THIS KILLS: offscreen used to read chrome.storage.local
+      // itself and, on coming up empty, register as `conn.wsId` — which is the
+      // literal string "default". So whether a browser registered as its real
+      // stable id or as "default" depended on who won a race between the
+      // service worker's first storage write and the offscreen's first
+      // connect. Ben's desktop Chrome alternated between `ext_018237f9…` and
+      // `default` across reloads for exactly this reason, which means every
+      // agent holding the previous id was silently pointing at nothing.
+      //
+      // ensureExtensionId() is a memoised singleton, so awaiting it here is
+      // authoritative and cheap: it returns the SAME id the SW already
+      // resolved, or completes the one round-trip in flight.
+      if (message.type === 'GET_EXTENSION_ID') {
+        (async () => {
+          try {
+            const id = await ensureExtensionId();
+            sendResponse({ ok: true, extensionId: id });
+          } catch (err) {
+            sendResponse({ ok: false, error: err?.message || String(err) });
+          }
+        })();
+        return true; // async response
+      }
+
       if (message.type === 'RECONNECT_WS') {
         (async () => {
           try {

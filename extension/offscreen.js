@@ -356,9 +356,38 @@ class OffscreenManager {
                 if (extensionId) break;
                 await new Promise(r => setTimeout(r, 200));
               }
-              if (!extensionId) {
-                console.log(`[Offscreen][${conn.wsId}] storage still empty after retries; relying on server ws-owner fallback`);
+            }
+            // ⛔ ASK THE BACKGROUND — it OWNS the identity. Polling storage is a
+            // race we can lose: on a reload the SW's first write may not have
+            // landed, and the old code then registered as `conn.wsId`, the
+            // literal string "default". Ben's desktop Chrome alternated between
+            // its real id and "default" across reloads because of this, which
+            // silently stranded every agent holding the previous one.
+            // ensureExtensionId() is a memoised singleton, so this returns the
+            // id the SW already resolved rather than minting a competing one.
+            if (!extensionId && typeof chrome !== 'undefined' && chrome?.runtime?.sendMessage) {
+              try {
+                const resp = await new Promise((resolve) => {
+                  let done = false;
+                  const t = setTimeout(() => { if (!done) { done = true; resolve(null); } }, 3000);
+                  chrome.runtime.sendMessage({ type: 'GET_EXTENSION_ID' }, (r) => {
+                    void chrome.runtime.lastError;
+                    if (!done) { done = true; clearTimeout(t); resolve(r); }
+                  });
+                });
+                if (resp?.ok && resp.extensionId) {
+                  extensionId = resp.extensionId;
+                  console.log(`[Offscreen][${conn.wsId}] got authoritative extensionId ${extensionId} from background`);
+                }
+              } catch (e) {
+                console.warn(`[Offscreen][${conn.wsId}] GET_EXTENSION_ID failed:`, e?.message || e);
               }
+            }
+            if (!extensionId) {
+              // Registering as conn.wsId ("default") is the LAST resort and is
+              // deliberately loud: it means this browser is about to take on an
+              // id that any other unidentified browser could also take.
+              console.warn(`[Offscreen][${conn.wsId}] NO stable extensionId available — registering as "${conn.wsId}". Agents holding a previous id for this browser will be stranded.`);
             }
             const payload = JSON.stringify({
               type: 'EXTENSION_REGISTER',
