@@ -460,8 +460,16 @@ export const SegmentedScreenshotTool = z.object({
 
 export const GetConsoleLogsTool = z.object({
   name: z.literal("browser_get_console_logs"),
-  description: z.literal("Get the console logs from the browser"),
-  arguments: TabTargetSchema.merge(MaxTokensSchema),
+  description: z.literal(
+    "Get console logs from the browser. Entries are tagged source:\"page\" (from a tab) or " +
+    "source:\"background\" (the extension's own service worker — its errors and handler failures). " +
+    "Pass source:\"background\" to get ONLY extension errors: an unfiltered call on a busy browser " +
+    "can exceed 200k characters of page noise and bury them."
+  ),
+  arguments: z.object({
+    source: z.enum(["page", "background", "all"]).optional()
+      .describe("Filter by origin: 'background' = the extension's own service worker only, 'page' = tabs only, 'all' = both (default)."),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const EvaluateTool = z.object({
@@ -498,10 +506,18 @@ export const GetErrorsTool = z.object({
     "and a summary. Use 'since' to filter to errors after a timestamp. " +
     "Designed for the heal/diagnostic workflow — call this first when something seems wrong."
   ),
+  // ⚠️ MUST merge TabTargetSchema — that is what carries extensionId/tabTarget.
+  // Without it, zod's .parse() STRIPS the extensionId the caller passed, the
+  // router's payload fallback finds nothing, and the call dies telling the
+  // caller to pass the field they just passed. Measured live 2026-08-13 with
+  // three browsers connected. Worst possible tool to lose: its own description
+  // says "call this first when something seems wrong", so the one tool built
+  // for diagnosis was the one that failed in the multi-browser setup that is
+  // now normal.
   arguments: z.object({
     since: z.number().optional().describe("Only return errors after this Unix ms timestamp"),
     levelsOnly: z.array(z.string()).optional().describe("Filter page errors to these levels (e.g. ['error']). Defaults to error+warning."),
-  }).merge(MaxTokensSchema),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const ReloadExtensionTool = z.object({

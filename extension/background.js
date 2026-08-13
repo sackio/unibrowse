@@ -1111,7 +1111,20 @@ class BackgroundController {
     this.cdp = new CDPHelper(); // DEPRECATED: Keep for backwards compatibility during migration
     this.handlers = {};
     this.consoleLogs = [];
-    this.backgroundErrors = []; // Ring buffer of handler/critical errors, max 200
+    // Ring buffer of background errors, max 200.
+    // ⚠️ Two things used to make this miss exactly the errors worth having:
+    //   1. It was ONLY written from inside handler try/catch blocks, so an
+    //      uncaught throw or a rejected promise at service-worker top level —
+    //      the kind that kills the worker — was never recorded at all.
+    //   2. It is in-memory, so an MV3 teardown or a crash destroyed the buffer.
+    //      The record of a crash did not survive the crash.
+    // ⇒ Ben, 2026-08-13, asked whether I could read the extension's own errors.
+    // For the ones that mattered the answer was no, and he had been acting as
+    // my instrument (reading chrome://extensions and pasting) as a result.
+    // Now: installGlobalErrorCapture() below catches uncaught + unhandled
+    // rejection, and every write mirrors to chrome.storage.local so the next
+    // worker can read what happened before it started.
+    this.backgroundErrors = [];
     this.networkLogs = [];
     this.badgeBlinkInterval = null;
     this.recordingSessions = new Map(); // Track active recording sessions
@@ -3707,8 +3720,7 @@ class BackgroundController {
     } catch (error) {
       // Classify and handle error appropriately
       console.error('[Background] Handler error:', error);
-      this.backgroundErrors.push({ timestamp: Date.now(), level: 'error', source: 'handler', message: error.message || String(error), stack: error.stack || null });
-      if (this.backgroundErrors.length > 200) this.backgroundErrors.shift();
+      this.recordBackgroundError({ level: 'error', source: 'handler', message: error.message || String(error), stack: error.stack || null });
 
       const errorClassification = this.classifyError(error);
 
@@ -3871,8 +3883,7 @@ class BackgroundController {
     console.error('[Background] Critical error:', error.message);
     console.error('[Background] Error stack:', error.stack);
     console.error('[Background] State at error:', stateSnapshot);
-    this.backgroundErrors.push({ timestamp: Date.now(), level: 'critical', source: 'handler', message: error.message || String(error), stack: error.stack || null });
-    if (this.backgroundErrors.length > 200) this.backgroundErrors.shift();
+    this.recordBackgroundError({ level: 'critical', source: 'handler', message: error.message || String(error), stack: error.stack || null });
 
     await this.safeSendResponse(requestId, {
       error: error.message,
@@ -4983,6 +4994,105 @@ class BackgroundController {
     };
   }
 
+  /**
+   * Single write path for background errors: ring-buffer + PERSIST.
+   *
+   * Persistence is the point. The buffer is in-memory, and an MV3 service
+   * worker is torn down constantly (idle) and occasionally dies outright. Both
+   * destroy the record — so the errors from immediately BEFORE a crash, which
+   * are the ones that explain it, were exactly the ones that never survived to
+   * be read. Mirroring to chrome.storage.local means the next worker can serve
+   * them, whether or not this one shut down cleanly.
+   *
+   * Best-effort and never throws: an error recorder that can itself fail loudly
+   * inside a catch block would replace the original error with its own.
+   *
+   * ⚠️ SCOPE, stated because the boundary is easy to assume away: this survives
+   * SERVICE-WORKER teardown, not a profile relaunch. chrome.storage.local lives
+   * in Default/Local Extension Settings, which wipeStaleExtensionData deletes on
+   * every container-chromium launch (the same directory that used to eat the
+   * stable extensionId). So for a sidecar browser the history starts empty each
+   * launch — which is fine, since it is a new browser — while for a long-lived
+   * desktop Chrome, the case this exists for, it persists indefinitely.
+   *
+   * ⚠️ UNVERIFIED END-TO-END as of 2026-08-13: the write path and the filter are
+   * confirmed live, but I could not observe a full write→teardown→recover cycle.
+   * The extension holds an open websocket, which keeps the worker alive and
+   * prevents natural dormancy, and browser_reload_extension on a container
+   * chromium dropped the extension without it re-registering. Do not read the
+   * recovery path as proven; the first real post-teardown read is the test.
+   */
+  recordBackgroundError(entry) {
+    const rec = { timestamp: Date.now(), ...entry };
+    try {
+      this.backgroundErrors.push(rec);
+      while (this.backgroundErrors.length > 200) this.backgroundErrors.shift();
+    } catch { /* never let recording break the caller */ }
+    try {
+      // Keep the persisted slice small — it is read on startup, and the whole
+      // point is that it is readable, not complete.
+      const slice = this.backgroundErrors.slice(-50);
+      chrome.storage.local.set({ __unibrowseBackgroundErrors: slice }).catch(() => {});
+    } catch { /* storage unavailable during teardown */ }
+    return rec;
+  }
+
+  /**
+   * Load errors persisted by a PREVIOUS service-worker generation and prepend
+   * them, so a caller asking "what went wrong" after a crash sees across the
+   * restart rather than only after it. Tagged so nobody mistakes a recovered
+   * entry for a live one.
+   */
+  async loadPersistedBackgroundErrors() {
+    try {
+      const st = await chrome.storage.local.get(['__unibrowseBackgroundErrors']);
+      const prev = st.__unibrowseBackgroundErrors;
+      if (!Array.isArray(prev) || !prev.length) return 0;
+      const known = new Set(this.backgroundErrors.map(e => `${e.timestamp}|${e.message}`));
+      const recovered = prev
+        .filter(e => e && !known.has(`${e.timestamp}|${e.message}`))
+        .map(e => ({ ...e, fromPreviousWorker: true }));
+      if (!recovered.length) return 0;
+      this.backgroundErrors = [...recovered, ...this.backgroundErrors].slice(-200);
+      console.log(`[Background] recovered ${recovered.length} error(s) from a previous service-worker generation`);
+      return recovered.length;
+    } catch { return 0; }
+  }
+
+  /**
+   * Catch what the handler try/catch blocks structurally cannot: an uncaught
+   * throw at service-worker top level, and a promise rejection nobody awaited.
+   * These are the ones that take the worker down, and until 2026-08-13 the
+   * extension recorded none of them — which is why "the extension crashed" had
+   * to be diagnosed by a human reading chrome://extensions.
+   */
+  installGlobalErrorCapture() {
+    if (self.__unibrowseGlobalErrorCaptureInstalled) return;
+    self.__unibrowseGlobalErrorCaptureInstalled = true;
+    try {
+      self.addEventListener('error', (ev) => {
+        this.recordBackgroundError({
+          level: 'critical',
+          source: 'uncaught',
+          message: ev?.message || String(ev?.error || 'uncaught error'),
+          stack: ev?.error?.stack || (ev?.filename ? `${ev.filename}:${ev.lineno}:${ev.colno}` : null),
+        });
+      });
+      self.addEventListener('unhandledrejection', (ev) => {
+        const r = ev?.reason;
+        this.recordBackgroundError({
+          level: 'critical',
+          source: 'unhandledrejection',
+          message: (r && (r.message || String(r))) || 'unhandled promise rejection',
+          stack: r?.stack || null,
+        });
+      });
+      console.log('[Background] global error capture installed');
+    } catch (e) {
+      console.warn('[Background] could not install global error capture:', e?.message || e);
+    }
+  }
+
   async handleRealisticType({ text, minDelay, maxDelay, mistakeChance, pressEnter, tabTarget }) {
     const cdp = await this.tabManager.requireCDP(tabTarget);
     const safeText = text ?? '';
@@ -5616,16 +5726,28 @@ class BackgroundController {
     };
   }
 
-  async handleGetConsoleLogs() {
+  async handleGetConsoleLogs({ source = 'all' } = {}) {
     // Merge page console logs with background extension errors so agents see both.
     // Background errors are tagged with source:'background' for easy filtering.
+    //
+    // ⚠️ `source` exists because an unfiltered call on a busy browser returned
+    // 219,000 characters — ~61k tokens, almost entirely Amazon preload
+    // warnings — with the single background error that mattered buried inside
+    // it. A diagnostic you cannot afford to read is not a diagnostic.
     const bgEntries = this.backgroundErrors.map(e => ({
       level: e.level === 'critical' ? 'error' : e.level,
       text: `[Background ${e.level}] ${e.message}`,
       stack: e.stack || undefined,
       timestamp: e.timestamp,
       source: 'background',
+      // Surfaced so a reader can tell a recovered entry from a live one — it
+      // came from a PREVIOUS service-worker generation, i.e. from before a
+      // teardown or crash.
+      fromPreviousWorker: e.fromPreviousWorker || undefined,
+      errorSource: e.source || undefined,
     }));
+    if (source === 'background') return bgEntries.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    if (source === 'page') return [...this.consoleLogs].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     return [...this.consoleLogs, ...bgEntries].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
   }
 
@@ -7276,6 +7398,19 @@ class BackgroundController {
 
 // Initialize controller
 const controller = new BackgroundController();
+
+// ⚠️ Wire the error capture IMMEDIATELY, at module scope, before anything else
+// runs. Two reasons it goes here rather than inside some later init step:
+//   1. This is the earliest point a throw can happen in a fresh service-worker
+//      generation, and startup is exactly when the interesting crashes occur.
+//   2. There is no other init hook guaranteed to run — the worker is spun up
+//      and torn down constantly, and a capture installed lazily is a capture
+//      that misses the generation that died.
+controller.installGlobalErrorCapture();
+// Recover what a PREVIOUS generation recorded before it went away. Fire and
+// forget: the read is async, and blocking module evaluation on storage would
+// delay every connect.
+controller.loadPersistedBackgroundErrors().catch(() => {});
 
 console.log('[Background] Browser MCP extension loaded');
 

@@ -41,7 +41,11 @@ export const getConsoleLogs: Tool = {
       // propagated. Check the siblings when you fix a routing bug here.
       const consoleLogs = await context.sendSocketMessage(
         "browser_get_console_logs",
-        {},
+        // `source` must be forwarded in the PAYLOAD — the options arg carries
+        // routing only. Sending `{}` here (as this did) silently drops any
+        // filter the caller asked for, which on this tool means they get the
+        // 200k-character unfiltered dump they were explicitly trying to avoid.
+        { source: params?.source } as any,
         { extensionId: params?.extensionId, tabTarget: params?.tabTarget },
       );
       const text: string = consoleLogs
