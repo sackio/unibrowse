@@ -109,7 +109,7 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-KEA4I6US.js";
+} from "./chunk-7IG6FI3X.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -335,7 +335,11 @@ var reloadExtension = {
     const { max_tokens } = params || {};
     try {
       await context.ensureAttachedFromParams(params);
-      const result = await context.sendSocketMessage("browser_reload_extension", params || {});
+      const result = await context.sendSocketMessage(
+        "browser_reload_extension",
+        params || {},
+        { extensionId: params?.extensionId }
+      );
       return jsonResponse(result, true, max_tokens);
     } catch (error) {
       return errorResponse(`Failed to reload extension: ${error.message}`, false, error, max_tokens);

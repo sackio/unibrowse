@@ -306,7 +306,13 @@ export const CreateWindowTool = z.object({
     incognito: z.boolean().optional().describe("Whether to open in incognito/private mode (default: false)"),
     width: z.number().optional().describe("Window width in pixels"),
     height: z.number().optional().describe("Window height in pixels"),
-  }).merge(MaxTokensSchema),
+    // Same gap as ReloadExtensionTool, found in the same pass: creating a
+    // window is a per-BROWSER action and there was no way to say which
+    // browser. The handler parses with zod, so an extensionId passed by a
+    // caller was silently STRIPPED before routing ever saw it — the failure
+    // looked like "it opened somewhere else" rather than like a rejected
+    // argument.
+  }).merge(ExtensionIdSchema).merge(MaxTokensSchema),
 });
 
 export const FillFormTool = z.object({
@@ -526,9 +532,23 @@ export const ReloadExtensionTool = z.object({
     "Reload the unibrowse Chrome extension (calls chrome.runtime.reload()). " +
     "Use this to recover from extension crashes, stale state, or after background.js errors. " +
     "The extension will reconnect automatically within ~2 seconds. " +
-    "All attached tab sessions will need to be re-established after reload."
+    "All attached tab sessions will need to be re-established after reload. " +
+    "Pass extensionId to choose WHICH browser to reload when several are connected."
   ),
-  arguments: z.object({}).merge(MaxTokensSchema),
+  // ⚠️ This took no target at all until 2026-08-14, while GetErrorsTool
+  // directly above it had been given one. Same file, same domain, same
+  // handler module — fixed on one, never propagated to its sibling.
+  //
+  // The consequence was worse here than a missing filter: with several
+  // browsers connected there was NO WAY to say which one to reload, so the
+  // only honest options were to refuse or to guess. On this fleet a guess can
+  // land on Laura's browser or on the container serving other agents' tabs,
+  // which is why the tool sat unused and Ben kept being asked to reload by
+  // hand — twice asking why I wasn't doing it myself.
+  //
+  // ExtensionIdSchema rather than TabTargetSchema: reloading is a per-BROWSER
+  // action, not a per-tab one, so tabTarget/agent/takeover would be noise.
+  arguments: z.object({}).merge(ExtensionIdSchema).merge(MaxTokensSchema),
 });
 
 // DOM Exploration Tools

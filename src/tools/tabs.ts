@@ -160,7 +160,11 @@ export const createWindow: Tool = {
     try {
       // Don't call ensureAttached() - creating a window doesn't need an existing attachment
       const validatedParams = CreateWindowTool.shape.arguments.parse(params);
-      const result = await context.sendSocketMessage("browser_create_window", validatedParams);
+      const result = await context.sendSocketMessage(
+        "browser_create_window",
+        validatedParams,
+        { extensionId: params?.extensionId },
+      );
 
       // Return the full result object as JSON so tests can access windowId, tabs, etc.
       return jsonResponse(result, true, max_tokens);

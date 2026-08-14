@@ -34,7 +34,17 @@ export const reloadExtension: Tool = {
     const { max_tokens } = params || {};
     try {
       await context.ensureAttachedFromParams(params);
-      const result = await context.sendSocketMessage("browser_reload_extension", params || {});
+      // Route explicitly rather than leaning on sendSocketMessage's fallback
+      // of reading the payload. The fallback does work here (this handler
+      // forwards RAW params, so nothing is stripped), but relying on it is
+      // what made the sibling bugs so hard to see: the moment someone adds a
+      // .parse() to this handler, routing would break silently and the tool
+      // would start reloading an arbitrary browser.
+      const result = await context.sendSocketMessage(
+        "browser_reload_extension",
+        params || {},
+        { extensionId: params?.extensionId },
+      );
       return jsonResponse(result, true, max_tokens);
     } catch (error) {
       return errorResponse(`Failed to reload extension: ${error.message}`, false, error, max_tokens);
