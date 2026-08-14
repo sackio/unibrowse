@@ -158,7 +158,15 @@ function deriveBaseUrl(req) {
   const wsProto = proto === "https" ? "wss" : "ws";
   return { http: `${proto}://${host}`, ws: `${wsProto}://${host}` };
 }
+function detectBrowserFamily(req) {
+  const ua = req.headers["user-agent"] || "";
+  if (/\bEdgA?\//.test(ua)) return { name: "Edge", scheme: "edge" };
+  if (/\bOPR\//.test(ua)) return { name: "Opera", scheme: "opera" };
+  if (/\bVivaldi\//.test(ua)) return { name: "Vivaldi", scheme: "vivaldi" };
+  return { name: "Chrome", scheme: "chrome" };
+}
 function installLandingHandler(req, res) {
+  const browser = detectBrowserFamily(req);
   const { http: httpBase, ws: wsBase } = deriveBaseUrl(req);
   const queryKey = req.query.key || "";
   const authOn = isAuthEnabled();
@@ -190,14 +198,14 @@ function installLandingHandler(req, res) {
 </head>
 <body>
   <h1>Install the unibrowse extension</h1>
-  <div class="sub">This dev extension is distributed directly from your server, not the Chrome Web Store.</div>
+  <div class="sub">This dev extension is distributed directly from your server, not a web store. It runs on any Chromium browser \u2014 Chrome, Edge, Brave, Opera, Vivaldi.</div>
   ${errorBanner}
   <a class="download" href="${downloadHref}" ${!keyIsValid ? 'aria-disabled="true"' : ""}>Download extension (.zip)</a>
   <h3>Install steps</h3>
   <ol>
     <li>Click the button above to download <code>unibrowse-extension.zip</code>.</li>
     <li>Unzip it somewhere stable (e.g. <code>~/unibrowse-extension</code>).</li>
-    <li>Open <code>chrome://extensions</code> in Chrome and toggle <strong>Developer mode</strong> on (top-right).</li>
+    <li>Open <code>${browser.scheme}://extensions</code> in ${escapeHtml(browser.name)} and turn <strong>Developer mode</strong> on.</li>
     <li>Click <strong>Load unpacked</strong> and select the unzipped folder.</li>
     <li>The extension auto-connects to this server (<code>${wsBase}/ws</code>).</li>
   </ol>

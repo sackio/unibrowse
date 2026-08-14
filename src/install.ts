@@ -45,11 +45,32 @@ function deriveBaseUrl(req: Request): { http: string; ws: string } {
 }
 
 /**
+ * Which Chromium fork is asking for the download — used only to word the
+ * install steps, which name a page that differs per browser (`edge://extensions`
+ * vs `chrome://extensions`). The visitor is by definition using the browser they
+ * are about to install into, so the request's own user-agent is the right
+ * signal.
+ *
+ * Order matters: every fork carries `Chrome/` in its UA, so a fork token has to
+ * win. Brave deliberately does not identify itself and will read as Chrome —
+ * acceptable here, because Brave accepts `chrome://extensions`. Getting this
+ * wrong costs a slightly-off instruction, never a failed install.
+ */
+function detectBrowserFamily(req: Request): { name: string; scheme: string } {
+  const ua = (req.headers["user-agent"] as string | undefined) || "";
+  if (/\bEdgA?\//.test(ua)) return { name: "Edge", scheme: "edge" };
+  if (/\bOPR\//.test(ua)) return { name: "Opera", scheme: "opera" };
+  if (/\bVivaldi\//.test(ua)) return { name: "Vivaldi", scheme: "vivaldi" };
+  return { name: "Chrome", scheme: "chrome" };
+}
+
+/**
  * Landing page at GET /install — public, no auth required. Shows the user the
  * download link and instructions. If auth is enabled, the URL the admin shares
  * with users carries the key as ?key=<...> and the download link inherits it.
  */
 export function installLandingHandler(req: Request, res: Response) {
+  const browser = detectBrowserFamily(req);
   const { http: httpBase, ws: wsBase } = deriveBaseUrl(req);
   const queryKey = (req.query.key as string | undefined) || "";
   const authOn = isAuthEnabled();
@@ -88,14 +109,14 @@ export function installLandingHandler(req: Request, res: Response) {
 </head>
 <body>
   <h1>Install the unibrowse extension</h1>
-  <div class="sub">This dev extension is distributed directly from your server, not the Chrome Web Store.</div>
+  <div class="sub">This dev extension is distributed directly from your server, not a web store. It runs on any Chromium browser — Chrome, Edge, Brave, Opera, Vivaldi.</div>
   ${errorBanner}
   <a class="download" href="${downloadHref}" ${!keyIsValid ? 'aria-disabled="true"' : ""}>Download extension (.zip)</a>
   <h3>Install steps</h3>
   <ol>
     <li>Click the button above to download <code>unibrowse-extension.zip</code>.</li>
     <li>Unzip it somewhere stable (e.g. <code>~/unibrowse-extension</code>).</li>
-    <li>Open <code>chrome://extensions</code> in Chrome and toggle <strong>Developer mode</strong> on (top-right).</li>
+    <li>Open <code>${browser.scheme}://extensions</code> in ${escapeHtml(browser.name)} and turn <strong>Developer mode</strong> on.</li>
     <li>Click <strong>Load unpacked</strong> and select the unzipped folder.</li>
     <li>The extension auto-connects to this server (<code>${wsBase}/ws</code>).</li>
   </ol>

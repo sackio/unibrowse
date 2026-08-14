@@ -25,9 +25,8 @@ class CDPHelper {
 
       // Check if URL is accessible
       if (tab.url && (
-        tab.url.startsWith('chrome://') ||
+        BrowserEnv.isInternalUrl(tab.url) ||
         tab.url.startsWith('chrome-extension://') ||
-        tab.url.startsWith('edge://') ||
         tab.url.startsWith('about:')
       )) {
         throw new Error(`Cannot attach debugger to restricted URL: ${tab.url}`);
@@ -272,9 +271,8 @@ class CDPHelper {
 
       // Check if tab navigated to restricted URL
       if (tab.url && (
-        tab.url.startsWith('chrome://') ||
+        BrowserEnv.isInternalUrl(tab.url) ||
         tab.url.startsWith('chrome-extension://') ||
-        tab.url.startsWith('edge://') ||
         tab.url.startsWith('about:')
       )) {
         console.warn(`[CDP] Tab navigated to restricted URL: ${tab.url}`);

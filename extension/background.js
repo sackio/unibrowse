@@ -3,7 +3,7 @@
  * Central coordinator for WebSocket, Chrome Debugger, and message routing
  */
 
-importScripts('config.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js');
+importScripts('config.js', 'utils/browser-env.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js');
 
 // ─── Auto session-capture on attach (ben 2026-08-02) ────────────────────────
 // "Anytime we attach a tab we should be doing a session recording so that we
@@ -566,15 +566,10 @@ class TabManager {
       // path then eats 5x before giving up — and on every keepalive
       // pass after that.
       if (url && (url.startsWith('chrome-extension://') ||
-                  url.startsWith('chrome://') ||
-                  url.startsWith('chrome-search://') ||
-                  url.startsWith('chrome-untrusted://') ||
-                  url.startsWith('devtools://') ||
-                  url.startsWith('view-source://') ||
-                  url.startsWith('edge://') ||
+                  BrowserEnv.isInternalUrl(url) ||
                   (url.startsWith('about:') && url !== 'about:blank' && url !== 'about:blank#blocked'))) {
         const friendly = url.startsWith('chrome-extension://')
-          ? 'This tab is owned by another extension (likely a New Tab override or PDF viewer). Chrome blocks debugging other extensions\' pages — navigate to a regular URL first.'
+          ? `This tab is owned by another extension (likely a New Tab override or PDF viewer). ${BrowserEnv.name} blocks debugging other extensions' pages — navigate to a regular URL first.`
           : `This page (${url}) can't be debugged by extensions. Navigate to a regular URL first.`;
         const err = new Error(friendly);
         err.code = 'UNATTACHABLE_URL';
@@ -1164,11 +1159,9 @@ class BackgroundController {
     if (url === 'about:blank' || url === 'about:blank#blocked') return false;
 
     return (
-      url.startsWith('chrome://') ||
+      BrowserEnv.isInternalUrl(url) ||
       url.startsWith('chrome-extension://') ||
-      url.startsWith('edge://') ||
-      url.startsWith('about:') ||
-      url.startsWith('devtools://')
+      url.startsWith('about:')
     );
   }
 
@@ -1185,7 +1178,7 @@ class BackgroundController {
       }
     }
 
-    throw new Error('No valid tabs found - all tabs have restricted URLs (chrome://, chrome-extension://, etc.)');
+    throw new Error(`No valid tabs found - all tabs have restricted URLs (${BrowserEnv.internalScheme}, chrome-extension://, etc.)`);
   }
 
   /**
@@ -5318,9 +5311,13 @@ class BackgroundController {
     if (incognito) {
       const allowed = await chrome.extension.isAllowedIncognitoAccess();
       if (!allowed) {
+        // The API stays `incognito` on every Chromium fork — only the words a
+        // human has to hunt for change. Edge calls the mode "InPrivate" and
+        // labels the toggle "Allow in InPrivate", so Chrome's wording sends an
+        // Edge user looking for a control that isn't there under that name.
         throw new Error(
-          'Extension not allowed in incognito mode. ' +
-          'Go to chrome://extensions, find unibrowse, and enable "Allow in incognito".'
+          `Extension not allowed in ${BrowserEnv.privateModeLabel} mode. ` +
+          BrowserEnv.privateAccessHint()
         );
       }
 
@@ -5339,10 +5336,9 @@ class BackgroundController {
         if (win.incognito !== true) {
           try { await chrome.windows.remove(win.id); } catch {}
           throw new Error(
-            'Cannot open incognito tab: extension is not allowed in incognito ' +
-            '(Chrome silently fell back to the default profile). Go to ' +
-            'chrome://extensions, find unibrowse, and enable "Allow in incognito", ' +
-            'then retry.'
+            `Cannot open ${BrowserEnv.privateModeLabel} tab: extension is not allowed in ` +
+            `${BrowserEnv.privateModeLabel} (${BrowserEnv.name} silently fell back to the ` +
+            `default profile). ${BrowserEnv.privateAccessHint()} Then retry.`
           );
         }
         this._incognitoWindowId = win.id;
@@ -5379,8 +5375,8 @@ class BackgroundController {
 
     // Skip debugger attachment for restricted URLs (about:blank, chrome://, etc.)
     const isRestricted = !tab.url || tab.url === 'about:blank' ||
-      tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') ||
-      tab.url.startsWith('edge://') || tab.url.startsWith('about:');
+      BrowserEnv.isInternalUrl(tab.url) || tab.url.startsWith('chrome-extension://') ||
+      tab.url.startsWith('about:');
     if (isRestricted) {
       console.log('[handleCreateTab] Restricted URL, skipping debugger attachment:', tab.url);
       return { success: true, tabId: tab.id, label: `tab-${tab.id}`, url: tab.url || 'about:blank' };
@@ -5498,10 +5494,9 @@ class BackgroundController {
     if (incognito === true && window.incognito !== true) {
       try { await chrome.windows.remove(window.id); } catch { /* best-effort */ }
       throw new Error(
-        'Cannot open incognito window: extension is not allowed in incognito ' +
-        '(Chrome silently fell back to the default profile). Go to ' +
-        'chrome://extensions, find unibrowse, and enable "Allow in incognito", ' +
-        'then retry.'
+        `Cannot open ${BrowserEnv.privateModeLabel} window: extension is not allowed in ` +
+        `${BrowserEnv.privateModeLabel} (${BrowserEnv.name} silently fell back to the ` +
+        `default profile). ${BrowserEnv.privateAccessHint()} Then retry.`
       );
     }
 
@@ -7181,8 +7176,17 @@ class BackgroundController {
     const browserInfo = await chrome.runtime.getPlatformInfo();
 
     return {
-      browserName: 'Chrome',
-      browserVersion: /Chrome\/([0-9.]+)/.exec(navigator.userAgent)?.[1] || 'Unknown',
+      // ⚠️ Both of these were hardcoded to Chrome: the name literally, and the
+      // version by parsing the UA's `Chrome/` token — which every Chromium
+      // fork carries, so on Edge this reported "Chrome" plus the underlying
+      // Chromium version. An agent asking which browser it was driving got a
+      // confident wrong answer, and nothing failed to make that visible.
+      browserName: BrowserEnv.name,
+      browserVersion: BrowserEnv.version,
+      // Kept alongside, because the fork version and the engine version are
+      // different questions and callers checking for a Chromium-level
+      // behaviour change want this one.
+      chromiumVersion: BrowserEnv.chromiumVersion,
       extensionVersion: manifest.version,
       userAgent: navigator.userAgent,
       platform: browserInfo,
@@ -7224,7 +7228,9 @@ class BackgroundController {
     }
 
     return {
-      browserVersion: /Chrome\/([0-9.]+)/.exec(navigator.userAgent)?.[1] || 'Unknown',
+      browserName: BrowserEnv.name,
+      browserVersion: BrowserEnv.version,
+      chromiumVersion: BrowserEnv.chromiumVersion,
       extensionName: manifest.name,
       extensionVersion: manifest.version,
       manifestVersion: manifest.manifest_version,
@@ -7478,11 +7484,12 @@ async function autoConnect() {
     // Auto-select active tab, but skip restricted URLs
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
 
-    // Filter out restricted URLs (chrome://, chrome-extension://, about:, etc.)
-    const restrictedPrefixes = ['chrome://', 'chrome-extension://', 'about:', 'edge://', 'view-source:'];
+    // Filter out restricted URLs (the browser's own pages, extension pages, about:)
     const isRestricted = (url) => {
       if (!url) return true;
-      return restrictedPrefixes.some(prefix => url.startsWith(prefix));
+      return BrowserEnv.isInternalUrl(url) ||
+        url.startsWith('chrome-extension://') ||
+        url.startsWith('about:');
     };
 
     let selectedTab = null;

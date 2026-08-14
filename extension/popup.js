@@ -104,8 +104,13 @@ class PopupController {
    */
   _isUnattachableUrl(url) {
     if (!url) return true;
-    const blocked = ['chrome://', 'chrome-search://', 'chrome-untrusted://', 'devtools://', 'view-source://', 'about:'];
-    if (blocked.some(p => url.startsWith(p))) return true;
+    // ⚠️ This list used to be Chrome-only, and was the ONE guard in the
+    // extension that never learned about `edge://` — every attach-path guard
+    // in background.js and utils/cdp.js already handled it. The consequence
+    // was confined to this popup: it would offer an Edge internal page as
+    // attachable, and the attach then failed with the background's (correct)
+    // error. Misleading UI rather than a broken tab, which is why it survived.
+    if (BrowserEnv.isInternalUrl(url) || url.startsWith('about:')) return true;
     if (url.startsWith('chrome-extension://')) {
       // Allow our own extension pages (popup, options, review.html) — but those
       // shouldn't be in the attach list anyway since the popup itself isn't a tab.
@@ -118,13 +123,16 @@ class PopupController {
   _unattachableHint(url) {
     if (!url) return 'This tab has no URL — navigate it to a real page first.';
     if (url.startsWith('chrome-extension://')) {
-      return 'This tab is owned by another extension (likely a New Tab override or PDF viewer). Chrome blocks debugging other extensions’ pages — navigate this tab to a regular URL (e.g. https://example.com) first.';
+      return `This tab is owned by another extension (likely a New Tab override or PDF viewer). ${BrowserEnv.name} blocks debugging other extensions’ pages — navigate this tab to a regular URL (e.g. https://example.com) first.`;
     }
-    if (url.startsWith('chrome://') || url.startsWith('chrome-search://') || url.startsWith('chrome-untrusted://')) {
-      return 'Chrome’s built-in pages (chrome://...) can’t be debugged by extensions. Navigate to a regular URL first.';
-    }
-    if (url.startsWith('devtools://') || url.startsWith('view-source://') || url.startsWith('about:')) {
+    // Checked before the generic internal-page branch below, because
+    // devtools:/view-source: are in the internal-prefix list too and deserve
+    // the more specific wording.
+    if (url.startsWith('devtools://') || url.startsWith('view-source:') || url.startsWith('about:')) {
       return 'This kind of page can’t be attached. Navigate to a regular URL first.';
+    }
+    if (BrowserEnv.isInternalUrl(url)) {
+      return `${BrowserEnv.name}’s built-in pages (${BrowserEnv.internalScheme}…) can’t be debugged by extensions. Navigate to a regular URL first.`;
     }
     return 'This tab can’t be attached.';
   }
@@ -132,10 +140,15 @@ class PopupController {
   _friendlyAttachError(error) {
     const msg = error?.message || String(error || 'Failed to attach to tab');
     if (/Cannot access a chrome-extension:\/\/ URL of different extension/i.test(msg)) {
-      return 'This tab is owned by another extension (likely a New Tab override or PDF viewer). Chrome blocks debugging other extensions’ pages — navigate this tab to a regular URL (e.g. https://example.com) first.';
+      return `This tab is owned by another extension (likely a New Tab override or PDF viewer). ${BrowserEnv.name} blocks debugging other extensions’ pages — navigate this tab to a regular URL (e.g. https://example.com) first.`;
     }
-    if (/cannot access (?:a )?chrome[:\/]/i.test(msg)) {
-      return 'Chrome’s built-in pages can’t be debugged by extensions. Navigate to a regular URL first.';
+    // ⚠️ Matches the browser's OWN error text, which we do not control. Chromium
+    // says "Cannot access a chrome:// URL"; whether a fork rewrites that to its
+    // own scheme is not something I could verify without the browser in hand, so
+    // this accepts either rather than assuming. A miss here only costs the
+    // friendly rewrite — the raw message still reaches the user.
+    if (/cannot access (?:a )?(?:chrome|edge|brave|opera|vivaldi)[:\/]/i.test(msg)) {
+      return `${BrowserEnv.name}’s built-in pages can’t be debugged by extensions. Navigate to a regular URL first.`;
     }
     if (/No tab with given id/i.test(msg)) {
       return 'That tab is no longer open. Refresh the tab list.';
