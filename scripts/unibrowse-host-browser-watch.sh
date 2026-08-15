@@ -60,6 +60,9 @@ SERVER="${UNIBROWSE_SERVER:-http://localhost:9010}"
 ATC="${ATC_URL:-http://192.168.1.168:3030}"
 NOTIFY="${UNIBROWSE_WATCH_NOTIFY:-unibrowse}"
 STATE="${UNIBROWSE_WATCH_STATE:-/tmp/unibrowse-host-browser-watch.state}"
+RELOADER="${UNIBROWSE_RELOADER:-/mnt/nas/data/code/unibrowse/scripts/unibrowse-extension-reload.mjs}"
+CDP_PORT="${UNIBROWSE_CDP_PORT:-9222}"
+EXT_PATH="${UNIBROWSE_EXT_PATH:-/mnt/nas/data/code/unibrowse/extension}"
 QUIET=0
 [ "${1:-}" = "--quiet" ] && QUIET=1
 
@@ -114,6 +117,38 @@ chrome_running="no"
 pgrep -f -- '--extension-process' >/dev/null 2>&1 && chrome_running="yes"
 
 echo "[watch] HOST BROWSER MISSING. chrome_running=$chrome_running last_disconnect: $last"
+
+# ── SELF-HEAL, before bothering anybody ──────────────────────────────────────
+# Reload the extension over CDP. This is the whole point of adding
+# --remote-debugging-port to Chrome's launch: nothing INSIDE the extension can
+# revive it (the worker is what died, and Chrome only starts a worker to deliver
+# it an event), and the ui-eye click path refuses to run while Ben is at the
+# keyboard. CDP has neither constraint.
+#
+# ⚠️ Only meaningful once Chrome has been RESTARTED with the flag — it takes
+# effect at browser-process startup and cannot be toggled live. Until then this
+# exits 3 and we fall through to alerting, which is the correct behaviour, not
+# a failure.
+if [ -x "$RELOADER" ] || [ -f "$RELOADER" ]; then
+  echo "[watch] attempting CDP reload…"
+  if node "$RELOADER" --port "$CDP_PORT" --path "$EXT_PATH"; then
+    # ⚠️ Trust the SERVER, not the reloader's own exit code. The reloader can
+    # only see that a worker started; whether it then reconnected to
+    # mcp-server is a different claim, and that is the one that matters.
+    sleep 6
+    recheck="$(curl -s -m 10 "$SERVER/extensions" 2>/dev/null | grep -o '"hostBrowserPresent":[a-z]*' | cut -d: -f2)"
+    if [ "$recheck" = "true" ]; then
+      echo "[watch] SELF-HEALED via CDP — host browser reconnected"
+      curl -s -m 10 -X POST "$ATC/messages" -H 'Content-Type: application/json' \
+        -d "{\"to\":\"$NOTIFY\",\"from\":\"unibrowse-watch\",\"priority\":\"info\",\"subject\":\"host browser self-healed\",\"content\":\"The extension had dropped and was revived over CDP without anyone clicking. Last disconnect: $last\"}" >/dev/null 2>&1
+      echo "up" > "$STATE"
+      exit 0
+    fi
+    echo "[watch] CDP reload ran but the extension still has not reconnected — escalating"
+  else
+    echo "[watch] CDP reload unavailable or failed (exit $?) — escalating"
+  fi
+fi
 
 # Alert once per outage, not every five minutes.
 if [ "$(cat "$STATE" 2>/dev/null)" != "down" ]; then
