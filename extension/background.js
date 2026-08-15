@@ -5383,10 +5383,50 @@ class BackgroundController {
     }
 
     // Pass the caller's agent/takeover so the tab is reserved on creation.
-    const tabInfo = await this.tabManager.attachTab(targetTabId, tab.url, tab.title, {
-      agent: this.tabManager._currentAgent,
-      takeover: this.tabManager._currentTakeover,
-    });
+    //
+    // ⚠️ TOCTOU: the isRestricted check above read tab.url, but chrome.debugger
+    // .attach() runs later, and the tab can navigate in between — at which point
+    // Chrome throws its own raw "Cannot access a chrome-extension:// URL of
+    // different extension". That escapes unwrapped, because the guarded path
+    // that would have turned it into a friendly UNATTACHABLE_URL error is the
+    // one we already passed.
+    //
+    // This is INTERMITTENT, which is exactly why it was mistaken for a
+    // permanent New Tab override: `agents` hit it twice in a row on
+    // 2026-08-15 and `!login ben` failed 0/4, while minutes later I could not
+    // reproduce it on the same browser with the same URLs, plain or incognito.
+    // I had hit it myself earlier the same day on a slow-loading tab and
+    // dismissed it.
+    //
+    // The wait above resolves on a 15s TIMEOUT as well as on 'complete', so a
+    // slow page reaches this line still mid-navigation — which widens the
+    // window rather than being a separate bug.
+    //
+    // ⛔ NOT PROVEN — I could not reproduce it, so this is defensive, not a
+    // confirmed fix. It is safe either way: re-read the URL, and only retry
+    // when the tab has settled somewhere attachable. If it has genuinely landed
+    // on another extension's page, fall back to the same non-attached success
+    // the guard above returns, instead of failing the caller's create.
+    let tabInfo;
+    try {
+      tabInfo = await this.tabManager.attachTab(targetTabId, tab.url, tab.title, {
+        agent: this.tabManager._currentAgent,
+        takeover: this.tabManager._currentTakeover,
+      });
+    } catch (err) {
+      const raced = /Cannot access a chrome-extension:\/\/ URL of different extension/i.test(err?.message || '');
+      if (!raced) throw err;
+      const settled = await chrome.tabs.get(targetTabId).catch(() => null);
+      const settledUrl = settled?.url || '';
+      console.warn(`[handleCreateTab] attach raced a navigation; url now ${settledUrl || '(unknown)'}`);
+      if (!settledUrl || settledUrl.startsWith('chrome-extension://') || BrowserEnv.isInternalUrl(settledUrl)) {
+        return { success: true, tabId: targetTabId, label: `tab-${targetTabId}`, url: settledUrl || 'about:blank', attached: false, note: 'Tab created but not attached: it settled on a page extensions cannot debug.' };
+      }
+      tabInfo = await this.tabManager.attachTab(targetTabId, settledUrl, settled?.title, {
+        agent: this.tabManager._currentAgent,
+        takeover: this.tabManager._currentTakeover,
+      });
+    }
     // Apply caller-requested label so the tab is resolvable by it (e.g. the
     // recording-screenshot flow creates a tab labeled "rrweb-frame-<ts>" and then
     // navigates/screenshots/closes it by that label). Without this the label was
