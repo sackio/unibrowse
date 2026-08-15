@@ -117,6 +117,66 @@ export class Context {
   // extension-id rotation, because nothing could distinguish the two.
   private _seenExtensions = new Map<string, { lastSeenAt: number; firstSeenAt: number }>();
 
+  // Ring of recent DISCONNECTS, with the close code and how long the socket
+  // had been up.
+  //
+  // ⚠️ This exists because every instrument we had for "the extension died"
+  // lived INSIDE the extension — the global error listeners, the
+  // chrome.storage.local persistence, all of it. When Chrome tears the
+  // extension down, the instrument goes with it, so we were trying to read the
+  // black box from inside the crash. Ben has now had to hand-click Reload at
+  // least three times (08-12, 08-14, 08-15) and asked, fairly, why it keeps
+  // happening and why it isn't fixed. The honest answer was that each previous
+  // fix addressed something ADJACENT — a stale reservation, an id rotation, an
+  // un-aimable reload tool — all of which a reload also cures, so each looked
+  // like the fix from outside.
+  //
+  // The server is the one component that observes the death and SURVIVES it.
+  // Recording the close code here is the first evidence that outlives the
+  // patient: 1000/1001 is an orderly close (Chrome shutting the worker down),
+  // 1006 is an abnormal drop with no close frame. Those imply very different
+  // causes and we have never once known which we were looking at.
+  private _disconnects: Array<{
+    extensionId: string;
+    label?: string;
+    kind?: string;
+    remoteAddress?: string;
+    at: number;
+    connectedMs: number;
+    code?: number;
+    reason?: string;
+  }> = [];
+  private static readonly MAX_DISCONNECT_LOG = 50;
+
+  /** Record a disconnect. Called from the ws close handler, before unregister. */
+  recordDisconnect(entry: {
+    extensionId: string;
+    label?: string;
+    kind?: string;
+    remoteAddress?: string;
+    connectedMs: number;
+    code?: number;
+    reason?: string;
+  }): void {
+    this._disconnects.push({ ...entry, at: Date.now() });
+    if (this._disconnects.length > Context.MAX_DISCONNECT_LOG) {
+      this._disconnects.splice(0, this._disconnects.length - Context.MAX_DISCONNECT_LOG);
+    }
+  }
+
+  /** Recent disconnects, newest last. */
+  getDisconnects(): ReadonlyArray<Context["_disconnects"][number]> {
+    return this._disconnects;
+  }
+
+  /** Which extension owns this socket, if any. Needed to name a dying ws. */
+  findExtensionIdByWs(ws: WebSocket): string | undefined {
+    for (const [id, conn] of this._extensions) {
+      if (conn.ws === ws) return id;
+    }
+    return undefined;
+  }
+
   get ws(): WebSocket {
     if (!this._ws) {
       throw new Error(noConnectionMessage);

@@ -59,6 +59,7 @@ import {
   getSystemInfo,
   getVersion,
   getVisibleText,
+  globalContext,
   goBack,
   goForward,
   hover,
@@ -109,7 +110,7 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-7IG6FI3X.js";
+} from "./chunk-V5HWWAWS.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -544,6 +545,20 @@ async function main() {
       authRequired: authOn && !local,
       clientIp: getEffectiveClientIP(req),
       isLocalClient: local
+    });
+  });
+  app.get("/extensions", (_req, res) => {
+    const identities = globalContext.describeExtensions();
+    const usable = identities.filter(
+      (e) => e.kind !== "container-sidecar" && e.kind !== "lan-remote"
+    );
+    res.json({
+      hostBrowserPresent: usable.length > 0,
+      hostBrowserKinds: usable.map((e) => e.kind),
+      connected: identities,
+      // Newest last. Close code is the diagnostic field: 1000/1001 = deliberate
+      // close (worker shutdown), 1006 = socket vanished with no close frame.
+      recentDisconnects: globalContext.getDisconnects()
     });
   });
   app.get("/install", installLandingHandler);

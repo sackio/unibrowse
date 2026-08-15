@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 import { appConfig } from "@/config/app.config";
 
 import type { Resource } from "@/resources/resource";
-import { createServerWithTools, createServerWithoutWebSocket } from "@/server";
+import { createServerWithTools, createServerWithoutWebSocket, globalContext } from "@/server";
 import * as bookmarks from "@/tools/bookmarks";
 import * as clipboard from "@/tools/clipboard";
 import * as common from "@/tools/common";
@@ -278,6 +278,34 @@ async function main() {
       authRequired: authOn && !local,
       clientIp: getEffectiveClientIP(req),
       isLocalClient: local,
+    });
+  });
+
+  // Connected extensions + recent disconnects. Public, read-only, no secrets.
+  //
+  // ⚠️ The point of this endpoint is that it answers "is a usable browser
+  // attached, and if not, when and how did it go?" WITHOUT needing a browser.
+  // Every previous instrument for that question lived inside the extension, so
+  // it died with the thing it was measuring.
+  //
+  // `hostBrowserPresent` deliberately encodes the SAME gate the login script
+  // uses (an extension that is neither a container sidecar nor off-host), so a
+  // watchdog built on this cannot report healthy for a browser the login would
+  // reject. ⛔ It is NOT proof a sign-in will complete: the container sidecar
+  // requests a magic link happily and then hangs forever consuming one. Necessary,
+  // not sufficient — treat a true here as "worth attempting", never as success.
+  app.get("/extensions", (_req, res) => {
+    const identities = globalContext.describeExtensions();
+    const usable = identities.filter(
+      (e) => e.kind !== "container-sidecar" && e.kind !== "lan-remote",
+    );
+    res.json({
+      hostBrowserPresent: usable.length > 0,
+      hostBrowserKinds: usable.map((e) => e.kind),
+      connected: identities,
+      // Newest last. Close code is the diagnostic field: 1000/1001 = deliberate
+      // close (worker shutdown), 1006 = socket vanished with no close frame.
+      recentDisconnects: globalContext.getDisconnects(),
     });
   });
 

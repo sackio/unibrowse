@@ -22,7 +22,11 @@ type Options = {
 };
 
 // Shared context for all servers (WebSocket and HTTP)
-const globalContext = new Context();
+// Exported so the HTTP layer can expose connection/disconnection state at
+// GET /extensions. That endpoint is deliberately readable WITHOUT a working
+// extension — it is the only view of "the browser died" that survives the
+// browser dying. http-server imports from here already; there is no cycle.
+export const globalContext = new Context();
 
 // MCP `instructions` field — surfaced to clients via the initialize handshake.
 // Documents the multi-agent shared-server model that confused several callers
@@ -207,8 +211,40 @@ export async function createServerWithTools(options: Options): Promise<Server> {
       }
     });
 
-    websocket.on("close", () => {
-      console.log("[Server] WebSocket connection closed");
+    websocket.on("close", (code?: number, reason?: Buffer) => {
+      // ⚠️ Identify and RECORD the dying extension BEFORE unregistering it —
+      // describeExtension() reads the live connection record, so after
+      // unregisterExtensionByWs() there is nothing left to name it with. The
+      // old handler logged the bare string "WebSocket connection closed",
+      // which is why three separate disappearances of ben's Chrome left no
+      // evidence about which browser had gone or how.
+      const dyingId = globalContext.findExtensionIdByWs(websocket);
+      if (dyingId) {
+        const ident = globalContext.describeExtension(dyingId);
+        const conn = globalContext.getExtension(dyingId);
+        const connectedMs = conn ? Date.now() - conn.registeredAt : 0;
+        const reasonText = reason?.toString?.() || undefined;
+        globalContext.recordDisconnect({
+          extensionId: dyingId,
+          label: ident?.label,
+          kind: ident?.kind,
+          remoteAddress: ident?.remoteAddress,
+          connectedMs,
+          code,
+          reason: reasonText,
+        });
+        // Close code is the single most diagnostic field and we have never
+        // captured it: 1000/1001 mean Chrome closed the socket deliberately
+        // (worker shutdown), 1006 means the socket vanished with no close
+        // frame at all. Those point at completely different causes.
+        console.log(
+          `[Server] Extension DISCONNECTED: ${dyingId} kind=${ident?.kind ?? "unknown"} ` +
+          `addr=${ident?.remoteAddress ?? "?"} afterMs=${connectedMs} ` +
+          `code=${code ?? "none"} reason=${reasonText || "(none)"}`,
+        );
+      } else {
+        console.log("[Server] WebSocket connection closed (no extension registered on it)");
+      }
       connections.delete(websocket);
       console.log(`[Server] Total active connections: ${connections.size}`);
 
