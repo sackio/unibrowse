@@ -20,8 +20,41 @@
  *
  * This path has no such constraint.
  *
+ * ⛔ NOT USABLE ON BEN'S CHROME AS IT STANDS — READ THIS FIRST
+ * ------------------------------------------------------------
+ * Chrome refuses DevTools remote debugging unless `--user-data-dir` names a
+ * NON-DEFAULT directory, and it compares the PATH: passing the default location
+ * spelled out is still refused. Ben's profile lives at the default location, so
+ * the port never opens and this script exits 3.
+ *
+ * The refusal is SILENT in every place you would look: the flag is accepted,
+ * `ps` shows it on the browser process, and there is no port, no
+ * DevToolsActivePort file, and nothing in any log the startup script keeps. The
+ * only evidence is a single line on Chrome's own stderr:
+ *     "DevTools remote debugging requires a non-default data directory."
+ *
+ * Enabling this for real requires MOVING his profile off ~/.config/google-chrome
+ * and launching with --user-data-dir pointing at the new location. That is a
+ * real migration and his decision, not a side effect of a flag change.
+ *
+ * Until then the recovery path is the ui-eye click, and the watchdog escalates
+ * to a human. This script stays because it is correct and tested — it is the
+ * profile location, not the approach, that blocks it.
+ *
  * MEASURED, NOT ASSUMED (office, Chrome 150.0.7871.186, 2026-08-15)
  * -----------------------------------------------------------------
+ *  · headful + no --user-data-dir                 -> REFUSED
+ *  · headful + --user-data-dir=<default path>     -> REFUSED
+ *  · headful + --user-data-dir=<non-default path> -> PORT OPEN
+ *  · headless + no --user-data-dir                -> PORT OPEN (headless is exempt)
+ * ⛔ Two traps, both of which I fell into in one afternoon:
+ *   1. I "verified" the flag using a HEADLESS browser. Headless is exempt, so the
+ *      test proved nothing about the launch it was meant to validate. Verify a
+ *      browser flag in the MODE it will actually run in.
+ *   2. I then tested a path that merely LOOKED like a default
+ *      (/tmp/fake/.config/google-chrome) and concluded Chrome checks only flag
+ *      presence. It was a non-default path. A fixture that RESEMBLES the target
+ *      is not the target.
  *  · `Extensions.loadUnpacked` on an ALREADY-LOADED unpacked extension returns
  *    the SAME extension id and spawns a fresh `service_worker` target for it.
  *    It is the CDP equivalent of the Reload button. Id stability matters:
