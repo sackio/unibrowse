@@ -50,6 +50,12 @@ services:
       # Required when the public TLS proxy is on another host (server4 nginx →
       # office:9010): the container sees server4's LAN NIC as the peer, so it must be
       # trusted here or its XFF (which marks the traffic remote) is ignored.
+      # ⛔ SECURITY CONTROL — emptying this exposes /mcp (arbitrary browser
+      # control) to the internet, silently and with no error. Public traffic
+      # arrives via nginx on server4 whose peer address is PRIVATE; only its
+      # membership here makes us read the X-Forwarded-For that classifies that
+      # traffic as REMOTE. Drop it and every public visitor is treated as LAN.
+      # Read EXTRA_TRUSTED_PROXIES in src/utils/auth.ts before changing this.
       UNIBROWSE_TRUSTED_PROXIES: ${UNIBROWSE_TRUSTED_PROXIES:-}
       # When set, browser_launch_isolated_chrome POSTs to the chromium-host
       # sidecar instead of spawning chromium in-process. Decouples chromium

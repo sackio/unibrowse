@@ -921,6 +921,14 @@ async function main() {
     console.log(`[HTTP] Health check: http://localhost:${port}/health`);
     console.log(`[HTTP] Install page:  http://localhost:${port}/install`);
     console.log(`[HTTP] Auth policy:   ${isAuthEnabled() ? "LAN open, remote requires API key (UNIBROWSE_API_KEYS set)" : "open (no UNIBROWSE_API_KEYS \u2014 all clients allowed)"}`);
+    const trustedProxies = (process.env.UNIBROWSE_TRUSTED_PROXIES || "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (trustedProxies.length === 0) {
+      console.warn(
+        "[HTTP] \u26A0\uFE0F  UNIBROWSE_TRUSTED_PROXIES is EMPTY. If this server is reachable via a reverse proxy (browser.pushbuild.com \u2192 nginx on server4), that proxy's traffic will now be classified by its PRIVATE peer address, i.e. as LAN \u2014 bypassing the API key and exposing /mcp. Set it to the proxy's NIC address(es). See EXTRA_TRUSTED_PROXIES in src/utils/auth.ts."
+      );
+    } else {
+      console.log(`[HTTP] Trusted proxies: ${trustedProxies.join(", ")} (their X-Forwarded-For is authoritative; removing one fails toward LAN \u2014 see src/utils/auth.ts)`);
+    }
   });
   const { createWebSocketServerFromHTTP } = await import("./ws-S7OJF7HG.js");
   const wss = createWebSocketServerFromHTTP(httpServer);

@@ -238,6 +238,17 @@ export async function createServerWithTools(options: Options): Promise<Server> {
     // NIC, 192.168.1.168), which is the case this exists for, and it leaves
     // every direct LAN/loopback/bridge connection deriving identity from the
     // unspoofable peer exactly as before.
+    //
+    // ⛔ NOTE THE COUPLING, because it is not obvious from here: that same env
+    // var is a SECURITY control for auth classification, not just an identity
+    // hint. Emptying it silently reclassifies all public traffic as LAN and
+    // exposes /mcp. Read EXTRA_TRUSTED_PROXIES in src/utils/auth.ts before
+    // touching the value — and do NOT "fix" the 203.0.113.1 that appears as a
+    // remoteAddress for proxied browsers. It is a deliberate TEST-NET-3
+    // placeholder nginx writes because the border router SNATs the real client
+    // away; replacing it with a "real" address sends a PRIVATE one and breaks
+    // the remote classification. I called it a defect to `agents` on
+    // 2026-08-17 before reading the config; it is the opposite.
     try {
       if (request) {
         const peer = stripIPv4Mapped(String((websocket as any)?._socket?.remoteAddress || ""));

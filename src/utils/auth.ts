@@ -114,6 +114,33 @@ export function isLocalIP(ip: string | null | undefined): boolean {
 // would be treated as a LAN CLIENT and its X-Forwarded-For ignored — defeating
 // remote/key gating. Only the specific proxy IP(s) are trusted, never a whole
 // subnet.
+// ⛔⛔ THIS LIST IS A SECURITY CONTROL, NOT A CONVENIENCE. EMPTYING IT OPENS
+// THE CODE-EXEC PLANE TO THE INTERNET. Read this before editing the value.
+//
+// The border router SNATs ALL inbound public traffic to its own LAN IP
+// (192.168.1.1), so the real client IP is unrecoverable by the time it reaches
+// us. nginx for browser.pushbuild.com therefore writes a FIXED, NON-PRIVATE
+// X-Forwarded-For — the TEST-NET-3 placeholder 203.0.113.1 — precisely so that
+// every request arriving by the public path classifies as REMOTE.
+//
+// ⇒ That classification only happens if the nginx peer is in THIS SET. Drop
+// server4's NIC from it and the peer address becomes the verdict — a PRIVATE,
+// LAN address — so every public visitor is treated as a LAN client: API key
+// bypassed on /ws and /install, and /mcp (arbitrary browser control) reachable
+// from the internet. The edge `location = /mcp { return 403; }` is
+// defense-in-depth by its own description, NOT the primary control.
+//
+// ⇒ So the failure direction is TOWARD-LAN, i.e. toward open, and it is silent:
+// nothing errors, traffic simply starts being trusted. Surfaced by `agents`
+// 2026-08-17 after I had described the 203.0.113.1 placeholder to them as an
+// "nginx config defect" — which, had anyone acted on it, was an instruction to
+// remove exactly this protection. It is deliberate and load-bearing.
+//
+// ⚠️ UNVERIFIED PREMISE, stated so it is not mistaken for measured: the SNAT
+// claim above is quoted from the nginx config's own comment. Nobody has
+// probed the border router to confirm it. A topology claim in a comment is
+// never exercised by anything, so confirm it BEFORE any deliberate change —
+// but note that the safe direction does not depend on it.
 const EXTRA_TRUSTED_PROXIES = new Set(
   (process.env.UNIBROWSE_TRUSTED_PROXIES || "")
     .split(",")

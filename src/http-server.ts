@@ -775,6 +775,27 @@ async function main() {
     console.log(`[HTTP] Health check: http://localhost:${port}/health`);
     console.log(`[HTTP] Install page:  http://localhost:${port}/install`);
     console.log(`[HTTP] Auth policy:   ${isAuthEnabled() ? "LAN open, remote requires API key (UNIBROWSE_API_KEYS set)" : "open (no UNIBROWSE_API_KEYS — all clients allowed)"}`);
+
+    // ⛔ Say it at boot, because the failure is SILENT and fails toward OPEN.
+    // Public traffic reaches us through nginx on server4, whose peer address is
+    // private; only its membership in UNIBROWSE_TRUSTED_PROXIES makes us read
+    // the X-Forwarded-For that marks that traffic REMOTE. With the list empty,
+    // nothing errors — every public visitor simply starts classifying as LAN,
+    // which bypasses the API key and exposes /mcp. There is no other symptom to
+    // notice, so the only chance to notice is here.
+    const trustedProxies = (process.env.UNIBROWSE_TRUSTED_PROXIES || "")
+      .split(",").map(s => s.trim()).filter(Boolean);
+    if (trustedProxies.length === 0) {
+      console.warn(
+        "[HTTP] ⚠️  UNIBROWSE_TRUSTED_PROXIES is EMPTY. If this server is reachable via a " +
+        "reverse proxy (browser.pushbuild.com → nginx on server4), that proxy's traffic will " +
+        "now be classified by its PRIVATE peer address, i.e. as LAN — bypassing the API key " +
+        "and exposing /mcp. Set it to the proxy's NIC address(es). See EXTRA_TRUSTED_PROXIES " +
+        "in src/utils/auth.ts.",
+      );
+    } else {
+      console.log(`[HTTP] Trusted proxies: ${trustedProxies.join(", ")} (their X-Forwarded-For is authoritative; removing one fails toward LAN — see src/utils/auth.ts)`);
+    }
   });
 
   // Create WebSocket server on the same HTTP server
