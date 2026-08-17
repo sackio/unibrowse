@@ -254,12 +254,33 @@ fi
 # until Ben tripped over it. One missed message must not equal permanent silence
 # on a service four hosts depend on. 30 min is chosen to be noisy enough to
 # survive a missed read and quiet enough not to become the thing people filter.
+#
+# ⚠️ AND REQUIRE TWO CONSECUTIVE FAILED POLLS BEFORE THE FIRST ALERT. A single
+# missing reading is not an outage: on 2026-08-16 a deliberate
+# browser_reload_extension dropped the socket for ONE SECOND and the next poll
+# paged about it, after the extension had already recovered. A false page on a
+# self-healing blip is worse than 5 minutes of extra latency on a real outage —
+# and the real one that night lasted 31 minutes, so confirming costs almost
+# nothing against it. The CDP self-heal above still runs on the FIRST failure;
+# only the alerting waits for confirmation.
 prev="$(cat "$STATE" 2>/dev/null || true)"
 now="$(date +%s)"
 since="${prev#down:}"
 case "$prev" in
-  down:*) [ $(( now - since )) -ge 1800 ] && do_alert=1 || do_alert=0 ;;
-  *)      do_alert=1 ;;
+  down:*)
+    # Already alerted. Re-alert only every 30 min.
+    [ $(( now - since )) -ge 1800 ] && do_alert=1 || do_alert=0
+    ;;
+  pending:*)
+    # Second consecutive failure — this is a real outage. Alert.
+    do_alert=1
+    ;;
+  *)
+    # First failure. Record it and say nothing yet.
+    echo "[watch] host browser missing on ONE poll — waiting for a second reading before alerting (see 'up' again and this is dropped silently)"
+    echo "pending:$now" > "$STATE"
+    exit 1
+    ;;
 esac
 
 if [ "$do_alert" -eq 1 ]; then
@@ -277,8 +298,10 @@ If Chrome is running, the BROWSER is fine and the EXTENSION's socket dropped. Op
 · Prefer ui_eye_press (AT-SPI) over ui_eye_click (coordinates). If XTEST keyboard does not reach Chrome, XTEST mouse is suspect for the same reason, and a coordinate click that lands nowhere still returns success.
 · ui-eye refuses to act while the operator is touching the keyboard. Check the real idle time (xprintidle) before believing that guard — automation input resets it too, so a refusal may be the last agent's residue rather than Ben.
 
-⭐ READ THE KEEPALIVE HEARTBEAT — THIS IS THE DIAGNOSTIC, AND IT WORKS WHILE THE EXTENSION IS DEAD:
-  strings \"\$HOME/.config/google-chrome/Profile 1/Local Extension Settings/pikjoohganfooeancifkoccakcocchmk\"/*.log | grep swHeartbeat | tail -1
+⭐ READ THE KEEPALIVE HEARTBEAT — THIS IS THE DIAGNOSTIC, AND IT WORKS WHILE THE EXTENSION IS DEAD. Run ON THE OFFICE HOST as ben:
+  D=\"\$HOME/.config/google-chrome/Profile 1/Local Extension Settings/pikjoohganfooeancifkoccakcocchmk\"
+  strings \"\$D\"/*.log | grep -o '\\[{\"at\".*' | tail -1
+⚠️ Grep for the VALUE (\`[{\"at\"\`), NOT the key: leveldb stores key and value as separate strings, so \`grep swHeartbeat\` prints the word 'swHeartbeat' and nothing else once the ring grows. Trim to the last '}' before parsing — the tail is usually a partial record.
 ⚠️ \"Profile 1\", NOT \"Default\". The subdirectory is Chrome's own extension id, not the ext_… handle. \`at\` is epoch ms in scientific notation (1.7e+12) — float parse, not int.
 
 WHAT THE RECORD MEANS. The sw-keepalive alarm fires every 30s and is supposed to force a reconnect whenever the socket is dead, so an outage lasting minutes means recovery ran and failed, not that nothing tried:
@@ -288,7 +311,8 @@ WHAT THE RECORD MEANS. The sw-keepalive alarm fires every 30s and is supposed to
   · no records at all across the dead window      → the alarm genuinely stopped firing
 ⚠️ This tells you WHICH path failed, not why it failed identically N times. One dead tick and sixty dead ticks have different explanations and the record distinguishes the second only by repetition — count them.
 
-Evidence on the server side: curl $SERVER/extensions | jq .recentDisconnects
+Evidence on the server side, FROM THE OFFICE HOST (\$SERVER here was $SERVER; 'localhost' is host-relative, so this refuses from inside a container):
+  curl -s http://localhost:9010/extensions | jq .recentDisconnects
 Close code 1001 = clean teardown by Chrome; 1006 = socket vanished with no close frame. Different bugs."
   echo "down:$now" > "$STATE"
 fi
