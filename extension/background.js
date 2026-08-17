@@ -7590,10 +7590,22 @@ async function autoConnect() {
 // error anywhere else.
 //
 // READING IT WHEN THE EXTENSION IS DEAD (the case that matters — you cannot ask
-// a dead worker anything):
-//   strings ~/.config/google-chrome/Default/'Local Extension Settings'/<extid>/*.log \
-//     | grep -o '"swHeartbeat".*'
-// The entries are {at, stage, …} with `at` in epoch ms.
+// a dead worker anything). Verified working on office 2026-08-16:
+//
+//   strings "$HOME/.config/google-chrome/Profile 1/Local Extension Settings/\
+// pikjoohganfooeancifkoccakcocchmk"/*.log | grep swHeartbeat | tail -1
+//
+//   → swHeartbeat[{"at":1.78693049208e+12,"stage":"enter"},
+//                 {"at":1.786930493141e+12,"stage":"probed","wsLive":true,
+//                  "shouldReconnect":true}]
+//
+// ⚠️ The profile directory is "Profile 1" on ben's office Chrome, NOT "Default"
+// — do not assume, `find ~/.config/google-chrome -maxdepth 2 -type d -name
+// 'Local Extension Settings'`. The per-extension subdirectory is Chrome's own
+// extension id, which is NOT the `ext_…` handle mcp-server uses; find it with
+// `grep -l swHeartbeat */*.log`.
+// ⚠️ `at` is epoch ms but Chrome's serializer writes it in scientific notation
+// (1.78693049208e+12), so it needs a float parse, not an int parse.
 const HEARTBEAT_KEY = 'swHeartbeat';
 const HEARTBEAT_MAX = 80; // ~20 min of history at 2 records per 30s tick
 
