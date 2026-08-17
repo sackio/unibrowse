@@ -1339,9 +1339,22 @@ export const ListAttachedTabsTool = z.object({
   description: z.literal(
     "List all tabs that have debugger attached with their labels and IDs. " +
     "Use this to find valid tabTarget values for browser_navigate, browser_snapshot, browser_click, and all other tab-targeting operations. " +
-    "Only attached tabs can be targeted — use browser_attach_tab or browser_create_tab to attach new tabs."
+    "Only attached tabs can be targeted — use browser_attach_tab or browser_create_tab to attach new tabs. " +
+    "URL query-string values and fragments are redacted by default (origin, path and parameter names are kept) because a long-attached tab " +
+    "puts its URL into every caller's context; pass fullUrls:true if you genuinely need them."
   ),
-  arguments: z.object({}).merge(MaxTokensSchema),
+  arguments: z.object({
+    // ⛔ Opt-IN, never opt-out. A tab attached and left broadcasts its query
+    // string to every agent that lists tabs, and on 2026-08-17 that was a
+    // stranger's name, home address, phone, email and card last-4 landing in
+    // two seats' contexts. A default-full flag would have left the exposure in
+    // place for everyone who never read this schema, which is everyone.
+    fullUrls: z.boolean().optional().describe(
+      "Return unredacted URLs including query-string values and fragments. Default false. " +
+      "Only set this when you need a specific parameter value — the redacted form keeps origin, path and parameter names, " +
+      "which is enough to identify a tab."
+    ),
+  }).merge(MaxTokensSchema),
 });
 
 export const SetTabLabelTool = z.object({

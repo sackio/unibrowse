@@ -16,6 +16,65 @@ import { textResponse, errorResponse, jsonResponse } from "@/utils/response-help
 import type { Tool } from "./tool";
 
 /**
+ * Redact query-string VALUES, keeping origin, path and parameter NAMES.
+ *
+ * ⛔ WHY. A tab attached and left carries its URL into every caller's context
+ * forever. `ext_0433615b` (Laura's MacBook) has had a vault.trustcommerce.com
+ * receipt tab attached since 2026-08-02 with NO reservation, and its query
+ * string carries her name, home address, phone, BWH email, card last-4 and
+ * expiry, and the amount. Every agent that calls browser_list_attached_tabs
+ * receives those fields. Two independent seats — `genomics` and `agents` —
+ * reported getting them on 2026-08-17, which is how the exposure surfaced: not
+ * from a scan, but from other people's contexts filling up with a stranger's
+ * card details.
+ *
+ * ⭐ The exposure is a property of the ATTACH-AND-LEAVE pattern, not of that one
+ * tab. Closing it fixes today; redacting fixes the shape.
+ *
+ * Origin + path + parameter names are kept because that is what a caller needs
+ * to answer "which tab is this?", which is what the listing is FOR. Values are
+ * what carry the payload. A caller that genuinely needs a full URL passes
+ * fullUrls:true and takes responsibility for what lands in its context.
+ *
+ * ⚠️ NOT SUFFICIENT ON ITS OWN — path segments and tab TITLES can carry
+ * identifiers too (/receipt/<email>, "Receipt for Jane Doe"). This closes the
+ * commonest and widest channel; it does not make the listing safe to treat as
+ * PII-free.
+ */
+function redactUrl(url: unknown): string {
+  const raw = typeof url === "string" ? url : "";
+  if (!raw) return raw;
+  const q = raw.indexOf("?");
+  const h = raw.indexOf("#");
+  if (q === -1 && h === -1) return raw;
+  try {
+    const u = new URL(raw);
+    let changed = false;
+    for (const key of Array.from(u.searchParams.keys())) {
+      u.searchParams.set(key, "…");
+      changed = true;
+    }
+    // Fragments are opaque and routinely carry tokens; keep the marker only.
+    if (u.hash && u.hash.length > 1) {
+      u.hash = "#…";
+      changed = true;
+    }
+    // URL.toString() percent-encodes the ellipsis. Decode it back so the
+    // output is readable — a caller scanning a list should see `?name=…`, not
+    // `?name=%E2%80%A6`, which reads like a real (and alarming) value.
+    // ⚠️ Match the bare sequence, not `=%E2%80%A6`: the first version did the
+    // latter and left the FRAGMENT as `#%E2%80%A6`, because a hash has no `=`.
+    return changed ? u.toString().replace(/%E2%80%A6/g, "…") : raw;
+  } catch {
+    // Non-parseable (chrome://, about:, malformed). Truncate at the first
+    // separator rather than returning it whole — failing open here would keep
+    // exactly the payload this exists to withhold.
+    const cut = Math.min(...[q, h].filter((i) => i >= 0));
+    return raw.slice(0, cut) + (raw[cut] === "#" ? "#…" : "?…");
+  }
+}
+
+/**
  * List all attached tabs with their labels
  * Returns information about all tabs that currently have debugger attached,
  * including their tab IDs, labels, URLs, titles, and last-used timestamps.
@@ -28,7 +87,7 @@ export const listAttachedTabs: Tool = {
     inputSchema: zodToJsonSchema(ListAttachedTabsTool.shape.arguments),
   },
   handle: async (context: Context, params) => {
-    const { max_tokens } = params || {};
+    const { max_tokens, fullUrls } = (params || {}) as any;
     try {
       // Aggregate across every registered extension. With multiple extensions
       // (ben's main Chrome + container chromiums launched via
@@ -48,7 +107,15 @@ export const listAttachedTabs: Tool = {
           continue;
         }
         for (const t of (r.result?.tabs ?? [])) {
-          tabs.push({ ...t, extensionId: r.extensionId });
+          // Redact on the way IN, so there is no downstream path — summary,
+          // json body, or a future field — that can leak the raw value by
+          // forgetting to call redactUrl. Opting out is explicit and per-call.
+          tabs.push({
+            ...t,
+            url: fullUrls ? t.url : redactUrl(t.url),
+            urlRedacted: fullUrls ? undefined : (typeof t.url === "string" && redactUrl(t.url) !== t.url) || undefined,
+            extensionId: r.extensionId,
+          });
         }
       }
 
