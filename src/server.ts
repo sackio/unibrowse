@@ -10,7 +10,7 @@ import type { WebSocketServer, WebSocket } from "ws";
 import { Context } from "@/context";
 import type { Resource } from "@/resources/resource";
 import type { Tool } from "@/tools/tool";
-import { stripIPv4Mapped } from "@/utils/auth";
+import { stripIPv4Mapped, getEffectiveClientIP } from "@/utils/auth";
 import { createWebSocketServer } from "@/ws";
 
 type Options = {
@@ -83,12 +83,22 @@ export async function createServerWithTools(options: Options): Promise<Server> {
         profileName: payload?.profileName as string | undefined,
         hostname: payload?.hostname as string | undefined,
         userAgent: payload?.userAgent as string | undefined,
-        // Server-side, so it is available even for an extension too old to
-        // report anything about itself. This is what tells a container
-        // chromium apart from a desktop Chrome — see Context.describeExtension.
-        remoteAddress: stripIPv4Mapped(
-          String((ws as any)?._socket?.remoteAddress || ""),
-        ) || undefined,
+        // The BROWSER's address. Captured server-side, so it is available even
+        // for an extension too old to report anything about itself, and it is
+        // what tells a container chromium apart from a desktop Chrome — see
+        // Context.describeExtension. Resolved past a trusted proxy at
+        // connection time (see the wss "connection" handler); falls back to the
+        // raw peer when there was no upgrade request to read, which is the old
+        // behaviour and correct for every direct LAN/loopback connection.
+        remoteAddress: ((ws as any).__clientIp as string | undefined)
+          || stripIPv4Mapped(String((ws as any)?._socket?.remoteAddress || ""))
+          || undefined,
+        // The PROXY's address, kept separately so a reader can still see the
+        // path a connection took and can disagree with the inference above.
+        // ⚠️ Never merge these two back into one field: the whole defect was
+        // that one field was answering two different questions.
+        peerAddress: (ws as any).__peerIp as string | undefined,
+        viaProxy: (ws as any).__viaProxy as boolean | undefined,
       };
       globalContext.registerExtension(extensionId, ws, meta);
       console.log(`[Server] Extension registered: extensionId=${extensionId} profile=${meta.profileName ?? '-'} totalConnected=${globalContext.listExtensions().length}`);
@@ -191,7 +201,37 @@ export async function createServerWithTools(options: Options): Promise<Server> {
 
   // Use provided WebSocketServer or create a new one
   const wss = providedWss || await createWebSocketServer();
-  wss.on("connection", (websocket) => {
+  wss.on("connection", (websocket, request?: any) => {
+    // ⛔ RESOLVE THE CLIENT BEHIND THE PROXY, AT CONNECTION TIME.
+    //
+    // The raw socket peer is NOT the browser's address whenever the extension
+    // arrives through the public reverse proxy (browser.pushbuild.com → nginx
+    // on server4 → here). In that case the peer is server4's LAN NIC, and
+    // describeExtension() then labelled the connection "browser on
+    // 192.168.0.109" — naming the PROXY as though it were the machine.
+    //
+    // That is not cosmetic. On 2026-08-17 `genomics` had been reporting
+    // 192.168.0.109 to ben for two days as Laura's MacBook's address and
+    // comparing it against a real IP for his own machine; neither of them
+    // could have caught it, because the tool states it as fact. I repeated the
+    // same claim to them from my own notes. `kind` is inferred from this
+    // address too, so a proxied desktop browser gets labelled `lan-remote`
+    // purely as an artifact of how it reached us.
+    //
+    // getEffectiveClientIP() already knows how to do this (rightmost XFF when
+    // the peer is a trusted proxy) — it was simply never applied here. Stash
+    // it on the socket now, because the upgrade request is not in scope inside
+    // handleBrowserMessage where EXTENSION_REGISTER is handled.
+    try {
+      if (request) {
+        const peer = stripIPv4Mapped(String((websocket as any)?._socket?.remoteAddress || ""));
+        const effective = stripIPv4Mapped(getEffectiveClientIP(request));
+        (websocket as any).__clientIp = effective || undefined;
+        (websocket as any).__peerIp = peer || undefined;
+        (websocket as any).__viaProxy = !!effective && !!peer && effective !== peer;
+      }
+    } catch { /* best-effort: identity degrades to the peer, never throws */ }
+
     console.log("[Server] New WebSocket connection established");
     connections.add(websocket);
     console.log(`[Server] Total active connections: ${connections.size}`);

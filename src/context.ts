@@ -29,12 +29,20 @@ export interface ExtensionConn {
     profileName?: string;
     hostname?: string;
     userAgent?: string;
-    // Peer address of the extension's websocket, captured server-side at
-    // registration. This is the ONE identity fact that needs no cooperation
-    // from the extension, and it is the one that separates a container from a
-    // desktop: a sidecar chromium connects from the docker bridge (172.x),
-    // ben's own Chrome from loopback or the office LAN address.
+    // The BROWSER's address, captured server-side at registration and resolved
+    // past a trusted reverse proxy (rightmost X-Forwarded-For). This is the ONE
+    // identity fact that needs no cooperation from the extension, and it is the
+    // one that separates a container from a desktop: a sidecar chromium
+    // connects from the docker bridge (172.x), ben's own Chrome from loopback
+    // or the office LAN address.
     remoteAddress?: string;
+    // The immediate socket peer. Differs from remoteAddress ONLY when the
+    // connection came through a trusted proxy, in which case this is the
+    // proxy. ⛔ Do not use it for identity — until 2026-08-17 remoteAddress
+    // held THIS value for proxied extensions, and the resulting label named
+    // server4's NIC as if it were Laura's MacBook.
+    peerAddress?: string;
+    viaProxy?: boolean;
   };
   registeredAt: number;
 }
@@ -90,6 +98,9 @@ export interface ExtensionIdentity {
   profileName?: string;
   hostname?: string;
   remoteAddress?: string;
+  /** The proxy the connection arrived through, when it did. Never identity. */
+  peerAddress?: string;
+  viaProxy?: boolean;
   connectedForMs: number;
   tabCount: number;
 }
@@ -264,7 +275,7 @@ export class Context {
   describeExtension(extensionId: string): ExtensionIdentity | undefined {
     const conn = this._extensions.get(extensionId);
     if (!conn) return undefined;
-    const { profileName, hostname, userAgent, remoteAddress } = conn.meta;
+    const { profileName, hostname, userAgent, remoteAddress, peerAddress, viaProxy } = conn.meta;
 
     const platform = userAgent
       ? (/Macintosh|Mac OS X/.test(userAgent) ? "macOS"
@@ -299,7 +310,15 @@ export class Context {
       kind === "container-sidecar" ? "container chromium (sidecar)"
         : kind === "local-desktop" ? "desktop browser on this host"
         : kind === "docker-host-desktop" ? "desktop browser on the docker HOST (not a container)"
-        : kind === "lan-remote" ? `browser on ${hostname || addr}`
+        // ⛔ For a proxied connection do NOT put an address in the label at
+        // all unless the extension told us its hostname. `addr` is now the
+        // real client, but a NAT'd machine still reports the NAT address, and
+        // a bare IP in a human-readable label gets quoted onward as though it
+        // identified the machine — which is exactly what happened with
+        // 192.168.0.109 for two days. Say "remote browser" and let the reader
+        // ask, rather than handing them a number that reads like an answer.
+        : kind === "lan-remote"
+          ? (hostname ? `browser on ${hostname}` : viaProxy ? "remote browser (via proxy — address not identifying)" : `browser on ${addr}`)
         : "unidentified browser",
       profileName ? `profile "${profileName}"` : undefined,
       platform,
@@ -313,6 +332,8 @@ export class Context {
       profileName,
       hostname,
       remoteAddress: remoteAddress || undefined,
+      peerAddress: peerAddress && peerAddress !== remoteAddress ? peerAddress : undefined,
+      viaProxy: viaProxy || undefined,
       connectedForMs: Date.now() - conn.registeredAt,
       tabCount: conn.tabIds.size,
     };
