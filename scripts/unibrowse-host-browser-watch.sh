@@ -66,7 +66,11 @@ ATC="${ATC_URL:-http://192.168.1.168:3030}"
 # exactly the outcome the script exists to prevent. Detection was never the gap;
 # single-recipient delivery was. `agents` owns the login flow and is the seat that
 # can act on this without Ben in the loop.
-NOTIFY="${UNIBROWSE_WATCH_NOTIFY:-unibrowse,agents}"
+# `-` not `:-` deliberately: an explicitly EMPTY UNIBROWSE_WATCH_NOTIFY means
+# "send nothing", which is what you want when exercising this script by hand.
+# With `:-` an empty value silently fell back to the default and every dry run
+# DM'd real recipients.
+NOTIFY="${UNIBROWSE_WATCH_NOTIFY-unibrowse,agents}"
 STATE="${UNIBROWSE_WATCH_STATE:-/tmp/unibrowse-host-browser-watch.state}"
 RELOADER="${UNIBROWSE_RELOADER:-/mnt/nas/data/code/unibrowse/scripts/unibrowse-extension-reload.mjs}"
 CDP_PORT="${UNIBROWSE_CDP_PORT:-9222}"
@@ -174,9 +178,38 @@ fi
 # close code — 1000/1001 means Chrome closed it deliberately, 1006 means the
 # socket vanished with no close frame. Those are different bugs, and until this
 # endpoint existed we had never once known which we were looking at.
-last="$(printf '%s' "$resp" | tr ',' '\n' | grep -E '"(code|kind|extensionId|connectedMs)"' | tail -8 | tr '\n' ' ')"
+#
+# ⚠️ Parse it properly. The first version split the JSON on commas and grepped
+# the fragments, which produced an unreadable smear with the timestamp dropped —
+# and the timestamp is the field that tells you WHEN to look in the heartbeat.
+last="$(printf '%s' "$resp" | python3 -c "$(cat <<'PY'
+import sys, json, datetime
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("(could not parse /extensions)")
+    raise SystemExit
+rows = d.get("recentDisconnects") or []
+if not rows:
+    print("(none recorded)")
+    raise SystemExit
+c = rows[-1]
+at = c.get("at")
+when = datetime.datetime.fromtimestamp(at / 1000).strftime("%Y-%m-%d %H:%M:%S") if at else "unknown time"
+print("%s  ext=%s  kind=%s  close_code=%s  had_been_connected=%smin" % (
+    when, c.get("extensionId"), c.get("kind"), c.get("code"),
+    round(c.get("connectedMs", 0) / 60000)))
+PY
+)" 2>/dev/null)"
+[ -n "$last" ] || last="(unavailable)"
+
+# ⚠️ MUST match the HOST Chrome specifically. `pgrep -f -- '--extension-process'`
+# also matches the CONTAINER chromium — the host process table lists a
+# container's processes too — so it reported "Chrome is running" on a host where
+# only the sidecar was alive, which points the reader at a UI repair for a
+# browser that is not there. Key on the real binary path plus ben's profile.
 chrome_running="no"
-pgrep -f -- '--extension-process' >/dev/null 2>&1 && chrome_running="yes"
+pgrep -f -- '^/opt/google/chrome/chrome' >/dev/null 2>&1 && chrome_running="yes"
 
 echo "[watch] HOST BROWSER MISSING. chrome_running=$chrome_running last_disconnect: $last"
 
@@ -244,7 +277,18 @@ If Chrome is running, the BROWSER is fine and the EXTENSION's socket dropped. Op
 · Prefer ui_eye_press (AT-SPI) over ui_eye_click (coordinates). If XTEST keyboard does not reach Chrome, XTEST mouse is suspect for the same reason, and a coordinate click that lands nowhere still returns success.
 · ui-eye refuses to act while the operator is touching the keyboard. Check the real idle time (xprintidle) before believing that guard — automation input resets it too, so a refusal may be the last agent's residue rather than Ben.
 
-Evidence for the still-unknown root cause: curl $SERVER/extensions | jq .recentDisconnects
+⭐ READ THE KEEPALIVE HEARTBEAT — THIS IS THE DIAGNOSTIC, AND IT WORKS WHILE THE EXTENSION IS DEAD:
+  strings \"\$HOME/.config/google-chrome/Profile 1/Local Extension Settings/pikjoohganfooeancifkoccakcocchmk\"/*.log | grep swHeartbeat | tail -1
+⚠️ \"Profile 1\", NOT \"Default\". The subdirectory is Chrome's own extension id, not the ext_… handle. \`at\` is epoch ms in scientific notation (1.7e+12) — float parse, not int.
+
+WHAT THE RECORD MEANS. The sw-keepalive alarm fires every 30s and is supposed to force a reconnect whenever the socket is dead, so an outage lasting minutes means recovery ran and failed, not that nothing tried:
+  · 'enter' with no matching 'probed'            → the handler HUNG (leaves no trace anywhere else)
+  · 'threw'                                       → it errored (Chrome swallows async listener throws silently)
+  · 'probed' wsLive:false repeating, no 'reconnected' → autoConnect is failing
+  · no records at all across the dead window      → the alarm genuinely stopped firing
+⚠️ This tells you WHICH path failed, not why it failed identically N times. One dead tick and sixty dead ticks have different explanations and the record distinguishes the second only by repetition — count them.
+
+Evidence on the server side: curl $SERVER/extensions | jq .recentDisconnects
 Close code 1001 = clean teardown by Chrome; 1006 = socket vanished with no close frame. Different bugs."
   echo "down:$now" > "$STATE"
 fi
