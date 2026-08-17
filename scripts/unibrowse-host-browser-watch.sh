@@ -58,7 +58,15 @@ set -uo pipefail
 
 SERVER="${UNIBROWSE_SERVER:-http://localhost:9010}"
 ATC="${ATC_URL:-http://192.168.1.168:3030}"
-NOTIFY="${UNIBROWSE_WATCH_NOTIFY:-unibrowse}"
+# ⚠️ COMMA-SEPARATED, AND `agents` MUST STAY IN IT. Until 2026-08-16 this alerted
+# only `unibrowse`. That is a single point of failure with no redundancy: on
+# 2026-08-16 the extension dropped at 20:57, this script detected it correctly and
+# alerted on schedule — into a session that was mid-compaction. Nobody saw it, and
+# the outage was discovered 21 minutes later by Ben's `!login` failing, which is
+# exactly the outcome the script exists to prevent. Detection was never the gap;
+# single-recipient delivery was. `agents` owns the login flow and is the seat that
+# can act on this without Ben in the loop.
+NOTIFY="${UNIBROWSE_WATCH_NOTIFY:-unibrowse,agents}"
 STATE="${UNIBROWSE_WATCH_STATE:-/tmp/unibrowse-host-browser-watch.state}"
 RELOADER="${UNIBROWSE_RELOADER:-/mnt/nas/data/code/unibrowse/scripts/unibrowse-extension-reload.mjs}"
 CDP_PORT="${UNIBROWSE_CDP_PORT:-9222}"
@@ -67,6 +75,23 @@ QUIET=0
 [ "${1:-}" = "--quiet" ] && QUIET=1
 
 log() { [ "$QUIET" -eq 1 ] || echo "$@"; }
+
+# notify <priority> <subject> <content>
+#
+# Fans out to every recipient in $NOTIFY. Builds the JSON in python3 rather than
+# by hand: the content carries newlines, quotes and shell-expanded values, and a
+# hand-built body silently produces a malformed request that the broker rejects
+# with a 4xx nobody reads — an alert that was never delivered is indistinguishable
+# from an outage that never happened.
+notify() {
+  local pri="$1" subj="$2" body="$3" who payload
+  local IFS=,
+  for who in $NOTIFY; do
+    [ -n "$who" ] || continue
+    payload="$(PRI="$pri" SUBJ="$subj" BODY="$body" WHO="$who" python3 -c 'import json,os; print(json.dumps({"to":os.environ["WHO"],"from":"unibrowse-watch","priority":os.environ["PRI"],"subject":os.environ["SUBJ"],"content":os.environ["BODY"]}))')" || continue
+    curl -s -m 10 -X POST "$ATC/messages" -H 'Content-Type: application/json' -d "$payload" >/dev/null 2>&1
+  done
+}
 
 resp="$(curl -s -m 10 "$SERVER/extensions" 2>/dev/null)"
 
@@ -77,8 +102,8 @@ if [ -z "$resp" ]; then
   echo "[watch] mcp-server unreachable at $SERVER — NOT a browser problem"
   # Only alert once per outage.
   if [ "$(cat "$STATE" 2>/dev/null)" != "server-down" ]; then
-    curl -s -m 10 -X POST "$ATC/messages" -H 'Content-Type: application/json' \
-      -d "{\"to\":\"$NOTIFY\",\"from\":\"unibrowse-watch\",\"priority\":\"warning\",\"subject\":\"mcp-server unreachable\",\"content\":\"GET $SERVER/extensions returned nothing. This is the SERVER, not the browser — do not go clicking Reload in Chrome. Check: docker compose ps mcp-server\"}" >/dev/null 2>&1
+    notify warning "mcp-server unreachable" \
+      "GET $SERVER/extensions returned nothing. This is the SERVER, not the browser — do not go clicking Reload in Chrome. Check: docker compose ps mcp-server"
     echo "server-down" > "$STATE"
   fi
   exit 2
@@ -94,8 +119,8 @@ present="$(printf '%s' "$resp" | grep -o '"hostBrowserPresent":[a-z]*' | cut -d:
 if [ "$present" != "true" ] && [ "$present" != "false" ]; then
   echo "[watch] /extensions did not report hostBrowserPresent — endpoint missing (server older than this script?). NOT concluding anything about the browser."
   if [ "$(cat "$STATE" 2>/dev/null)" != "no-endpoint" ]; then
-    curl -s -m 10 -X POST "$ATC/messages" -H 'Content-Type: application/json' \
-      -d "{\"to\":\"$NOTIFY\",\"from\":\"unibrowse-watch\",\"priority\":\"info\",\"subject\":\"watchdog cannot probe — /extensions missing\",\"content\":\"GET $SERVER/extensions answered but carried no hostBrowserPresent field. The running mcp-server predates that endpoint; deploy the build that adds it. Reporting NOTHING about browser health until then — this is 'cannot tell', not 'down'.\"}" >/dev/null 2>&1
+    notify info "watchdog cannot probe — /extensions missing" \
+      "GET $SERVER/extensions answered but carried no hostBrowserPresent field. The running mcp-server predates that endpoint; deploy the build that adds it. Reporting NOTHING about browser health until then — this is 'cannot tell', not 'down'."
     echo "no-endpoint" > "$STATE"
   fi
   exit 3
@@ -103,7 +128,44 @@ fi
 
 if [ "$present" = "true" ]; then
   log "[watch] ok — host browser attached"
-  [ "$(cat "$STATE" 2>/dev/null)" = "down" ] && log "[watch] recovered"
+  # Announce RECOVERY to everyone who got the outage alert. Without this the
+  # alert is a dead end: whoever was told "down" has no way to learn it came back
+  # except by re-probing, and on 2026-08-16 that closing message had to be sent by
+  # hand. `down*` matches both the current `down:<epoch>` form and the bare `down`
+  # written by versions of this script before 2026-08-16.
+  case "$(cat "$STATE" 2>/dev/null || true)" in
+    down*)
+      log "[watch] recovered"
+      # ⚠️ Build the roster in its own step with a QUOTED heredoc. The first
+      # version inlined `python3 -c '…'` inside a $( ) inside a double-quoted
+      # argument; bash ate the escaped quotes in the f-string and the section
+      # arrived EMPTY in the delivered message while the script still exited 0.
+      # A formatting bug in an alert body is invisible from the sending side —
+      # read one delivered message before believing any of this works.
+      conn_summary="$(curl -s -m 10 "$SERVER/extensions" 2>/dev/null | python3 -c "$(cat <<'PY'
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("(could not parse /extensions)")
+    raise SystemExit
+print("Connected now:")
+for c in d.get("connected", []):
+    up = round(c.get("connectedForMs", 0) / 60000)
+    print("  %s  kind=%s  tabs=%s  up=%smin" % (
+        c.get("extensionId"), c.get("kind"), c.get("tabCount"), up))
+PY
+)" 2>/dev/null)"
+      [ -n "$conn_summary" ] || conn_summary="(roster unavailable)"
+
+      notify info "host browser is BACK on office" \
+"A browser we own is registered again and !login can proceed.
+
+⚠️ This says a browser is ATTACHED, never that sign-in works — the container sidecar requests magic links happily and then hangs forever consuming one. Confirm with an actual round-trip (browser_get_version pinned to the extensionId) before telling anyone it is fixed.
+
+$conn_summary"
+      ;;
+  esac
   echo "up" > "$STATE"
   exit 0
 fi
@@ -139,8 +201,8 @@ if [ -x "$RELOADER" ] || [ -f "$RELOADER" ]; then
     recheck="$(curl -s -m 10 "$SERVER/extensions" 2>/dev/null | grep -o '"hostBrowserPresent":[a-z]*' | cut -d: -f2)"
     if [ "$recheck" = "true" ]; then
       echo "[watch] SELF-HEALED via CDP — host browser reconnected"
-      curl -s -m 10 -X POST "$ATC/messages" -H 'Content-Type: application/json' \
-        -d "{\"to\":\"$NOTIFY\",\"from\":\"unibrowse-watch\",\"priority\":\"info\",\"subject\":\"host browser self-healed\",\"content\":\"The extension had dropped and was revived over CDP without anyone clicking. Last disconnect: $last\"}" >/dev/null 2>&1
+      notify info "host browser self-healed" \
+        "The extension had dropped and was revived over CDP without anyone clicking. Last disconnect: $last"
       echo "up" > "$STATE"
       exit 0
     fi
@@ -150,16 +212,41 @@ if [ -x "$RELOADER" ] || [ -f "$RELOADER" ]; then
   fi
 fi
 
-# Alert once per outage, not every five minutes.
-if [ "$(cat "$STATE" 2>/dev/null)" != "down" ]; then
-  curl -s -m 10 -X POST "$ATC/messages" -H 'Content-Type: application/json' \
-    -d "$(cat <<JSON
-{"to":"$NOTIFY","from":"unibrowse-watch","priority":"warning",
- "subject":"Host browser extension is DOWN on office",
- "content":"No non-sidecar, non-lan-remote extension is connected, so claude-login-auto:resolve_host_browser will fail.\n\nChrome process running: $chrome_running\nLast disconnect: $last\n\nIf Chrome is running, the BROWSER is fine and the EXTENSION dropped — opening Chrome changes nothing and browser_reload_extension cannot revive a socket that is already gone. The repair is a click on the blue Reload on the unibrowse card at chrome://extensions.\n\nAgent path: ui_eye_click host=office x=6509 y=1603 expect_window='Extensions - Google Chrome' (re-screenshot first; coords drift if the window moved). ui-eye REFUSES to click while Ben is at the keyboard — that guard is correct, wait it out or ask him.\n\nEvidence for the still-unknown root cause: curl $SERVER/extensions | jq .recentDisconnects"}
-JSON
-)" >/dev/null 2>&1
-  echo "down" > "$STATE"
+# Alert on the first tick of an outage, then RE-ALERT every 30 minutes while it
+# lasts.
+#
+# ⚠️ It used to alert exactly once per outage and never again. That is only
+# correct if the first alert is guaranteed to be read, and on 2026-08-16 it was
+# not — the one alert landed in a compacting session and the outage ran 31 min
+# until Ben tripped over it. One missed message must not equal permanent silence
+# on a service four hosts depend on. 30 min is chosen to be noisy enough to
+# survive a missed read and quiet enough not to become the thing people filter.
+prev="$(cat "$STATE" 2>/dev/null || true)"
+now="$(date +%s)"
+since="${prev#down:}"
+case "$prev" in
+  down:*) [ $(( now - since )) -ge 1800 ] && do_alert=1 || do_alert=0 ;;
+  *)      do_alert=1 ;;
+esac
+
+if [ "$do_alert" -eq 1 ]; then
+  notify warning "Host browser extension is DOWN on office" \
+"No browser we own is connected (container sidecar and lan-remote do not count), so claude-login-auto:resolve_host_browser will fail and every !login returns 0 hosts.
+
+Chrome process running: $chrome_running
+Last disconnect: $last
+
+If Chrome is running, the BROWSER is fine and the EXTENSION's socket dropped. Opening Chrome changes nothing, and browser_reload_extension cannot help — it travels over the socket that is already gone. The repair is the Reload control on the unibrowse card at chrome://extensions.
+
+⛔ MEASURED ON OFFICE 2026-08-16, BEFORE YOU PLAN A UI REPAIR:
+· There is NO WORKING KEYBOARD PATH to that Chrome. ui_eye_type fails with AttributeError: keycode_to_keysym_list; xdotool key/type exits 0 and delivers nothing (verified by screenshot, X session is genuinely x11 with XTEST present). Anything that types a URL will fail, and xdotool fails SILENTLY.
+· chrome://extensions therefore cannot be reached by typing, and NOT from the command line either — google-chrome 'chrome://extensions/' reports 'Opening in existing browser session' and then opens a plain New Tab, because Chrome blocks chrome:// from argv. Route: click the puzzle-piece Extensions toolbar icon, then 'Manage extensions'.
+· Prefer ui_eye_press (AT-SPI) over ui_eye_click (coordinates). If XTEST keyboard does not reach Chrome, XTEST mouse is suspect for the same reason, and a coordinate click that lands nowhere still returns success.
+· ui-eye refuses to act while the operator is touching the keyboard. Check the real idle time (xprintidle) before believing that guard — automation input resets it too, so a refusal may be the last agent's residue rather than Ben.
+
+Evidence for the still-unknown root cause: curl $SERVER/extensions | jq .recentDisconnects
+Close code 1001 = clean teardown by Chrome; 1006 = socket vanished with no close frame. Different bugs."
+  echo "down:$now" > "$STATE"
 fi
 
 exit 1

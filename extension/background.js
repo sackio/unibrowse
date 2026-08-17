@@ -7568,36 +7568,100 @@ async function autoConnect() {
   }
 }
 
+// ── sw-keepalive heartbeat, written to disk ──────────────────────────────────
+//
+// ⛔ WHY THIS EXISTS. On 2026-08-16 the socket to mcp-server was dead for 31
+// minutes — roughly 62 consecutive sw-keepalive ticks, every one of which
+// should have reconnected it (see the handler below: it forces a reconnect
+// whenever the socket is dead). It was the FOURTH such outage, and after all
+// four we still could not say which of these happened:
+//     · the alarm stopped firing altogether
+//     · it fired and got stuck partway through the handler
+//     · it fired, completed, and decided not to act
+// Those are three different bugs with three different fixes, and nothing in
+// Chrome records which one we are looking at. The service-worker console is
+// useless here: it is cleared by the reload that ends the outage, so the
+// evidence is destroyed by the repair.
+//
+// chrome.storage.local survives BOTH service-worker eviction and an extension
+// reload, so this makes the next occurrence readable after the fact instead of
+// argued about. ⭐ A record written at 'enter' with no matching outcome record
+// is the signal that the handler HUNG rather than failed — a hang leaves no
+// error anywhere else.
+//
+// READING IT WHEN THE EXTENSION IS DEAD (the case that matters — you cannot ask
+// a dead worker anything):
+//   strings ~/.config/google-chrome/Default/'Local Extension Settings'/<extid>/*.log \
+//     | grep -o '"swHeartbeat".*'
+// The entries are {at, stage, …} with `at` in epoch ms.
+const HEARTBEAT_KEY = 'swHeartbeat';
+const HEARTBEAT_MAX = 80; // ~20 min of history at 2 records per 30s tick
+
+async function recordHeartbeat(stage, extra = {}) {
+  try {
+    const stored = await chrome.storage.local.get(HEARTBEAT_KEY);
+    const ring = Array.isArray(stored?.[HEARTBEAT_KEY]) ? stored[HEARTBEAT_KEY] : [];
+    ring.push({ at: Date.now(), stage, ...extra });
+    while (ring.length > HEARTBEAT_MAX) ring.shift();
+    await chrome.storage.local.set({ [HEARTBEAT_KEY]: ring });
+  } catch (err) {
+    // Instrumentation must NEVER break the recovery path it is instrumenting.
+    // A failed write costs us evidence; a thrown write would cost us the
+    // reconnect, which is the whole point of the handler.
+    console.warn('[Background] heartbeat write failed (ignored):', err?.message || err);
+  }
+}
+
 // Alarm listener must be registered synchronously at top level so Chrome wakes
 // the service worker when the alarm fires (even after suspension).
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== 'sw-keepalive') return;
   console.log('[Background] sw-keepalive alarm fired — service worker awake');
 
+  // Written BEFORE the first await below, so that a hang in isConnected() —
+  // the failure this whole record exists to catch — still leaves a trace.
+  await recordHeartbeat('enter');
+
   // Always check the ACTUAL WebSocket state, not controller.state.connected. The
   // in-memory state is set optimistically in connect() before the async ws.connect()
   // resolves, so it can stay `true` after a silent failure — which would block the
   // alarm from ever recovering. isConnected() is async (offscreen round-trip), so
   // it MUST be awaited — otherwise wsLive is a (truthy) Promise and we never recover.
-  const wsLive = await controller.ws.isConnected();
+  // ⚠️ Everything below runs inside try/catch ONLY so the failure is recorded.
+  // An async listener that throws is swallowed by Chrome with nothing logged
+  // anywhere a later reader can find — which is indistinguishable from the
+  // alarm never having fired, and is one of the three cases we could not tell
+  // apart across four outages.
+  try {
+    const wsLive = await controller.ws.isConnected();
 
-  // Default to reconnecting unless storage explicitly says no. This recovers from
-  // session-storage being cleared or never written.
-  const { swShouldReconnect } = await chrome.storage.session.get('swShouldReconnect');
-  const shouldReconnect = swShouldReconnect !== false;
+    // Default to reconnecting unless storage explicitly says no. This recovers from
+    // session-storage being cleared or never written.
+    const { swShouldReconnect } = await chrome.storage.session.get('swShouldReconnect');
+    const shouldReconnect = swShouldReconnect !== false;
 
-  // Reconcile in-memory state with reality.
-  controller.state.connected = wsLive;
+    // Reconcile in-memory state with reality.
+    controller.state.connected = wsLive;
 
-  if (shouldReconnect && !wsLive) {
-    console.log('[Background] Alarm wake: WebSocket dead, forcing reconnect…');
-    autoConnectAttempted = false; // clear any stuck flag
-    await autoConnect();
-  }
+    await recordHeartbeat('probed', { wsLive, shouldReconnect });
 
-  // Restart keepalive interval if the service worker was suspended and it stopped.
-  if (wsLive && !controller.keepaliveInterval) {
-    controller.startKeepalive();
+    if (shouldReconnect && !wsLive) {
+      console.log('[Background] Alarm wake: WebSocket dead, forcing reconnect…');
+      autoConnectAttempted = false; // clear any stuck flag
+      await autoConnect();
+      // Re-probe rather than assuming autoConnect() worked: it resolves without
+      // throwing on a failed connect, so "we called it" and "it connected" are
+      // different claims and only the second one matters.
+      await recordHeartbeat('reconnected', { wsLive: await controller.ws.isConnected() });
+    }
+
+    // Restart keepalive interval if the service worker was suspended and it stopped.
+    if (wsLive && !controller.keepaliveInterval) {
+      controller.startKeepalive();
+    }
+  } catch (err) {
+    await recordHeartbeat('threw', { error: String(err?.message || err) });
+    console.error('[Background] sw-keepalive handler threw:', err);
   }
 });
 
