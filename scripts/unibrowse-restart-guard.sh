@@ -1,13 +1,39 @@
 #!/usr/bin/env bash
-# unibrowse-restart-guard — show what a mcp-server restart would destroy,
-# BEFORE it is destroyed.
+# unibrowse-restart-guard — show who a mcp-server restart will disrupt,
+# BEFORE you restart.
+#
+# ⛔ CORRECTION, 2026-08-17, MEASURED AFTER THE FIRST VERSION SHIPPED:
+# A RESTART DOES NOT DESTROY TAB STATE. The premise below was wrong, and I had
+# already told four seats it was true.
+#
+# Measured across an actual restart: browser_list_attached_tabs returned the
+# SAME 9 tabs afterwards, with reservations carrying their PRE-restart claim
+# times (quantum-navigator 08-13, ha 13:02, genomics 13:07). Attachments and
+# reservations live EXTENSION-side and survive the server dying. What resets is
+# the SERVER's routing bookkeeping — /extensions reported tabCount=0 for all
+# four extensions while the extension list still showed 9 tabs.
+#
+# ⇒ The real cost of a restart is that tabTarget routing degrades until each
+# extension re-announces its tabs, NOT lost form state. A filled, unsubmitted
+# form survives a restart. It does NOT survive a 1006 socket drop, which is
+# what actually destroyed genomics' form on 08-16 — a different failure that
+# this script cannot see and cannot prevent.
+#
+# ⭐ The general error: I inferred "restart destroys attachments" from the
+# server's own tabCount going to zero, and never checked the extension's view.
+# Server-side bookkeeping resetting is not the same as the thing it books
+# keeping resetting.
+#
+# The script is still worth running before a restart — the tab list tells you
+# who is mid-task so you can ask them — but read it as "who will notice", not
+# "what will be lost".
 #
 # WHY THIS EXISTS
 # ---------------
-# `docker compose restart mcp-server` resets every attached tab and every tab
-# reservation, LAN-wide. That cost is invisible at the moment you decide to pay
-# it: nothing in the restart command, and nothing anyone runs beforehand, says
-# how many seats are mid-task or what is in those tabs.
+# `docker compose restart mcp-server` drops every seat's tabTarget routing
+# until extensions re-announce. That cost is invisible at the moment you decide
+# to pay it: nothing in the restart command, and nothing anyone runs
+# beforehand, says how many seats are mid-task.
 #
 # It bit twice in two days, both times on the same tab:
 #   2026-08-16  a 1006 drop on Laura's MacBook destroyed a filled, unsubmitted
@@ -16,14 +42,15 @@
 #               re-filled form was again sitting unsubmitted, waiting on a
 #               human. `genomics` had to catch it and ask me to hold.
 #
-# ⛔ A filled-but-unsubmitted form lives ONLY in the tab. A restart destroys it
-# with no error, no log line, and no way to tell afterwards that it happened —
-# the tab simply comes back detached and empty-handed. The agent that owns it
-# finds out by re-reading the page, if it thinks to.
+# ⚠️ Note what the second entry actually was, now that the premise is corrected:
+# a hold I asked for on a false belief. The form was never at risk from the
+# restart. `genomics` was right to flag it and I was wrong about why.
 #
-# This script cannot preserve that state. It makes the cost VISIBLE before the
-# decision, which is the half that is actually mine to fix — a network drop is
-# not preventable from here, but a planned restart absolutely is.
+# ⛔ A filled-but-unsubmitted form lives ONLY in the tab, and a 1006 SOCKET DROP
+# destroys it with no error, no log line, and no way to tell afterwards — the
+# tab comes back detached and empty-handed, and the owning agent finds out by
+# re-reading the page, if it thinks to. That failure is real; it is just not
+# the one a restart causes, and this script cannot see or prevent it.
 #
 # ⚠️ WHAT IT CANNOT TELL YOU. There is no "this tab has unsaved work" flag
 # today — reservations live extension-side and carry an owner, not a state. So
@@ -37,7 +64,7 @@
 #   unibrowse-restart-guard.sh            # report; exit 1 if anything is attached
 #   unibrowse-restart-guard.sh --quiet    # only output when something is at risk
 #
-# Exit 0 = nothing attached, restart is free.
+# Exit 0 = server tracks nothing attached (see caveat — not proof).
 # Exit 1 = tabs are attached; read the list and ask their owners first.
 # Exit 2 = server unreachable (so the restart is moot, or it is already down).
 
@@ -69,11 +96,13 @@ conns = d.get("connected", []) or []
 total = sum(int(c.get("tabCount") or 0) for c in conns)
 
 if total == 0:
-    print("[guard] no attached tabs across %d connected browser(s) — a restart costs nothing." % len(conns))
+    print("[guard] server tracks no attached tabs across %d connected browser(s)." % len(conns))
+    print("        ⚠️ This is the SERVER's view and it reads 0 immediately after a restart even")
+    print("        while extensions still hold tabs. Confirm with browser_list_attached_tabs.")
     raise SystemExit(0)
 
-print("⛔ A RESTART WOULD DETACH AT LEAST %d TAB(S) across %d browser(s):" % (total, len(conns)))
-print("⚠️  AT LEAST — this is the SERVER's view (conn.tabIds), which undercounts.")
+print("⚠️  %d SEAT-VISIBLE TAB(S) across %d browser(s) — tabTarget routing degrades for these:" % (total, len(conns)))
+print("⚠️  A FLOOR — this is the SERVER's view (conn.tabIds), which undercounts.")
 print("   Measured 2026-08-17: this said 3 while browser_list_attached_tabs said 8.")
 print("   The server only knows about tabs it saw TAB_ATTACHED for; anything attached")
 print("   before it learned of the extension is missing here. Treat the number as a")
@@ -86,12 +115,13 @@ for c in conns:
     print("  %-46s %-20s %2d tab(s)  connected %smin"
           % (c.get("extensionId"), c.get("kind"), n, up))
 print("")
-print("Every one of those loses its attachment AND its reservation. Anything typed into a")
-print("form and not submitted is destroyed silently — no error, no log line, and the owning")
-print("agent will not be told.")
+print("⛔ These do NOT lose their tab state — attachments and reservations live extension-side")
+print("and survive a restart (measured 2026-08-17). What degrades is the SERVER's routing")
+print("bookkeeping until each extension re-announces. A filled, unsubmitted form SURVIVES a")
+print("restart; it does not survive a 1006 socket drop, which is a different failure.")
 print("")
-print("⭐ Nothing here marks a tab as carrying unsaved work, so this list CANNOT tell you a")
-print("   restart is safe. Ask the owners. Reservation owners are in:")
+print("⭐ Read this as WHO WILL NOTICE, not what will be lost. Ask the owners if any are")
+print("   mid-flow. Reservation owners are in:")
 print("     browser_list_attached_tabs  →  tabs[].reservation.owner")
 raise SystemExit(1)
 PY

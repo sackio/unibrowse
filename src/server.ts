@@ -222,10 +222,34 @@ export async function createServerWithTools(options: Options): Promise<Server> {
     // the peer is a trusted proxy) — it was simply never applied here. Stash
     // it on the socket now, because the upgrade request is not in scope inside
     // handleBrowserMessage where EXTENSION_REGISTER is handled.
+    // ⛔ AND CONSULT X-FORWARDED-FOR ONLY FOR AN EXPLICITLY-CONFIGURED PROXY.
+    //
+    // getEffectiveClientIP() trusts the whole docker-bridge range, which is
+    // correct where it was written (auth gating) and WRONG here. Identity is a
+    // different security question: trusting the bridge means any container can
+    // set X-Forwarded-For and choose its own `remoteAddress` — and therefore
+    // its own `kind`, which claude-login-auto gates on. Before this code
+    // existed, `kind` derived from the socket peer, which cannot be forged.
+    // I introduced that regression and `agents` surfaced it by asking whether
+    // the re-inference could change what their allowlist sees.
+    //
+    // So: gate on UNIBROWSE_TRUSTED_PROXIES membership only. That is the set
+    // that actually fronts browser.pushbuild.com (192.168.0.109 = server4's
+    // NIC, 192.168.1.168), which is the case this exists for, and it leaves
+    // every direct LAN/loopback/bridge connection deriving identity from the
+    // unspoofable peer exactly as before.
     try {
       if (request) {
         const peer = stripIPv4Mapped(String((websocket as any)?._socket?.remoteAddress || ""));
-        const effective = stripIPv4Mapped(getEffectiveClientIP(request));
+        const configured = new Set(
+          (process.env.UNIBROWSE_TRUSTED_PROXIES || "")
+            .split(",")
+            .map((s) => stripIPv4Mapped(s.trim()))
+            .filter(Boolean),
+        );
+        const effective = configured.has(peer)
+          ? stripIPv4Mapped(getEffectiveClientIP(request))
+          : peer;
         (websocket as any).__clientIp = effective || undefined;
         (websocket as any).__peerIp = peer || undefined;
         (websocket as any).__viaProxy = !!effective && !!peer && effective !== peer;
