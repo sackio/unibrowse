@@ -300,17 +300,37 @@ If Chrome is running, the BROWSER is fine and the EXTENSION's socket dropped. Op
 · ui-eye refuses to act while the operator is touching the keyboard. Check the real idle time (xprintidle) before believing that guard — automation input resets it too, so a refusal may be the last agent's residue rather than Ben.
 
 ⭐ READ THE KEEPALIVE HEARTBEAT — THIS IS THE DIAGNOSTIC, AND IT WORKS WHILE THE EXTENSION IS DEAD. Run ON THE OFFICE HOST as ben:
-  D=\"\$HOME/.config/google-chrome/Profile 1/Local Extension Settings/pikjoohganfooeancifkoccakcocchmk\"
-  strings \"\$D\"/*.log | grep -o '\\[{\"at\".*' | tail -1
-⚠️ Grep for the VALUE (\`[{\"at\"\`), NOT the key: leveldb stores key and value as separate strings, so \`grep swHeartbeat\` prints the word 'swHeartbeat' and nothing else once the ring grows. Trim to the last '}' before parsing — the tail is usually a partial record.
+⚠️ PASTE THE BLOCK BELOW FLUSH-LEFT, EXACTLY AS SHOWN. The python body and the closing EOF must start at column 0 — indenting the body raises IndentationError and an indented EOF never terminates the heredoc.
+
+python3 - <<'EOF'
+import re, glob, json, datetime, os
+D = os.path.expanduser('~/.config/google-chrome/Profile 1/Local Extension Settings/pikjoohganfooeancifkoccakcocchmk')
+recs = {}
+for f in glob.glob(D + '/*.log') + glob.glob(D + '/*.ldb'):
+    for m in re.finditer(rb'\\{\"at\":[^}]*\\}', open(f, 'rb').read()):
+        try: r = json.loads(m.group().decode('utf8', 'replace'))
+        except Exception: continue
+        recs[(r['at'], r.get('stage'))] = r
+for k in sorted(recs)[-10:]:
+    r = recs[k]
+    extra = {a: b for a, b in r.items() if a not in ('at', 'stage')}
+    print(datetime.datetime.fromtimestamp(r['at']/1000).strftime('%F %T.%f')[:-3], r.get('stage'), extra or '')
+EOF
+
+⛔ CORRECTED 2026-08-18 — THE COMMAND PREVIOUSLY PRINTED HERE WAS WRONG AND FAILED TOWARD 'DEAD'. It was \`strings \"\$D\"/*.log | grep -o '\\[{\"at\".*' | tail -1\`, i.e. the LAST RING FRAGMENT IN STREAM ORDER. Two independent defects: (a) it read only *.log, never *.ldb; (b) \`strings\` splits on non-printable bytes, so the newest ring is often NOT the last matching line — the fragment it returns can be an OLD one. Measured on office during occurrence #6: it reported a last tick of 16:06:14 while the extension was HEALTHY and ticking at 16:22. ⇒ IT CAN MAKE A WORKING EXTENSION LOOK FROZEN, and an agent following this runbook would then reload a healthy extension. Extract INDIVIDUAL records and sort them BY TIME; never trust stream order.
+⚠️ Do NOT \`grep swHeartbeat\`: leveldb stores key and value as separate strings, so that prints the word 'swHeartbeat' and nothing else.
 ⚠️ \"Profile 1\", NOT \"Default\". The subdirectory is Chrome's own extension id, not the ext_… handle. \`at\` is epoch ms in scientific notation (1.7e+12) — float parse, not int.
 
 WHAT THE RECORD MEANS. The sw-keepalive alarm fires every 30s and is supposed to force a reconnect whenever the socket is dead, so an outage lasting minutes means recovery ran and failed, not that nothing tried:
   · 'enter' with no matching 'probed'            → the handler HUNG (leaves no trace anywhere else)
   · 'threw'                                       → it errored (Chrome swallows async listener throws silently)
   · 'probed' wsLive:false repeating, no 'reconnected' → autoConnect is failing
-  · no records at all across the dead window      → the alarm genuinely stopped firing
+  · records simply STOP at the last healthy tick  → ⭐ THIS IS THE KNOWN BUG (occurrences #5 and #6, 2026-08-17 and -18). Chrome stops starting the service worker for ANY registered event. Our code never runs; the extension stays installed and enabled.
 ⚠️ This tells you WHICH path failed, not why it failed identically N times. One dead tick and sixty dead ticks have different explanations and the record distinguishes the second only by repetition — count them.
+
+⭐ CONFIRM THE KNOWN BUG WITH THE ALARM STORE — this separates 'the alarm was lost' from 'the alarm was scheduled and never delivered':
+  strings \"\$HOME/.config/google-chrome/Profile 1/Extension State\"/*.log \"\$HOME/.config/google-chrome/Profile 1/Extension State\"/*.ldb | grep -o '\"name\":\"sw-keepalive\"[^]]*scheduledTime\":[0-9.e+]*' | tail -3
+Decode scheduledTime the same way (epoch ms, scientific notation). In BOTH occurrences the alarm was still registered with persistAcrossSessions:true and a scheduledTime that had already passed — i.e. Chrome scheduled the next tick and never delivered it. A scheduledTime in the FUTURE that keeps advancing means the worker is alive and this is NOT the known bug.
 
 Evidence on the server side, FROM THE OFFICE HOST (\$SERVER here was $SERVER; 'localhost' is host-relative, so this refuses from inside a container):
   curl -s http://localhost:9010/extensions | jq .recentDisconnects
