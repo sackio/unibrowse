@@ -315,6 +315,14 @@ def repair(threshold_ms, dry_run):
         log("  DRY RUN: would press Reload -- stopping here, nothing was pressed")
         return False
 
+    # Last-moment re-check: the toolbar -> popup -> page sequence above takes
+    # several seconds, and THIS is the press that actually causes an outage.
+    # If the extension reconnected while we were navigating, pressing Reload
+    # would drop a working socket.
+    if host_browser_present():
+        log("  host browser reconnected mid-sequence -- NOT pressing Reload")
+        return False
+
     require_idle(threshold_ms, "before Reload press")
     press(node, "unibrowse card Reload")
     return True
@@ -347,6 +355,24 @@ def main():
     attempt = 0
     while True:
         attempt += 1
+
+        # ⛔ RE-CHECK EVERY ITERATION, not just at startup. While we sit here
+        # waiting for the desk to go idle, the extension can come back by some
+        # other route -- most likely a human noticing and clicking Reload
+        # themselves, which is exactly what happened on 2026-08-19. A version
+        # that only checked at startup stayed armed against a now-HEALTHY
+        # extension and would have reloaded it the moment the operator stepped
+        # away, manufacturing the very outage it exists to repair. The failure
+        # direction is toward ACTING, so it must be re-tested, not assumed.
+        if not args.force:
+            still_down = host_browser_present()
+            if still_down:
+                log("host browser came back by other means -- standing down, nothing to repair")
+                return 0
+            if still_down is None:
+                log("server probe failed; refusing to drive the UI on an unknown state")
+                return 2
+
         try:
             ms = idle_ms()
         except Exception as e:
@@ -390,6 +416,13 @@ def main():
 
         if args.dry_run:
             log("dry run complete -- nothing was pressed")
+            return 0
+
+        if not pressed:
+            # repair() declined (the browser came back mid-sequence). Do NOT
+            # fall through to the verification below: it would observe a
+            # healthy browser and report a self-heal that never happened.
+            log("nothing was pressed -- not claiming a repair")
             return 0
 
         for _ in range(12):
