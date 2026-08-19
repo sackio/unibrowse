@@ -317,7 +317,11 @@ for k in sorted(recs)[-10:]:
     print(datetime.datetime.fromtimestamp(r['at']/1000).strftime('%F %T.%f')[:-3], r.get('stage'), extra or '')
 EOF
 
-⛔ CORRECTED 2026-08-18 — THE COMMAND PREVIOUSLY PRINTED HERE WAS WRONG AND FAILED TOWARD 'DEAD'. It was \`strings \"\$D\"/*.log | grep -o '\\[{\"at\".*' | tail -1\`, i.e. the LAST RING FRAGMENT IN STREAM ORDER. Two independent defects: (a) it read only *.log, never *.ldb; (b) \`strings\` splits on non-printable bytes, so the newest ring is often NOT the last matching line — the fragment it returns can be an OLD one. Measured on office during occurrence #6: it reported a last tick of 16:06:14 while the extension was HEALTHY and ticking at 16:22. ⇒ IT CAN MAKE A WORKING EXTENSION LOOK FROZEN, and an agent following this runbook would then reload a healthy extension. Extract INDIVIDUAL records and sort them BY TIME; never trust stream order.
+⛔⛔ THE RULE FOR EVERY READ OF THESE LEVELDB STORES, NOT JUST THIS ONE COMMAND: **NEVER TAKE THE LAST MATCH — EXTRACT ALL AND TAKE THE MAX BY TIME.** These are append-with-compaction stores read through \`strings\`, which splits on non-printable bytes; the newest record is frequently NOT the last matching line, and stream order is not even monotonic. \`tail\` therefore returns an ARBITRARY OLD record, and because the value looks perfectly well-formed there is nothing to alert you.
+⛔ Corrected TWICE, both measured on office, both silent and both failing toward a WRONG ANSWER rather than toward an error:
+  · 2026-08-18, heartbeat: \`strings \"\$D\"/*.log | grep -o '\\[{\"at\".*' | tail -1\` reported a last tick of 16:06:14 while the extension was HEALTHY and ticking at 16:22 (it also read only *.log, never *.ldb) ⇒ IT MAKES A WORKING EXTENSION LOOK FROZEN, and a reader following the runbook reloads a healthy extension.
+  · 2026-08-19, alarm store: \`… | tail -3\` returned scheduledTimes from 2026-08-18 12:25/12:38/12:52 — ~22h STALE — while the true max was 11:00:13 that morning; 1,334 records existed and tail reached three of the oldest. ⇒ WORSE: a stale-but-PASSED scheduledTime satisfies 'passed ⇒ known bug', so it CONFIRMS THE DIAGNOSIS FROM EVIDENCE ABOUT ANOTHER DAY, and would 'confirm' it just as readily against a healthy extension. (Caught by \`agents\`.)
+⭐ The lesson worth more than either fix: the first correction named \`strings\`/stream order as the cause and then repaired ONE CALLER. The second caller of the same primitive sat four paragraphs below it and kept the bug for a day. **Scope a fix to the PRIMITIVE, then grep for every caller in the same breath.**
 ⚠️ Do NOT \`grep swHeartbeat\`: leveldb stores key and value as separate strings, so that prints the word 'swHeartbeat' and nothing else.
 ⚠️ \"Profile 1\", NOT \"Default\". The subdirectory is Chrome's own extension id, not the ext_… handle. \`at\` is epoch ms in scientific notation (1.7e+12) — float parse, not int.
 
@@ -328,9 +332,31 @@ WHAT THE RECORD MEANS. The sw-keepalive alarm fires every 30s and is supposed to
   · records simply STOP at the last healthy tick  → ⭐ THIS IS THE KNOWN BUG (occurrences #5 and #6, 2026-08-17 and -18). Chrome stops starting the service worker for ANY registered event. Our code never runs; the extension stays installed and enabled.
 ⚠️ This tells you WHICH path failed, not why it failed identically N times. One dead tick and sixty dead ticks have different explanations and the record distinguishes the second only by repetition — count them.
 
-⭐ CONFIRM THE KNOWN BUG WITH THE ALARM STORE — this separates 'the alarm was lost' from 'the alarm was scheduled and never delivered':
-  strings \"\$HOME/.config/google-chrome/Profile 1/Extension State\"/*.log \"\$HOME/.config/google-chrome/Profile 1/Extension State\"/*.ldb | grep -o '\"name\":\"sw-keepalive\"[^]]*scheduledTime\":[0-9.e+]*' | tail -3
-Decode scheduledTime the same way (epoch ms, scientific notation). In BOTH occurrences the alarm was still registered with persistAcrossSessions:true and a scheduledTime that had already passed — i.e. Chrome scheduled the next tick and never delivered it. A scheduledTime in the FUTURE that keeps advancing means the worker is alive and this is NOT the known bug.
+⭐ CONFIRM THE KNOWN BUG WITH THE ALARM STORE — this separates 'the alarm was lost' from 'the alarm was scheduled and never delivered'. ⚠️ PASTE FLUSH-LEFT, body and EOF at column 0:
+
+python3 - <<'EOF'
+import re, glob, json, datetime, os
+D = os.path.expanduser('~/.config/google-chrome/Profile 1/Extension State')
+vals = []
+for f in glob.glob(D + '/*.log') + glob.glob(D + '/*.ldb'):
+    for m in re.finditer(rb'\"name\":\"sw-keepalive\".{0,200}?scheduledTime\":([0-9.e+]+)', open(f, 'rb').read()):
+        try: v = float(m.group(1))
+        except Exception: continue
+        if v > 1e12: vals.append(v)          # drop malformed/epoch-0 partials
+if not vals:
+    print('no sw-keepalive alarm records found')
+else:
+    newest = max(vals)
+    when = datetime.datetime.fromtimestamp(newest/1000)
+    age = (datetime.datetime.now() - when).total_seconds()
+    print(f'records={len(vals)}  newest scheduledTime={when:%F %T}  ({age:+.0f}s relative to now)')
+    print('PAST and not advancing  => consistent with the known bug (Chrome scheduled it and never delivered it)'
+          if age > 90 else
+          'FUTURE / recent => the worker is alive; this is NOT the known bug')
+EOF
+
+⛔ Take the MAX, never \`tail\` — see the rule above; \`tail -3\` here returned 22-hour-old records while the true newest was that morning.
+⚠️ Re-run it a minute apart: a newest scheduledTime that ADVANCES means the worker is alive regardless of what a single reading looked like. In every occurrence so far the alarm was still registered with persistAcrossSessions:true and its scheduledTime simply froze at the tick that never fired.
 
 Evidence on the server side, FROM THE OFFICE HOST (\$SERVER here was $SERVER; 'localhost' is host-relative, so this refuses from inside a container):
   curl -s http://localhost:9010/extensions | jq .recentDisconnects
