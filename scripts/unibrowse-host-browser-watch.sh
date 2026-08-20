@@ -208,8 +208,35 @@ PY
 # container's processes too — so it reported "Chrome is running" on a host where
 # only the sidecar was alive, which points the reader at a UI repair for a
 # browser that is not there. Key on the real binary path plus ben's profile.
+# Is Ben's DESKTOP Chrome BROWSER process alive?
+#
+# ⛔ DO NOT go back to `pgrep -f -- '^/opt/google/chrome/chrome'`. Measured
+# 2026-08-20, that matcher is wrong in BOTH directions at once:
+#   · FALSE POSITIVE — the pattern is a PREFIX, so it also matches
+#     `chrome_crashpad_handler`, plus every --type=zygote/renderer/gpu/utility
+#     child. After a browser-process crash those children linger, so it happily
+#     reports 22 matches with NO browser running.
+#   · FALSE NEGATIVE — it never matched the browser process at all. Chrome is
+#     launched through the `/usr/bin/google-chrome` wrapper, so argv[0] is
+#     `/usr/bin/google-chrome`; only /proc/PID/exe resolves to
+#     /opt/google/chrome/chrome.
+# ⇒ `chrome_running` was never measuring the browser; it was counting children,
+#   and looked right only because children exist when Chrome does.
+#
+# That matters because the alert body tells the reader "if Chrome is running,
+# the BROWSER is fine and the EXTENSION's socket dropped" -- so a false positive
+# sends them to a UI repair when the real fix is to START CHROME.
+#
+# Robust test: /proc/PID/exe resolves to the chrome binary AND the process has
+# no --type= flag (that flag is what marks a child). Independent of argv[0].
 chrome_running="no"
-pgrep -f -- '^/opt/google/chrome/chrome' >/dev/null 2>&1 && chrome_running="yes"
+for _p in /proc/[0-9]*; do
+  _exe="$(readlink "$_p/exe" 2>/dev/null)" || continue
+  case "$_exe" in */chrome) ;; *) continue ;; esac
+  tr '\0' '\n' < "$_p/cmdline" 2>/dev/null | grep -q -- '--type=' && continue
+  chrome_running="yes"; break
+done
+unset _p _exe
 
 echo "[watch] HOST BROWSER MISSING. chrome_running=$chrome_running last_disconnect: $last"
 
