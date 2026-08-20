@@ -80,6 +80,35 @@ QUIET=0
 
 log() { [ "$QUIET" -eq 1 ] || echo "$@"; }
 
+# Chrome profile stores worth capturing at the moment an outage is first seen.
+EVIDENCE_DIR="${UNIBROWSE_EVIDENCE_DIR:-$HOME/.unibrowse-selfheal/evidence}"
+CHROME_PROFILE="${UNIBROWSE_CHROME_PROFILE:-$HOME/.config/google-chrome/Profile 1}"
+CHROME_EXT_ID="${UNIBROWSE_CHROME_EXT_ID:-pikjoohganfooeancifkoccakcocchmk}"
+EVIDENCE_KEEP="${UNIBROWSE_EVIDENCE_KEEP:-20}"
+
+# preserve_stores <epoch> — snapshot the heartbeat + alarm leveldb stores.
+#
+# ⛔ NEVER let this fail the watchdog. Its whole job is to be a cheap side
+# effect of noticing an outage; if it errors, the alert still matters more.
+preserve_stores() {
+  local stamp dest
+  stamp="$(date -d "@${1:-$(date +%s)}" '+%Y%m%d-%H%M%S' 2>/dev/null || date '+%Y%m%d-%H%M%S')"
+  dest="$EVIDENCE_DIR/watch-$stamp"
+  (
+    mkdir -p "$dest/settings" "$dest/extstate" 2>/dev/null || exit 0
+    cp -a "$CHROME_PROFILE/Local Extension Settings/$CHROME_EXT_ID"/*.log \
+          "$CHROME_PROFILE/Local Extension Settings/$CHROME_EXT_ID"/*.ldb \
+          "$dest/settings"/ 2>/dev/null
+    cp -a "$CHROME_PROFILE/Extension State"/*.log \
+          "$CHROME_PROFILE/Extension State"/*.ldb \
+          "$dest/extstate"/ 2>/dev/null
+    # Bounded retention: keep the newest N snapshots, drop the rest.
+    ls -1dt "$EVIDENCE_DIR"/watch-* 2>/dev/null | tail -n +$((EVIDENCE_KEEP + 1)) \
+      | while read -r old; do rm -rf -- "$old" 2>/dev/null; done
+  ) >/dev/null 2>&1 || true
+  log "[watch] preserved heartbeat + alarm stores -> $dest"
+}
+
 # notify <priority> <subject> <content>
 #
 # Fans out to every recipient in $NOTIFY. Builds the JSON in python3 rather than
@@ -304,6 +333,21 @@ case "$prev" in
     ;;
   *)
     # First failure. Record it and say nothing yet.
+    #
+    # ⭐ But PRESERVE THE HEARTBEAT + ALARM STORES NOW, before saying anything.
+    # The heartbeat ring holds 80 records ~= 20 min, so the window BEFORE the
+    # outage is a wasting asset: it is overwritten once the worker restarts,
+    # and waiting for the second confirming poll throws away another 5 minutes
+    # of it. Copying on a FALSE positive costs a few hundred KB and nothing
+    # else, so the trade is one-sided.
+    #
+    # This exists because that pre-outage window turned out to carry a real
+    # constraint: across the 08-19 crash the store showed twelve consecutive
+    # keepalive ticks at 30.000s with wsLive true, ending 2.9s before the
+    # socket closed -- i.e. Chrome was running the service worker perfectly
+    # while (per scripts/ui-eye) its accessibility plane was already failing.
+    # That was n=1 only because nothing captured the window automatically.
+    preserve_stores "$now"
     echo "[watch] host browser missing on ONE poll — waiting for a second reading before alerting (see 'up' again and this is dropped silently)"
     echo "pending:$now" > "$STATE"
     exit 1
