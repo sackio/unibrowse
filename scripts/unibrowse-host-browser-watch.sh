@@ -319,6 +319,39 @@ Last disconnect: $last
 
 If Chrome is running, the BROWSER is fine and the EXTENSION's socket dropped. Opening Chrome changes nothing, and browser_reload_extension cannot help — it travels over the socket that is already gone. The repair is the Reload control on the unibrowse card at chrome://extensions.
 
+⛔⛔ FIRST, BEFORE ANY UI REPAIR: IS CHROME ON THE AT-SPI BUS *RIGHT NOW*? Every AXPress instruction below depends on it, and it VARIES BETWEEN CHROME LAUNCHES. Measured 2026-08-20, three consecutive browser processes:
+  · pid 3632980 — launched via the WRAPPER /usr/bin/google-chrome, no --force-renderer-accessibility → ABSENT from the bus
+  · pid 3739698 — launched as the BINARY /opt/google/chrome/chrome, no flag              → PRESENT, 4 windows
+  · pid 3752738 — WRAPPER, --force-renderer-accessibility PRESENT                        → ABSENT
+⛔ SO THE FLAG IS NOT THE TEST. A flagless Chrome served 4 windows; a flagged one exposed nothing. Do not trust ui-eye's error string claiming Chrome exposes no tree without the flag — it is falsified by pid 3739698. ⭐ The surviving correlate is the LAUNCH PATH (wrapper vs binary), n=3, NOT deliberately tested — one direct-binary launch would confirm or kill it. The wrapper sets no a11y env vars (only CHROME_WRAPPER, CHROME_VERSION_EXTRA, GNOME_DISABLE_CRASH_DIALOG), so if it is the cause the mechanism is not an obvious variable.
+⛔ AND DO NOT INHERIT A PREVIOUS ANSWER, INCLUDING ONE FROM EARLIER IN THE SAME OUTAGE — this flipped twice in 10 minutes on 08-20 and I sent two seats opposite conclusions before measuring properly. MEASURE IT AT THE MOMENT OF NEED.
+✅ An AT client engaging does NOT flip it (tested: repeated Atspi queries plus ui-eye ax_tree against pid 3752738 never caused registration), so checking is free and does not contaminate anyone's experiment.
+⇒ IF CHROME IS GENUINELY ABSENT: there is no keyboard path and no working CDP either, so THERE IS NO REMOTE REMEDY — escalate to Ben to click Reload on the unibrowse card, or restart Chrome. Do not burn the outage discovering that from a confusing AXPress error.
+⚠️ PASTE FLUSH-LEFT, body and EOF at column 0:
+
+DISPLAY=:1 XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /usr/bin/python3 - <<'EOF'
+# /usr/bin/python3 is REQUIRED here -- the default python3 on PATH has no 'gi'.
+# Without the DBUS address the bindings abort with 'Couldn't connect to
+# accessibility bus' and DUMP CORE (that is the _usr_bin_python3.10 file in
+# /var/crash -- ours, not Chrome's).
+import gi
+gi.require_version('Atspi', '2.0')
+from gi.repository import Atspi
+d = Atspi.get_desktop(0)
+n = d.get_child_count()
+if n < 0:
+    raise SystemExit('child count -1: FAILED CALL, not an empty registry -- that sentinel misdirected five investigations on 08-16')
+names = []
+for i in range(n):
+    a = d.get_child_at_index(i)
+    if a is None: continue
+    try: names.append((a.get_name() or '?', a.get_process_id(), a.get_child_count()))
+    except Exception: pass
+chrome = [t for t in names if 'hrome' in t[0]]
+print(f'{len(names)} apps on the bus')
+print('CHROME:', chrome if chrome else 'ABSENT -- no AXPress repair possible; re-run once before believing it')
+EOF
+
 ⛔ MEASURED ON OFFICE 2026-08-16, BEFORE YOU PLAN A UI REPAIR:
 · There is NO WORKING KEYBOARD PATH to that Chrome, and as of 2026-08-16 21:42 BOTH WAYS OF DISCOVERING THAT ARE SILENT. xdotool key/type exits 0 and delivers nothing (verified by screenshot; the X session is genuinely x11 with XTEST present, so this is not Wayland). ui_eye_type used to fail loudly with AttributeError: keycode_to_keysym_list — ui-eye fixed that crash (3bef657), so it now RETURNS {\"typed\": N} while XTEST still delivers nothing. ⛔ N IS A LIE. Do not read a successful return as text having been typed; screenshot the target and confirm the characters are there. The loud bug was standing in front of the silent one.
 · chrome://extensions therefore cannot be reached by typing, and NOT from the command line either — google-chrome 'chrome://extensions/' reports 'Opening in existing browser session' and then opens a plain New Tab, because Chrome blocks chrome:// from argv. Route: click the puzzle-piece Extensions toolbar icon, then 'Manage extensions'.

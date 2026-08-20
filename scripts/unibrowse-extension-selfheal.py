@@ -273,7 +273,30 @@ def find_card_reload(app):
 def repair(threshold_ms, dry_run):
     app = chrome_app()
     if app is None:
-        raise RuntimeError("no Google Chrome application on the accessibility bus")
+        # ⛔ Chrome exposes NO accessibility tree unless it was started with
+        # --force-renderer-accessibility -- not a thin one, none at all. That
+        # flag was removed from both launch paths on 2026-08-20 17:02 for a
+        # crash investigation, which takes this entire repair path away. With
+        # no AT-SPI, no keyboard path and no working CDP, there is no remote
+        # remedy at all. Say so plainly rather than failing as a lookup error,
+        # because the next reader will otherwise spend the outage debugging
+        # the wrong thing.
+        registered = []
+        try:
+            desktop = Atspi.get_desktop(0)
+            n = desktop.get_child_count()
+            if n > 0:
+                registered = [nm(desktop.get_child_at_index(i)) for i in range(n)]
+        except Exception:
+            pass
+        raise RuntimeError(
+            "Chrome is not registered with AT-SPI, so there is NO remote repair path "
+            "(no keyboard path, no CDP either). Escalate to a human to click Reload on the "
+            "unibrowse card, or restart Chrome. Chrome exposes no tree at all without "
+            "--force-renderer-accessibility. "
+            f"Bus is {'healthy' if registered else 'possibly down'}; "
+            f"{len(registered)} app(s) registered: {', '.join(registered[:12]) or 'none'}"
+        )
 
     widx, node = find_card_reload(app)
     if node is None:
