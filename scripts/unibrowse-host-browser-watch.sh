@@ -360,8 +360,34 @@ WHAT THE RECORD MEANS. The sw-keepalive alarm fires every 30s and is supposed to
   · 'enter' with no matching 'probed'            → the handler HUNG (leaves no trace anywhere else)
   · 'threw'                                       → it errored (Chrome swallows async listener throws silently)
   · 'probed' wsLive:false repeating, no 'reconnected' → autoConnect is failing
-  · records simply STOP at the last healthy tick  → ⭐ THIS IS THE KNOWN BUG (occurrences #5 and #6, 2026-08-17 and -18). Chrome stops starting the service worker for ANY registered event. Our code never runs; the extension stays installed and enabled.
+  · records simply STOP at the last healthy tick  → ⛔ FIRST CHECK WHETHER CHROME'S BROWSER PROCESS DIED. See below — this is NOT by itself evidence of a service-worker bug.
 ⚠️ This tells you WHICH path failed, not why it failed identically N times. One dead tick and sixty dead ticks have different explanations and the record distinguishes the second only by repetition — count them.
+
+⛔⛔ CORRECTED 2026-08-20 — THE CONCLUSION THIS RUNBOOK USED TO DRAW WAS WRONG, AND IT WAS THE APPEALING ONE. It said a heartbeat that simply STOPS proves 'Chrome stops starting the service worker for ANY registered event'. \`scripts\` then established that office Chrome's BROWSER PROCESS has been crashing repeatedly (dump dates 08-03/05/07/11/15/16/17/18), and that the 08-19 disconnect at 10:59:46 is the exact second of that day's crash. A dead process produces EXACTLY this evidence: a heartbeat that stops mid-stream, an alarm whose scheduledTime is frozen at a tick that never fired, and a socket close. ⇒ BEFORE blaming the service worker, ESTABLISH WHETHER THE BROWSER DIED. The ordinary explanation was never excluded, and it is far likelier than a novel Chrome scheduling bug.
+⚠️ PASTE FLUSH-LEFT, body and EOF at column 0:
+
+python3 - <<'EOF'
+import os, glob, subprocess
+found = []
+for d in glob.glob('/proc/[0-9]*'):
+    try: exe = os.readlink(d + '/exe')
+    except OSError: continue
+    if os.path.basename(exe) != 'chrome': continue          # excludes container 'chromium'
+    try: cmdline = open(d + '/cmdline', 'rb').read()
+    except OSError: continue
+    if b'--type=' in cmdline: continue                        # --type= marks a CHILD
+    pid = d.rsplit('/', 1)[1]
+    age = subprocess.run(['ps','-o','etime=','-p',pid], capture_output=True, text=True).stdout.strip()
+    found.append((pid, age, exe))
+print('BROWSER PROCESSES:', len(found) or 'NONE -- Chrome is DOWN, the fix is to START it, not to reload anything')
+for pid, age, exe in found:
+    print(f'  pid={pid} age={age} exe={exe}')
+EOF
+
+  ls -lat /var/crash 2>/dev/null | head -5
+⛔ DO NOT ask this with \`pgrep -f '^/opt/google/chrome/chrome'\` — that matcher is wrong in BOTH directions: it MATCHES crashpad handlers and every --type= child (22 hits with no browser running), and it MISSES the browser itself because Chrome starts via /usr/bin/google-chrome so argv[0] is the wrapper. It was never measuring the browser at all.
+✅ WHAT SURVIVES, and it is narrower: after the crash and restart, the unpacked extension is loaded but its SERVICE WORKER IS NEVER STARTED — which is why the outage persists until someone clicks Reload. (On 08-17, 13 min post-crash, a controlled navigation confirmed in Chrome's History sqlite produced no wake while Chrome was demonstrably running.) So the Reload repair below is still the right remedy; only the CAUSE story changed.
+⚠️ AND NOTE THE CONFLICT OF INTEREST IN THE REPAIR: AXPress drives AT-SPI at the BROWSER PROCESS, and accessibility is \`scripts\`' standing suspect for the crashes. It cannot be the origin (crashes predate any AXPress use here), but prefer a CDP repair path over an accessibility one where you have the choice.
 
 ⭐ CONFIRM THE KNOWN BUG WITH THE ALARM STORE — this separates 'the alarm was lost' from 'the alarm was scheduled and never delivered'. ⚠️ PASTE FLUSH-LEFT, body and EOF at column 0:
 
@@ -381,9 +407,10 @@ else:
     when = datetime.datetime.fromtimestamp(newest/1000)
     age = (datetime.datetime.now() - when).total_seconds()
     print(f'records={len(vals)}  newest scheduledTime={when:%F %T}  ({age:+.0f}s relative to now)')
-    print('PAST and not advancing  => consistent with the known bug (Chrome scheduled it and never delivered it)'
+    print('PAST and not advancing => our code is not running. ⛔ This does NOT by itself mean Chrome failed to '
+          'START the worker -- a browser-process CRASH produces exactly this. Check process liveness and /var/crash first.'
           if age > 90 else
-          'FUTURE / recent => the worker is alive; this is NOT the known bug')
+          'FUTURE / recent => the worker is alive; whatever is wrong, it is not a stalled keepalive')
 EOF
 
 ⛔ Take the MAX, never \`tail\` — see the rule above; \`tail -3\` here returned 22-hour-old records while the true newest was that morning.
