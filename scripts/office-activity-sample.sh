@@ -127,11 +127,46 @@ browser_uptime="NA"
 # CHANGES the load it is trying to measure, in an investigation where "agent
 # probing drives crashes" was itself a live hypothesis.
 #
-# ⚠️ The backlog shows as Send-Q on the DAEMON side, NOT Recv-Q on the stalled
-# client's side. Grepping for a growing recv-Q on the client socket finds zero
-# and reads as healthy. Measured 2026-08-20: one connection carried 213,504
-# bytes queued toward `python3 -m ui_eye.client` (pid 422117) while every other
-# connection sat at 768 — 95% of all backlog on the bus, 278x the next largest.
+# ⚠️ The backlog shows as Send-Q on the DAEMON side, i.e. bytes the bus has
+# queued TOWARD a client that is not reading them.
+#
+# ⛔ THIS COMMENT USED TO CLAIM "every other connection sat at 768 — 278x the
+# next largest." RETRACTED 2026-08-20 21:11, and the retraction matters more
+# than the number did, because `ui-eye` cited that 768 back to me as an
+# independent control for their crash mechanism. It was not independent: it was
+# my own unverified reading making a round trip and returning with authority it
+# never had. ⇒ ⛔ A FIGURE YOU PUBLISHED IS NOT EVIDENCE WHEN IT COMES BACK.
+#
+# What 768 actually missed: the busy clients are on the SESSION bus (pid 5457),
+# NOT this a11y bus, and they show THE SAME SIGNATURE. Measured 21:11:30 --
+# xdg-desktop-portal-gtk rq=36448/sq=205824 (x12), gnome-shell 35904/202752,
+# update-notifier 36312/205056, 1password 34272/193536, seahorse 34136/192768,
+# against ui_eye.client 41436/213760.
+# ⇒ ⛔ sendq ~200 KB with recvq ~35 KB IS THE ORDINARY STEADY STATE of a busy
+# dbus connection on this host. gnome-shell was drawing the desktop and
+# gnome-terminal-server was rendering a live session at those depths. **Magnitude
+# alone does not distinguish a wedged client from a healthy one.**
+#
+# ✅ WHAT SURVIVES, and it is why this column stays: on THIS bus (647592), the
+# ui_eye client is the only peer with any queue at all. That asymmetry is real.
+# It is a statement about WHICH BUS, not about how deep -- so never compare a
+# depth here against a depth from the session bus. Different populations.
+#
+# ⛔ THIS COMMENT USED TO ADD "and Recv-Q on the client socket is zero, so a
+# recv-Q grep reads as healthy." THAT IS FALSE, measured 21:06 on 2026-08-20,
+# and it was false in a way that made two seats argue past each other for an
+# hour. ONE CLIENT PID HOLDS TWO a11y-BUS SOCKETS AT ONCE:
+#     recvq=41678  sendq=0       peer=588150  python3 -m ui_eye.client
+#     recvq=0      sendq=213760  peer=588150  python3 -m ui_eye.client
+# ⇒ ⛔ ATTRIBUTE BY INODE, NOT BY PID. Resolving a socket to its owning process
+# does NOT identify the socket -- `ui-eye` was reading the recvq one and this
+# sampler the sendq one, both correctly, both on the same pid, and neither
+# instrument could say so.
+# ⇒ ⭐ THE TWO SOCKETS DO NOT BEHAVE ALIKE, so a single "depth" number is a
+# category error: recvq FLUCTUATES (9,980 -> 41,218 -> 41,678) while sendq
+# SATURATES (213,504 / 213,760, two wedges 256 bytes apart). "a11y depth
+# saturates" is a fact about the sendq socket that I wrongly generalised to
+# the bus. Report them SEPARATELY -- collapsing with max() hid the whole thing.
 #
 # ⚠️ LAGGING AND THRESHOLDED, not a signal count: it only moves when some reader
 # falls behind, so a burst everyone keeps up with reads as zero. A true
@@ -151,7 +186,7 @@ browser_uptime="NA"
 # ⚠️ Liveness is necessary, NOT sufficient: a process that is alive but in its
 # shutdown path has also stopped reading, and looks identical to a wedge. Treat
 # a spike as "someone stopped reading", never as "someone is wedged".
-read -r a11y_tot_q a11y_max_q a11y_dropped <<<"$(/usr/bin/python3 - <<'PY' 2>/dev/null || echo "NA NA NA"
+read -r a11y_tot_q a11y_max_q a11y_dropped a11y_max_rq a11y_conns <<<"$(/usr/bin/python3 - <<'PY' 2>/dev/null || echo "NA NA NA NA NA"
 import os, subprocess, glob
 # ⛔ PIN TO THE ACCESSIBILITY DAEMON. Do NOT max over every socket whose PATH
 # contains "at-spi" -- that was this column's first form and it is wrong twice
@@ -179,32 +214,58 @@ try:
     out = subprocess.run(['ss','-x'], capture_output=True, text=True, timeout=10).stdout
 except Exception:
     raise SystemExit(1)
-tot = mx = dropped = 0
+# ⛔ DO NOT COLLAPSE recv AND send WITH max(). That was this block's first form
+# and it is exactly what hid the two-socket structure documented above: one
+# "depth" column silently reported whichever side was larger, so a SATURATING
+# sendq permanently masked a FLUCTUATING recvq on the same pid, and the column
+# looked like a stable measurement of one thing. Keep the two sides apart.
+# `conns` is here so a quiet bus and a filtered-empty bus cannot look identical.
+tot = mx_sq = mx_rq = dropped = conns = 0
 for line in out.splitlines():
     f = line.split()
     if len(f) < 8: continue
     try: rq, sq = int(f[2]), int(f[3])
     except ValueError: continue
-    q = rq if rq > sq else sq
-    if q <= 0: continue
+    if rq <= 0 and sq <= 0: continue
     ino, peer = f[5], f[7]
     a, b = owner.get(ino), owner.get(peer)
     if not (a in daemon or b in daemon): continue   # a11y bus connections only
     other = b if a in daemon else a
     if other is None or not os.path.isdir('/proc/' + str(other)):
-        dropped += q                 # peer gone: departing-socket artefact
+        dropped += rq + sq           # peer gone: departing-socket artefact
         continue
-    tot += q
-    if q > mx: mx = q
-print(tot, mx, dropped)
+    conns += 1
+    tot += rq + sq
+    if sq > mx_sq: mx_sq = sq
+    if rq > mx_rq: mx_rq = rq
+print(tot, mx_sq, dropped, mx_rq, conns)
 PY
 )"
 [ -n "$a11y_tot_q" ] || { a11y_tot_q=NA; a11y_max_q=NA; a11y_dropped=NA; }
+[ -n "$a11y_max_rq" ] || a11y_max_rq=NA
+[ -n "$a11y_conns" ] || a11y_conns=NA
 
-[ -s "$LOG" ] || echo "iso_time,epoch,idle_ms,chrome_windows,renderer_procs,browser_up,visits_5m,browser_uptime_s,a11y_total_sendq,a11y_max_sendq,a11y_dropped_sendq" > "$LOG"
-printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+# ⚠️ SCHEMA CHANGED 2026-08-20 21:10 — two columns APPENDED, none reordered.
+# Appended rather than inserted on purpose: anything reading columns 1-11 by
+# POSITION keeps working across the boundary, and rows written before this
+# change simply have 11 fields instead of 13. Read by header name if you can.
+# ⚠️ Columns 9/10/11 changed MEANING even though their positions did not:
+# `total` is now rq+sq summed (was max(rq,sq) summed) and `max_sendq` is now
+# genuinely the send side (was whichever side was larger). Pre-21:10 rows are
+# NOT comparable to post-21:10 rows on those three columns. The name change
+# from *_sendq to *_q on 9 and 11 is the marker of the boundary.
+HDR="iso_time,epoch,idle_ms,chrome_windows,renderer_procs,browser_up,visits_5m,browser_uptime_s,a11y_total_q,a11y_max_sendq,a11y_dropped_q,a11y_max_recvq,a11y_conns"
+if [ ! -s "$LOG" ]; then
+  echo "$HDR" > "$LOG"
+elif [ "$(head -1 "$LOG")" != "$HDR" ]; then
+  # Rewrite ONLY line 1. A stale header over renamed columns is worse than no
+  # header: it reads as authoritative and names the wrong quantity.
+  { echo "$HDR"; tail -n +2 "$LOG"; } > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
+fi
+printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
   "$(date '+%F %T')" "$(date +%s)" "$idle" "$windows" "$renderers" "$browser_up" \
-  "$visits_5m" "$browser_uptime" "$a11y_tot_q" "$a11y_max_q" "$a11y_dropped" >> "$LOG"
+  "$visits_5m" "$browser_uptime" "$a11y_tot_q" "$a11y_max_q" "$a11y_dropped" \
+  "$a11y_max_rq" "$a11y_conns" >> "$LOG"
 
 # Bounded: keep the header plus the newest MAX_LINES rows.
 lines="$(wc -l < "$LOG" 2>/dev/null || echo 0)"
