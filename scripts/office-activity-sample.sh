@@ -152,8 +152,23 @@ browser_uptime="NA"
 # shutdown path has also stopped reading, and looks identical to a wedge. Treat
 # a spike as "someone stopped reading", never as "someone is wedged".
 read -r a11y_tot_q a11y_max_q a11y_dropped <<<"$(/usr/bin/python3 - <<'PY' 2>/dev/null || echo "NA NA NA"
-import os, re, subprocess, glob
-# inode -> pid, built once from /proc/*/fd
+import os, subprocess, glob
+# ⛔ PIN TO THE ACCESSIBILITY DAEMON. Do NOT max over every socket whose PATH
+# contains "at-spi" -- that was this column's first form and it is wrong twice
+# over (both raised by `scripts` 2026-08-20):
+#   1. a MAX across ~20 sockets can silently switch WHICH socket it reports
+#      between samples, so consecutive rows are not like-for-like and any rate
+#      derived from them is meaningless.
+#   2. the real client connections are ANONYMOUS socketpairs with NO path, so a
+#      path grep misses them entirely while catching unrelated named
+#      at-spi2-*/socket entries.
+# Attribution is by peer inode -> owning pid, which works for anonymous sockets.
+daemon = set()
+for d in glob.glob('/proc/[0-9]*'):
+    try: cl = open(d + '/cmdline', 'rb').read().decode('utf8', 'replace')
+    except OSError: continue
+    if 'dbus-daemon' in cl and 'accessibility.conf' in cl:
+        daemon.add(d.split('/')[2])
 owner = {}
 for fd in glob.glob('/proc/[0-9]*/fd/*'):
     try: t = os.readlink(fd)
@@ -166,19 +181,21 @@ except Exception:
     raise SystemExit(1)
 tot = mx = dropped = 0
 for line in out.splitlines():
-    if 'at-spi' not in line: continue
     f = line.split()
     if len(f) < 8: continue
-    try: sq = int(f[3])
+    try: rq, sq = int(f[2]), int(f[3])
     except ValueError: continue
-    if sq <= 0: continue
-    peer = f[7]                      # peer inode column
-    pid = owner.get(peer)
-    if pid is None or not os.path.isdir(f'/proc/{pid}'):
-        dropped += sq                # peer gone: departing-socket artefact
+    q = rq if rq > sq else sq
+    if q <= 0: continue
+    ino, peer = f[5], f[7]
+    a, b = owner.get(ino), owner.get(peer)
+    if not (a in daemon or b in daemon): continue   # a11y bus connections only
+    other = b if a in daemon else a
+    if other is None or not os.path.isdir('/proc/' + str(other)):
+        dropped += q                 # peer gone: departing-socket artefact
         continue
-    tot += sq
-    if sq > mx: mx = sq
+    tot += q
+    if q > mx: mx = q
 print(tot, mx, dropped)
 PY
 )"
