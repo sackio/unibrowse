@@ -8,6 +8,21 @@ import {
 import { jsonResponse, textResponse, errorResponse } from "@/utils/response-helpers";
 import type { Tool } from "./tool";
 
+// ⛔ NO TOOL IN THIS FILE MAY CALL ensureAttachedFromParams().
+//
+// All four are answered by chrome.management.* on the extension side and never
+// touch a tab (verified: zero chrome.tabs / debugger / requireCDP references in
+// handleListExtensions, handleGetExtensionInfo, handleEnableExtension,
+// handleDisableExtension). The attach pre-flight opened or attached a tab
+// purely to discard it.
+//
+// Removed 2026-08-20 for the same reason as src/tools/system.ts: with no tab
+// attached, ensure_attached auto-opens one, and if it settles on a page
+// extensions cannot debug the call dies with Chrome's raw "Cannot access a
+// chrome-extension:// URL of different extension". `agents` measured
+// browser_get_extension_info failing that way on office while
+// browser_attach_tab + browser_evaluate against an explicit tabTarget worked.
+
 /**
  * List all installed extensions
  * Retrieves a list of all browser extensions including their IDs, names,
@@ -23,7 +38,6 @@ export const listExtensions: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const validatedParams = ListExtensionsTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_list_extensions", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -49,7 +63,6 @@ export const getExtensionInfo: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const validatedParams = GetExtensionInfoTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_extension_info", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -74,7 +87,6 @@ export const enableExtension: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const validatedParams = EnableExtensionTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_enable_extension", validatedParams);
       return textResponse(`Extension enabled successfully (ID: ${validatedParams.id}, max_tokens)`);
@@ -99,7 +111,6 @@ export const disableExtension: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const validatedParams = DisableExtensionTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_disable_extension", validatedParams);
       return textResponse(`Extension disabled successfully (ID: ${validatedParams.id}, max_tokens)`);
