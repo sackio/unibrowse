@@ -93,8 +93,15 @@ cutoff = int((datetime.datetime.now(datetime.timezone.utc)
 # forever for. Worst case is a torn read on a COUNT, which the caller's NA
 # fallback absorbs.
 con = sqlite3.connect(f"file:{H}?mode=ro&nolock=1", uri=True, timeout=3)
-print(con.execute("SELECT COUNT(*) FROM visits WHERE visit_time > ?", (cutoff,)).fetchone()[0])
+n = con.execute("SELECT COUNT(*) FROM visits WHERE visit_time > ?", (cutoff,)).fetchone()[0]
 con.close()
+# ⛔ PLAUSIBILITY BOUND. nolock reads a file Chrome is actively writing, so a
+# torn read can return a WRONG COUNT rather than an error -- flagged by
+# `scripts` 2026-08-20. An off-by-a-few is undetectable and harmless for a
+# gate asking "is this increasing"; a wild value is not, and would look like
+# a churn spike. Emit NA rather than a number nobody can distinguish from
+# real. 5000 visits in 5 minutes is ~17/second, far past human or automated.
+print(n if isinstance(n, int) and 0 <= n < 5000 else "NA")
 PY
 )"
 [ -n "$visits_5m" ] || visits_5m="NA"
