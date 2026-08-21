@@ -53,17 +53,64 @@ for d in /proc/[0-9]*; do
   # processes exit mid-scan constantly, and `tr ... 2>/dev/null` does not catch
   # a failure to OPEN the file, only tr's own stderr.
   cl="$( { tr '\0' ' ' < "$d/cmdline"; } 2>/dev/null )" || continue
-  case "$cl" in /opt/google/chrome/chrome*|/usr/bin/google-chrome*) ;; *) continue ;; esac
+  # ⛔ COMPARE argv[0] EXACTLY. A prefix glob like /opt/google/chrome/chrome*
+  # ALSO MATCHES chrome_crashpad_handler -- which is the identical bug already
+  # fixed in unibrowse-host-browser-watch.sh (1dbfeed) and which I promptly
+  # reintroduced here. It reported THREE browser processes where there is one.
+  argv0="${cl%% *}"
+  case "$argv0" in
+    /opt/google/chrome/chrome|/usr/bin/google-chrome|/usr/bin/google-chrome-stable) ;;
+    *) continue ;;
+  esac
   case "$cl" in
     *--type=renderer*) renderers=$((renderers + 1)) ;;
     *--type=*)         : ;;
-    *)                 browser_up=1 ;;
+    *)                 browser_up=1; browser_pid="${d##*/}" ;;
   esac
 done
 
-[ -s "$LOG" ] || echo "iso_time,epoch,idle_ms,chrome_windows,renderer_procs,browser_up" > "$LOG"
-printf '%s,%s,%s,%s,%s,%s\n' \
-  "$(date '+%F %T')" "$(date +%s)" "$idle" "$windows" "$renderers" "$browser_up" >> "$LOG"
+# PAGE CHURN. `scripts` demoted renderer count from a gate condition to a
+# covariate because it CANNOT MOVE during the browsing it was meant to detect:
+# renderers track tab/site-instance lifetime, so a morning spent reading in
+# already-open mail and Slack tabs leaves the count flat. Visit rows do move.
+#
+# Counted over a 5-minute window rather than as a running total, because
+# Chrome prunes history at ~90 days and a total can therefore go DOWN.
+#
+# Read-only against the LIVE db (mode=ro, no lock taken, no copy) -- it is
+# 39 MB and copying it once a minute would be silly. TIMESTAMPS ONLY: this
+# reads visit_time and nothing else, no URLs and no titles.
+visits_5m="$(/usr/bin/python3 - <<'PY' 2>/dev/null || echo NA
+import sqlite3, os, datetime
+H = os.path.expanduser('~/.config/google-chrome/Profile 1/History')
+EPOCH = datetime.datetime(1601, 1, 1, tzinfo=datetime.timezone.utc)
+cutoff = int((datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(minutes=5) - EPOCH).total_seconds() * 1_000_000)
+# nolock=1 is REQUIRED, not an optimisation: Chrome holds the History lock
+# persistently while active (rollback journal, not WAL), so a plain mode=ro
+# read fails with "database is locked" even at an 8s timeout -- measured.
+# mode=ro guarantees we never write; nolock skips the lock we would wait
+# forever for. Worst case is a torn read on a COUNT, which the caller's NA
+# fallback absorbs.
+con = sqlite3.connect(f"file:{H}?mode=ro&nolock=1", uri=True, timeout=3)
+print(con.execute("SELECT COUNT(*) FROM visits WHERE visit_time > ?", (cutoff,)).fetchone()[0])
+con.close()
+PY
+)"
+[ -n "$visits_5m" ] || visits_5m="NA"
+
+# Seconds since the BROWSER process started. This is what makes a tab-restore
+# burst self-labelling: `scripts`' gate must not count restore-driven visits,
+# and any row with browser_uptime_s under ~300 is inside that window. Recording
+# it beats trying to time when the column starts.
+browser_uptime="NA"
+[ -n "${browser_pid:-}" ] && browser_uptime="$(ps -o etimes= -p "$browser_pid" 2>/dev/null | tr -d ' ')"
+[ -n "$browser_uptime" ] || browser_uptime="NA"
+
+[ -s "$LOG" ] || echo "iso_time,epoch,idle_ms,chrome_windows,renderer_procs,browser_up,visits_5m,browser_uptime_s" > "$LOG"
+printf '%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  "$(date '+%F %T')" "$(date +%s)" "$idle" "$windows" "$renderers" "$browser_up" \
+  "$visits_5m" "$browser_uptime" >> "$LOG"
 
 # Bounded: keep the header plus the newest MAX_LINES rows.
 lines="$(wc -l < "$LOG" 2>/dev/null || echo 0)"
