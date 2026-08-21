@@ -89,7 +89,7 @@ export const enableExtension: Tool = {
     try {
       const validatedParams = EnableExtensionTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_enable_extension", validatedParams);
-      return textResponse(`Extension enabled successfully (ID: ${validatedParams.id}, max_tokens)`);
+      return textResponse(`Extension enabled successfully (ID: ${validatedParams.id})`, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to enable extension: ${error.message}`, false, error, max_tokens);
@@ -113,7 +113,7 @@ export const disableExtension: Tool = {
     try {
       const validatedParams = DisableExtensionTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_disable_extension", validatedParams);
-      return textResponse(`Extension disabled successfully (ID: ${validatedParams.id}, max_tokens)`);
+      return textResponse(`Extension disabled successfully (ID: ${validatedParams.id})`, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to disable extension: ${error.message}`, false, error, max_tokens);

@@ -10,6 +10,31 @@ import { jsonResponse, textResponse, errorResponse } from "@/utils/response-help
 
 import type { Tool } from "./tool";
 
+// ⛔ NO TOOL IN THIS FILE MAY CALL ensureAttachedFromParams().
+//
+// All four are BROWSER-scoped, not tab-scoped. Verified against the extension
+// on 2026-08-20 by reading every handler body: handleSearchHistory / handleGetHistoryVisits / handleDeleteHistory / handleClearHistory
+// use ONLY the chrome.history API and contain zero references to chrome.tabs,
+// chrome.debugger, tabId or tabTarget. The attach pre-flight they used to run
+// was pure liability -- it opened or attached a tab purely to discard it, and
+// the server side never even looked at its return value.
+//
+// This is the same defect fixed in system.ts/extensions.ts by 737069d, whose
+// symptom was: with no tab attached, ensure_attached auto-opens one, and if
+// that tab settles on a page extensions cannot debug, Chrome raises "Cannot
+// access a chrome-extension:// URL of different extension" and the whole call
+// fails. It looks exactly like a dead browser and is not one. Calls that passed
+// an explicit tabTarget kept working, which is what made it look intermittent.
+//
+// ⛔ THE REASON IT SURVIVED IN THESE FOUR: they LOOK tab-scoped. Cookies and
+// history feel like properties of a page. They are not -- they are profile-wide
+// stores, and the extension reads them without a tab. ⇒ Judge scope by what the
+// HANDLER touches, never by what the tool name suggests.
+//
+// Routing is unaffected: sendSocketMessage() reads extensionId straight off the
+// payload, so multi-extension disambiguation still works and still raises the
+// normal "Multiple extensions are connected" error when the caller omits it.
+
 /**
  * Search browsing history
  * Searches browser history for items matching the provided text. Supports filtering
@@ -25,7 +50,6 @@ export const searchHistory: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const validatedParams = SearchHistoryTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_search_history", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -51,7 +75,6 @@ export const getHistoryVisits: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const validatedParams = GetHistoryVisitsTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_history_visits", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -77,10 +100,9 @@ export const deleteHistory: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const validatedParams = DeleteHistoryTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_delete_history", validatedParams);
-      return textResponse(`Deleted ${validatedParams.urls.length} URL(s, max_tokens) from history`);
+      return textResponse(`Deleted ${validatedParams.urls.length} URL(s) from history`, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to delete history: ${error.message}`, false, error, max_tokens);
@@ -103,7 +125,6 @@ export const clearHistory: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const validatedParams = ClearHistoryTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_clear_history", validatedParams);
       const startDate = new Date(validatedParams.startTime).toISOString();

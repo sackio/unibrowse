@@ -28,7 +28,7 @@ export const realisticMouseMove: Tool = {
 
       const result = await context.sendSocketMessage("browser_realistic_mouse_move", validatedParams);
 
-      return textResponse(result.message || `Moved mouse to (${validatedParams.x}, ${validatedParams.y}, max_tokens)`);
+      return textResponse(result.message || `Moved mouse to (${validatedParams.x}, ${validatedParams.y})`, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to move mouse: ${error.message}`, false, error, max_tokens);
@@ -55,7 +55,7 @@ export const realisticClick: Tool = {
 
       const result = await context.sendSocketMessage("browser_realistic_click", validatedParams);
 
-      return textResponse(result.message || `Clicked at (${validatedParams.x}, ${validatedParams.y}, max_tokens)`);
+      return textResponse(result.message || `Clicked at (${validatedParams.x}, ${validatedParams.y})`, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to click: ${error.message}`, false, error, max_tokens);

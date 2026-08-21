@@ -8,6 +8,31 @@ import {
 import { jsonResponse, textResponse, errorResponse } from "@/utils/response-helpers";
 import type { Tool } from "./tool";
 
+// ⛔ NO TOOL IN THIS FILE MAY CALL ensureAttachedFromParams().
+//
+// All four are BROWSER-scoped, not tab-scoped. Verified against the extension
+// on 2026-08-20 by reading every handler body: handleGetBookmarks / handleCreateBookmark / handleDeleteBookmark / handleSearchBookmarks
+// use ONLY the chrome.bookmarks API and contain zero references to chrome.tabs,
+// chrome.debugger, tabId or tabTarget. The attach pre-flight they used to run
+// was pure liability -- it opened or attached a tab purely to discard it, and
+// the server side never even looked at its return value.
+//
+// This is the same defect fixed in system.ts/extensions.ts by 737069d, whose
+// symptom was: with no tab attached, ensure_attached auto-opens one, and if
+// that tab settles on a page extensions cannot debug, Chrome raises "Cannot
+// access a chrome-extension:// URL of different extension" and the whole call
+// fails. It looks exactly like a dead browser and is not one. Calls that passed
+// an explicit tabTarget kept working, which is what made it look intermittent.
+//
+// ⛔ THE REASON IT SURVIVED IN THESE FOUR: they LOOK tab-scoped. Cookies and
+// history feel like properties of a page. They are not -- they are profile-wide
+// stores, and the extension reads them without a tab. ⇒ Judge scope by what the
+// HANDLER touches, never by what the tool name suggests.
+//
+// Routing is unaffected: sendSocketMessage() reads extensionId straight off the
+// payload, so multi-extension disambiguation still works and still raises the
+// normal "Multiple extensions are connected" error when the caller omits it.
+
 /**
  * Get bookmarks from the browser
  * Retrieves bookmarks from a specific folder or the entire bookmark tree.
@@ -23,7 +48,6 @@ export const getBookmarks: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttachedFromParams(params);
       const validatedParams = GetBookmarksTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_get_bookmarks", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -49,7 +73,6 @@ export const createBookmark: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttachedFromParams(params);
       const validatedParams = CreateBookmarkTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_create_bookmark", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -74,7 +97,6 @@ export const deleteBookmark: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttachedFromParams(params);
       const validatedParams = DeleteBookmarkTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_delete_bookmark", validatedParams);
       return textResponse(`Bookmark deleted successfully (ID: ${validatedParams.id})`, max_tokens);
@@ -100,7 +122,6 @@ export const searchBookmarks: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      await context.ensureAttachedFromParams(params);
       const validatedParams = SearchBookmarksTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage("browser_search_bookmarks", validatedParams);
       return jsonResponse(result, true, max_tokens);

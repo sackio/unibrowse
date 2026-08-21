@@ -209,7 +209,8 @@ export const detachTab: Tool = {
       );
 
       return textResponse(
-        `Detached from tab ${validatedParams.tabId}${result.detachedLabel ? ` (${result.detachedLabel}, max_tokens)` : ""}`
+        `Detached from tab ${validatedParams.tabId}${result.detachedLabel ? ` (${result.detachedLabel})` : ""}`,
+        max_tokens
       );
     } catch (error) {
       const { max_tokens } = params || {};
