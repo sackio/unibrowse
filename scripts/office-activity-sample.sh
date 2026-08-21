@@ -114,10 +114,80 @@ browser_uptime="NA"
 [ -n "${browser_pid:-}" ] && browser_uptime="$(ps -o etimes= -p "$browser_pid" 2>/dev/null | tr -d ' ')"
 [ -n "$browser_uptime" ] || browser_uptime="NA"
 
-[ -s "$LOG" ] || echo "iso_time,epoch,idle_ms,chrome_windows,renderer_procs,browser_up,visits_5m,browser_uptime_s" > "$LOG"
-printf '%s,%s,%s,%s,%s,%s,%s,%s\n' \
+# AT-SPI BUS BACKLOG. A passive proxy for accessibility signal volume.
+#
+# `scripts` proposed a common-cause model on 2026-08-20: an a11y signal burst
+# both wedges a client that is not pumping its connection AND puts Chrome under
+# heavy accessibility work, so a client fault and a crash can pair 6/6 with no
+# arrow between them. Fill rate is the quantity that model names, and until now
+# nothing measured it.
+#
+# Measured passively with `ss -x` — no AT-SPI client is created. That is
+# deliberate: an event-listening client would be a second instrument that
+# CHANGES the load it is trying to measure, in an investigation where "agent
+# probing drives crashes" was itself a live hypothesis.
+#
+# ⚠️ The backlog shows as Send-Q on the DAEMON side, NOT Recv-Q on the stalled
+# client's side. Grepping for a growing recv-Q on the client socket finds zero
+# and reads as healthy. Measured 2026-08-20: one connection carried 213,504
+# bytes queued toward `python3 -m ui_eye.client` (pid 422117) while every other
+# connection sat at 768 — 95% of all backlog on the bus, 278x the next largest.
+#
+# ⚠️ LAGGING AND THRESHOLDED, not a signal count: it only moves when some reader
+# falls behind, so a burst everyone keeps up with reads as zero. A true
+# signals-per-interval counter has to come from a client that is pumping.
+# ⛔ LIVENESS FILTER — WITHOUT THIS THE COLUMN MEASURES RESTARTS, NOT SIGNALS.
+# Raised by `scripts` 2026-08-20 and it is correct. When an AT-SPI client exits,
+# the bus's undelivered backlog toward it stays queued on the daemon side, so a
+# departing peer produces exactly the same large Send-Q as a wedged one. The
+# ui_eye.client restarts 36+ times a night and those restarts are FAULT-DRIVEN
+# ⇒ an unfiltered series would correlate beautifully with faults and crashes
+# while measuring none of them. A spurious correlation built into the sampler.
+#
+# So: resolve each queued socket's PEER pid and count only connections whose
+# peer is still alive. Report what was dropped rather than filtering silently —
+# a quiet night and a heavily-filtered night must not look identical.
+#
+# ⚠️ Liveness is necessary, NOT sufficient: a process that is alive but in its
+# shutdown path has also stopped reading, and looks identical to a wedge. Treat
+# a spike as "someone stopped reading", never as "someone is wedged".
+read -r a11y_tot_q a11y_max_q a11y_dropped <<<"$(/usr/bin/python3 - <<'PY' 2>/dev/null || echo "NA NA NA"
+import os, re, subprocess, glob
+# inode -> pid, built once from /proc/*/fd
+owner = {}
+for fd in glob.glob('/proc/[0-9]*/fd/*'):
+    try: t = os.readlink(fd)
+    except OSError: continue
+    if t.startswith('socket:['):
+        owner[t[8:-1]] = fd.split('/')[2]
+try:
+    out = subprocess.run(['ss','-x'], capture_output=True, text=True, timeout=10).stdout
+except Exception:
+    raise SystemExit(1)
+tot = mx = dropped = 0
+for line in out.splitlines():
+    if 'at-spi' not in line: continue
+    f = line.split()
+    if len(f) < 8: continue
+    try: sq = int(f[3])
+    except ValueError: continue
+    if sq <= 0: continue
+    peer = f[7]                      # peer inode column
+    pid = owner.get(peer)
+    if pid is None or not os.path.isdir(f'/proc/{pid}'):
+        dropped += sq                # peer gone: departing-socket artefact
+        continue
+    tot += sq
+    if sq > mx: mx = sq
+print(tot, mx, dropped)
+PY
+)"
+[ -n "$a11y_tot_q" ] || { a11y_tot_q=NA; a11y_max_q=NA; a11y_dropped=NA; }
+
+[ -s "$LOG" ] || echo "iso_time,epoch,idle_ms,chrome_windows,renderer_procs,browser_up,visits_5m,browser_uptime_s,a11y_total_sendq,a11y_max_sendq,a11y_dropped_sendq" > "$LOG"
+printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
   "$(date '+%F %T')" "$(date +%s)" "$idle" "$windows" "$renderers" "$browser_up" \
-  "$visits_5m" "$browser_uptime" >> "$LOG"
+  "$visits_5m" "$browser_uptime" "$a11y_tot_q" "$a11y_max_q" "$a11y_dropped" >> "$LOG"
 
 # Bounded: keep the header plus the newest MAX_LINES rows.
 lines="$(wc -l < "$LOG" 2>/dev/null || echo 0)"
