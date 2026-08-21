@@ -127,46 +127,59 @@ browser_uptime="NA"
 # CHANGES the load it is trying to measure, in an investigation where "agent
 # probing drives crashes" was itself a live hypothesis.
 #
-# ⚠️ The backlog shows as Send-Q on the DAEMON side, i.e. bytes the bus has
-# queued TOWARD a client that is not reading them.
+# ⛔⛔ READ THIS BEFORE TRUSTING ANY NUMBER BELOW. Three claims that lived in
+# this comment on 2026-08-20 were WRONG, and all three were mine. The corrected
+# model, converged with `scripts` and `ui-eye` and re-verified here at 21:14:
 #
-# ⛔ THIS COMMENT USED TO CLAIM "every other connection sat at 768 — 278x the
-# next largest." RETRACTED 2026-08-20 21:11, and the retraction matters more
-# than the number did, because `ui-eye` cited that 768 back to me as an
-# independent control for their crash mechanism. It was not independent: it was
-# my own unverified reading making a round trip and returning with authority it
-# never had. ⇒ ⛔ A FIGURE YOU PUBLISHED IS NOT EVIDENCE WHEN IT COMES BACK.
+# ⛔ 1. "ONE CLIENT PID HOLDS TWO a11y SOCKETS." FALSE. It is ONE connection
+# seen from BOTH ENDS. `ss -x` prints a row per ENDPOINT, and the inode pair is
+# reciprocal (381012841 <-> 381016500 = client fd=11 / daemon fd=26). My own
+# reciprocity test: 72 nonzero endpoint rows -> 37 distinct CONNECTIONS.
+# ⇒ What manufactured the phantom second socket was a display bug in my probe:
+# `other = b if a in daemon else a` prints the socket's OWNER when the daemon is
+# on the far end, and I labelled that column "peer". Both ends then read
+# `peer=588150` and looked like two sockets on one pid.
+# ⇒ ⛔ THE LESSON IS NOT "attribute by inode" (I said that, and it was already
+# what I did). It is: **a label that is right half the time is worse than no
+# label.** Print BOTH inodes and let the reciprocity be checkable.
 #
-# What 768 actually missed: the busy clients are on the SESSION bus (pid 5457),
-# NOT this a11y bus, and they show THE SAME SIGNATURE. Measured 21:11:30 --
-# xdg-desktop-portal-gtk rq=36448/sq=205824 (x12), gnome-shell 35904/202752,
-# update-notifier 36312/205056, 1password 34272/193536, seahorse 34136/192768,
-# against ui_eye.client 41436/213760.
-# ⇒ ⛔ sendq ~200 KB with recvq ~35 KB IS THE ORDINARY STEADY STATE of a busy
-# dbus connection on this host. gnome-shell was drawing the desktop and
-# gnome-terminal-server was rendering a live session at those depths. **Magnitude
-# alone does not distinguish a wedged client from a healthy one.**
+# ⛔ 2. "recvq FLUCTUATES, sendq SATURATES -- report them separately." FALSE,
+# and it is the same error wearing different clothes. They are THE SAME BYTES
+# IN DIFFERENT UNITS. AF_UNIX charges queued data to the SENDER's wmem as skb
+# TRUESIZE, while the reader's Recv-Q counts PAYLOAD:
+#     213760 / 41436 = 5.159      213504 / 41436 = 5.153
+# ⇒ Ratio ~5.16 (many small D-Bus messages, per-skb overhead). ⛔ SO NEVER SUM
+# rq + sq -- that double-counts one queue. Take the sender side alone; the
+# receiver side adds no independent information.
+# ⇒ And the 9,980 -> 41,218 "drain" that cost two seats an evening needs no
+# drain, no restart and no transport recovery: it is payload wobble on one queue.
 #
-# ✅ WHAT SURVIVES, and it is why this column stays: on THIS bus (647592), the
-# ui_eye client is the only peer with any queue at all. That asymmetry is real.
-# It is a statement about WHICH BUS, not about how deep -- so never compare a
-# depth here against a depth from the session bus. Different populations.
+# ⛔ 3. "MAGNITUDE DETECTS A WEDGE." FALSE, and this is the one that matters.
+# `scripts` measured the ui_eye client at 125 s old with t_alloc=214016 against
+# tb=212992 -- AT the kernel ceiling -- while the watchdog logged `ok - 19 apps`
+# at that same instant. ⇒ **Saturation is a CONSTANT of this client, reached
+# ~2 min after every start and held through healthy and wedged phases alike.**
+# A constant cannot trigger an event, and it cannot separate the two states.
+# ⇒ Cause: that client runs no GLib main loop, so nothing ever pumps the
+# connection. Real defect, but hygiene -- NOT the cure for the blind-view bug.
 #
-# ⛔ THIS COMMENT USED TO ADD "and Recv-Q on the client socket is zero, so a
-# recv-Q grep reads as healthy." THAT IS FALSE, measured 21:06 on 2026-08-20,
-# and it was false in a way that made two seats argue past each other for an
-# hour. ONE CLIENT PID HOLDS TWO a11y-BUS SOCKETS AT ONCE:
-#     recvq=41678  sendq=0       peer=588150  python3 -m ui_eye.client
-#     recvq=0      sendq=213760  peer=588150  python3 -m ui_eye.client
-# ⇒ ⛔ ATTRIBUTE BY INODE, NOT BY PID. Resolving a socket to its owning process
-# does NOT identify the socket -- `ui-eye` was reading the recvq one and this
-# sampler the sendq one, both correctly, both on the same pid, and neither
-# instrument could say so.
-# ⇒ ⭐ THE TWO SOCKETS DO NOT BEHAVE ALIKE, so a single "depth" number is a
-# category error: recvq FLUCTUATES (9,980 -> 41,218 -> 41,678) while sendq
-# SATURATES (213,504 / 213,760, two wedges 256 bytes apart). "a11y depth
-# saturates" is a fact about the sendq socket that I wrongly generalised to
-# the bus. Report them SEPARATELY -- collapsing with max() hid the whole thing.
+# ⛔ AND THERE IS NO SAME-BUS CONTROL ON THIS HOST. The other 22-23 peers on
+# 647592 read 0/0 because they are AT-SPI PROVIDERS that receive nothing, not
+# subscribers that are keeping up. Zero here means "not subscribed", not
+# "healthy and draining". ⇒ The only valid control is this client's OWN healthy
+# phase. ⛔ Do not compare against the SESSION bus (pid 5457) either -- different
+# population entirely; its busy clients sit at rq~36K/sq~205K as a matter of
+# course, which is where a "wedged" reading also sits.
+#
+# ⚑ Provenance note, because it cost real time: the figure "every other
+# connection sat at 768, 278x the next largest" was MINE, unverified, written
+# here -- and `ui-eye` then cited it back to me as an independent control.
+# ⇒ ⛔ A FIGURE YOU PUBLISHED IS NOT EVIDENCE WHEN IT RETURNS.
+#
+# ⇒ ✅ SO WHAT IS THIS COLUMN STILL FOR? Not depth. Depth is a constant for the
+# only peer that has one. It is for CONNECTION IDENTITY AND TURNOVER: whether a
+# subscribed client is attached at all, and whether that connection was replaced
+# between samples. Those do move, and nothing else here records them.
 #
 # ⚠️ LAGGING AND THRESHOLDED, not a signal count: it only moves when some reader
 # falls behind, so a burst everyone keeps up with reads as zero. A true
@@ -220,24 +233,46 @@ except Exception:
 # sendq permanently masked a FLUCTUATING recvq on the same pid, and the column
 # looked like a stable measurement of one thing. Keep the two sides apart.
 # `conns` is here so a quiet bus and a filtered-empty bus cannot look identical.
-tot = mx_sq = mx_rq = dropped = conns = 0
+# ⛔ DEDUPE BY RECIPROCAL INODE PAIR. `ss -x` emits one row per ENDPOINT, so
+# every connection appears TWICE and a naive loop counts it twice. The version
+# committed in 8358aee did exactly that: it summed rq+sq across both rows, i.e.
+# payload PLUS truesize of the same bytes, and reported `conns=2` for ONE
+# connection. Corrected 21:16 -- only the 21:09:57 row carries the doubled
+# values; treat it as bad and nothing before it had the column at all.
+rows = {}
 for line in out.splitlines():
     f = line.split()
     if len(f) < 8: continue
     try: rq, sq = int(f[2]), int(f[3])
     except ValueError: continue
-    if rq <= 0 and sq <= 0: continue
-    ino, peer = f[5], f[7]
+    rows[f[5]] = (rq, sq, f[7])      # inode -> (recvq, sendq, peer inode)
+
+tot = mx_sq = mx_rq = dropped = conns = 0
+seen = set()
+for ino, (rq, sq, peer) in rows.items():
     a, b = owner.get(ino), owner.get(peer)
     if not (a in daemon or b in daemon): continue   # a11y bus connections only
-    other = b if a in daemon else a
-    if other is None or not os.path.isdir('/proc/' + str(other)):
-        dropped += rq + sq           # peer gone: departing-socket artefact
+    key = (ino, peer) if ino < peer else (peer, ino)
+    if key in seen: continue                        # already did the far end
+    seen.add(key)
+    # Orient the pair: the DAEMON end carries the queue toward the client
+    # (charged to the sender as skb truesize); the CLIENT end's recvq is the
+    # payload view of those same bytes. Take the daemon side as the quantity.
+    if a in daemon:
+        d_sq = sq;                    c_ino, c_pid = peer, b
+    else:
+        pr = rows.get(peer)
+        d_sq = pr[1] if pr else 0;    c_ino, c_pid = ino, a
+    c = rows.get(c_ino)
+    c_rq = c[0] if c else 0
+    if d_sq <= 0 and c_rq <= 0: continue            # idle connection
+    if c_pid is None or not os.path.isdir('/proc/' + str(c_pid)):
+        dropped += d_sq              # peer gone: departing-socket artefact
         continue
     conns += 1
-    tot += rq + sq
-    if sq > mx_sq: mx_sq = sq
-    if rq > mx_rq: mx_rq = rq
+    tot += d_sq                      # ⛔ daemon side ONLY -- never rq + sq
+    if d_sq > mx_sq: mx_sq = d_sq
+    if c_rq > mx_rq: mx_rq = c_rq
 print(tot, mx_sq, dropped, mx_rq, conns)
 PY
 )"
