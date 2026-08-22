@@ -1386,6 +1386,49 @@ class BackgroundController {
         this.handleMCPMessage(data);
       }
 
+      // ⭐ Re-announce every attached tab whenever the socket comes up.
+      //
+      // The server's tabId→extension routing map is built ONLY from
+      // TAB_ATTACHED, which was sent once at attach time and never again. The
+      // map lives in server memory, so a :9010 restart empties it while the
+      // tabs themselves — which live here — are completely unaffected. With
+      // more than one browser connected, wsFor() then resolves no owner for a
+      // tabTarget and throws "Multiple extensions are connected (N)…", telling
+      // the caller their call is ambiguous when nothing about their call
+      // changed. Every seat holding a tab by label breaks at once, silently,
+      // and the error points at them rather than at the restart.
+      //
+      // Found 2026-08-22 while planning a restart to deploy 8e61812 — by
+      // asking what the restart would cost, not by hitting it. Until now the
+      // recovery was for each seat to re-attach by hand, which only works if
+      // someone tells them to.
+      //
+      // Best-effort and idempotent: recordTabOwner() is a Map set, so a
+      // duplicate announcement for a tab the server already knows is a no-op.
+      // The offscreen doc sends EXTENSION_REGISTER on the same socket before
+      // it notifies us, so the connection is already identified by the time
+      // this runs; the small delay is slack for that ordering, not a fix for it.
+      if (state === 'connected') {
+        setTimeout(() => {
+          const attached = Array.from(this.tabManager?.attachedTabs?.values?.() || []);
+          if (attached.length === 0) return;
+          console.log('[Background] Socket up — re-announcing', attached.length, 'attached tab(s) to rebuild server routing');
+          for (const info of attached) {
+            try {
+              self.__unibrowseSendBareToServer?.({
+                type: 'TAB_ATTACHED',
+                payload: {
+                  extensionId: self.__unibrowseExtensionId,
+                  tabId: info.tabId,
+                  label: info.label,
+                  url: info.url,
+                },
+              });
+            } catch { /* best-effort, per tab */ }
+          }
+        }, 500);
+      }
+
       // Reset autoConnectAttempted on disconnection
       // This allows reconnection when server restarts or becomes available
       // WebSocket will retry indefinitely with exponential backoff (max 5s delay)
