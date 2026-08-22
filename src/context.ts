@@ -113,6 +113,15 @@ export class Context {
   // Reverse-lookup: tabId → extensionId, so a tool call carrying tabTarget
   // can be routed to the right extension without walking the whole pool.
   private _tabToExtension = new Map<number, string>();
+  // tabId → the LABEL the extension announced for it. Labels are what tool
+  // descriptions tell callers to prefer ("Prefer tabTarget when you have a
+  // label"), yet until 2026-08-22 the server recorded only the numeric id, so a
+  // non-numeric tabTarget fell straight through wsFor() to the ambiguity throw
+  // whenever more than one browser was connected — i.e. following the
+  // documented advice was the one thing that could not route. Kept as
+  // tabId → label (not label → extension) so forgetTabOwner stays a single
+  // delete and a label that moves between tabs cannot leave a stale mapping.
+  private _tabLabels = new Map<number, string>();
   // Every extensionId seen since this process started, INCLUDING ones that have
   // since disconnected. Without this, `unregisterExtensionById` erases the fact
   // that a browser ever existed, and "the extension is dead" becomes
@@ -224,7 +233,10 @@ export class Context {
   unregisterExtensionById(extensionId: string): void {
     const conn = this._extensions.get(extensionId);
     if (!conn) return;
-    for (const tabId of conn.tabIds) this._tabToExtension.delete(tabId);
+    for (const tabId of conn.tabIds) {
+      this._tabToExtension.delete(tabId);
+      this._tabLabels.delete(tabId);
+    }
     this._extensions.delete(extensionId);
     // Leave the _seenExtensions tombstone in place and stamp when we lost it.
     // This is the whole point: a disconnected browser must stay VISIBLE as
@@ -382,11 +394,33 @@ export class Context {
   }
 
   /** Mark a tab as owned by an extension (called from TAB_ATTACHED handler). */
-  recordTabOwner(tabId: number, extensionId: string): void {
+  recordTabOwner(tabId: number, extensionId: string, label?: string): void {
     const conn = this._extensions.get(extensionId);
     if (!conn) return;
     conn.tabIds.add(tabId);
     this._tabToExtension.set(tabId, extensionId);
+    if (label) this._tabLabels.set(tabId, label);
+  }
+
+  /**
+   * Which extensions currently hold a tab under this label?
+   *
+   * Returns every match, never a pick. Labels are unique WITHIN an extension
+   * and nothing makes them unique across the pool — two browsers can each hold
+   * a tab labelled "pushbuild.slack.com" — so collapsing a collision to one
+   * answer would route a caller to a browser they did not name and report it as
+   * success. That is the failure mode this file keeps re-learning (see the
+   * restricted-URL retarget note in the extension's handleEnsureAttached): a
+   * wrong destination reported as success costs more than an error.
+   */
+  private extensionsForLabel(label: string): string[] {
+    const owners = new Set<string>();
+    for (const [tabId, l] of this._tabLabels) {
+      if (l !== label) continue;
+      const owner = this._tabToExtension.get(tabId);
+      if (owner && this._extensions.has(owner)) owners.add(owner);
+    }
+    return Array.from(owners);
   }
 
   /**
@@ -426,7 +460,7 @@ export class Context {
     let recovered = 0;
     for (const t of tabs) {
       if (typeof t?.tabId === "number") {
-        this.recordTabOwner(t.tabId, extensionId);
+        this.recordTabOwner(t.tabId, extensionId, typeof t.label === "string" ? t.label : undefined);
         recovered++;
       }
     }
@@ -438,6 +472,7 @@ export class Context {
     const owner = this._tabToExtension.get(tabId);
     if (!owner) return;
     this._tabToExtension.delete(tabId);
+    this._tabLabels.delete(tabId);
     const conn = this._extensions.get(owner);
     if (conn) conn.tabIds.delete(tabId);
   }
@@ -482,13 +517,42 @@ export class Context {
         const owner = this._tabToExtension.get(opts.tabTarget);
         if (owner) return this._extensions.get(owner)!.ws;
       }
-      // String tabTarget: a numeric string, or a label. For numeric strings,
-      // try the number; for labels, walk the pool — extensions track labels
-      // internally, so we let `wsFor` fall through to the single-pool fallback
-      // below; the extension will resolve the label on its own.
+      // String tabTarget: a numeric string, or a label.
       if (typeof opts.tabTarget === "string" && /^\d+$/.test(opts.tabTarget)) {
         const owner = this._tabToExtension.get(parseInt(opts.tabTarget, 10));
         if (owner) return this._extensions.get(owner)!.ws;
+      }
+      // A non-numeric tabTarget is a LABEL. This used to fall straight through
+      // to the single-pool fallback below, on the reasoning that "extensions
+      // track labels internally, so let the extension resolve it". True, and
+      // useless with several connected: REACHING the extension that knows the
+      // label is the very thing being decided. So the advice the tool
+      // descriptions give — "Prefer tabTarget when you have a label" — was the
+      // one form of targeting that could not route on this fleet, and every
+      // label-holding seat got "Multiple extensions are connected" instead.
+      // TAB_ATTACHED has always carried the label; the server just never kept it.
+      if (typeof opts.tabTarget === "string") {
+        const owners = this.extensionsForLabel(opts.tabTarget);
+        if (owners.length === 1) return this._extensions.get(owners[0])!.ws;
+        if (owners.length > 1) {
+          // ⛔ Never pick. Labels are unique WITHIN an extension and nothing
+          // makes them unique across the pool — two browsers can each hold a
+          // tab labelled "pushbuild.slack.com". Resolving that by guessing
+          // would drive a browser the caller did not name and report success,
+          // which is the failure this file keeps re-learning.
+          throw new Error(
+            `Tab label "${opts.tabTarget}" exists in ${owners.length} connected browsers, so it does not identify one:\n` +
+            owners.map((id) => {
+              const d = this.describeExtension(id);
+              return `  · ${id} — ${d?.label ?? "(unknown)"}`;
+            }).join("\n") +
+            `\nPass extensionId alongside tabTarget to say which, or target the numeric tabId from ` +
+            `browser_list_attached_tabs — tab ids are unique across browsers, labels are not.`,
+          );
+        }
+        // Zero matches: fall through. The label may belong to a tab attached
+        // before this server started and not yet re-announced, and the
+        // single-extension fallback below still resolves it correctly.
       }
     }
     // No explicit target. If there's exactly one extension, that's the default.

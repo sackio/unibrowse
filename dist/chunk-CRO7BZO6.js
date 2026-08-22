@@ -134,6 +134,15 @@ var Context = class _Context {
   // Reverse-lookup: tabId → extensionId, so a tool call carrying tabTarget
   // can be routed to the right extension without walking the whole pool.
   _tabToExtension = /* @__PURE__ */ new Map();
+  // tabId → the LABEL the extension announced for it. Labels are what tool
+  // descriptions tell callers to prefer ("Prefer tabTarget when you have a
+  // label"), yet until 2026-08-22 the server recorded only the numeric id, so a
+  // non-numeric tabTarget fell straight through wsFor() to the ambiguity throw
+  // whenever more than one browser was connected — i.e. following the
+  // documented advice was the one thing that could not route. Kept as
+  // tabId → label (not label → extension) so forgetTabOwner stays a single
+  // delete and a label that moves between tabs cannot leave a stale mapping.
+  _tabLabels = /* @__PURE__ */ new Map();
   // Every extensionId seen since this process started, INCLUDING ones that have
   // since disconnected. Without this, `unregisterExtensionById` erases the fact
   // that a browser ever existed, and "the extension is dead" becomes
@@ -217,7 +226,10 @@ var Context = class _Context {
   unregisterExtensionById(extensionId) {
     const conn = this._extensions.get(extensionId);
     if (!conn) return;
-    for (const tabId of conn.tabIds) this._tabToExtension.delete(tabId);
+    for (const tabId of conn.tabIds) {
+      this._tabToExtension.delete(tabId);
+      this._tabLabels.delete(tabId);
+    }
     this._extensions.delete(extensionId);
     const seen = this._seenExtensions.get(extensionId);
     if (seen) seen.lastSeenAt = Date.now();
@@ -319,11 +331,32 @@ var Context = class _Context {
     return ` \u26A0\uFE0F ALSO SEEN THIS SESSION BUT CURRENTLY ABSENT: ${parts.join(", ")}. An absent extension means that browser is closed, or Chrome disabled/crashed its extension (chrome://extensions will show a Reload button). If the browser you actually want is in that list, DO NOT reason about the ones still connected \u2014 you would be measuring a different browser.`;
   }
   /** Mark a tab as owned by an extension (called from TAB_ATTACHED handler). */
-  recordTabOwner(tabId, extensionId) {
+  recordTabOwner(tabId, extensionId, label) {
     const conn = this._extensions.get(extensionId);
     if (!conn) return;
     conn.tabIds.add(tabId);
     this._tabToExtension.set(tabId, extensionId);
+    if (label) this._tabLabels.set(tabId, label);
+  }
+  /**
+   * Which extensions currently hold a tab under this label?
+   *
+   * Returns every match, never a pick. Labels are unique WITHIN an extension
+   * and nothing makes them unique across the pool — two browsers can each hold
+   * a tab labelled "pushbuild.slack.com" — so collapsing a collision to one
+   * answer would route a caller to a browser they did not name and report it as
+   * success. That is the failure mode this file keeps re-learning (see the
+   * restricted-URL retarget note in the extension's handleEnsureAttached): a
+   * wrong destination reported as success costs more than an error.
+   */
+  extensionsForLabel(label) {
+    const owners = /* @__PURE__ */ new Set();
+    for (const [tabId, l] of this._tabLabels) {
+      if (l !== label) continue;
+      const owner = this._tabToExtension.get(tabId);
+      if (owner && this._extensions.has(owner)) owners.add(owner);
+    }
+    return Array.from(owners);
   }
   /**
    * Rebuild one extension's routing entries by ASKING it what it has attached.
@@ -362,7 +395,7 @@ var Context = class _Context {
     let recovered = 0;
     for (const t of tabs) {
       if (typeof t?.tabId === "number") {
-        this.recordTabOwner(t.tabId, extensionId);
+        this.recordTabOwner(t.tabId, extensionId, typeof t.label === "string" ? t.label : void 0);
         recovered++;
       }
     }
@@ -373,6 +406,7 @@ var Context = class _Context {
     const owner = this._tabToExtension.get(tabId);
     if (!owner) return;
     this._tabToExtension.delete(tabId);
+    this._tabLabels.delete(tabId);
     const conn = this._extensions.get(owner);
     if (conn) conn.tabIds.delete(tabId);
   }
@@ -411,6 +445,20 @@ var Context = class _Context {
       if (typeof opts.tabTarget === "string" && /^\d+$/.test(opts.tabTarget)) {
         const owner = this._tabToExtension.get(parseInt(opts.tabTarget, 10));
         if (owner) return this._extensions.get(owner).ws;
+      }
+      if (typeof opts.tabTarget === "string") {
+        const owners = this.extensionsForLabel(opts.tabTarget);
+        if (owners.length === 1) return this._extensions.get(owners[0]).ws;
+        if (owners.length > 1) {
+          throw new Error(
+            `Tab label "${opts.tabTarget}" exists in ${owners.length} connected browsers, so it does not identify one:
+` + owners.map((id) => {
+              const d = this.describeExtension(id);
+              return `  \xB7 ${id} \u2014 ${d?.label ?? "(unknown)"}`;
+            }).join("\n") + `
+Pass extensionId alongside tabTarget to say which, or target the numeric tabId from browser_list_attached_tabs \u2014 tab ids are unique across browsers, labels are not.`
+          );
+        }
       }
     }
     if (this._extensions.size === 1) {
@@ -605,7 +653,7 @@ async function createServerWithTools(options) {
       const tabId = payload?.tabId;
       if (tabId != null && extensionId) {
         if (type2 === "TAB_ATTACHED") {
-          globalContext.recordTabOwner(tabId, extensionId);
+          globalContext.recordTabOwner(tabId, extensionId, payload?.label);
           console.log(`[Server] TAB_ATTACHED: tab=${tabId} ext=${extensionId}`);
         } else {
           globalContext.forgetTabOwner(tabId);

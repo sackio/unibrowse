@@ -150,7 +150,9 @@ export async function createServerWithTools(options: Options): Promise<Server> {
       const tabId = payload?.tabId as number;
       if (tabId != null && extensionId) {
         if (type === 'TAB_ATTACHED') {
-          globalContext.recordTabOwner(tabId, extensionId);
+          // Keep the label too — it is what callers are told to prefer, and
+          // wsFor() can now route on it. See Context.extensionsForLabel.
+          globalContext.recordTabOwner(tabId, extensionId, payload?.label as string | undefined);
           console.log(`[Server] TAB_ATTACHED: tab=${tabId} ext=${extensionId}`);
         } else {
           globalContext.forgetTabOwner(tabId);
