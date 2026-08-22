@@ -74,7 +74,14 @@ export const clearCache: Tool = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
+      // ⛔ No ensureAttachedFromParams() here — unlike the two tools above it,
+      // which really are tab-scoped (both do requireCDP(tabTarget)).
+      // handleClearCache calls chrome.browsingData.remove(), which is
+      // PROFILE-wide and never touches a tab; the pre-flight could only ever
+      // fail the call. Same class as the bookmarks/cookies/downloads/history
+      // sweep in 79c4655 — missed there because it lives in network.ts, and
+      // "cache" reads like a page property when it is a profile-wide store.
+      // ⭐ Judge scope by what the HANDLER touches, not by the file it sits in.
       const validatedParams = ClearCacheTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_clear_cache", validatedParams);
       return textResponse("Cache cleared successfully", max_tokens);

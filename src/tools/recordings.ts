@@ -497,8 +497,12 @@ export const getRecordingScreenshot: Tool = {
       }
 
       // ── rrweb DOM replay via browser tab ──────────────────────────────────
-      await context.ensureAttachedFromParams(params);
-
+      // ⛔ No ensureAttachedFromParams() pre-flight. This path creates and
+      // attaches its OWN player tab three lines down, so the pre-flight was
+      // attaching an unrelated tab purely to throw it away — and it inherited
+      // that tool's failure mode: untargeted, it falls back to
+      // tabManager.lastUsedTabId, so a dangling pointer failed DOM replay with
+      // "No tab with id: <a tab nobody asked about>". See the banner in tabs.ts.
       const label = `rrweb-frame-${Date.now()}`;
       const playerUrl = `http://localhost:9010/rrweb-player?id=${p.id}&t=${targetTs}${p.selector ? "&selector=" + encodeURIComponent(p.selector) : ""}`;
 

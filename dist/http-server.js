@@ -110,7 +110,7 @@ import {
   updateMacro,
   updateRecording,
   wait
-} from "./chunk-24RFYTK5.js";
+} from "./chunk-2NBR2QBT.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -317,7 +317,6 @@ var getErrors = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const validatedParams = GetErrorsTool.shape.arguments.parse(params || {});
       const result = await context.sendSocketMessage("browser_get_errors", validatedParams);
       return jsonResponse(result, true, max_tokens);
@@ -335,7 +334,6 @@ var reloadExtension = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const result = await context.sendSocketMessage(
         "browser_reload_extension",
         params || {},

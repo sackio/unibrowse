@@ -3369,7 +3369,6 @@ var clearCache = {
   handle: async (context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const validatedParams = ClearCacheTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_clear_cache", validatedParams);
       return textResponse("Cache cleared successfully", max_tokens);
@@ -5047,7 +5046,6 @@ var getRecordingScreenshot = {
           return errorResponse(`No video file found for recording "${p.id}"${tabId ? ` tab ${tabId}` : ""}`, true, void 0, max_tokens);
         }
       }
-      await context.ensureAttachedFromParams(params);
       const label = `rrweb-frame-${Date.now()}`;
       const playerUrl = `http://localhost:9010/rrweb-player?id=${p.id}&t=${targetTs}${p.selector ? "&selector=" + encodeURIComponent(p.selector) : ""}`;
       await context.sendSocketMessage(
