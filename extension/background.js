@@ -780,17 +780,10 @@ class TabManager {
     // cannot be meaningful: the tab it refers to is gone.
     this.reservations.delete(tabId);
 
-    // Update lastUsedTabId if needed
-    if (this.lastUsedTabId === tabId) {
-      const remaining = Array.from(this.attachedTabs.values());
-      if (remaining.length > 0) {
-        // Use the most recently used remaining tab
-        remaining.sort((a, b) => b.lastUsedAt - a.lastUsedAt);
-        this.lastUsedTabId = remaining[0].tabId;
-      } else {
-        this.lastUsedTabId = null;
-      }
-    }
+    // Update lastUsedTabId if needed. This was the ONLY path that got it
+    // right; repointLastUsed() is this logic extracted so the five paths that
+    // nulled the pointer instead can share it.
+    if (this.lastUsedTabId === tabId) this.repointLastUsed();
 
     console.log('[TabManager] Tab detached. Remaining tabs:', this.attachedTabs.size);
   }
@@ -989,6 +982,23 @@ class TabManager {
         title: t.title,
         attachedAt: t.attachedAt,
         lastUsedAt: t.lastUsedAt,
+        // ⛔ LOAD-BEARING CONTRACT, NOT AN INCIDENTAL FIELD. `isActive` means
+        // exactly "this tab IS lastUsedTabId" and nothing else.
+        //
+        // `claude-login-auto` (agents, commit 936f2ee) derives a health check
+        // from it: "extension has attached tabs AND none is active ⇒ the
+        // last-used pointer is dangling", and then HEALS that by re-attaching
+        // the extension's first live tab. Redefining isActive — e.g. to "the
+        // foreground tab", or to something the server maintains independently
+        // of lastUsedTabId — silently INVERTS that predicate: it would report
+        // healthy extensions as wedged and re-attach tabs nobody asked for, on
+        // every login run across the fleet.
+        //
+        // ⛔ Tell `agents` BEFORE changing this so they can re-key the detector.
+        //
+        // ⚠️ Deliberately reads the RAW field, not getLastUsedTabId(): that
+        // getter repairs a stale pointer on read, and repairing the state you
+        // are reporting on would hide the very condition this field publishes.
         isActive: t.tabId === this.lastUsedTabId,
         // Reservation: surface current owner + claim time + prior owners.
         // null when free-for-all (no reservation), so legacy callers can
@@ -1040,12 +1050,39 @@ class TabManager {
    * to call this method; that would heal the state being reported on.
    */
   getLastUsedTabId() {
-    if (this.lastUsedTabId !== null && !this.attachedTabs.has(this.lastUsedTabId)) {
-      console.warn('[TabManager] lastUsedTabId', this.lastUsedTabId, 'is not attached; re-pointing at the most recently used live tab');
-      const remaining = Array.from(this.attachedTabs.values()).sort((a, b) => b.lastUsedAt - a.lastUsedAt);
-      this.lastUsedTabId = remaining.length > 0 ? remaining[0].tabId : null;
-    }
+    if (!this.attachedTabs.has(this.lastUsedTabId)) this.repointLastUsed();
     return this.lastUsedTabId;
+  }
+
+  /**
+   * Point lastUsedTabId at the most recently used tab that is actually
+   * attached, or null when nothing is.
+   *
+   * ⛔ CALL THIS INSTEAD OF `lastUsedTabId = null` ANYWHERE OTHER TABS MAY
+   * STILL BE ATTACHED. Nulling it while two tabs are attached leaves the
+   * extension in a state where NO tab reports isActive — which is not a
+   * neutral inaccuracy, because that exact condition is a published signal.
+   *
+   * `claude-login-auto` (agents, commit 936f2ee) reads
+   * "extension has attached tabs AND none is active ⇒ dangling pointer" and
+   * HEALS it by re-attaching the first live tab. A spurious all-false state
+   * therefore makes it re-attach a tab nobody asked for, on every login run.
+   * Five call sites nulled the pointer this way, three of them added by me on
+   * 2026-08-22 while fixing the dangling-pointer wedge itself — the fix
+   * reintroduced a weaker form of the bug at a lower severity, which is why
+   * this is a method and not a line repeated six times.
+   *
+   * detachTab() has always done the right thing here; this is that logic,
+   * named, so the other paths can share it.
+   */
+  repointLastUsed() {
+    const remaining = Array.from(this.attachedTabs.values()).sort((a, b) => b.lastUsedAt - a.lastUsedAt);
+    const next = remaining.length > 0 ? remaining[0].tabId : null;
+    if (next !== this.lastUsedTabId) {
+      console.warn('[TabManager] re-pointing lastUsedTabId', this.lastUsedTabId, '→', next);
+    }
+    this.lastUsedTabId = next;
+    return next;
   }
 }
 
@@ -1328,7 +1365,7 @@ class BackgroundController {
         if (!currentTab) {
           console.log(`[Background] TabManager tab ${tabId} closed, removing from map`);
           this.tabManager.attachedTabs.delete(tabId);
-          if (this.tabManager.lastUsedTabId === tabId) this.tabManager.lastUsedTabId = null;
+          if (this.tabManager.lastUsedTabId === tabId) this.tabManager.repointLastUsed();
           return;
         }
 
@@ -1341,7 +1378,7 @@ class BackgroundController {
           if (currentTab.url.startsWith('chrome-extension://')) {
             console.warn(`[Background] TabManager tab ${tabId} owned by another extension (${currentTab.url}); removing from attached-tabs`);
             this.tabManager.attachedTabs.delete(tabId);
-            if (this.tabManager.lastUsedTabId === tabId) this.tabManager.lastUsedTabId = null;
+            if (this.tabManager.lastUsedTabId === tabId) this.tabManager.repointLastUsed();
             return;
           }
           // For chrome:// / devtools:// / etc., a single retry covers transient
@@ -2898,7 +2935,7 @@ class BackgroundController {
           await this.tabManager.detachTab(targetTabId).catch(() => {
             // Best-effort: guarantee the map entry is gone even if detach throws
             this.tabManager.attachedTabs.delete(targetTabId);
-            if (this.tabManager.lastUsedTabId === targetTabId) this.tabManager.lastUsedTabId = null;
+            if (this.tabManager.lastUsedTabId === targetTabId) this.tabManager.repointLastUsed();
           });
           if (this.state.tabId === targetTabId) {
             this.state.tabId = null;
@@ -2941,7 +2978,7 @@ class BackgroundController {
           // exactly the state that wedged ext_018237f9 on 2026-08-22.
           // getLastUsedTabId() now repairs this on read; keeping the pointer
           // honest here too means the repair is a backstop, not the mechanism.
-          if (this.tabManager.lastUsedTabId === targetTabId) this.tabManager.lastUsedTabId = null;
+          if (this.tabManager.lastUsedTabId === targetTabId) this.tabManager.repointLastUsed();
         }
       }
 
@@ -2963,7 +3000,7 @@ class BackgroundController {
         }
         console.warn('[Background] Self-chosen target', targetTabId, 'vanished before attach; re-resolving');
         this.tabManager.attachedTabs.delete(targetTabId);
-        if (this.tabManager.lastUsedTabId === targetTabId) this.tabManager.lastUsedTabId = null;
+        if (this.tabManager.lastUsedTabId === targetTabId) this.tabManager.repointLastUsed();
         // One retry only. The prune above shrinks the map, so a second miss
         // means we are picking from live-tab queries rather than stale state,
         // and looping would not converge on anything better.
