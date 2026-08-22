@@ -325,6 +325,49 @@ var Context = class _Context {
     conn.tabIds.add(tabId);
     this._tabToExtension.set(tabId, extensionId);
   }
+  /**
+   * Rebuild one extension's routing entries by ASKING it what it has attached.
+   *
+   * ⛔ THE ROUTING MAP DOES NOT SURVIVE A SERVER RESTART, BUT THE TABS DO.
+   * _tabToExtension is populated only by TAB_ATTACHED, which extensions send
+   * once at attach time. It lives in this process's memory; the attached tabs
+   * live in the browsers. So a :9010 restart empties the map while every tab
+   * stays attached and healthy — and with more than one browser connected,
+   * wsFor() then resolves no owner for a tabTarget and throws "Multiple
+   * extensions are connected (N)…". That error tells the caller their call is
+   * ambiguous at a moment when nothing about their call changed, and it fires
+   * for every seat holding a tab by label, all at once.
+   *
+   * Recovering by having each seat re-attach by hand only works if something
+   * tells them to, and nothing did. Asking the extension is better than waiting
+   * to be told: browser_list_attached_tabs is answered from the extension's own
+   * TabManager, needs no attached tab, and — unlike the matching extension-side
+   * re-announce — works against extension builds ALREADY RUNNING, so it repairs
+   * the restart that deploys it rather than the one after.
+   *
+   * Best-effort by construction: failure leaves the map exactly as empty as it
+   * would have been, and recordTabOwner() is a Map set, so racing a genuine
+   * TAB_ATTACHED for the same tab is a no-op rather than a conflict.
+   */
+  async rebuildTabOwnership(extensionId) {
+    const conn = this._extensions.get(extensionId);
+    if (!conn) return 0;
+    const { sendSocketMessage } = createSocketMessageSender(conn.ws);
+    const result = await sendSocketMessage(
+      "browser_list_attached_tabs",
+      {},
+      { timeoutMs: 1e4 }
+    );
+    const tabs = Array.isArray(result?.tabs) ? result.tabs : [];
+    let recovered = 0;
+    for (const t of tabs) {
+      if (typeof t?.tabId === "number") {
+        this.recordTabOwner(t.tabId, extensionId);
+        recovered++;
+      }
+    }
+    return recovered;
+  }
   /** Clear a tab's owner (called from TAB_DETACHED or extension disconnect). */
   forgetTabOwner(tabId) {
     const owner = this._tabToExtension.get(tabId);
@@ -541,6 +584,9 @@ async function createServerWithTools(options) {
         ws.send(JSON.stringify({ type: "EXTENSION_REGISTER_ACK", payload: { extensionId } }));
       } catch {
       }
+      void globalContext.rebuildTabOwnership(extensionId).then((n) => {
+        if (n > 0) console.log(`[Server] Rebuilt tab ownership for ${extensionId}: ${n} tab(s)`);
+      }).catch((e) => console.log(`[Server] Tab-ownership rebuild for ${extensionId} failed (non-fatal): ${e?.message ?? e}`));
       return;
     }
     if (type2 === "TAB_ATTACHED" || type2 === "TAB_DETACHED") {

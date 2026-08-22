@@ -106,6 +106,17 @@ export async function createServerWithTools(options: Options): Promise<Server> {
       try {
         ws.send(JSON.stringify({ type: 'EXTENSION_REGISTER_ACK', payload: { extensionId } }));
       } catch { /* best-effort */ }
+      // Ask this extension what it already has attached, and re-record the
+      // ownership the restart erased. See Context.rebuildTabOwnership — without
+      // this, every seat holding a tab by label gets "Multiple extensions are
+      // connected" after a server restart, blaming the caller for a map that
+      // this process dropped. Deliberately not awaited: registration must not
+      // block on it, and a failure leaves the map no worse than before.
+      void globalContext.rebuildTabOwnership(extensionId)
+        .then((n) => {
+          if (n > 0) console.log(`[Server] Rebuilt tab ownership for ${extensionId}: ${n} tab(s)`);
+        })
+        .catch((e) => console.log(`[Server] Tab-ownership rebuild for ${extensionId} failed (non-fatal): ${e?.message ?? e}`));
       return;
     }
 
