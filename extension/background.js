@@ -1014,8 +1014,37 @@ class TabManager {
 
   /**
    * Get the last-used tab ID
+   *
+   * ⛔ NEVER hand back an id that is no longer in attachedTabs. Callers use this
+   * as "the tab to use when the caller named none", and handleEnsureAttached's
+   * dead-tab prune is guarded by `attachedTabs.has(targetTabId)` — so a pointer
+   * that has fallen OUT of the map skips the prune entirely and drops through to
+   * `chrome.tabs.get(<dead id>)`, which rejects with Chrome's raw
+   * "No tab with id: <n>". Every untargeted call into that extension then fails
+   * with an id the caller never supplied and cannot act on.
+   *
+   * Measured 2026-08-22 on office's desktop Chrome (ext_018237f9): the pointer
+   * dangled at 41931315 for ~29h. browser_create_tab failed 100%, which blocked
+   * claude.ai logins fleet-wide, because that browser is the only one on office
+   * that can consume a magic link. Re-attaching any live tab cleared it — attach
+   * calls markUsed(), which overwrites the pointer.
+   *
+   * ⭐ Validate on READ, not at each delete. Two paths already drop an entry
+   * without moving the pointer (the re-attach-failed delete in
+   * handleEnsureAttached, and the same delete in _attemptTabManagerReattach),
+   * and the next one written will do it again. Only the read is a chokepoint.
+   *
+   * ⚠️ listTabs() deliberately still compares against the RAW field so that
+   * `isActive` reports the pointer's true state — an extension with attached
+   * tabs and no isActive:true is the dangling-pointer signal. Do not "fix" it
+   * to call this method; that would heal the state being reported on.
    */
   getLastUsedTabId() {
+    if (this.lastUsedTabId !== null && !this.attachedTabs.has(this.lastUsedTabId)) {
+      console.warn('[TabManager] lastUsedTabId', this.lastUsedTabId, 'is not attached; re-pointing at the most recently used live tab');
+      const remaining = Array.from(this.attachedTabs.values()).sort((a, b) => b.lastUsedAt - a.lastUsedAt);
+      this.lastUsedTabId = remaining.length > 0 ? remaining[0].tabId : null;
+    }
     return this.lastUsedTabId;
   }
 }
@@ -2687,7 +2716,7 @@ class BackgroundController {
    *   assigned until AFTER that internal attach returns, so the usual
    *   "already recording" guard is still null and cannot break the cycle.
    */
-  async handleEnsureAttached({ tabId, label, autoOpenUrl, autoCapture = true }) {
+  async handleEnsureAttached({ tabId, label, autoOpenUrl, autoCapture = true, _reResolved = false }) {
     try {
       let targetTabId = tabId;
 
@@ -2863,13 +2892,42 @@ class BackgroundController {
         } catch (reattachErr) {
           console.warn('[Background] Re-attach failed, removing from map for fresh attach:', reattachErr.message);
           this.tabManager.attachedTabs.delete(targetTabId);
+          // ⚠️ And move the last-used pointer off it. This delete bypasses
+          // detachTab(), which is the only place that re-points it — leaving
+          // lastUsedTabId naming a tab that is no longer in the map. That is
+          // exactly the state that wedged ext_018237f9 on 2026-08-22.
+          // getLastUsedTabId() now repairs this on read; keeping the pointer
+          // honest here too means the repair is a backstop, not the mechanism.
+          if (this.tabManager.lastUsedTabId === targetTabId) this.tabManager.lastUsedTabId = null;
         }
       }
 
-      // Get tab info
-      let tab = await chrome.tabs.get(targetTabId);
+      // Get tab info.
+      //
+      // ⛔ chrome.tabs.get REJECTS for an unknown id — it does not resolve to a
+      // falsy value — so the `if (!tab)` guard below was unreachable and
+      // Chrome's raw "No tab with id: <n>" escaped in its place. That is the
+      // right answer when the caller NAMED the tab, and the wrong one when WE
+      // picked it: an id we chose ourselves going stale is ours to recover
+      // from, not theirs to read as a failure about a tab they never mentioned.
+      let tab = await chrome.tabs.get(targetTabId).catch((err) => {
+        if (explicitTarget) throw err;
+        return null;
+      });
       if (!tab) {
-        throw new Error(`Tab ${targetTabId} not found`);
+        if (explicitTarget) {
+          throw new Error(`Tab ${targetTabId} not found`);
+        }
+        console.warn('[Background] Self-chosen target', targetTabId, 'vanished before attach; re-resolving');
+        this.tabManager.attachedTabs.delete(targetTabId);
+        if (this.tabManager.lastUsedTabId === targetTabId) this.tabManager.lastUsedTabId = null;
+        // One retry only. The prune above shrinks the map, so a second miss
+        // means we are picking from live-tab queries rather than stale state,
+        // and looping would not converge on anything better.
+        if (_reResolved) {
+          throw new Error('No tab available. Provide tabId, label, or autoOpenUrl.');
+        }
+        return await this.handleEnsureAttached({ tabId: null, label: null, autoOpenUrl: null, autoCapture, _reResolved: true });
       }
 
       // Check if the target tab has a restricted URL

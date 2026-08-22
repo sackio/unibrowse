@@ -13,6 +13,35 @@ import { textResponse, jsonResponse, errorResponse } from "@/utils/response-help
 
 import type { Tool } from "./tool";
 
+// ⛔ NO TOOL IN THIS FILE MAY CALL ensureAttachedFromParams().
+//
+// These are the tab LIFECYCLE tools — create, close, switch, list, create
+// window. Every one of their extension handlers resolves its own target from
+// its own arguments (handleCreateTab uses only the id of the tab it just
+// created; handleSwitchTab / handleCloseTab resolve tabId-or-tabTarget and are
+// unreachable without one) and none of them reads the last-used pointer. The
+// attach pre-flight they used to run could therefore only ever fail; it could
+// never help.
+//
+// On browser_create_tab it was worse than useless: it required an already-
+// attached tab in order to create one. Untargeted, ensure_attached falls back
+// to tabManager.lastUsedTabId, and on 2026-08-22 office's desktop Chrome
+// (ext_018237f9) had that pointer dangling at a closed tab, 41931315. Every
+// browser_create_tab returned "Failed to create tab: No tab with id: 41931315"
+// — naming an id the caller never supplied, for a create that never ran — for
+// ~29h. That browser is the only one on office that can consume a claude.ai
+// magic link, so it blocked every login on the fleet.
+//
+// This is the third pass of the same removal (737069d: system + extensions;
+// 79c4655: bookmarks/cookies/downloads/history; this one: tab lifecycle).
+// ⭐ Judge scope by what the extension HANDLER touches, never by the tool name:
+// these look tab-scoped, and are the tools that manage tabs rather than tools
+// that operate inside one.
+//
+// Routing survives the removal: sendSocketMessage() reads extensionId and
+// tabTarget straight off the payload, and every schema here merges
+// ExtensionIdSchema, so multi-extension disambiguation is unchanged.
+
 /**
  * List all open browser tabs
  * Returns information about all currently open tabs in the browser, including tab IDs,
@@ -56,7 +85,6 @@ export const switchTab: Tool = {
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const validatedParams = SwitchTabTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_switch_tab", validatedParams);
       // Report what the CALLER actually named. These read `tabId`, but the
@@ -88,7 +116,6 @@ export const createTab: Tool = {
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const validatedParams = CreateTabTool.shape.arguments.parse(params);
       const result: any = await context.sendSocketMessage(
         "browser_create_tab",
@@ -125,7 +152,6 @@ export const closeTab: Tool = {
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
       const validatedParams = CloseTabTool.shape.arguments.parse(params);
       await context.sendSocketMessage("browser_close_tab", validatedParams);
       // Report what the CALLER actually named. These read `tabId`, but the

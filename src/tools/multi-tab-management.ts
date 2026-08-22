@@ -201,7 +201,14 @@ export const detachTab: Tool = {
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
     try {
-      await context.ensureAttachedFromParams(params);
+      // ⛔ No ensureAttachedFromParams() here. Running an ATTACH pre-flight in
+      // front of a DETACH is backwards on its face, and it is not harmless:
+      // untargeted, ensure_attached falls back to tabManager.lastUsedTabId, so
+      // a dangling pointer makes detach fail with "No tab with id: <someone
+      // else's dead tab>" while the tab you named is alive and attached.
+      // (Same failure that wedged browser_create_tab on 2026-08-22 — see the
+      // banner in tabs.ts.) handleDetachTab resolves tabId/tabTarget itself and
+      // errors clearly when given neither.
       const validatedParams = DetachTabTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage(
         "browser_detach_tab",
