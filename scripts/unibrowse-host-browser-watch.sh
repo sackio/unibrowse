@@ -126,19 +126,70 @@ notify() {
   done
 }
 
-resp="$(curl -s -m 10 "$SERVER/extensions" 2>/dev/null)"
+# ⚠️ Capture curl's OWN verdict, not just the body. With `curl -s` alone, a
+# connection refused, a 10s timeout, and a 200 with an empty body are all the
+# same empty string — so the alert could only ever say "returned nothing",
+# which names the symptom and hides the cause. On 2026-08-22 23:05 this fired
+# while the container was up with restarts=0 and its healthcheck returned 200
+# six seconds later; there was no way to tell from the message whether that was
+# a slow response, a refused connection, or a real outage, and finding out took
+# a container inspect and a health-log read.
+probe_server() {
+  local out tail
+  out="$(curl -s -m 10 -w '\n%{http_code} %{time_total}' "$SERVER/extensions" 2>/dev/null)"; curl_rc=$?
+  tail="$(printf '%s' "$out" | tail -n1)"
+  resp="$(printf '%s' "$out" | sed '$d')"
+  case "$curl_rc" in
+    0)  probe_why="HTTP ${tail%% *} after ${tail##* }s" ;;
+    7)  probe_why="connection REFUSED (nothing listening on $SERVER)" ;;
+    28) probe_why="TIMED OUT after 10s — the port accepted but no reply came. The server may be UP and merely slow." ;;
+    *)  probe_why="curl exit $curl_rc" ;;
+  esac
+}
+
+# ⛔ RETRY BEFORE CONCLUDING. One failed request is not an outage, and this
+# check runs only every 5 minutes — so a single transient failure used to buy a
+# warning that stood for at least five more minutes with no way to age out.
+#
+# 2026-08-22 23:05: this alerted while the container had restarts=0 and its own
+# healthcheck returned 200 six seconds later, and localhost answered in ~1.3ms
+# when probed by hand minutes after. `agents` independently reached the server
+# from another host across the same window and drove four OAuth logins through
+# it. Nothing was down. A second attempt would have cost 3 seconds and sent
+# nothing at all.
+#
+# ⚠️ The cost of the false positive is not the noise. This branch exits before
+# the browser check ever runs, and its text says "do not go clicking Reload in
+# Chrome" — so a spurious server-down BLINDS the browser monitor and actively
+# steers the reader away from the browser, which may be the only thing actually
+# broken. `agents` hit exactly that: it landed ten seconds after an account-swap
+# alert, and acting on both in sequence would have meant standing down.
+probe_server
+if [ -z "$resp" ]; then
+  first_why="$probe_why"
+  sleep 3
+  probe_server
+  [ -n "$resp" ] && log "[watch] first probe failed ($first_why), retry succeeded — not alerting"
+  [ -z "$resp" ] && probe_why="$first_why; retried after 3s: $probe_why"
+fi
 
 if [ -z "$resp" ]; then
   # ⚠️ Distinguish "server down" from "browser down". They need different
   # people and different fixes, and conflating them is how a reader ends up
   # reloading a browser to cure a dead container.
-  echo "[watch] mcp-server unreachable at $SERVER — NOT a browser problem"
-  # Only alert once per outage.
-  if [ "$(cat "$STATE" 2>/dev/null)" != "server-down" ]; then
-    notify warning "mcp-server unreachable" \
-      "GET $SERVER/extensions returned nothing. This is the SERVER, not the browser — do not go clicking Reload in Chrome. Check: docker compose ps mcp-server"
-    echo "server-down" > "$STATE"
-  fi
+  echo "[watch] mcp-server unreachable at $SERVER — NOT a browser problem ($probe_why)"
+  # Only alert once per outage. ⚠️ The sentinel carries a timestamp so the
+  # all-clear can state the DURATION: a 10-second gap is a transient probe
+  # failure and a 20-minute one is an outage, and a reader cannot tell those
+  # apart from two messages that say only "down" then "back".
+  case "$(cat "$STATE" 2>/dev/null)" in
+    server-down*) : ;;
+    *)
+      notify warning "mcp-server unreachable" \
+        "GET $SERVER/extensions failed TWICE (3s apart) from host $(hostname): $probe_why. ⚠️ $SERVER is what THIS host probed — if that is not where mcp-server listens, the fault is the probe, not the server. This is the SERVER, not the browser — do not go clicking Reload in Chrome. Check: docker compose ps mcp-server, and 'docker inspect unibrowse-mcp-server --format {{.State.Health.Status}}'. An all-clear follows automatically when it answers again."
+      echo "server-down:$(date +%s)" > "$STATE"
+      ;;
+  esac
   exit 2
 fi
 
@@ -167,6 +218,47 @@ if [ "$present" = "true" ]; then
   # hand. `down*` matches both the current `down:<epoch>` form and the bare `down`
   # written by versions of this script before 2026-08-16.
   case "$(cat "$STATE" 2>/dev/null || true)" in
+    server-down*)
+      # ⛔ THIS BRANCH DID NOT EXIST, AND THE SERVER ALL-CLEAR NEVER FIRED.
+      # The server-unreachable path writes `server-down`, which does NOT match
+      # the `down*` pattern below — verified: `case server-down in down*)` is a
+      # prefix test and the string starts with "server-". So the state was
+      # silently reset to "up" and whoever received "mcp-server unreachable"
+      # was never told it came back.
+      #
+      # That is the exact dead end the comment above this case says the block
+      # exists to prevent. It was written for the BROWSER-down path; the
+      # SERVER-down path was added later with a different sentinel and never
+      # added to the pattern. Same file, same decision, made twice.
+      # Found 2026-08-22 23:05 by chasing a false alarm to its source.
+      prev_state="$(cat "$STATE" 2>/dev/null || true)"
+      since="${prev_state#server-down}"; since="${since#:}"
+      if [ -n "$since" ] && [ "$since" -eq "$since" ] 2>/dev/null; then
+        secs=$(( $(date +%s) - since ))
+        dur="${secs}s"
+        [ "$secs" -ge 120 ] && dur="$(( secs / 60 ))min"
+        # ⭐ The duration is the whole point. A gap this short is a probe
+        # failure, not an outage, and saying so stops the next reader
+        # re-investigating a healthy server the way I just did.
+        if [ "$secs" -lt 120 ]; then
+          verdict="Unreachable for only ${dur}. That is a TRANSIENT PROBE FAILURE, not an outage — a single slow or refused request between two 5-minute checks. Do not restart anything on the strength of it. Confirm against the container before treating the earlier warning as real: docker inspect unibrowse-mcp-server --format '{{.RestartCount}} {{.State.StartedAt}}' — a restart count that did not move means the server never went down."
+        else
+          verdict="Unreachable for ${dur}. Long enough to be a real outage; check whether the container restarted (docker inspect unibrowse-mcp-server --format '{{.RestartCount}}')."
+        fi
+      else
+        verdict="Duration unknown (state written by a version of this script that did not stamp it)."
+      fi
+      log "[watch] mcp-server reachable again"
+      notify info "mcp-server is answering again" \
+"GET $SERVER/extensions succeeded. This clears the earlier 'mcp-server unreachable' warning.
+
+$verdict"
+      ;;
+    no-endpoint)
+      log "[watch] /extensions route is back"
+      notify info "mcp-server /extensions route is back" \
+"The server answers /extensions again, so it is no longer running a build that predates that route. This clears the earlier 'no /extensions endpoint' warning."
+      ;;
     down*)
       log "[watch] recovered"
       # ⚠️ Build the roster in its own step with a QUOTED heredoc. The first
