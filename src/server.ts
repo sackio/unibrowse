@@ -139,7 +139,11 @@ export async function createServerWithTools(options: Options): Promise<Server> {
       const toRearm = specsToRearm(extensionId);
       if (toRearm.length > 0) {
         try {
+          // Carry an id: handleMCPMessage replies via safeSendResponse(id, …)
+          // for every message, and an undefined id makes that reply malformed.
+          // We do not read the response, but it should not be garbage.
           ws.send(JSON.stringify({
+            id: `watch-rearm-${Date.now()}`,
             type: 'browser_watch_rearm',
             payload: { specs: toRearm },
           }));
@@ -160,7 +164,11 @@ export async function createServerWithTools(options: Options): Promise<Server> {
         (payload ?? {}) as Record<string, unknown>,
         (watchId) => {
           try {
-            ws.send(JSON.stringify({ type: 'browser_watch_disarm', payload: { watchId } }));
+            ws.send(JSON.stringify({
+              id: `watch-disarm-${Date.now()}`,
+              type: 'browser_watch_disarm',
+              payload: { watchId },
+            }));
           } catch { /* best-effort */ }
         },
       ).catch((e) => console.log(`[Watch] handleWatchFired failed: ${e?.message ?? e}`));

@@ -1045,6 +1045,7 @@ async function createServerWithTools(options) {
       if (toRearm.length > 0) {
         try {
           ws.send(JSON.stringify({
+            id: `watch-rearm-${Date.now()}`,
             type: "browser_watch_rearm",
             payload: { specs: toRearm }
           }));
@@ -1060,7 +1061,11 @@ async function createServerWithTools(options) {
         payload ?? {},
         (watchId) => {
           try {
-            ws.send(JSON.stringify({ type: "browser_watch_disarm", payload: { watchId } }));
+            ws.send(JSON.stringify({
+              id: `watch-disarm-${Date.now()}`,
+              type: "browser_watch_disarm",
+              payload: { watchId }
+            }));
           } catch {
           }
         }
