@@ -467,6 +467,18 @@ export class Context {
     return recovered;
   }
 
+  /**
+   * Which extension currently owns this tab, if the server knows.
+   *
+   * Returns undefined rather than guessing — the map is populated only by
+   * TAB_ATTACHED and by rebuildTabOwnership, so "not in the map" means "not
+   * recorded", never "no owner". Callers that need certainty should say which
+   * extension they mean instead of treating undefined as an answer.
+   */
+  extensionIdForTab(tabId: number): string | undefined {
+    return this._tabToExtension.get(tabId);
+  }
+
   /** Clear a tab's owner (called from TAB_DETACHED or extension disconnect). */
   forgetTabOwner(tabId: number): void {
     const owner = this._tabToExtension.get(tabId);

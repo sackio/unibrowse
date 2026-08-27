@@ -21,6 +21,7 @@ import * as exploration from "@/tools/exploration";
 import * as forms from "@/tools/forms";
 import * as history from "@/tools/history";
 import * as interactions from "@/tools/interactions";
+import * as watch from "@/tools/watch";
 import * as network from "@/tools/network";
 import * as snapshot from "@/tools/snapshot";
 import * as system from "@/tools/system";
@@ -106,6 +107,14 @@ const interactionTools: Tool[] = [
   interactions.getInteractions,
   interactions.pruneInteractions,
   interactions.searchInteractions,
+
+  // Watch — push events out of the browser instead of polling for them.
+  // See docs/WATCH_DESIGN.md.
+  watch.watchSources,
+  watch.watchCreate,
+  watch.watchList,
+  watch.watchDelete,
+  watch.watchPoll,
 ];
 
 const cookieTools: Tool[] = [

@@ -3,6 +3,11 @@ import {
   GetErrorsTool,
   ListFramesTool,
   ReloadExtensionTool,
+  WatchCreateTool,
+  WatchDeleteTool,
+  WatchListTool,
+  WatchPollTool,
+  WatchSourcesTool,
   appConfig,
   attachTab,
   cancelDownload,
@@ -106,11 +111,14 @@ import {
   storeMacro,
   submitForm,
   switchTab,
+  textResponse,
   type,
   updateMacro,
   updateRecording,
-  wait
-} from "./chunk-CRO7BZO6.js";
+  wait,
+  watchBuffer,
+  watchRegistry
+} from "./chunk-JTKJU5VC.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -127,6 +135,865 @@ import express from "express";
 import fs2 from "fs";
 import path2 from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
+
+// src/tools/watch.ts
+import { zodToJsonSchema } from "zod-to-json-schema";
+
+// src/watch/sources.ts
+var CDP_SOURCES = [
+  {
+    id: "cdp.Network.eventSourceMessageReceived",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { data: string; eventName: string; eventId: string; requestId: string; timestamp: number }) => boolean",
+    cost: "high",
+    scope: "tab",
+    description: "Server-Sent Events frame. The best source for a chat app: one event per streamed message, with none of the re-render noise a DOM observer sees."
+  },
+  {
+    id: "cdp.Network.webSocketFrameReceived",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { requestId: string; timestamp: number; response: { payloadData: string; opcode: number } }) => boolean",
+    cost: "high",
+    scope: "tab",
+    description: "Inbound WebSocket frame \u2014 the other half of live apps."
+  },
+  {
+    id: "cdp.Network.webSocketFrameSent",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { requestId: string; timestamp: number; response: { payloadData: string; opcode: number } }) => boolean",
+    cost: "high",
+    scope: "tab",
+    description: "Outbound WebSocket frame."
+  },
+  {
+    id: "cdp.Network.requestWillBeSent",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { requestId: string; request: { url: string; method: string; headers: object }; timestamp: number }) => boolean",
+    cost: "high",
+    scope: "tab",
+    description: "Outgoing request. Already feeds the networkLogs ring buffer that browser_get_network_logs polls. High volume \u2014 use a predicate."
+  },
+  {
+    id: "cdp.Network.responseReceived",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { requestId: string; response: { url: string; status: number; mimeType: string; headers: object } }) => boolean",
+    cost: "high",
+    scope: "tab",
+    description: "Response headers received. Fires before the body is available."
+  },
+  {
+    id: "cdp.Network.loadingFinished",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { requestId: string; timestamp: number; encodedDataLength: number }) => boolean",
+    cost: "high",
+    scope: "tab",
+    description: "A request completed and its body is now retrievable."
+  },
+  {
+    id: "cdp.Network.loadingFailed",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { requestId: string; errorText: string; canceled?: boolean; blockedReason?: string }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "A request failed, was cancelled, or was blocked."
+  },
+  {
+    id: "cdp.Runtime.consoleAPICalled",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { type: string; args: Array<{ type: string; value?: unknown }>; timestamp: number }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "console.log / warn / error from the page."
+  },
+  {
+    id: "cdp.Runtime.exceptionThrown",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { timestamp: number; exceptionDetails: { text: string; url?: string; lineNumber: number } }) => boolean",
+    cost: "low",
+    scope: "tab",
+    description: "An uncaught exception in the page."
+  },
+  {
+    id: "cdp.Log.entryAdded",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { entry: { source: string; level: string; text: string; url?: string } }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "Browser-level log: CORS failures, CSP violations, mixed content. Things the page's own console never sees."
+  },
+  {
+    id: "cdp.Page.javascriptDialogOpening",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { url: string; message: string; type: string; hasBrowserHandler: boolean }) => boolean",
+    cost: "low",
+    scope: "tab",
+    description: "An alert/confirm/prompt is blocking the tab."
+  },
+  {
+    id: "cdp.Page.fileChooserOpened",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { frameId: string; mode: string }) => boolean",
+    cost: "low",
+    scope: "tab",
+    description: "The page opened a file picker."
+  },
+  {
+    id: "cdp.Page.downloadWillBegin",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { frameId: string; guid: string; url: string; suggestedFilename: string }) => boolean",
+    cost: "low",
+    scope: "tab",
+    description: "A download is starting from this tab."
+  },
+  {
+    id: "cdp.Page.frameNavigated",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { frame: { id: string; url: string; securityOrigin: string } }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "A frame committed a navigation, including sub-frames."
+  },
+  {
+    id: "cdp.Page.loadEventFired",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { timestamp: number }) => boolean",
+    cost: "low",
+    scope: "tab",
+    description: "The page's load event fired."
+  },
+  {
+    id: "cdp.Page.domContentEventFired",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { timestamp: number }) => boolean",
+    cost: "low",
+    scope: "tab",
+    description: "DOMContentLoaded fired."
+  },
+  {
+    id: "cdp.Target.targetCrashed",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { targetId: string; status: string; errorCode: number }) => boolean",
+    cost: "low",
+    scope: "tab",
+    description: "The tab died. Currently invisible to an agent until its next call fails."
+  },
+  {
+    id: "cdp.DOM.attributeModified",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { nodeId: number; name: string; value: string }) => boolean",
+    cost: "high",
+    scope: "tab",
+    description: "DOM attribute changed, without needing a content script. Chatty; prefer a network source where the state round-trips to a server."
+  },
+  {
+    id: "cdp.DOM.childNodeInserted",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { parentNodeId: number; previousNodeId: number; node: { nodeName: string; nodeValue?: string } }) => boolean",
+    cost: "high",
+    scope: "tab",
+    description: "A node was inserted. Very chatty on modern frameworks."
+  },
+  {
+    id: "cdp.Media.playerEventsAdded",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { playerId: string; events: Array<{ timestamp: number; value: string }> }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "Media player state changes."
+  },
+  {
+    id: "cdp.Security.securityStateChanged",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { securityState: string; summary?: string }) => boolean",
+    cost: "low",
+    scope: "tab",
+    description: "TLS/security state of the page changed."
+  },
+  {
+    id: "cdp.Storage.indexedDBContentUpdated",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { origin: string; databaseName: string; objectStoreName: string }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "IndexedDB content changed for an origin."
+  }
+];
+var CHROME_SOURCES = [
+  {
+    id: "chrome.webNavigation.onCommitted",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { tabId: number; url: string; frameId: number; transitionType: string; timeStamp: number }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "A navigation committed. Top frame is frameId === 0. This is the source browser_observe_navigations_* already uses."
+  },
+  {
+    id: "chrome.webNavigation.onCompleted",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { tabId: number; url: string; frameId: number; timeStamp: number }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "A document finished loading."
+  },
+  {
+    id: "chrome.webNavigation.onHistoryStateUpdated",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { tabId: number; url: string; frameId: number; transitionType: string }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "history.pushState \u2014 SPA route changes, which onCommitted never fires for. If a single-page app seems to 'not navigate', this is why."
+  },
+  {
+    id: "chrome.webNavigation.onBeforeNavigate",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { tabId: number; url: string; frameId: number; timeStamp: number }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "A navigation is about to start."
+  },
+  {
+    id: "chrome.webNavigation.onDOMContentLoaded",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { tabId: number; url: string; frameId: number; timeStamp: number }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "DOMContentLoaded, per frame."
+  },
+  {
+    id: "chrome.webNavigation.onErrorOccurred",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { tabId: number; url: string; error: string; frameId: number }) => boolean",
+    cost: "low",
+    scope: "tab",
+    description: "A navigation failed."
+  },
+  {
+    id: "chrome.webNavigation.onCreatedNavigationTarget",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { sourceTabId: number; tabId: number; url: string }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "A new tab/window was opened by a navigation (target=_blank)."
+  },
+  {
+    id: "chrome.tabs.onUpdated",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { tabId: number; changeInfo: { status?: string; title?: string; url?: string; favIconUrl?: string; audible?: boolean; mutedInfo?: object; discarded?: boolean }; tab: object }) => boolean",
+    cost: "high",
+    scope: "tab",
+    description: "Tab changed. Title, favicon, audible, muted and discarded transitions all arrive inside changeInfo."
+  },
+  {
+    id: "chrome.tabs.onCreated",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { tab: { id: number; url?: string; title?: string; windowId: number } }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "A tab was created."
+  },
+  {
+    id: "chrome.tabs.onRemoved",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { tabId: number; removeInfo: { windowId: number; isWindowClosing: boolean } }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "A tab was closed."
+  },
+  {
+    id: "chrome.tabs.onActivated",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { tabId: number; windowId: number }) => boolean",
+    cost: "medium",
+    scope: "browser",
+    description: "The foreground tab changed."
+  },
+  {
+    id: "chrome.windows.onCreated",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { window: { id: number; type: string; focused: boolean } }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "A browser window opened."
+  },
+  {
+    id: "chrome.windows.onRemoved",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { windowId: number }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "A browser window closed."
+  },
+  {
+    id: "chrome.windows.onFocusChanged",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { windowId: number }) => boolean",
+    cost: "medium",
+    scope: "browser",
+    description: "Window focus moved. windowId is -1 when the browser lost focus."
+  },
+  {
+    id: "chrome.downloads.onCreated",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { id: number; url: string; filename: string; mime: string; totalBytes: number }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "A download started."
+  },
+  {
+    id: "chrome.downloads.onChanged",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { id: number; state?: { previous: string; current: string }; paused?: object; error?: object }) => boolean",
+    cost: "medium",
+    scope: "browser",
+    description: "Download progress. state.current === 'complete' is the usual predicate."
+  },
+  {
+    id: "chrome.cookies.onChanged",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { removed: boolean; cookie: { name: string; domain: string; value: string; expirationDate?: number }; cause: string }) => boolean",
+    cost: "high",
+    scope: "browser",
+    description: "A cookie changed. Useful for detecting session expiry, login and logout without touching the page."
+  },
+  {
+    id: "chrome.history.onVisited",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { id: string; url: string; title?: string; lastVisitTime?: number }) => boolean",
+    cost: "medium",
+    scope: "browser",
+    description: "A URL was visited. The durable fallback that already rescues cross-origin redirects a tab has bounced away from."
+  },
+  {
+    id: "chrome.management.onDisabled",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { id: string; name: string; enabled: boolean }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "An extension was disabled under you."
+  },
+  {
+    id: "chrome.management.onEnabled",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { id: string; name: string; enabled: boolean }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "An extension was enabled."
+  },
+  {
+    id: "chrome.management.onUninstalled",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { id: string }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "An extension was uninstalled."
+  },
+  {
+    id: "chrome.storage.onChanged",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { changes: Record<string, { oldValue?: unknown; newValue?: unknown }>; areaName: string }) => boolean",
+    cost: "medium",
+    scope: "browser",
+    description: "Extension storage changed."
+  },
+  {
+    id: "chrome.bookmarks.onCreated",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { id: string; bookmark: { title: string; url?: string; parentId?: string } }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "A bookmark was created."
+  },
+  {
+    id: "chrome.notifications.onClicked",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { notificationId: string }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "The user clicked a notification."
+  },
+  {
+    id: "chrome.declarativeNetRequest.onRuleMatchedDebug",
+    home: "worker",
+    permission: "GRANTED",
+    predicateArg: "(e: { request: { url: string; method: string; tabId: number }; rule: { rulesetId: string; ruleId: number } }) => boolean",
+    cost: "high",
+    scope: "browser",
+    description: "A declarativeNetRequest rule matched. Observational only."
+  }
+];
+var UNIBROWSE_SOURCES = [
+  {
+    id: "unibrowse.tab.attached",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { tabId: number; extensionId: string; url?: string; label?: string }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "A tab was attached to unibrowse."
+  },
+  {
+    id: "unibrowse.tab.detached",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { tabId: number; extensionId: string; reason?: string }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "A tab was detached."
+  },
+  {
+    id: "unibrowse.tab.reserved",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { tabId: number; owner: string; claimedAt: number }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "An agent reserved a tab."
+  },
+  {
+    id: "unibrowse.tab.released",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { tabId: number; owner: string }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "A tab reservation was released."
+  },
+  {
+    id: "unibrowse.tab.takeover",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { tabId: number; previousOwner: string; newOwner: string; at: number }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "Another agent took over a tab you had reserved. Today you find this out by having a call fail."
+  },
+  {
+    id: "unibrowse.tab.lastUsedRepointed",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { previousTabId: number | null; tabId: number | null; reason: string }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "The lastUsedTabId pointer moved. Relevant to anything reading isActive."
+  },
+  {
+    id: "unibrowse.macro.finished",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { name: string; ok: boolean; durationMs: number; error?: string }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "A macro or routine finished, successfully or not."
+  },
+  {
+    id: "unibrowse.recording.stopped",
+    home: "worker",
+    permission: "FREE",
+    predicateArg: "(e: { recordingId: string; tabId: number; eventCount: number }) => boolean",
+    cost: "low",
+    scope: "browser",
+    description: "A session recording stopped."
+  }
+];
+var SOURCES = [
+  ...CDP_SOURCES,
+  ...CHROME_SOURCES,
+  ...UNIBROWSE_SOURCES
+];
+var BY_ID = new Map(SOURCES.map((s) => [s.id, s]));
+function distance(a, b) {
+  if (a === b) return 0;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const curr = [i];
+    for (let j = 1; j <= b.length; j++) {
+      curr[j] = Math.min(
+        prev[j] + 1,
+        curr[j - 1] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+    prev = curr;
+  }
+  return prev[b.length];
+}
+function validateSourceId(id) {
+  const hit = BY_ID.get(id);
+  if (hit) return { ok: true, source: hit };
+  let best = null;
+  for (const s of SOURCES) {
+    const d = distance(id, s.id);
+    if (!best || d < best.d) best = { id: s.id, d };
+  }
+  const suggestion = best && best.d <= Math.max(6, Math.floor(id.length * 0.4)) ? ` Did you mean "${best.id}"?` : "";
+  return {
+    ok: false,
+    error: `Unknown watch source "${id}".${suggestion} Call browser_watch_sources to list all ${SOURCES.length} sources with their predicate argument shapes.`
+  };
+}
+
+// src/tools/watch.ts
+function renderArmed(rec) {
+  if (rec.armedReportedByExtension === null) return "unknown \u2014 extension has never reported";
+  const when = rec.armedReportedAt ? new Date(rec.armedReportedAt).toISOString() : "?";
+  return `${rec.armedReportedByExtension} (as of ${when})`;
+}
+var watchSources = {
+  schema: {
+    name: WatchSourcesTool.shape.name.value,
+    description: WatchSourcesTool.shape.description.value,
+    inputSchema: zodToJsonSchema(WatchSourcesTool.shape.arguments)
+  },
+  handle: (async (_context, params) => {
+    const { filter } = WatchSourcesTool.shape.arguments.parse(params ?? {});
+    const list = filter ? SOURCES.filter((s) => s.id.toLowerCase().includes(filter.toLowerCase())) : SOURCES;
+    if (list.length === 0) {
+      return textResponse(
+        `No watch source matches "${filter}". Call browser_watch_sources with no filter to see all ${SOURCES.length}.`
+      );
+    }
+    let out = `# Watch sources (${list.length}${filter ? ` matching "${filter}"` : ""})
+
+`;
+    out += `The predicate argument differs per source. Copy the shape below rather than guessing \u2014
+`;
+    out += `a predicate written against the wrong shape simply never matches, which looks exactly
+`;
+    out += `like a quiet page.
+
+`;
+    let currentGroup = "";
+    for (const s of list) {
+      const group = s.id.split(".")[0];
+      if (group !== currentGroup) {
+        currentGroup = group;
+        const heading = group === "cdp" ? "CDP \u2014 per attached tab" : group === "chrome" ? "chrome.* \u2014 browser-wide APIs" : "unibrowse \u2014 the automation plane itself";
+        out += `
+## ${heading}
+
+`;
+      }
+      out += `**\`${s.id}\`**  \xB7  ${s.scope}-scoped  \xB7  volume: ${s.cost}
+`;
+      out += `${s.description}
+`;
+      out += `predicate: \`${s.predicateArg}\`
+
+`;
+    }
+    return textResponse(out);
+  })
+};
+var watchCreate = {
+  schema: {
+    name: WatchCreateTool.shape.name.value,
+    description: WatchCreateTool.shape.description.value,
+    inputSchema: zodToJsonSchema(WatchCreateTool.shape.arguments)
+  },
+  handle: (async (context, params) => {
+    try {
+      const args = WatchCreateTool.shape.arguments.parse(params ?? {});
+      const check = validateSourceId(args.source);
+      if (!check.ok) return errorResponse(check.error);
+      const descriptor = check.source;
+      const sink = args.sink ?? { kind: "atc" };
+      if (sink.kind === "atc" && !sink.to && !args.agent) {
+        return errorResponse(
+          `This watch would have nowhere to deliver: sink.kind is "atc" but neither sink.to nor \`agent\` was set. Pass \`agent\` with your identifier so events reach your own session, or set sink.to explicitly.`
+        );
+      }
+      if (sink.kind === "webhook" && !sink.url) {
+        return errorResponse(`sink.kind is "webhook" but sink.url was not set.`);
+      }
+      let tabId = null;
+      let extensionId = args.extensionId;
+      if (descriptor.scope === "tab") {
+        const attached = await context.ensureAttachedFromParams(args);
+        tabId = attached.tabId;
+        if (!extensionId) {
+          extensionId = context.extensionIdForTab(attached.tabId);
+        }
+      }
+      if (!extensionId) {
+        const exts = context.listExtensions();
+        if (exts.length === 1) extensionId = exts[0].extensionId;
+        else if (exts.length > 1) {
+          return errorResponse(
+            `Multiple extensions are connected (${exts.length}); pass extensionId to say which browser to arm the watch in. Connected: ${exts.map((e) => e.extensionId).join(", ")}`
+          );
+        } else {
+          return errorResponse(`No extension is connected, so there is nothing to arm a watch in.`);
+        }
+      }
+      const record = watchRegistry.create(
+        {
+          source: args.source,
+          predicate: args.predicate,
+          sink,
+          options: args.options,
+          tabId,
+          extensionId,
+          agent: args.agent
+        },
+        descriptor.home
+      );
+      let armed;
+      try {
+        const res = await context.sendSocketMessage(
+          "browser_watch_arm",
+          {
+            watchId: record.watchId,
+            source: record.source,
+            predicate: record.predicate,
+            options: record.options,
+            tabId: record.tabId,
+            extensionId
+          },
+          { extensionId }
+        );
+        armed = res?.armed === true;
+        watchRegistry.recordArmed(record.watchId, armed, Date.now());
+      } catch (e) {
+        watchRegistry.delete(record.watchId);
+        return errorResponse(
+          `Failed to arm the watch in extension ${extensionId}: ${e?.message ?? e}. No watch was created.`
+        );
+      }
+      if (!armed) {
+        watchRegistry.delete(record.watchId);
+        return errorResponse(
+          `Extension ${extensionId} did not confirm the watch as armed. No watch was created.`
+        );
+      }
+      let out = `# Watch armed
+
+`;
+      out += `**watchId**: \`${record.watchId}\`
+`;
+      out += `**source**: \`${record.source}\` (${descriptor.scope}-scoped, volume ${descriptor.cost})
+`;
+      out += `**home**: ${record.home}
+`;
+      if (tabId != null) out += `**tab**: ${tabId}
+`;
+      out += `**extension**: ${extensionId}
+`;
+      out += `**sink**: ${sink.kind}`;
+      if (sink.kind === "atc") out += ` \u2192 ${sink.to ?? args.agent}`;
+      if (sink.kind === "webhook") out += ` \u2192 ${sink.url}`;
+      out += `
+`;
+      out += `**predicate**: ${record.predicate ? `\`${record.predicate}\`` : "none \u2014 fires on every event"}
+
+`;
+      out += `Events are dropped if nothing is listening when they fire; they are never queued.
+`;
+      out += `This watch is cleared when the tab detaches, the extension disconnects`;
+      if (record.options?.ttlMs) out += `, after ${record.options.ttlMs}ms`;
+      if (record.options?.once) out += `, or after its first match`;
+      out += `, or when you call browser_watch_delete.
+`;
+      if (sink.kind === "buffer") {
+        out += `
+Drain it with \`browser_watch_poll({watchId: "${record.watchId}"})\`.
+`;
+      }
+      return textResponse(out);
+    } catch (e) {
+      return errorResponse(`browser_watch_create failed: ${e?.message ?? e}`);
+    }
+  })
+};
+var watchList = {
+  schema: {
+    name: WatchListTool.shape.name.value,
+    description: WatchListTool.shape.description.value,
+    inputSchema: zodToJsonSchema(WatchListTool.shape.arguments)
+  },
+  handle: (async (context, params) => {
+    try {
+      const args = WatchListTool.shape.arguments.parse(params ?? {});
+      const tabId = typeof args.tabTarget === "number" ? args.tabTarget : void 0;
+      if (args.refresh) {
+        const targets = new Set(
+          watchRegistry.list({ extensionId: args.extensionId }).map((w) => w.extensionId)
+        );
+        for (const ext of targets) {
+          try {
+            const res = await context.sendSocketMessage(
+              "browser_watch_list_armed",
+              {},
+              { extensionId: ext }
+            );
+            const live = new Set(
+              (res?.watches ?? []).filter((w) => w.armed).map((w) => w.watchId)
+            );
+            const now = Date.now();
+            for (const rec of watchRegistry.list({ extensionId: ext })) {
+              watchRegistry.recordArmed(rec.watchId, live.has(rec.watchId), now);
+            }
+          } catch {
+          }
+        }
+      }
+      const rows = watchRegistry.list({
+        extensionId: args.extensionId,
+        ...tabId !== void 0 ? { tabId } : {},
+        agent: args.agent
+      });
+      if (rows.length === 0) return textResponse(`No watches.`);
+      let out = `# Watches (${rows.length})
+
+`;
+      for (const r of rows) {
+        out += `**\`${r.watchId}\`** \u2014 \`${r.source}\`
+`;
+        out += `- armed (per extension): ${renderArmed(r)}
+`;
+        out += `- sink: ${r.sink.kind}`;
+        if (r.sink.kind === "atc") out += ` \u2192 ${r.sink.to ?? r.agent ?? "?"}`;
+        out += `
+`;
+        out += `- extension: ${r.extensionId}${r.tabId != null ? `, tab ${r.tabId}` : ", browser-wide"}
+`;
+        out += `- fired: ${r.firedCount}`;
+        if (r.lastFiredAt) out += ` (last ${new Date(r.lastFiredAt).toISOString()})`;
+        if (r.droppedCount) out += `, delivery failures: ${r.droppedCount}`;
+        out += `
+`;
+        if (r.predicate) out += `- predicate: \`${r.predicate}\`
+`;
+        out += `
+`;
+      }
+      out += `
+\`armed\` is the extension's own last answer, recorded verbatim. "unknown" means it
+`;
+      out += `has never reported \u2014 which is not the same as false. Pass \`refresh: true\` to re-ask.
+`;
+      return textResponse(out);
+    } catch (e) {
+      return errorResponse(`browser_watch_list failed: ${e?.message ?? e}`);
+    }
+  })
+};
+var watchDelete = {
+  schema: {
+    name: WatchDeleteTool.shape.name.value,
+    description: WatchDeleteTool.shape.description.value,
+    inputSchema: zodToJsonSchema(WatchDeleteTool.shape.arguments)
+  },
+  handle: (async (context, params) => {
+    try {
+      const args = WatchDeleteTool.shape.arguments.parse(params ?? {});
+      const rec = watchRegistry.get(args.watchId);
+      if (!rec) return errorResponse(`No watch with id "${args.watchId}".`);
+      let disarmNote = "";
+      try {
+        await context.sendSocketMessage(
+          "browser_watch_disarm",
+          { watchId: args.watchId },
+          { extensionId: args.extensionId ?? rec.extensionId }
+        );
+      } catch (e) {
+        disarmNote = `
+\u26A0\uFE0F The extension did not confirm the disarm (${e?.message ?? e}). The server record is gone, so any further events from it will be discarded and the extension told to disarm on the next one.
+`;
+      }
+      watchRegistry.delete(args.watchId);
+      watchBuffer.drop(args.watchId);
+      return textResponse(`Deleted watch \`${args.watchId}\` (\`${rec.source}\`).${disarmNote}`);
+    } catch (e) {
+      return errorResponse(`browser_watch_delete failed: ${e?.message ?? e}`);
+    }
+  })
+};
+var watchPoll = {
+  schema: {
+    name: WatchPollTool.shape.name.value,
+    description: WatchPollTool.shape.description.value,
+    inputSchema: zodToJsonSchema(WatchPollTool.shape.arguments)
+  },
+  handle: (async (_context, params) => {
+    try {
+      const args = WatchPollTool.shape.arguments.parse(params ?? {});
+      const rec = watchRegistry.get(args.watchId);
+      if (!rec) return errorResponse(`No watch with id "${args.watchId}".`);
+      if (rec.sink.kind !== "buffer") {
+        return errorResponse(
+          `Watch "${args.watchId}" has a "${rec.sink.kind}" sink, so its events are delivered rather than buffered. Only a watch created with sink {kind:"buffer"} can be polled.`
+        );
+      }
+      const res = await watchBuffer.poll(args.watchId, args.timeoutMs ?? 15e3);
+      if (!res.matched) {
+        return textResponse(
+          `No events from \`${args.watchId}\` within ${res.timeoutMs}ms. This is an answer, not an error \u2014 poll again to keep waiting.`
+        );
+      }
+      let out = `# ${res.events.length} event(s) from \`${args.watchId}\`
+
+`;
+      for (const ev of res.events) {
+        out += `**${new Date(ev.firedAt).toISOString()}** \u2014 \`${ev.source}\`
+`;
+        if (ev.breakerTripped) {
+          out += `\u26D4 WATCH DISARMED: ${ev.breakerTripped.reason} (${ev.breakerTripped.firedInWindow} fires against a cap of ${ev.breakerTripped.cap})
+`;
+        }
+        out += "```json\n" + JSON.stringify(ev.payload, null, 2).slice(0, 4e3) + "\n```\n\n";
+      }
+      return textResponse(out);
+    } catch (e) {
+      return errorResponse(`browser_watch_poll failed: ${e?.message ?? e}`);
+    }
+  })
+};
 
 // src/install.ts
 import fs from "fs";
@@ -286,12 +1153,12 @@ self.UNIBROWSE_CONFIG = {
 }
 
 // src/tools/frames.ts
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToJsonSchema as zodToJsonSchema2 } from "zod-to-json-schema";
 var listFrames = {
   schema: {
     name: ListFramesTool.shape.name.value,
     description: ListFramesTool.shape.description.value,
-    inputSchema: zodToJsonSchema(ListFramesTool.shape.arguments)
+    inputSchema: zodToJsonSchema2(ListFramesTool.shape.arguments)
   },
   handle: async (context, params) => {
     const { max_tokens } = params || {};
@@ -307,12 +1174,12 @@ var listFrames = {
 };
 
 // src/tools/errors.ts
-import { zodToJsonSchema as zodToJsonSchema2 } from "zod-to-json-schema";
+import { zodToJsonSchema as zodToJsonSchema3 } from "zod-to-json-schema";
 var getErrors = {
   schema: {
     name: GetErrorsTool.shape.name.value,
     description: GetErrorsTool.shape.description.value,
-    inputSchema: zodToJsonSchema2(GetErrorsTool.shape.arguments)
+    inputSchema: zodToJsonSchema3(GetErrorsTool.shape.arguments)
   },
   handle: async (context, params) => {
     const { max_tokens } = params || {};
@@ -329,7 +1196,7 @@ var reloadExtension = {
   schema: {
     name: ReloadExtensionTool.shape.name.value,
     description: ReloadExtensionTool.shape.description.value,
-    inputSchema: zodToJsonSchema2(ReloadExtensionTool.shape.arguments)
+    inputSchema: zodToJsonSchema3(ReloadExtensionTool.shape.arguments)
   },
   handle: async (context, params) => {
     const { max_tokens } = params || {};
@@ -404,7 +1271,12 @@ var recordingTools = [
 var interactionTools = [
   getInteractions,
   pruneInteractions,
-  searchInteractions
+  searchInteractions,
+  watchSources,
+  watchCreate,
+  watchList,
+  watchDelete,
+  watchPoll
 ];
 var cookieTools = [
   getCookies,

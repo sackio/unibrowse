@@ -1783,3 +1783,121 @@ export const CloseIsolatedChromeTool = z.object({
       .describe("Your agent identifier, recorded in the override audit line and the owner notification."),
   }).merge(MaxTokensSchema),
 });
+
+// ─── Watch — push events out of the browser ──────────────────────────────────
+// See docs/WATCH_DESIGN.md. The predicate runs in the extension where the
+// event already is, so non-matching events never cross the WebSocket.
+
+export const WatchSourcesTool = z.object({
+  name: z.literal("browser_watch_sources"),
+  description: z.literal(
+    "List every event source browser_watch_create can watch, with each one's execution home, permission status, rough event volume, and — most importantly — the EXACT shape the predicate will be handed. Call this before creating a watch: the predicate's argument differs per source, and guessing it is the main way a watch silently never fires."
+  ),
+  arguments: z.object({
+    filter: z
+      .string()
+      .optional()
+      .describe("Optional substring to filter source ids by, e.g. 'Network' or 'chrome.downloads'."),
+  }),
+});
+
+export const WatchCreateTool = z.object({
+  name: z.literal("browser_watch_create"),
+  description: z.literal(
+    "Arm a watch on a browser event source and get pushed a notification when your predicate matches — instead of polling the page. Events are FIRE-AND-FORGET: if no listener is attached when one fires, it is dropped, never queued. The watch is cleared when the tab detaches, the extension disconnects, its ttl elapses, or you delete it. Call browser_watch_sources first to see the sources and their predicate shapes."
+  ),
+  arguments: z.object({
+    source: z
+      .string()
+      .describe("Source id from browser_watch_sources, e.g. 'cdp.Network.eventSourceMessageReceived'."),
+    predicate: z
+      .string()
+      .optional()
+      .describe(
+        "JS arrow function evaluated in the extension on each event, e.g. \"(e) => e.data.includes('[DONE]')\". Omit to fire on every event. A predicate that throws at runtime does not fire and does not kill the watch. NOTE: this is admin-trust code — it runs in the extension context."
+      ),
+    sink: z
+      .object({
+        kind: z.enum(["atc", "webhook", "buffer"]).describe("Where matches are delivered."),
+        to: z
+          .string()
+          .optional()
+          .describe("atc only: recipient. Defaults to your `agent`, so events land in your own session."),
+        subject: z.string().optional().describe("atc only: message subject."),
+        priority: z.enum(["info", "warning", "critical"]).optional().describe("atc only."),
+        url: z.string().optional().describe("webhook only: the URL to POST to."),
+        headers: z.record(z.string()).optional().describe("webhook only: extra request headers."),
+        maxBuffered: z.number().optional().describe("buffer only: queue depth (default 100)."),
+      })
+      .optional()
+      .describe("Delivery target. Defaults to {kind:'atc'}, which DMs your own agent session."),
+    tabTarget: z
+      .union([z.number(), z.string()])
+      .optional()
+      .describe("Tab id or label to scope the watch to. Omit for a browser-wide source."),
+    extensionId: z
+      .string()
+      .optional()
+      .describe("Which browser to arm in. Required when several extensions are connected."),
+    agent: z
+      .string()
+      .optional()
+      .describe("Your agent identifier. The atc sink delivers here by default — set it or events have nowhere to go."),
+    options: z
+      .object({
+        once: z.boolean().optional().describe("Disarm after the first match."),
+        ttlMs: z.number().optional().describe("Auto-disarm after this many ms."),
+        maxPerMin: z
+          .number()
+          .optional()
+          .describe("Rate cap. Exceeding 10x this in one minute trips a breaker that disarms the watch AND tells you it did."),
+        coalesce: z
+          .object({
+            windowMs: z.number(),
+            mode: z.enum(["last", "batch", "count"]),
+          })
+          .optional()
+          .describe("Group bursts. For a streamed response you usually want the end, not every token."),
+      })
+      .optional(),
+  }),
+});
+
+export const WatchListTool = z.object({
+  name: z.literal("browser_watch_list"),
+  description: z.literal(
+    "List watches this server holds. `armed` is the EXTENSION's last raw answer, not the server's belief: 'unknown' means the extension has never reported, which is different from false. This report never repairs state on read."
+  ),
+  arguments: z.object({
+    extensionId: z.string().optional().describe("Filter to one browser."),
+    tabTarget: z.union([z.number(), z.string()]).optional().describe("Filter to one tab."),
+    agent: z.string().optional().describe("Filter to watches you created."),
+    refresh: z
+      .boolean()
+      .optional()
+      .describe("Re-query the extension for actual armed state and record the answer. Off by default so listing stays side-effect-free."),
+  }),
+});
+
+export const WatchDeleteTool = z.object({
+  name: z.literal("browser_watch_delete"),
+  description: z.literal("Delete a watch and disarm it in the extension."),
+  arguments: z.object({
+    watchId: z.string().describe("The watchId returned by browser_watch_create."),
+    extensionId: z.string().optional().describe("Which browser holds it."),
+  }),
+});
+
+export const WatchPollTool = z.object({
+  name: z.literal("browser_watch_poll"),
+  description: z.literal(
+    "Drain events from a watch whose sink is 'buffer', blocking until one arrives or the timeout elapses. This is the 'wait until X happens' shape; use an atc or webhook sink when you want to be notified without waiting."
+  ),
+  arguments: z.object({
+    watchId: z.string().describe("The watchId returned by browser_watch_create."),
+    timeoutMs: z
+      .number()
+      .optional()
+      .describe("How long to block (default 15000, max 120000). A timeout is an answer, not an error."),
+  }),
+});

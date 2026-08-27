@@ -401,6 +401,17 @@ var Context = class _Context {
     }
     return recovered;
   }
+  /**
+   * Which extension currently owns this tab, if the server knows.
+   *
+   * Returns undefined rather than guessing — the map is populated only by
+   * TAB_ATTACHED and by rebuildTabOwnership, so "not in the map" means "not
+   * recorded", never "no owner". Callers that need certainty should say which
+   * extension they mean instead of treating undefined as an answer.
+   */
+  extensionIdForTab(tabId) {
+    return this._tabToExtension.get(tabId);
+  }
   /** Clear a tab's owner (called from TAB_DETACHED or extension disconnect). */
   forgetTabOwner(tabId) {
     const owner = this._tabToExtension.get(tabId);
@@ -573,6 +584,400 @@ OR first attach to a tab (browser_list_tabs \u2192 browser_attach_tab({tabId} or
   }
 };
 
+// src/watch/buffer.ts
+var DEFAULT_MAX_BUFFERED = 100;
+var MAX_TIMEOUT_MS = 12e4;
+var MIN_TIMEOUT_MS = 10;
+var WatchBuffer = class {
+  slots = /* @__PURE__ */ new Map();
+  maxBuffered;
+  // ⛔ NOT a TypeScript parameter property (`constructor(private x: T)`).
+  // Node's --experimental-strip-types rejects those outright, and the unit
+  // tests import this module directly rather than through tsup.
+  constructor(maxBuffered = DEFAULT_MAX_BUFFERED) {
+    this.maxBuffered = maxBuffered;
+  }
+  slot(watchId) {
+    let s = this.slots.get(watchId);
+    if (!s) {
+      s = { queue: [], waiters: [] };
+      this.slots.set(watchId, s);
+    }
+    return s;
+  }
+  /** Deliver an event. Wakes one waiter if any, else buffers. */
+  push(watchId, event) {
+    const s = this.slot(watchId);
+    const waiter = s.waiters.shift();
+    if (waiter) {
+      waiter({ matched: true, events: [event] });
+      return;
+    }
+    s.queue.push(event);
+    if (s.queue.length > this.maxBuffered) {
+      s.queue.splice(0, s.queue.length - this.maxBuffered);
+    }
+  }
+  /**
+   * Drain everything buffered, or block until the next event or the timeout.
+   * Returns `{matched:false}` on timeout rather than throwing — a timeout is
+   * an answer ("nothing yet"), not an error.
+   */
+  poll(watchId, timeoutMs = 15e3) {
+    const s = this.slot(watchId);
+    if (s.queue.length > 0) {
+      const events = s.queue;
+      s.queue = [];
+      return Promise.resolve({ matched: true, events });
+    }
+    const deadline = Math.max(MIN_TIMEOUT_MS, Math.min(timeoutMs, MAX_TIMEOUT_MS));
+    return new Promise((resolve2) => {
+      let settled = false;
+      const settle = (r) => {
+        if (settled) return;
+        settled = true;
+        resolve2(r);
+      };
+      const waiter = (r) => settle(r);
+      s.waiters.push(waiter);
+      setTimeout(() => {
+        const idx = s.waiters.indexOf(waiter);
+        if (idx >= 0) s.waiters.splice(idx, 1);
+        settle({ matched: false, timeoutMs: deadline });
+      }, deadline);
+    });
+  }
+  /** Tear down a watch's slot; pending waiters resolve as unmatched. */
+  drop(watchId) {
+    const s = this.slots.get(watchId);
+    if (!s) return;
+    const waiters = s.waiters.splice(0);
+    for (const w of waiters) w({ matched: false });
+    this.slots.delete(watchId);
+  }
+};
+
+// src/watch/registry.ts
+var WatchRegistry = class {
+  watches = /* @__PURE__ */ new Map();
+  /** extensionId -> watchIds. Kept in sync on every create/delete. */
+  byExtension = /* @__PURE__ */ new Map();
+  /** `${extensionId}:${tabId}` -> watchIds, for the tab-detach cascade. */
+  byExtensionTab = /* @__PURE__ */ new Map();
+  counter = 0;
+  /** Deterministic ids — no Math.random, so tests are reproducible. */
+  nextId() {
+    this.counter += 1;
+    return `w-${Date.now().toString(36)}-${this.counter}`;
+  }
+  tabKey(extensionId, tabId) {
+    return `${extensionId}:${tabId}`;
+  }
+  index(rec) {
+    let ext = this.byExtension.get(rec.extensionId);
+    if (!ext) {
+      ext = /* @__PURE__ */ new Set();
+      this.byExtension.set(rec.extensionId, ext);
+    }
+    ext.add(rec.watchId);
+    if (rec.tabId != null) {
+      const key = this.tabKey(rec.extensionId, rec.tabId);
+      let tab = this.byExtensionTab.get(key);
+      if (!tab) {
+        tab = /* @__PURE__ */ new Set();
+        this.byExtensionTab.set(key, tab);
+      }
+      tab.add(rec.watchId);
+    }
+  }
+  deindex(rec) {
+    const ext = this.byExtension.get(rec.extensionId);
+    if (ext) {
+      ext.delete(rec.watchId);
+      if (ext.size === 0) this.byExtension.delete(rec.extensionId);
+    }
+    if (rec.tabId != null) {
+      const key = this.tabKey(rec.extensionId, rec.tabId);
+      const tab = this.byExtensionTab.get(key);
+      if (tab) {
+        tab.delete(rec.watchId);
+        if (tab.size === 0) this.byExtensionTab.delete(key);
+      }
+    }
+  }
+  create(spec, home) {
+    const rec = {
+      ...spec,
+      watchId: this.nextId(),
+      home,
+      createdAt: Date.now(),
+      firedCount: 0,
+      droppedCount: 0,
+      lastFiredAt: null,
+      // ⛔ null, not true. The server has not heard from the extension yet, and
+      // "unknown" is a different state from "armed" — conflating them is the
+      // isActive bug (memo 9fb367c0) under a new name.
+      armedReportedByExtension: null,
+      armedReportedAt: null
+    };
+    this.watches.set(rec.watchId, rec);
+    this.index(rec);
+    return rec;
+  }
+  get(watchId) {
+    return this.watches.get(watchId);
+  }
+  list(filter = {}) {
+    let out = [...this.watches.values()];
+    if (filter.extensionId !== void 0) {
+      out = out.filter((w) => w.extensionId === filter.extensionId);
+    }
+    if (filter.tabId !== void 0) {
+      out = out.filter((w) => w.tabId === filter.tabId);
+    }
+    if (filter.agent !== void 0) {
+      out = out.filter((w) => w.agent === filter.agent);
+    }
+    return out;
+  }
+  /** Every watch belonging to one extension — what gets re-pushed on register. */
+  specsFor(extensionId) {
+    const ids = this.byExtension.get(extensionId);
+    if (!ids) return [];
+    return [...ids].map((id) => this.watches.get(id)).filter(Boolean);
+  }
+  delete(watchId) {
+    const rec = this.watches.get(watchId);
+    if (!rec) return false;
+    this.deindex(rec);
+    this.watches.delete(watchId);
+    return true;
+  }
+  /** Cascade for TAB_DETACHED / tab close. Browser-wide watches survive. */
+  deleteByTab(extensionId, tabId) {
+    const ids = this.byExtensionTab.get(this.tabKey(extensionId, tabId));
+    if (!ids) return [];
+    const removed = [...ids];
+    for (const id of removed) this.delete(id);
+    return removed;
+  }
+  /** Cascade for socket close / extension disconnect. Takes everything. */
+  deleteByExtension(extensionId) {
+    const ids = this.byExtension.get(extensionId);
+    if (!ids) return [];
+    const removed = [...ids];
+    for (const id of removed) this.delete(id);
+    return removed;
+  }
+  /** Remove watches whose ttl has elapsed. Returns the removed ids. */
+  expire(now) {
+    const removed = [];
+    for (const rec of [...this.watches.values()]) {
+      const ttl = rec.options?.ttlMs;
+      if (ttl == null) continue;
+      if (now - rec.createdAt >= ttl) {
+        this.delete(rec.watchId);
+        removed.push(rec.watchId);
+      }
+    }
+    return removed;
+  }
+  recordFired(watchId, at) {
+    const rec = this.watches.get(watchId);
+    if (!rec) return;
+    rec.firedCount += 1;
+    rec.lastFiredAt = at;
+  }
+  recordDropped(watchId, count = 1) {
+    const rec = this.watches.get(watchId);
+    if (!rec) return;
+    rec.droppedCount += count;
+  }
+  /**
+   * Store what the EXTENSION said, verbatim.
+   *
+   * ⛔ Never call this with a value the server inferred. The whole point of the
+   * field is that it distinguishes "the extension confirmed it is armed" from
+   * "we have a row for it".
+   */
+  recordArmed(watchId, armed, at) {
+    const rec = this.watches.get(watchId);
+    if (!rec) return;
+    rec.armedReportedByExtension = armed;
+    rec.armedReportedAt = at;
+  }
+};
+
+// src/watch/sinks.ts
+var DEFAULT_ATC_FROM = "unibrowse-watch";
+function renderContent(record, event) {
+  const head = event.breakerTripped ? `\u26D4 WATCH DISARMED \u2014 ${event.breakerTripped.reason}
+watch ${record.watchId} on ${record.source} fired ${event.breakerTripped.firedInWindow} times in one minute against a cap of ${event.breakerTripped.cap}. It is no longer armed; re-create it with a narrower predicate or a higher maxPerMin.` : `watch ${record.watchId} fired \u2014 ${record.source}` + (record.tabId != null ? ` (tab ${record.tabId})` : "");
+  let payload;
+  try {
+    payload = JSON.stringify(event.payload, null, 2);
+  } catch {
+    payload = String(event.payload);
+  }
+  if (payload.length > 4e3) payload = payload.slice(0, 4e3) + "\n\u2026 truncated";
+  return `${head}
+
+${payload}`;
+}
+function createSinkDispatcher(opts) {
+  const { fetchImpl, buffer, atcUrl, atcFrom = DEFAULT_ATC_FROM } = opts;
+  async function post(url, body, headers = {}, sink = "webhook") {
+    try {
+      const res = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        if (res.text) {
+          try {
+            const t = await res.text();
+            if (t) detail += `: ${t.slice(0, 200)}`;
+          } catch {
+          }
+        }
+        return { ok: false, sink, detail };
+      }
+      return { ok: true, sink };
+    } catch (e) {
+      return { ok: false, sink, detail: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  return {
+    async deliver(record, event) {
+      const sink = record.sink;
+      if (sink.kind === "buffer") {
+        buffer.push(record.watchId, event);
+        return { ok: true, sink: "buffer" };
+      }
+      if (sink.kind === "webhook") {
+        return post(
+          sink.url,
+          {
+            watchId: record.watchId,
+            source: record.source,
+            tabId: record.tabId,
+            extensionId: record.extensionId,
+            firedAt: event.firedAt,
+            payload: event.payload,
+            breakerTripped: event.breakerTripped
+          },
+          sink.headers ?? {},
+          "webhook"
+        );
+      }
+      const to = sink.to ?? record.agent;
+      if (!to) {
+        return {
+          ok: false,
+          sink: "atc",
+          detail: `atc sink has no recipient: sink.to was not set and the watch has no \`agent\`. Pass \`agent\` when creating the watch so events reach your own session, or set sink.to explicitly.`
+        };
+      }
+      return post(
+        `${atcUrl}/messages`,
+        {
+          to,
+          from: atcFrom,
+          subject: sink.subject ?? `watch ${record.source}`,
+          content: renderContent(record, event),
+          priority: event.breakerTripped ? "warning" : sink.priority ?? "info"
+        },
+        {},
+        "atc"
+      );
+    }
+  };
+}
+
+// src/watch/service.ts
+var DEFAULT_ATC_URL = "http://192.168.1.168:3030";
+var watchRegistry = new WatchRegistry();
+var watchBuffer = new WatchBuffer();
+var dispatcher = createSinkDispatcher({
+  fetchImpl: ((url, init) => fetch(url, init)),
+  buffer: watchBuffer,
+  atcUrl: process.env.UNIBROWSE_ATC_URL || DEFAULT_ATC_URL
+});
+var expiryTimer = null;
+async function handleWatchFired(payload, disarmInExtension) {
+  const watchId = String(payload?.watchId ?? "");
+  if (!watchId) return;
+  const record = watchRegistry.get(watchId);
+  if (!record) {
+    console.log(`[Watch] WATCH_FIRED for unknown watch ${watchId}; disarming in extension`);
+    try {
+      disarmInExtension(watchId);
+    } catch {
+    }
+    return;
+  }
+  const event = {
+    watchId,
+    source: String(payload.source ?? record.source),
+    firedAt: Number(payload.firedAt ?? Date.now()),
+    payload: payload.payload,
+    breakerTripped: payload.breakerTripped
+  };
+  watchRegistry.recordFired(watchId, event.firedAt);
+  const result = await dispatcher.deliver(record, event);
+  if (!result.ok) {
+    watchRegistry.recordDropped(watchId);
+    console.log(
+      `[Watch] delivery failed for ${watchId} via ${result.sink}: ${result.detail ?? "unknown"}`
+    );
+  }
+  if (event.breakerTripped) {
+    watchRegistry.delete(watchId);
+    watchBuffer.drop(watchId);
+    return;
+  }
+  if (record.options?.once) {
+    watchRegistry.delete(watchId);
+  }
+}
+function onTabGone(extensionId, tabId) {
+  const removed = watchRegistry.deleteByTab(extensionId, tabId);
+  for (const id of removed) watchBuffer.drop(id);
+  if (removed.length > 0) {
+    console.log(`[Watch] tab ${tabId} gone: cleared ${removed.length} watch(es)`);
+  }
+  return removed;
+}
+function onExtensionGone(extensionId) {
+  const removed = watchRegistry.deleteByExtension(extensionId);
+  for (const id of removed) watchBuffer.drop(id);
+  if (removed.length > 0) {
+    console.log(`[Watch] extension ${extensionId} gone: cleared ${removed.length} watch(es)`);
+  }
+  return removed;
+}
+function specsToRearm(extensionId) {
+  return watchRegistry.specsFor(extensionId).map((w) => ({
+    watchId: w.watchId,
+    source: w.source,
+    predicate: w.predicate,
+    options: w.options,
+    tabId: w.tabId ?? null,
+    extensionId: w.extensionId
+  }));
+}
+function startWatchExpiry(intervalMs = 3e4) {
+  if (expiryTimer) return;
+  expiryTimer = setInterval(() => {
+    const removed = watchRegistry.expire(Date.now());
+    for (const id of removed) watchBuffer.drop(id);
+    if (removed.length > 0) console.log(`[Watch] expired ${removed.length} watch(es)`);
+  }, intervalMs);
+  if (typeof expiryTimer.unref === "function") expiryTimer.unref();
+}
+
 // src/server.ts
 var globalContext = new Context();
 var MULTI_AGENT_INSTRUCTIONS = `Unibrowse is a multi-agent browser MCP server.
@@ -593,6 +998,7 @@ Tab reservations (multi-agent etiquette):
 If a tool errors with "Multiple extensions are connected" it includes a prescriptive recovery path: pass extensionId, or attach a tab and use tabTarget. If your MCP client's tool schema doesn't show extensionId, your client cached tools/list before the schema bump \u2014 refresh with /mcp or session respawn.`;
 async function createServerWithTools(options) {
   const { name, version, tools, resources, wss: providedWss } = options;
+  startWatchExpiry();
   const server = new Server(
     { name, version },
     {
@@ -635,6 +1041,30 @@ async function createServerWithTools(options) {
       void globalContext.rebuildTabOwnership(extensionId).then((n) => {
         if (n > 0) console.log(`[Server] Rebuilt tab ownership for ${extensionId}: ${n} tab(s)`);
       }).catch((e) => console.log(`[Server] Tab-ownership rebuild for ${extensionId} failed (non-fatal): ${e?.message ?? e}`));
+      const toRearm = specsToRearm(extensionId);
+      if (toRearm.length > 0) {
+        try {
+          ws.send(JSON.stringify({
+            type: "browser_watch_rearm",
+            payload: { specs: toRearm }
+          }));
+          console.log(`[Watch] re-pushed ${toRearm.length} watch(es) to ${extensionId}`);
+        } catch (e) {
+          console.log(`[Watch] re-push to ${extensionId} failed (non-fatal): ${e?.message}`);
+        }
+      }
+      return;
+    }
+    if (type2 === "WATCH_FIRED") {
+      void handleWatchFired(
+        payload ?? {},
+        (watchId) => {
+          try {
+            ws.send(JSON.stringify({ type: "browser_watch_disarm", payload: { watchId } }));
+          } catch {
+          }
+        }
+      ).catch((e) => console.log(`[Watch] handleWatchFired failed: ${e?.message ?? e}`));
       return;
     }
     if (type2 === "TAB_ATTACHED" || type2 === "TAB_DETACHED") {
@@ -658,6 +1088,7 @@ async function createServerWithTools(options) {
         } else {
           globalContext.forgetTabOwner(tabId);
           console.log(`[Server] TAB_DETACHED: tab=${tabId} ext=${extensionId}`);
+          onTabGone(extensionId, tabId);
         }
       }
       return;
@@ -726,6 +1157,7 @@ async function createServerWithTools(options) {
     websocket.on("close", (code, reason) => {
       const dyingId = globalContext.findExtensionIdByWs(websocket);
       if (dyingId) {
+        onExtensionGone(dyingId);
         const ident = globalContext.describeExtension(dyingId);
         const conn = globalContext.getExtension(dyingId);
         const connectedMs = conn ? Date.now() - conn.registeredAt : 0;
@@ -1986,6 +2418,78 @@ var CloseIsolatedChromeTool = z.object({
     forceProfileName: z.string().optional().describe("Required to close an instance whose profile is on the persistent allowlist. Must equal the profile name verbatim. Persistent profiles are long-lived on purpose (e.g. auth brokers that look idle by design); closing one is cheap to recover from but should be deliberate. The owning session is notified."),
     caller: z.string().optional().describe("Your agent identifier, recorded in the override audit line and the owner notification.")
   }).merge(MaxTokensSchema)
+});
+var WatchSourcesTool = z.object({
+  name: z.literal("browser_watch_sources"),
+  description: z.literal(
+    "List every event source browser_watch_create can watch, with each one's execution home, permission status, rough event volume, and \u2014 most importantly \u2014 the EXACT shape the predicate will be handed. Call this before creating a watch: the predicate's argument differs per source, and guessing it is the main way a watch silently never fires."
+  ),
+  arguments: z.object({
+    filter: z.string().optional().describe("Optional substring to filter source ids by, e.g. 'Network' or 'chrome.downloads'.")
+  })
+});
+var WatchCreateTool = z.object({
+  name: z.literal("browser_watch_create"),
+  description: z.literal(
+    "Arm a watch on a browser event source and get pushed a notification when your predicate matches \u2014 instead of polling the page. Events are FIRE-AND-FORGET: if no listener is attached when one fires, it is dropped, never queued. The watch is cleared when the tab detaches, the extension disconnects, its ttl elapses, or you delete it. Call browser_watch_sources first to see the sources and their predicate shapes."
+  ),
+  arguments: z.object({
+    source: z.string().describe("Source id from browser_watch_sources, e.g. 'cdp.Network.eventSourceMessageReceived'."),
+    predicate: z.string().optional().describe(
+      `JS arrow function evaluated in the extension on each event, e.g. "(e) => e.data.includes('[DONE]')". Omit to fire on every event. A predicate that throws at runtime does not fire and does not kill the watch. NOTE: this is admin-trust code \u2014 it runs in the extension context.`
+    ),
+    sink: z.object({
+      kind: z.enum(["atc", "webhook", "buffer"]).describe("Where matches are delivered."),
+      to: z.string().optional().describe("atc only: recipient. Defaults to your `agent`, so events land in your own session."),
+      subject: z.string().optional().describe("atc only: message subject."),
+      priority: z.enum(["info", "warning", "critical"]).optional().describe("atc only."),
+      url: z.string().optional().describe("webhook only: the URL to POST to."),
+      headers: z.record(z.string()).optional().describe("webhook only: extra request headers."),
+      maxBuffered: z.number().optional().describe("buffer only: queue depth (default 100).")
+    }).optional().describe("Delivery target. Defaults to {kind:'atc'}, which DMs your own agent session."),
+    tabTarget: z.union([z.number(), z.string()]).optional().describe("Tab id or label to scope the watch to. Omit for a browser-wide source."),
+    extensionId: z.string().optional().describe("Which browser to arm in. Required when several extensions are connected."),
+    agent: z.string().optional().describe("Your agent identifier. The atc sink delivers here by default \u2014 set it or events have nowhere to go."),
+    options: z.object({
+      once: z.boolean().optional().describe("Disarm after the first match."),
+      ttlMs: z.number().optional().describe("Auto-disarm after this many ms."),
+      maxPerMin: z.number().optional().describe("Rate cap. Exceeding 10x this in one minute trips a breaker that disarms the watch AND tells you it did."),
+      coalesce: z.object({
+        windowMs: z.number(),
+        mode: z.enum(["last", "batch", "count"])
+      }).optional().describe("Group bursts. For a streamed response you usually want the end, not every token.")
+    }).optional()
+  })
+});
+var WatchListTool = z.object({
+  name: z.literal("browser_watch_list"),
+  description: z.literal(
+    "List watches this server holds. `armed` is the EXTENSION's last raw answer, not the server's belief: 'unknown' means the extension has never reported, which is different from false. This report never repairs state on read."
+  ),
+  arguments: z.object({
+    extensionId: z.string().optional().describe("Filter to one browser."),
+    tabTarget: z.union([z.number(), z.string()]).optional().describe("Filter to one tab."),
+    agent: z.string().optional().describe("Filter to watches you created."),
+    refresh: z.boolean().optional().describe("Re-query the extension for actual armed state and record the answer. Off by default so listing stays side-effect-free.")
+  })
+});
+var WatchDeleteTool = z.object({
+  name: z.literal("browser_watch_delete"),
+  description: z.literal("Delete a watch and disarm it in the extension."),
+  arguments: z.object({
+    watchId: z.string().describe("The watchId returned by browser_watch_create."),
+    extensionId: z.string().optional().describe("Which browser holds it.")
+  })
+});
+var WatchPollTool = z.object({
+  name: z.literal("browser_watch_poll"),
+  description: z.literal(
+    "Drain events from a watch whose sink is 'buffer', blocking until one arrives or the timeout elapses. This is the 'wait until X happens' shape; use an atc or webhook sink when you want to be notified without waiting."
+  ),
+  arguments: z.object({
+    watchId: z.string().describe("The watchId returned by browser_watch_create."),
+    timeoutMs: z.number().optional().describe("How long to block (default 15000, max 120000). A timeout is an answer, not an error.")
+  })
 });
 
 // src/utils/response-helpers.ts
@@ -6162,7 +6666,8 @@ var package_default = {
     "test:advanced-macros": "node tests/test-advanced-macros.js",
     "store:macros": "node tests/store-utility-macros.js",
     "store:advanced-macros": "node tests/store-advanced-macros.js",
-    "backup:test": "./scripts/backup-and-test.sh"
+    "backup:test": "./scripts/backup-and-test.sh",
+    "test:unit": "node --test --experimental-strip-types 'tests/unit/*.test.*'"
   },
   dependencies: {
     "@modelcontextprotocol/sdk": "^1.20.0",
@@ -6190,13 +6695,21 @@ var package_default = {
 
 export {
   appConfig,
+  watchRegistry,
+  watchBuffer,
   globalContext,
   createServerWithTools,
   createServerWithoutWebSocket,
   ListFramesTool,
   GetErrorsTool,
   ReloadExtensionTool,
+  WatchSourcesTool,
+  WatchCreateTool,
+  WatchListTool,
+  WatchDeleteTool,
+  WatchPollTool,
   jsonResponse,
+  textResponse,
   errorResponse,
   getBookmarks,
   createBookmark,
