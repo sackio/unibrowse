@@ -212,6 +212,12 @@ export const watchCreate: Tool = {
         );
       }
 
+      // Honour sink.maxBuffered. Set after the arm succeeds so a refused arm
+      // leaves no capacity entry behind.
+      if (sink.kind === "buffer") {
+        watchBuffer.setCapacity(record.watchId, sink.maxBuffered);
+      }
+
       let out = `# Watch armed\n\n`;
       out += `**watchId**: \`${record.watchId}\`\n`;
       out += `**source**: \`${record.source}\` (${descriptor.scope}-scoped, volume ${descriptor.cost})\n`;

@@ -33,12 +33,28 @@ const MIN_TIMEOUT_MS = 10;
 export class WatchBuffer {
   private slots = new Map<string, Slot>();
   private maxBuffered: number;
+  /**
+   * Per-watch capacity, from sink.maxBuffered. Without this the schema
+   * advertised a knob that did nothing — worse than not offering it, because a
+   * caller sizing a buffer for a long conversation would believe they had.
+   */
+  private capacities = new Map<string, number>();
 
   // ⛔ NOT a TypeScript parameter property (`constructor(private x: T)`).
   // Node's --experimental-strip-types rejects those outright, and the unit
   // tests import this module directly rather than through tsup.
   constructor(maxBuffered: number = DEFAULT_MAX_BUFFERED) {
     this.maxBuffered = maxBuffered;
+  }
+
+  /** Set a watch's own queue depth. Called when a buffer-sink watch is created. */
+  setCapacity(watchId: string, maxBuffered?: number): void {
+    if (maxBuffered == null || !Number.isFinite(maxBuffered) || maxBuffered < 1) return;
+    this.capacities.set(watchId, Math.floor(maxBuffered));
+  }
+
+  private capacityFor(watchId: string): number {
+    return this.capacities.get(watchId) ?? this.maxBuffered;
   }
 
   private slot(watchId: string): Slot {
@@ -61,8 +77,9 @@ export class WatchBuffer {
     s.queue.push(event);
     // Bounded: drop OLDEST first. A full buffer means nobody is draining, and
     // the newest state is the one worth keeping.
-    if (s.queue.length > this.maxBuffered) {
-      s.queue.splice(0, s.queue.length - this.maxBuffered);
+    const cap = this.capacityFor(watchId);
+    if (s.queue.length > cap) {
+      s.queue.splice(0, s.queue.length - cap);
     }
   }
 
@@ -102,6 +119,11 @@ export class WatchBuffer {
 
   /** Tear down a watch's slot; pending waiters resolve as unmatched. */
   drop(watchId: string): void {
+    // ⛔ Clear the capacity FIRST and unconditionally. A slot only exists once
+    // something has been pushed, so a watch created and deleted without ever
+    // firing would otherwise leave its capacity behind — and the next watch to
+    // reuse that id would silently inherit it.
+    this.capacities.delete(watchId);
     const s = this.slots.get(watchId);
     if (!s) return;
     const waiters = s.waiters.splice(0);

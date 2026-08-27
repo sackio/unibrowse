@@ -77,3 +77,33 @@ test("a timed-out waiter is removed and cannot be resolved later", async () => {
   // event would be consumed by nobody — a silently swallowed notification.
   assert.equal((await b.poll("w1", 10)).events?.length, 1);
 });
+
+test("a per-watch capacity overrides the default", async () => {
+  const b = new WatchBuffer(100);
+  b.setCapacity("w1", 2);
+  b.push("w1", ev(1));
+  b.push("w1", ev(2));
+  b.push("w1", ev(3));
+  const r = await b.poll("w1", 10);
+  assert.deepEqual(r.events?.map((e) => e.firedAt), [2, 3], "oldest dropped at the per-watch cap");
+});
+
+test("a watch without its own capacity still uses the default", async () => {
+  const b = new WatchBuffer(2);
+  b.setCapacity("w1", 5);
+  b.push("w2", ev(1));
+  b.push("w2", ev(2));
+  b.push("w2", ev(3));
+  const r = await b.poll("w2", 10);
+  assert.equal(r.events?.length, 2, "w2 is unaffected by w1's capacity");
+});
+
+test("dropping a watch forgets its capacity", async () => {
+  const b = new WatchBuffer(100);
+  b.setCapacity("w1", 1);
+  b.drop("w1");
+  b.push("w1", ev(1));
+  b.push("w1", ev(2));
+  const r = await b.poll("w1", 10);
+  assert.equal(r.events?.length, 2, "capacity must not outlive the watch it belonged to");
+});

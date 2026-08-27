@@ -591,11 +591,25 @@ var MIN_TIMEOUT_MS = 10;
 var WatchBuffer = class {
   slots = /* @__PURE__ */ new Map();
   maxBuffered;
+  /**
+   * Per-watch capacity, from sink.maxBuffered. Without this the schema
+   * advertised a knob that did nothing — worse than not offering it, because a
+   * caller sizing a buffer for a long conversation would believe they had.
+   */
+  capacities = /* @__PURE__ */ new Map();
   // ⛔ NOT a TypeScript parameter property (`constructor(private x: T)`).
   // Node's --experimental-strip-types rejects those outright, and the unit
   // tests import this module directly rather than through tsup.
   constructor(maxBuffered = DEFAULT_MAX_BUFFERED) {
     this.maxBuffered = maxBuffered;
+  }
+  /** Set a watch's own queue depth. Called when a buffer-sink watch is created. */
+  setCapacity(watchId, maxBuffered) {
+    if (maxBuffered == null || !Number.isFinite(maxBuffered) || maxBuffered < 1) return;
+    this.capacities.set(watchId, Math.floor(maxBuffered));
+  }
+  capacityFor(watchId) {
+    return this.capacities.get(watchId) ?? this.maxBuffered;
   }
   slot(watchId) {
     let s = this.slots.get(watchId);
@@ -614,8 +628,9 @@ var WatchBuffer = class {
       return;
     }
     s.queue.push(event);
-    if (s.queue.length > this.maxBuffered) {
-      s.queue.splice(0, s.queue.length - this.maxBuffered);
+    const cap = this.capacityFor(watchId);
+    if (s.queue.length > cap) {
+      s.queue.splice(0, s.queue.length - cap);
     }
   }
   /**
@@ -649,6 +664,7 @@ var WatchBuffer = class {
   }
   /** Tear down a watch's slot; pending waiters resolve as unmatched. */
   drop(watchId) {
+    this.capacities.delete(watchId);
     const s = this.slots.get(watchId);
     if (!s) return;
     const waiters = s.waiters.splice(0);

@@ -119,7 +119,7 @@ import {
   wait,
   watchBuffer,
   watchRegistry
-} from "./chunk-ZLF4E2J3.js";
+} from "./chunk-TGRVECL4.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -880,6 +880,9 @@ var watchCreate = {
         return errorResponse(
           `Extension ${extensionId} did not confirm the watch as armed. No watch was created.`
         );
+      }
+      if (sink.kind === "buffer") {
+        watchBuffer.setCapacity(record.watchId, sink.maxBuffered);
       }
       let out = `# Watch armed
 

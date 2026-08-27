@@ -26,9 +26,9 @@ const PAGE_BINDINGS = {
   "dom.mutation": {
     config: ["selector", "subtree", "attributes", "characterData"],
     body: `
-      const target = CONFIG.selector ? document.querySelector(CONFIG.selector) : document.body;
-      if (!target) { report({ error: 'selector matched nothing: ' + CONFIG.selector }); return; }
-      const obs = new MutationObserver((mutations) => {
+      let obs = null;
+      const stopBoot = whenPresent(CONFIG.selector, (target) => {
+      obs = new MutationObserver((mutations) => {
         const ev = {
           type: 'mutation',
           count: mutations.length,
@@ -46,7 +46,8 @@ const PAGE_BINDINGS = {
         attributes: CONFIG.attributes === true,
         characterData: CONFIG.characterData === true,
       });
-      cleanup(() => obs.disconnect());
+      });
+      cleanup(() => { stopBoot(); if (obs) obs.disconnect(); });
     `,
   },
 
@@ -80,9 +81,9 @@ const PAGE_BINDINGS = {
     config: ["selector", "threshold"],
     body: `
       if (!CONFIG.selector) { report({ error: 'dom.intersection requires config.selector' }); return; }
-      const el = document.querySelector(CONFIG.selector);
-      if (!el) { report({ error: 'selector matched nothing: ' + CONFIG.selector }); return; }
-      const obs = new IntersectionObserver((entries) => {
+      let obs = null;
+      const stopBoot = whenPresent(CONFIG.selector, (el) => {
+      obs = new IntersectionObserver((entries) => {
         for (const en of entries) {
           const ev = { type: 'intersection', selector: CONFIG.selector,
                        isIntersecting: en.isIntersecting, ratio: en.intersectionRatio,
@@ -91,7 +92,8 @@ const PAGE_BINDINGS = {
         }
       }, { threshold: CONFIG.threshold != null ? CONFIG.threshold : 0 });
       obs.observe(el);
-      cleanup(() => obs.disconnect());
+      });
+      cleanup(() => { stopBoot(); if (obs) obs.disconnect(); });
     `,
   },
 
@@ -100,8 +102,6 @@ const PAGE_BINDINGS = {
     body: `
       const name = CONFIG.eventName;
       if (!name) { report({ error: 'page.event requires config.eventName' }); return; }
-      const target = CONFIG.selector ? document.querySelector(CONFIG.selector) : window;
-      if (!target) { report({ error: 'selector matched nothing: ' + CONFIG.selector }); return; }
       const fn = (e) => {
         const ev = { type: 'pageEvent', eventName: name, url: location.href,
                      detail: (() => { try { return JSON.parse(JSON.stringify(e.detail ?? null)); }
@@ -110,8 +110,17 @@ const PAGE_BINDINGS = {
                      targetId: e.target && e.target.id ? e.target.id : null };
         if (predicate(ev)) report(ev);
       };
-      target.addEventListener(name, fn, CONFIG.capture === true);
-      cleanup(() => target.removeEventListener(name, fn, CONFIG.capture === true));
+      let bound = null;
+      const stopBoot = CONFIG.selector
+        ? whenPresent(CONFIG.selector, (el) => {
+            bound = el;
+            el.addEventListener(name, fn, CONFIG.capture === true);
+          })
+        : (window.addEventListener(name, fn, CONFIG.capture === true), bound = window, () => {});
+      cleanup(() => {
+        stopBoot();
+        if (bound) bound.removeEventListener(name, fn, CONFIG.capture === true);
+      });
     `,
   },
 
@@ -171,6 +180,30 @@ function buildPageWatchSource({ watchId, source, predicate, config }) {
     } catch (e) {
       try { teardown(); } catch (e2) { /* best-effort */ }
     }
+  };
+
+  // ⛔ WAIT FOR THE SELECTOR RATHER THAN GIVING UP ON IT.
+  //
+  // A widget that has not rendered yet — or has just been replaced by a
+  // re-auth wall, a route change, or a late hydration — is the NORMAL case,
+  // not an error. Bailing at inject time leaves the watch armed and blind,
+  // which is the fail-quiet this subsystem exists to remove.
+  //
+  // whenPresent(sel, cb) calls back immediately if the element is there, and
+  // otherwise watches the document until it appears. Returns a disposer.
+  // NOTE: no backticks anywhere in this string -- it lives inside a template
+  // literal, and one would terminate it. (Cost me a parse error once already.)
+  const whenPresent = (sel, cb) => {
+    const found = sel ? document.querySelector(sel) : document.body;
+    if (found) { cb(found); return () => {}; }
+    const boot = new MutationObserver(() => {
+      const el = document.querySelector(sel);
+      if (!el) return;
+      boot.disconnect();
+      cb(el);
+    });
+    boot.observe(document.documentElement, { childList: true, subtree: true });
+    return () => boot.disconnect();
   };
 
   // The caller's predicate, evaluated HERE where the DOM exists. A runtime
