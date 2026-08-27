@@ -15,6 +15,164 @@ var appConfig = {
   }
 };
 
+// src/utils/mongodb.ts
+import { MongoClient } from "mongodb";
+var MongoDB = class _MongoDB {
+  static instance;
+  client = null;
+  db = null;
+  connected = false;
+  constructor() {
+  }
+  static getInstance() {
+    if (!_MongoDB.instance) {
+      _MongoDB.instance = new _MongoDB();
+    }
+    return _MongoDB.instance;
+  }
+  /**
+   * Connect to MongoDB
+   * Default: mongodb://localhost:27018/unibrowse
+   */
+  async connect(uri) {
+    if (this.connected && this.client) {
+      return;
+    }
+    const connectionUri = uri || process.env.MONGODB_URI || "mongodb://localhost:27018";
+    const dbName = process.env.MONGODB_DB || "unibrowse";
+    try {
+      this.client = new MongoClient(connectionUri, {
+        maxPoolSize: 10,
+        minPoolSize: 2,
+        serverSelectionTimeoutMS: 5e3,
+        socketTimeoutMS: 45e3
+      });
+      await this.client.connect();
+      this.db = this.client.db(dbName);
+      this.connected = true;
+      await this.ensureIndexes();
+      console.log(`[MongoDB] Connected to ${connectionUri}/${dbName}`);
+    } catch (error) {
+      console.error("[MongoDB] Connection failed:", error);
+      this.connected = false;
+      throw error;
+    }
+  }
+  /**
+   * Ensure required indexes exist
+   */
+  async ensureIndexes() {
+    if (!this.db) return;
+    const macros = this.db.collection("macros");
+    await macros.createIndex({ id: 1 }, { unique: true });
+    await macros.createIndex({ site: 1, category: 1 });
+    await macros.createIndex({ site: 1, name: 1 }, { unique: true });
+    await macros.createIndex({ tags: 1 });
+    await macros.createIndex({ createdAt: 1 });
+    await macros.createIndex({ reliability: 1 });
+    const recordings = this.db.collection("recordings");
+    await recordings.createIndex({ id: 1 }, { unique: true });
+    await recordings.createIndex({ createdAt: -1 });
+    await recordings.createIndex({ tags: 1 });
+    await recordings.createIndex({ title: "text", description: "text" });
+    const recordingEvents = this.db.collection("recording_events");
+    try {
+      const existing = await recordingEvents.indexes();
+      const stale = existing.find(
+        (idx) => idx.unique && idx.key && idx.key.recordingId === 1 && Object.keys(idx.key).length === 1
+      );
+      if (stale) await recordingEvents.dropIndex(stale.name);
+    } catch {
+    }
+    await recordingEvents.createIndex({ recordingId: 1, chunkIndex: 1 }, { unique: true });
+    const watches = this.db.collection("watches");
+    await watches.createIndex({ watchId: 1 }, { unique: true });
+    await watches.createIndex({ extensionId: 1 });
+    await watches.createIndex({ createdAt: 1 });
+    console.log("[MongoDB] Indexes created successfully");
+  }
+  /**
+   * Get macros collection
+   */
+  getMacrosCollection() {
+    if (!this.db) {
+      throw new Error("MongoDB not connected. Call connect() first.");
+    }
+    return this.db.collection("macros");
+  }
+  /**
+   * Get recordings collection
+   */
+  getRecordingsCollection() {
+    if (!this.db) {
+      throw new Error("MongoDB not connected. Call connect() first.");
+    }
+    return this.db.collection("recordings");
+  }
+  /**
+   * Get recording_events collection (rrweb events + network entries, separate to avoid 16MB doc limit)
+   */
+  getRecordingEventsCollection() {
+    if (!this.db) {
+      throw new Error("MongoDB not connected. Call connect() first.");
+    }
+    return this.db.collection("recording_events");
+  }
+  /**
+   * Get recording_annotations collection — one doc per user-drawn annotation
+   * captured during a session recording. Separate collection because each doc
+   * carries a base64 PNG screenshot (~100-300KB) and we want fast indexed
+   * lookup by recordingId for the review UI / browser_get_recording tool.
+   */
+  getRecordingAnnotationsCollection() {
+    if (!this.db) {
+      throw new Error("MongoDB not connected. Call connect() first.");
+    }
+    return this.db.collection("recording_annotations");
+  }
+  /**
+   * Watch subscriptions collection — see src/watch/persistence.ts for what is
+   * stored and, more importantly, what deliberately is not.
+   */
+  getWatchesCollection() {
+    if (!this.db) {
+      throw new Error("MongoDB not connected. Call connect() first.");
+    }
+    return this.db.collection("watches");
+  }
+  /**
+   * Check if connected
+   */
+  isConnected() {
+    return this.connected;
+  }
+  /**
+   * Disconnect from MongoDB
+   */
+  async disconnect() {
+    if (this.client) {
+      await this.client.close();
+      this.connected = false;
+      this.client = null;
+      this.db = null;
+      console.log("[MongoDB] Disconnected");
+    }
+  }
+  /**
+   * Health check
+   */
+  async ping() {
+    if (!this.db) return false;
+    try {
+      await this.db.admin().ping();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+};
+var mongodb = MongoDB.getInstance();
+
 // src/server.ts
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
@@ -674,6 +832,81 @@ var WatchBuffer = class {
   }
 };
 
+// src/watch/persistence.ts
+function toPersisted(rec) {
+  return {
+    watchId: rec.watchId,
+    source: rec.source,
+    home: rec.home,
+    extensionId: rec.extensionId,
+    tabId: rec.tabId ?? null,
+    agent: rec.agent,
+    predicate: rec.predicate,
+    prefilter: rec.prefilter,
+    config: rec.config,
+    sink: rec.sink,
+    options: rec.options,
+    createdAt: rec.createdAt,
+    armedAgainstUrl: rec.armedAgainstUrl,
+    firedBeforeShutdown: Boolean(rec.options?.once && rec.firedCount > 0)
+  };
+}
+function fromPersisted(p) {
+  return {
+    watchId: p.watchId,
+    source: p.source,
+    home: p.home,
+    extensionId: p.extensionId,
+    tabId: p.tabId ?? null,
+    agent: p.agent,
+    predicate: p.predicate,
+    prefilter: p.prefilter,
+    config: p.config,
+    sink: p.sink,
+    options: p.options,
+    createdAt: p.createdAt,
+    // ⛔ Counters described a process that no longer exists. Carrying them over
+    // would make a fresh server claim a history it did not observe.
+    firedCount: 0,
+    droppedCount: 0,
+    prefilteredCount: 0,
+    lastFiredAt: null,
+    // ⛔ The load-bearing line of this file. See the header.
+    armedReportedByExtension: null,
+    armedReportedAt: null
+  };
+}
+function looksLikeAWatch(p) {
+  return p != null && typeof p === "object" && typeof p.watchId === "string" && typeof p.source === "string" && typeof p.extensionId === "string" && typeof p.createdAt === "number" && p.sink != null;
+}
+function planRehydration(rows, now) {
+  const plan = { rehydrate: [], drop: [], lostBuffers: [], malformed: 0 };
+  for (const row of rows) {
+    if (!looksLikeAWatch(row)) {
+      plan.malformed += 1;
+      continue;
+    }
+    if (row.firedBeforeShutdown) {
+      plan.drop.push({ watchId: row.watchId, reason: "once" });
+      continue;
+    }
+    const ttl = row.options?.ttlMs;
+    if (typeof ttl === "number" && now - row.createdAt >= ttl) {
+      plan.drop.push({ watchId: row.watchId, reason: "ttl" });
+      continue;
+    }
+    const record = fromPersisted(row);
+    plan.rehydrate.push({
+      watchId: row.watchId,
+      record,
+      // Page-home watches are conditional on the document still being there.
+      requiresUrl: row.home === "page" ? row.armedAgainstUrl : void 0
+    });
+    if (row.sink?.kind === "buffer") plan.lostBuffers.push(row.watchId);
+  }
+  return plan;
+}
+
 // src/watch/predicate.ts
 var cache = /* @__PURE__ */ new Map();
 function compilePredicate(src) {
@@ -786,6 +1019,17 @@ var WatchRegistry = class {
       armedReportedByExtension: null,
       armedReportedAt: null
     };
+    this.watches.set(rec.watchId, rec);
+    this.tombstones.delete(rec.watchId);
+    this.index(rec);
+    return rec;
+  }
+  /**
+   * Put an existing record back, verbatim — used by rehydration after a
+   * restart. Distinct from create(): it mints no id and invents no state, so
+   * whatever persistence decided about `armed` is preserved exactly.
+   */
+  restore(rec) {
     this.watches.set(rec.watchId, rec);
     this.tombstones.delete(rec.watchId);
     this.index(rec);
@@ -1014,6 +1258,58 @@ var dispatcher = createSinkDispatcher({
   atcUrl: process.env.UNIBROWSE_ATC_URL || DEFAULT_ATC_URL
 });
 var expiryTimer = null;
+var buffersLostToRestart = /* @__PURE__ */ new Set();
+var pendingUrlVerification = /* @__PURE__ */ new Map();
+async function persistWatch(rec) {
+  try {
+    if (!mongodb.isConnected()) await mongodb.connect();
+    await mongodb.getWatchesCollection().updateOne({ watchId: rec.watchId }, { $set: toPersisted(rec) }, { upsert: true });
+  } catch (e) {
+    console.log(`[Watch] persist failed for ${rec.watchId} (non-fatal): ${e?.message}`);
+  }
+}
+async function unpersistWatch(watchId) {
+  try {
+    if (!mongodb.isConnected()) return;
+    await mongodb.getWatchesCollection().deleteOne({ watchId });
+  } catch (e) {
+    console.log(`[Watch] unpersist failed for ${watchId} (non-fatal): ${e?.message}`);
+  }
+}
+async function unpersistMany(ids) {
+  if (ids.length === 0) return;
+  try {
+    if (!mongodb.isConnected()) return;
+    await mongodb.getWatchesCollection().deleteMany({ watchId: { $in: ids } });
+  } catch (e) {
+    console.log(`[Watch] bulk unpersist failed (non-fatal): ${e?.message}`);
+  }
+}
+async function rehydrateWatches() {
+  try {
+    if (!mongodb.isConnected()) await mongodb.connect();
+    if (!mongodb.isConnected()) {
+      console.log("[Watch] no MongoDB connection; watches did NOT survive this restart");
+      return;
+    }
+    const rows = await mongodb.getWatchesCollection().find({}).toArray();
+    if (rows.length === 0) return;
+    const plan = planRehydration(rows, Date.now());
+    for (const c of plan.rehydrate) {
+      watchRegistry.restore(c.record);
+      if (c.requiresUrl) pendingUrlVerification.set(c.watchId, c.requiresUrl);
+    }
+    for (const id of plan.lostBuffers) buffersLostToRestart.add(id);
+    if (plan.drop.length > 0) {
+      await unpersistMany(plan.drop.map((d) => d.watchId));
+    }
+    console.log(
+      `[Watch] rehydrated ${plan.rehydrate.length} watch(es) as armed:unknown${plan.drop.length ? `, dropped ${plan.drop.length} (${plan.drop.map((d) => d.reason).join(",")})` : ""}${plan.lostBuffers.length ? `, ${plan.lostBuffers.length} buffer(s) lost` : ""}${plan.malformed ? `, \u26A0\uFE0F ${plan.malformed} MALFORMED row(s) skipped` : ""}`
+    );
+  } catch (e) {
+    console.log(`[Watch] rehydration failed (non-fatal): ${e?.message}`);
+  }
+}
 async function handleWatchFired(payload, disarmInExtension) {
   const watchId = String(payload?.watchId ?? "");
   if (!watchId) return;
@@ -1056,15 +1352,18 @@ async function handleWatchFired(payload, disarmInExtension) {
   if (event.breakerTripped) {
     watchRegistry.delete(watchId, "breaker");
     watchBuffer.drop(watchId);
+    void unpersistWatch(watchId);
     return;
   }
   if (record.options?.once) {
     watchRegistry.delete(watchId, "once");
+    void unpersistWatch(watchId);
   }
 }
 function onTabGone(extensionId, tabId) {
   const removed = watchRegistry.deleteByTab(extensionId, tabId);
   for (const id of removed) watchBuffer.drop(id);
+  void unpersistMany(removed);
   if (removed.length > 0) {
     console.log(`[Watch] tab ${tabId} gone: cleared ${removed.length} watch(es)`);
   }
@@ -1077,6 +1376,56 @@ function onExtensionGone(extensionId) {
     console.log(`[Watch] extension ${extensionId} gone: cleared ${removed.length} watch(es)`);
   }
   return removed;
+}
+async function rearmForExtension(extensionId, listTabs2) {
+  const specs = specsToRearm(extensionId);
+  const dropped = [];
+  const needsCheck = specs.filter((s) => pendingUrlVerification.has(s.watchId));
+  if (needsCheck.length === 0) return { specs, dropped };
+  let tabs = [];
+  try {
+    tabs = await listTabs2();
+  } catch (e) {
+    console.log(`[Watch] tab list for ${extensionId} failed; holding ${needsCheck.length} page watch(es) unarmed: ${e?.message}`);
+    return { specs: specs.filter((s) => !pendingUrlVerification.has(s.watchId)), dropped };
+  }
+  const urlOf = new Map(tabs.map((t) => [t.tabId, t.url]));
+  const survivors = [];
+  for (const s of specs) {
+    const wanted = pendingUrlVerification.get(s.watchId);
+    if (!wanted) {
+      survivors.push(s);
+      continue;
+    }
+    const actual = s.tabId != null ? urlOf.get(s.tabId) : void 0;
+    if (typeof actual === "string" && actual === wanted) {
+      pendingUrlVerification.delete(s.watchId);
+      survivors.push(s);
+      continue;
+    }
+    pendingUrlVerification.delete(s.watchId);
+    watchRegistry.delete(s.watchId, "document-changed");
+    watchBuffer.drop(s.watchId);
+    void unpersistWatch(s.watchId);
+    dropped.push({ watchId: s.watchId, reason: "document-changed" });
+    console.log(
+      `[Watch] ${s.watchId} not re-armed: was created against ${wanted}, tab ${s.tabId} now shows ${actual ?? "(gone)"}`
+    );
+  }
+  return { specs: survivors, dropped };
+}
+async function recordArmedFromExtension(extensionId, listArmed) {
+  try {
+    const rows = await listArmed();
+    const live = new Set(rows.filter((r) => r.armed).map((r) => r.watchId));
+    const now = Date.now();
+    for (const rec of watchRegistry.list({ extensionId })) {
+      watchRegistry.recordArmed(rec.watchId, live.has(rec.watchId), now);
+    }
+    console.log(`[Watch] ${extensionId} confirms ${live.size} watch(es) armed`);
+  } catch (e) {
+    console.log(`[Watch] armed-state confirmation for ${extensionId} failed (non-fatal): ${e?.message}`);
+  }
 }
 function specsToRearm(extensionId) {
   return watchRegistry.specsFor(extensionId).map((w) => ({
@@ -1098,9 +1447,13 @@ function startWatchExpiry(intervalMs = 3e4) {
   expiryTimer = setInterval(() => {
     const removed = watchRegistry.expire(Date.now());
     for (const id of removed) watchBuffer.drop(id);
+    void unpersistMany(removed);
     if (removed.length > 0) console.log(`[Watch] expired ${removed.length} watch(es)`);
   }, intervalMs);
   if (typeof expiryTimer.unref === "function") expiryTimer.unref();
+}
+async function forgetWatch(watchId) {
+  await unpersistWatch(watchId);
 }
 
 // src/server.ts
@@ -1124,6 +1477,7 @@ If a tool errors with "Multiple extensions are connected" it includes a prescrip
 async function createServerWithTools(options) {
   const { name, version, tools, resources, wss: providedWss } = options;
   startWatchExpiry();
+  void rehydrateWatches();
   const server = new Server(
     { name, version },
     {
@@ -1166,19 +1520,33 @@ async function createServerWithTools(options) {
       void globalContext.rebuildTabOwnership(extensionId).then((n) => {
         if (n > 0) console.log(`[Server] Rebuilt tab ownership for ${extensionId}: ${n} tab(s)`);
       }).catch((e) => console.log(`[Server] Tab-ownership rebuild for ${extensionId} failed (non-fatal): ${e?.message ?? e}`));
-      const toRearm = specsToRearm(extensionId);
-      if (toRearm.length > 0) {
-        try {
-          ws.send(JSON.stringify({
-            id: `watch-rearm-${Date.now()}`,
-            type: "browser_watch_rearm",
-            payload: { specs: toRearm }
-          }));
-          console.log(`[Watch] re-pushed ${toRearm.length} watch(es) to ${extensionId}`);
-        } catch (e) {
-          console.log(`[Watch] re-push to ${extensionId} failed (non-fatal): ${e?.message}`);
+      void rearmForExtension(extensionId, async () => {
+        const res = await globalContext.sendSocketMessage(
+          "browser_list_attached_tabs",
+          {},
+          { extensionId, timeoutMs: 8e3 }
+        );
+        return res?.tabs ?? [];
+      }).then(({ specs, dropped }) => {
+        if (dropped.length > 0) {
+          console.log(`[Watch] ${dropped.length} page watch(es) cleared as document-changed`);
         }
-      }
+        if (specs.length === 0) return;
+        ws.send(JSON.stringify({
+          id: `watch-rearm-${Date.now()}`,
+          type: "browser_watch_rearm",
+          payload: { specs }
+        }));
+        console.log(`[Watch] re-pushed ${specs.length} watch(es) to ${extensionId}`);
+        return recordArmedFromExtension(extensionId, async () => {
+          const res = await globalContext.sendSocketMessage(
+            "browser_watch_list_armed",
+            {},
+            { extensionId, timeoutMs: 8e3 }
+          );
+          return res?.watches ?? [];
+        });
+      }).catch((e) => console.log(`[Watch] re-push to ${extensionId} failed (non-fatal): ${e?.message}`));
       return;
     }
     if (type2 === "WATCH_FIRED") {
@@ -4560,150 +4928,6 @@ var requestUserAction = (snapshot2) => ({
   }
 });
 
-// src/utils/mongodb.ts
-import { MongoClient } from "mongodb";
-var MongoDB = class _MongoDB {
-  static instance;
-  client = null;
-  db = null;
-  connected = false;
-  constructor() {
-  }
-  static getInstance() {
-    if (!_MongoDB.instance) {
-      _MongoDB.instance = new _MongoDB();
-    }
-    return _MongoDB.instance;
-  }
-  /**
-   * Connect to MongoDB
-   * Default: mongodb://localhost:27018/unibrowse
-   */
-  async connect(uri) {
-    if (this.connected && this.client) {
-      return;
-    }
-    const connectionUri = uri || process.env.MONGODB_URI || "mongodb://localhost:27018";
-    const dbName = process.env.MONGODB_DB || "unibrowse";
-    try {
-      this.client = new MongoClient(connectionUri, {
-        maxPoolSize: 10,
-        minPoolSize: 2,
-        serverSelectionTimeoutMS: 5e3,
-        socketTimeoutMS: 45e3
-      });
-      await this.client.connect();
-      this.db = this.client.db(dbName);
-      this.connected = true;
-      await this.ensureIndexes();
-      console.log(`[MongoDB] Connected to ${connectionUri}/${dbName}`);
-    } catch (error) {
-      console.error("[MongoDB] Connection failed:", error);
-      this.connected = false;
-      throw error;
-    }
-  }
-  /**
-   * Ensure required indexes exist
-   */
-  async ensureIndexes() {
-    if (!this.db) return;
-    const macros = this.db.collection("macros");
-    await macros.createIndex({ id: 1 }, { unique: true });
-    await macros.createIndex({ site: 1, category: 1 });
-    await macros.createIndex({ site: 1, name: 1 }, { unique: true });
-    await macros.createIndex({ tags: 1 });
-    await macros.createIndex({ createdAt: 1 });
-    await macros.createIndex({ reliability: 1 });
-    const recordings = this.db.collection("recordings");
-    await recordings.createIndex({ id: 1 }, { unique: true });
-    await recordings.createIndex({ createdAt: -1 });
-    await recordings.createIndex({ tags: 1 });
-    await recordings.createIndex({ title: "text", description: "text" });
-    const recordingEvents = this.db.collection("recording_events");
-    try {
-      const existing = await recordingEvents.indexes();
-      const stale = existing.find(
-        (idx) => idx.unique && idx.key && idx.key.recordingId === 1 && Object.keys(idx.key).length === 1
-      );
-      if (stale) await recordingEvents.dropIndex(stale.name);
-    } catch {
-    }
-    await recordingEvents.createIndex({ recordingId: 1, chunkIndex: 1 }, { unique: true });
-    console.log("[MongoDB] Indexes created successfully");
-  }
-  /**
-   * Get macros collection
-   */
-  getMacrosCollection() {
-    if (!this.db) {
-      throw new Error("MongoDB not connected. Call connect() first.");
-    }
-    return this.db.collection("macros");
-  }
-  /**
-   * Get recordings collection
-   */
-  getRecordingsCollection() {
-    if (!this.db) {
-      throw new Error("MongoDB not connected. Call connect() first.");
-    }
-    return this.db.collection("recordings");
-  }
-  /**
-   * Get recording_events collection (rrweb events + network entries, separate to avoid 16MB doc limit)
-   */
-  getRecordingEventsCollection() {
-    if (!this.db) {
-      throw new Error("MongoDB not connected. Call connect() first.");
-    }
-    return this.db.collection("recording_events");
-  }
-  /**
-   * Get recording_annotations collection — one doc per user-drawn annotation
-   * captured during a session recording. Separate collection because each doc
-   * carries a base64 PNG screenshot (~100-300KB) and we want fast indexed
-   * lookup by recordingId for the review UI / browser_get_recording tool.
-   */
-  getRecordingAnnotationsCollection() {
-    if (!this.db) {
-      throw new Error("MongoDB not connected. Call connect() first.");
-    }
-    return this.db.collection("recording_annotations");
-  }
-  /**
-   * Check if connected
-   */
-  isConnected() {
-    return this.connected;
-  }
-  /**
-   * Disconnect from MongoDB
-   */
-  async disconnect() {
-    if (this.client) {
-      await this.client.close();
-      this.connected = false;
-      this.client = null;
-      this.db = null;
-      console.log("[MongoDB] Disconnected");
-    }
-  }
-  /**
-   * Health check
-   */
-  async ping() {
-    if (!this.db) return false;
-    try {
-      await this.db.admin().ping();
-      return true;
-    } catch {
-      return false;
-    }
-  }
-};
-var mongodb = MongoDB.getInstance();
-
 // src/tools/macros.ts
 import { zodToJsonSchema as zodToJsonSchema17 } from "zod-to-json-schema";
 import { v4 as uuidv4 } from "uuid";
@@ -6884,9 +7108,13 @@ var package_default = {
 
 export {
   appConfig,
+  mongodb,
   validatePredicate,
   watchRegistry,
   watchBuffer,
+  buffersLostToRestart,
+  persistWatch,
+  forgetWatch,
   globalContext,
   createServerWithTools,
   createServerWithoutWebSocket,
@@ -6971,7 +7199,6 @@ export {
   closeTab,
   createWindow,
   requestUserAction,
-  mongodb,
   storeMacro,
   listMacros,
   getMacro,

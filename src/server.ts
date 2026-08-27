@@ -15,7 +15,9 @@ import {
   handleWatchFired,
   onExtensionGone,
   onTabGone,
-  specsToRearm,
+  rearmForExtension,
+  recordArmedFromExtension,
+  rehydrateWatches,
   startWatchExpiry,
 } from "@/watch/service";
 import { createWebSocketServer } from "@/ws";
@@ -63,6 +65,9 @@ export async function createServerWithTools(options: Options): Promise<Server> {
   // Reap ttl-expired watches. Idempotent, and unref'd so it never holds the
   // process open.
   startWatchExpiry();
+  // Bring watch subscriptions back after a restart. Loaded as armed:unknown —
+  // the re-push on EXTENSION_REGISTER below is what actually arms them.
+  void rehydrateWatches();
   const server = new Server(
     { name, version },
     {
@@ -136,22 +141,42 @@ export async function createServerWithTools(options: Options): Promise<Server> {
       // ⛔ The extension's answer is recorded VERBATIM — never inferred. A
       // registry that reports armed because it holds a row is the isActive bug
       // (memo 9fb367c0) under a new name.
-      const toRearm = specsToRearm(extensionId);
-      if (toRearm.length > 0) {
-        try {
-          // Carry an id: handleMCPMessage replies via safeSendResponse(id, …)
-          // for every message, and an undefined id makes that reply malformed.
-          // We do not read the response, but it should not be garbage.
+      // Verify page-home watches against the document they were created for
+      // before re-arming any of them. Deliberately not awaited inline — the
+      // registration must not block on it.
+      void rearmForExtension(extensionId, async () => {
+        const res: any = await globalContext.sendSocketMessage(
+          "browser_list_attached_tabs",
+          {},
+          { extensionId, timeoutMs: 8000 },
+        );
+        return (res?.tabs ?? []) as Array<{ tabId: number; url?: string }>;
+      })
+        .then(({ specs, dropped }) => {
+          if (dropped.length > 0) {
+            console.log(`[Watch] ${dropped.length} page watch(es) cleared as document-changed`);
+          }
+          if (specs.length === 0) return;
           ws.send(JSON.stringify({
             id: `watch-rearm-${Date.now()}`,
             type: 'browser_watch_rearm',
-            payload: { specs: toRearm },
+            payload: { specs },
           }));
-          console.log(`[Watch] re-pushed ${toRearm.length} watch(es) to ${extensionId}`);
-        } catch (e) {
-          console.log(`[Watch] re-push to ${extensionId} failed (non-fatal): ${(e as Error)?.message}`);
-        }
-      }
+          console.log(`[Watch] re-pushed ${specs.length} watch(es) to ${extensionId}`);
+          // ⛔ Then ASK the extension what it is actually holding, and record
+          // that. The re-push is fire-and-forget, so without this round trip
+          // every rehydrated watch would sit at armed:unknown forever — honest,
+          // but needlessly uninformative when the answer is one call away.
+          return recordArmedFromExtension(extensionId, async () => {
+            const res: any = await globalContext.sendSocketMessage(
+              "browser_watch_list_armed",
+              {},
+              { extensionId, timeoutMs: 8000 },
+            );
+            return (res?.watches ?? []) as Array<{ watchId: string; armed: boolean }>;
+          });
+        })
+        .catch((e) => console.log(`[Watch] re-push to ${extensionId} failed (non-fatal): ${e?.message}`));
       return;
     }
 

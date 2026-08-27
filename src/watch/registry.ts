@@ -106,6 +106,18 @@ export class WatchRegistry {
     return rec;
   }
 
+  /**
+   * Put an existing record back, verbatim — used by rehydration after a
+   * restart. Distinct from create(): it mints no id and invents no state, so
+   * whatever persistence decided about `armed` is preserved exactly.
+   */
+  restore(rec: WatchRecord): WatchRecord {
+    this.watches.set(rec.watchId, rec);
+    this.tombstones.delete(rec.watchId);
+    this.index(rec);
+    return rec;
+  }
+
   get(watchId: string): WatchRecord | undefined {
     return this.watches.get(watchId);
   }

@@ -122,7 +122,14 @@ export type ClearedReason =
   | "extension-disconnected"
   | "ttl"
   | "once"
-  | "breaker";
+  | "breaker"
+  /**
+   * A page-home watch could not be re-armed because its tab no longer shows
+   * the document it was created against. Re-arming it anyway would inject a
+   * selector observer into a different page and report matches the caller
+   * never asked for — with nothing erroring.
+   */
+  | "document-changed";
 
 /**
  * A cleared watch, kept briefly so it stays EXPLAINABLE.

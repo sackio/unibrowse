@@ -88,6 +88,13 @@ class MongoDB {
     } catch {}
     await recordingEvents.createIndex({ recordingId: 1, chunkIndex: 1 }, { unique: true });
 
+    // Watch subscriptions, so a watch survives an mcp-server restart. Only the
+    // SUBSCRIPTION is stored — events remain fire-and-forget by design.
+    const watches = this.db.collection("watches");
+    await watches.createIndex({ watchId: 1 }, { unique: true });
+    await watches.createIndex({ extensionId: 1 });
+    await watches.createIndex({ createdAt: 1 });
+
     console.log("[MongoDB] Indexes created successfully");
   }
 
@@ -132,6 +139,17 @@ class MongoDB {
       throw new Error("MongoDB not connected. Call connect() first.");
     }
     return this.db.collection("recording_annotations");
+  }
+
+  /**
+   * Watch subscriptions collection — see src/watch/persistence.ts for what is
+   * stored and, more importantly, what deliberately is not.
+   */
+  public getWatchesCollection(): Collection {
+    if (!this.db) {
+      throw new Error("MongoDB not connected. Call connect() first.");
+    }
+    return this.db.collection("watches");
   }
 
   /**

@@ -10,7 +10,13 @@ import {
 import { textResponse, errorResponse } from "@/utils/response-helpers";
 import { validatePredicate } from "@/watch/predicate";
 import { SOURCES, validateSourceId } from "@/watch/sources";
-import { watchBuffer, watchRegistry } from "@/watch/service";
+import {
+  buffersLostToRestart,
+  forgetWatch,
+  persistWatch,
+  watchBuffer,
+  watchRegistry,
+} from "@/watch/service";
 import type { WatchTombstone } from "@/watch/types";
 import type { SinkSpec } from "@/watch/types";
 
@@ -219,6 +225,26 @@ export const watchCreate: Tool = {
         watchBuffer.setCapacity(record.watchId, sink.maxBuffered);
       }
 
+      // Persist only a CONFIRMED arm, so a refused one leaves nothing to
+      // rehydrate. Page-home watches record the URL they were armed against:
+      // they observe a document, and a tab that navigated while the server was
+      // down would otherwise be re-armed silently onto the wrong page.
+      let armedAgainstUrl: string | undefined;
+      if (descriptor.home === "page" && tabId != null) {
+        try {
+          const info: any = await context.sendSocketMessage(
+            "browser_list_attached_tabs",
+            {},
+            { extensionId, timeoutMs: 5000 },
+          );
+          armedAgainstUrl = (info?.tabs ?? []).find((t: any) => t.tabId === tabId)?.url;
+        } catch {
+          // Not fatal: without a URL the watch simply will not be rehydrated
+          // after a restart, which is the safe direction.
+        }
+      }
+      void persistWatch({ ...record, armedAgainstUrl });
+
       let out = `# Watch armed\n\n`;
       out += `**watchId**: \`${record.watchId}\`\n`;
       out += `**source**: \`${record.source}\` (${descriptor.scope}-scoped, volume ${descriptor.cost})\n`;
@@ -379,6 +405,8 @@ export const watchDelete: Tool = {
 
       watchRegistry.delete(args.watchId);
       watchBuffer.drop(args.watchId);
+      buffersLostToRestart.delete(args.watchId);
+      await forgetWatch(args.watchId);
       return textResponse(`Deleted watch \`${args.watchId}\` (\`${rec.source}\`).${disarmNote}`);
     } catch (e) {
       return errorResponse(`browser_watch_delete failed: ${(e as Error)?.message ?? e}`);
@@ -406,11 +434,21 @@ export const watchPoll: Tool = {
 
       const res = await watchBuffer.poll(args.watchId, args.timeoutMs ?? 15000);
       if (!res.matched) {
+        // ⛔ An empty queue after a restart is NOT the same as a quiet page.
+        const lost = buffersLostToRestart.has(args.watchId);
         return textResponse(
           `No events from \`${args.watchId}\` within ${res.timeoutMs}ms. ` +
-            `This is an answer, not an error — poll again to keep waiting.`,
+            `This is an answer, not an error — poll again to keep waiting.` +
+            (lost
+              ? `\n\n⚠️ NOTE: this watch survived an mcp-server restart, but its BUFFER did not. ` +
+                `Anything it captured before the restart is gone and will not be replayed. ` +
+                `The watch itself is re-armed and will deliver new events normally.`
+              : ""),
         );
       }
+      // The caller has now drained at least once; the restart caveat no longer
+      // applies to what they are seeing.
+      buffersLostToRestart.delete(args.watchId);
 
       let out = `# ${res.events!.length} event(s) from \`${args.watchId}\`\n\n`;
       for (const ev of res.events!) {
@@ -458,9 +496,12 @@ function renderCleared(cleared: WatchTombstone[]): string {
 function restartNote(): string {
   const started = new Date(watchRegistry.startedAt).toISOString();
   return (
-    `⚠️ Watches do not survive an mcp-server restart: the registry is in memory, and a restart ` +
-    `also closes every extension socket. This server started at ${started} — any watch created ` +
-    `before then is gone, with no tombstone recorded.\n`
+    `Watches are persisted and DO survive an mcp-server restart: subscriptions are reloaded and ` +
+    `re-armed when each extension reconnects, arriving as \`armed: unknown\` until the extension ` +
+    `confirms. ⚠️ What does NOT survive: buffered events (the queue starts empty and a poll says ` +
+    `so), and any page watch whose tab navigated while the server was down — those are cleared as ` +
+    `\`document-changed\` rather than re-armed onto a different document. This server started at ` +
+    `${started}.\n`
   );
 }
 
@@ -476,7 +517,8 @@ function explainMissing(watchId: string): string {
     );
   }
   return (
-    `No watch with id "${watchId}", and no record of one having been cleared. ` +
+    `No watch with id "${watchId}", and no record of one having been cleared — ` +
+    `it was never created here, or it was cleared long enough ago that its tombstone aged out.\n\n` +
     `${restartNote()}`
   );
 }

@@ -10,6 +10,7 @@ import {
   WatchSourcesTool,
   appConfig,
   attachTab,
+  buffersLostToRestart,
   cancelDownload,
   checkElementState,
   checkVisibility,
@@ -40,6 +41,7 @@ import {
   executeMacro,
   fillForm,
   findByText,
+  forgetWatch,
   getActiveTab,
   getAttributes,
   getBookmarks,
@@ -79,6 +81,7 @@ import {
   navigate,
   openDownload,
   package_default,
+  persistWatch,
   pressKey,
   pruneInteractions,
   queryDOM,
@@ -119,7 +122,7 @@ import {
   wait,
   watchBuffer,
   watchRegistry
-} from "./chunk-RF2R7PJN.js";
+} from "./chunk-IQRZHUB2.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -884,6 +887,19 @@ var watchCreate = {
       if (sink.kind === "buffer") {
         watchBuffer.setCapacity(record.watchId, sink.maxBuffered);
       }
+      let armedAgainstUrl;
+      if (descriptor.home === "page" && tabId != null) {
+        try {
+          const info = await context.sendSocketMessage(
+            "browser_list_attached_tabs",
+            {},
+            { extensionId, timeoutMs: 5e3 }
+          );
+          armedAgainstUrl = (info?.tabs ?? []).find((t) => t.tabId === tabId)?.url;
+        } catch {
+        }
+      }
+      void persistWatch({ ...record, armedAgainstUrl });
       let out = `# Watch armed
 
 `;
@@ -1055,6 +1071,8 @@ var watchDelete = {
       }
       watchRegistry.delete(args.watchId);
       watchBuffer.drop(args.watchId);
+      buffersLostToRestart.delete(args.watchId);
+      await forgetWatch(args.watchId);
       return textResponse(`Deleted watch \`${args.watchId}\` (\`${rec.source}\`).${disarmNote}`);
     } catch (e) {
       return errorResponse(`browser_watch_delete failed: ${e?.message ?? e}`);
@@ -1079,10 +1097,14 @@ var watchPoll = {
       }
       const res = await watchBuffer.poll(args.watchId, args.timeoutMs ?? 15e3);
       if (!res.matched) {
+        const lost = buffersLostToRestart.has(args.watchId);
         return textResponse(
-          `No events from \`${args.watchId}\` within ${res.timeoutMs}ms. This is an answer, not an error \u2014 poll again to keep waiting.`
+          `No events from \`${args.watchId}\` within ${res.timeoutMs}ms. This is an answer, not an error \u2014 poll again to keep waiting.` + (lost ? `
+
+\u26A0\uFE0F NOTE: this watch survived an mcp-server restart, but its BUFFER did not. Anything it captured before the restart is gone and will not be replayed. The watch itself is re-armed and will deliver new events normally.` : "")
         );
       }
+      buffersLostToRestart.delete(args.watchId);
       let out = `# ${res.events.length} event(s) from \`${args.watchId}\`
 
 `;
@@ -1121,7 +1143,7 @@ function renderCleared(cleared) {
 }
 function restartNote() {
   const started = new Date(watchRegistry.startedAt).toISOString();
-  return `\u26A0\uFE0F Watches do not survive an mcp-server restart: the registry is in memory, and a restart also closes every extension socket. This server started at ${started} \u2014 any watch created before then is gone, with no tombstone recorded.
+  return `Watches are persisted and DO survive an mcp-server restart: subscriptions are reloaded and re-armed when each extension reconnects, arriving as \`armed: unknown\` until the extension confirms. \u26A0\uFE0F What does NOT survive: buffered events (the queue starts empty and a poll says so), and any page watch whose tab navigated while the server was down \u2014 those are cleared as \`document-changed\` rather than re-armed onto a different document. This server started at ${started}.
 `;
 }
 function explainMissing(watchId) {
@@ -1129,7 +1151,9 @@ function explainMissing(watchId) {
   if (t) {
     return `Watch \`${watchId}\` was CLEARED at ${new Date(t.at).toISOString()} \u2014 reason: **${t.reason}** (${CLEARED_EXPLANATION[t.reason] ?? "reason not recorded"}). It fired ${t.firedCount} time(s) before that. It is not armed and will deliver nothing; re-create it with browser_watch_create.`;
   }
-  return `No watch with id "${watchId}", and no record of one having been cleared. ${restartNote()}`;
+  return `No watch with id "${watchId}", and no record of one having been cleared \u2014 it was never created here, or it was cleared long enough ago that its tombstone aged out.
+
+${restartNote()}`;
 }
 
 // src/install.ts

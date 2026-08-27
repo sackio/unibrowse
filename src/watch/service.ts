@@ -7,7 +7,10 @@
  * authoritative registry per process.
  */
 
+import { mongodb } from "@/utils/mongodb";
+
 import { WatchBuffer } from "./buffer.ts";
+import { planRehydration, toPersisted } from "./persistence.ts";
 import { compilePredicate } from "./predicate.ts";
 import { WatchRegistry } from "./registry.ts";
 import { createSinkDispatcher } from "./sinks.ts";
@@ -32,6 +35,94 @@ const dispatcher = createSinkDispatcher({
 
 /** Timer that reaps ttl-expired watches. Started by startWatchExpiry(). */
 let expiryTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Watches whose buffers were lost to a restart, so browser_watch_poll can say
+ * so instead of returning an empty queue a caller cannot interpret.
+ */
+export const buffersLostToRestart = new Set<string>();
+
+/** Page-home watches awaiting a URL check before re-arming. watchId -> url. */
+export const pendingUrlVerification = new Map<string, string>();
+
+/**
+ * Persist a subscription. Best-effort: a Mongo failure must never break a
+ * working watch, it only costs durability across the next restart.
+ */
+export async function persistWatch(rec: any): Promise<void> {
+  try {
+    // Connect lazily, as every other Mongo consumer in this codebase does.
+    // ⚠️ Checking isConnected() alone silently no-ops forever: nothing connects
+    // eagerly at startup, so a bare check means NOTHING is ever persisted and
+    // the failure is invisible until a restart loses everything.
+    if (!mongodb.isConnected()) await mongodb.connect();
+    await mongodb
+      .getWatchesCollection()
+      .updateOne({ watchId: rec.watchId }, { $set: toPersisted(rec) }, { upsert: true });
+  } catch (e) {
+    console.log(`[Watch] persist failed for ${rec.watchId} (non-fatal): ${(e as Error)?.message}`);
+  }
+}
+
+async function unpersistWatch(watchId: string): Promise<void> {
+  try {
+    if (!mongodb.isConnected()) return; // nothing was persisted either
+    await mongodb.getWatchesCollection().deleteOne({ watchId });
+  } catch (e) {
+    console.log(`[Watch] unpersist failed for ${watchId} (non-fatal): ${(e as Error)?.message}`);
+  }
+}
+
+/** Forget several at once, after a cascade. */
+async function unpersistMany(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  try {
+    if (!mongodb.isConnected()) return;
+    await mongodb.getWatchesCollection().deleteMany({ watchId: { $in: ids } });
+  } catch (e) {
+    console.log(`[Watch] bulk unpersist failed (non-fatal): ${(e as Error)?.message}`);
+  }
+}
+
+/**
+ * Load persisted subscriptions back into the registry after a restart.
+ *
+ * ⛔ Everything loaded is marked armed:unknown. Nothing here contacts a
+ * browser — the existing re-push on EXTENSION_REGISTER does that, and the
+ * extension's own answer is what makes a watch armed.
+ */
+export async function rehydrateWatches(): Promise<void> {
+  try {
+    if (!mongodb.isConnected()) await mongodb.connect();
+    if (!mongodb.isConnected()) {
+      console.log("[Watch] no MongoDB connection; watches did NOT survive this restart");
+      return;
+    }
+    const rows = await mongodb.getWatchesCollection().find({}).toArray();
+    if (rows.length === 0) return;
+
+    const plan = planRehydration(rows, Date.now());
+
+    for (const c of plan.rehydrate) {
+      watchRegistry.restore(c.record);
+      if (c.requiresUrl) pendingUrlVerification.set(c.watchId, c.requiresUrl);
+    }
+    for (const id of plan.lostBuffers) buffersLostToRestart.add(id);
+
+    if (plan.drop.length > 0) {
+      await unpersistMany(plan.drop.map((d) => d.watchId));
+    }
+
+    console.log(
+      `[Watch] rehydrated ${plan.rehydrate.length} watch(es) as armed:unknown` +
+        `${plan.drop.length ? `, dropped ${plan.drop.length} (${plan.drop.map((d) => d.reason).join(",")})` : ""}` +
+        `${plan.lostBuffers.length ? `, ${plan.lostBuffers.length} buffer(s) lost` : ""}` +
+        `${plan.malformed ? `, ⚠️ ${plan.malformed} MALFORMED row(s) skipped` : ""}`,
+    );
+  } catch (e) {
+    console.log(`[Watch] rehydration failed (non-fatal): ${(e as Error)?.message}`);
+  }
+}
 
 /**
  * Handle a WATCH_FIRED message from an extension.
@@ -109,11 +200,13 @@ export async function handleWatchFired(
   if (event.breakerTripped) {
     watchRegistry.delete(watchId, "breaker");
     watchBuffer.drop(watchId);
+    void unpersistWatch(watchId);
     return;
   }
 
   if (record.options?.once) {
     watchRegistry.delete(watchId, "once");
+    void unpersistWatch(watchId);
     // The buffer is NOT dropped here: a once-watch's whole point is that
     // somebody polls for the single event, and they may not have polled yet.
   }
@@ -128,6 +221,7 @@ export async function deliverForTest(record: WatchRecord, event: WatchEvent) {
 export function onTabGone(extensionId: string, tabId: number): string[] {
   const removed = watchRegistry.deleteByTab(extensionId, tabId);
   for (const id of removed) watchBuffer.drop(id);
+  void unpersistMany(removed);
   if (removed.length > 0) {
     console.log(`[Watch] tab ${tabId} gone: cleared ${removed.length} watch(es)`);
   }
@@ -138,6 +232,10 @@ export function onTabGone(extensionId: string, tabId: number): string[] {
 export function onExtensionGone(extensionId: string): string[] {
   const removed = watchRegistry.deleteByExtension(extensionId);
   for (const id of removed) watchBuffer.drop(id);
+  // ⛔ DELIBERATELY NOT unpersisted. A server restart closes every extension
+  // socket, so treating a disconnect as "forget this watch forever" would
+  // erase, on the way down, exactly the subscriptions this feature exists to
+  // bring back. The persisted copy outlives the socket; rehydration decides.
   if (removed.length > 0) {
     console.log(`[Watch] extension ${extensionId} gone: cleared ${removed.length} watch(es)`);
   }
@@ -151,6 +249,93 @@ export function onExtensionGone(extensionId: string): string[] {
  * same useful property: it fixes drift that predates its own deploy, because
  * it runs against whatever the extension is currently holding.
  */
+/**
+ * Re-arm one extension's watches, verifying page-home ones first.
+ *
+ * ⛔ A page watch is armed against a DOCUMENT, not a tab. After a restart the
+ * tab id still resolves even if the page navigated, so a naive re-arm would
+ * succeed, inject into a different page, and start reporting matches from
+ * somewhere the caller never asked about — silently. Verifying the URL is what
+ * turns that into an explicit `document-changed` clear.
+ *
+ * @param listTabs fetches the extension's attached tabs (injected so this is
+ *   testable and so service.ts does not reach into the socket layer).
+ */
+export async function rearmForExtension(
+  extensionId: string,
+  listTabs: () => Promise<Array<{ tabId: number; url?: string }>>,
+): Promise<{ specs: any[]; dropped: Array<{ watchId: string; reason: string }> }> {
+  const specs = specsToRearm(extensionId);
+  const dropped: Array<{ watchId: string; reason: string }> = [];
+
+  const needsCheck = specs.filter((s) => pendingUrlVerification.has(s.watchId));
+  if (needsCheck.length === 0) return { specs, dropped };
+
+  let tabs: Array<{ tabId: number; url?: string }> = [];
+  try {
+    tabs = await listTabs();
+  } catch (e) {
+    // ⛔ Cannot verify ⇒ do not arm the page watches. Arming blind is the
+    // failure this check exists to prevent; a watch that stays unknown and is
+    // reported as such is strictly better.
+    console.log(`[Watch] tab list for ${extensionId} failed; holding ${needsCheck.length} page watch(es) unarmed: ${(e as Error)?.message}`);
+    return { specs: specs.filter((s) => !pendingUrlVerification.has(s.watchId)), dropped };
+  }
+
+  const urlOf = new Map(tabs.map((t) => [t.tabId, t.url]));
+  const survivors: any[] = [];
+  for (const s of specs) {
+    const wanted = pendingUrlVerification.get(s.watchId);
+    if (!wanted) {
+      survivors.push(s);
+      continue;
+    }
+    const actual = s.tabId != null ? urlOf.get(s.tabId) : undefined;
+    if (typeof actual === "string" && actual === wanted) {
+      pendingUrlVerification.delete(s.watchId);
+      survivors.push(s);
+      continue;
+    }
+    // The document moved, or the tab is gone. Say so rather than re-arm.
+    pendingUrlVerification.delete(s.watchId);
+    watchRegistry.delete(s.watchId, "document-changed");
+    watchBuffer.drop(s.watchId);
+    void unpersistWatch(s.watchId);
+    dropped.push({ watchId: s.watchId, reason: "document-changed" });
+    console.log(
+      `[Watch] ${s.watchId} not re-armed: was created against ${wanted}, tab ${s.tabId} now shows ${actual ?? "(gone)"}`,
+    );
+  }
+  return { specs: survivors, dropped };
+}
+
+/**
+ * Ask an extension which watches it is actually holding, and record the answer.
+ *
+ * ⛔ The answer is stored VERBATIM. This is the only thing that may set
+ * `armed` — never the server's own intention, and never an inference from a
+ * successful send.
+ */
+export async function recordArmedFromExtension(
+  extensionId: string,
+  listArmed: () => Promise<Array<{ watchId: string; armed: boolean }>>,
+): Promise<void> {
+  try {
+    const rows = await listArmed();
+    const live = new Set(rows.filter((r) => r.armed).map((r) => r.watchId));
+    const now = Date.now();
+    for (const rec of watchRegistry.list({ extensionId })) {
+      watchRegistry.recordArmed(rec.watchId, live.has(rec.watchId), now);
+    }
+    console.log(`[Watch] ${extensionId} confirms ${live.size} watch(es) armed`);
+  } catch (e) {
+    // Leave the stored answer alone. An unreachable extension is not evidence
+    // that a watch is disarmed, and writing false here would be exactly the
+    // inference this field exists to prevent.
+    console.log(`[Watch] armed-state confirmation for ${extensionId} failed (non-fatal): ${(e as Error)?.message}`);
+  }
+}
+
 export function specsToRearm(extensionId: string) {
   return watchRegistry.specsFor(extensionId).map((w) => ({
     watchId: w.watchId,
@@ -173,6 +358,7 @@ export function startWatchExpiry(intervalMs = 30_000): void {
   expiryTimer = setInterval(() => {
     const removed = watchRegistry.expire(Date.now());
     for (const id of removed) watchBuffer.drop(id);
+    void unpersistMany(removed);
     if (removed.length > 0) console.log(`[Watch] expired ${removed.length} watch(es)`);
   }, intervalMs);
   // Do not hold the process open for this.
@@ -183,4 +369,10 @@ export function stopWatchExpiry(): void {
   if (!expiryTimer) return;
   clearInterval(expiryTimer);
   expiryTimer = null;
+}
+
+
+/** Explicit delete from the tool layer, including the durable copy. */
+export async function forgetWatch(watchId: string): Promise<void> {
+  await unpersistWatch(watchId);
 }
