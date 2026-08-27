@@ -24,7 +24,7 @@ const BREAKER_MULTIPLE = 10;
  * @param {{windowMs: number, mode: "last"|"batch"|"count"}} [opts.coalesce]
  * @param {() => number} [opts.now]  injected clock, defaults to Date.now
  */
-export function createFloodGate({ maxPerMin, coalesce, now = Date.now } = {}) {
+function createFloodGate({ maxPerMin, coalesce, now = Date.now } = {}) {
   /** Delivery timestamps inside the current sliding window. */
   let stamps = [];
   /** Events held by the coalescer, awaiting flush(). */
@@ -124,3 +124,10 @@ export function createFloodGate({ maxPerMin, coalesce, now = Date.now } = {}) {
     },
   };
 }
+
+// ⛔ background.js is a CLASSIC service worker (no "type":"module" in the
+// manifest) and loads this via importScripts, where `export` is a syntax
+// error. A top-level declaration is already global there; this assignment is
+// a harmless no-op. Under Node's ESM loader — which the unit tests use — the
+// declaration is module-scoped, so the assignment is what publishes it.
+globalThis.createFloodGate = createFloodGate;

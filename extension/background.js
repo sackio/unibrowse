@@ -3,7 +3,7 @@
  * Central coordinator for WebSocket, Chrome Debugger, and message routing
  */
 
-importScripts('config.js', 'utils/browser-env.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js');
+importScripts('config.js', 'utils/browser-env.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js', 'watch-flood.js', 'watch-engine.js');
 
 // ─── Auto session-capture on attach (ben 2026-08-02) ────────────────────────
 // "Anytime we attach a tab we should be doing a session recording so that we
@@ -2068,6 +2068,19 @@ class BackgroundController {
 
       const tabLabel = tmTab?.label || null;
 
+      // Watch — feed every CDP event to the engine, which fans out only to
+      // watches subscribed to this exact method and evaluates their predicate
+      // before anything leaves the worker. A method nobody watches costs one
+      // Map lookup. background.js owns the single chrome.debugger.onEvent
+      // listener, so the engine is fed rather than binding its own.
+      if (this.watchEngine) {
+        try {
+          this.watchEngine.feed(`cdp.${method}`, { ...params, tabId: source.tabId, tabLabel });
+        } catch (e) {
+          console.warn('[Watch] cdp feed failed:', e?.message);
+        }
+      }
+
       if (method === 'Console.messageAdded') {
         this.consoleLogs.push({
           level: params.message.level,
@@ -2232,6 +2245,36 @@ class BackgroundController {
     this.handlers['browser_observe_navigations_start'] = this.handleObserveNavStart.bind(this);
     this.handlers['browser_observe_navigations_first'] = this.handleObserveNavFirst.bind(this);
     this.handlers['browser_observe_navigations_dispose'] = this.handleObserveNavDispose.bind(this);
+
+    // ─── Watch — push events out of the browser ────────────────────────────
+    // The generalisation of the nav observer above: any source, an arbitrary
+    // predicate, and delivery to a sink on the server. The predicate runs HERE
+    // so non-matches never cross the WebSocket. See docs/WATCH_DESIGN.md.
+    //
+    // ⛔ The engine holds no authority. The SERVER's registry is authoritative
+    // and re-pushes on EXTENSION_REGISTER; chrome.storage.session persistence
+    // is only so a service-worker eviction re-arms faster than that round trip.
+    this.watchEngine = createWatchEngine({
+      chrome,
+      sendToServer: (msg) => {
+        try { this.ws.sendNoResponse(msg); } catch { /* best-effort; the event is droppable by design */ }
+      },
+    });
+    this.handlers['browser_watch_arm'] = async (params) => this.watchEngine.arm(params);
+    this.handlers['browser_watch_disarm'] = async ({ watchId }) => this.watchEngine.disarm(watchId);
+    this.handlers['browser_watch_list_armed'] = async () => ({ watches: this.watchEngine.list() });
+    this.handlers['browser_watch_rearm'] = async ({ specs }) =>
+      ({ watches: await this.watchEngine.rearmAll(Array.isArray(specs) ? specs : []) });
+
+    // Re-arm from session storage on service-worker wake. Chrome evicts MV3
+    // workers on its own schedule; without this a watch would silently vanish
+    // and the waiting agent could not tell "nothing happened" from "my watch
+    // is gone" — the one failure mode that makes push worse than polling.
+    this.watchEngine.persistedSpecs().then((specs) => {
+      if (specs.length === 0) return;
+      console.log(`[Watch] re-arming ${specs.length} watch(es) after worker wake`);
+      return this.watchEngine.rearmAll(specs);
+    }).catch((e) => console.warn('[Watch] re-arm on wake failed:', e?.message));
 
     // Interaction handlers
     this.handlers['browser_click'] = this.handleClick.bind(this);

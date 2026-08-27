@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createFloodGate } from "../../extension/watch-flood.js";
+import "../../extension/watch-flood.js";
+
+// Loaded for side-effect: the extension ships classic scripts, so the module
+// publishes onto globalThis rather than using ESM exports.
+const { createFloodGate } = globalThis;
 
 const clock = (start = 0) => {
   let t = start;
