@@ -272,7 +272,7 @@ const CHROME_BINDINGS = {
  * @param {(msg: object) => void} opts.sendToServer
  * @param {() => number} [opts.now]
  */
-function createWatchEngine({ chrome, sendToServer, now = Date.now }) {
+function createWatchEngine({ chrome, sendToServer, now = Date.now, injectPageWatch = null }) {
   /** watchId -> {spec, predicate, gate, flushTimer} */
   const watches = new Map();
   /** sourceId -> {unbind, subscribers: Set<watchId>} */
@@ -379,14 +379,47 @@ function createWatchEngine({ chrome, sendToServer, now = Date.now }) {
     externalSources.delete(sourceId);
   }
 
+  /** Is this a page-home source, i.e. one whose predicate needs the DOM? */
+  function isPageSource(source) {
+    return (
+      typeof globalThis.PAGE_BINDINGS === "object" &&
+      globalThis.PAGE_BINDINGS !== null &&
+      Object.prototype.hasOwnProperty.call(globalThis.PAGE_BINDINGS, source)
+    );
+  }
+
+  async function injectFor(spec) {
+    if (!injectPageWatch) {
+      throw new Error(
+        `Cannot arm page watch "${spec.source}": no page injector is configured.`,
+      );
+    }
+    const ok = await injectPageWatch(spec);
+    if (!ok) {
+      throw new Error(
+        `Failed to inject the page watch into tab ${spec.tabId}. The watch was NOT armed — ` +
+          `a page watch that cannot be injected would report armed and never fire.`,
+      );
+    }
+  }
+
   async function arm(spec) {
+    const page = isPageSource(spec.source);
     const known =
+      page ||
       CHROME_BINDINGS[spec.source] ||
       spec.source.startsWith("cdp.") ||
       spec.source.startsWith("unibrowse.");
     if (!known) {
       throw new Error(
         `Cannot arm watch: unknown or unbindable source "${spec.source}"`,
+      );
+    }
+    // There is no browser-wide DOM. A page watch without a tab could only ever
+    // be armed against nothing.
+    if (page && spec.tabId == null) {
+      throw new Error(
+        `Source "${spec.source}" observes the page, so it requires a tab. Pass tabTarget.`,
       );
     }
 
@@ -400,12 +433,75 @@ function createWatchEngine({ chrome, sendToServer, now = Date.now }) {
       now,
     });
 
-    watches.set(spec.watchId, { spec, predicate, gate, flushTimer: null });
-    bindSource(spec.source);
-    bindings.get(spec.source).subscribers.add(spec.watchId);
+    watches.set(spec.watchId, { spec, predicate, gate, flushTimer: null, page });
+
+    if (page) {
+      // The predicate travels into the document and runs there; matches come
+      // back through feedMatch. Inject BEFORE claiming armed — a page watch
+      // that failed to inject would otherwise report armed and never fire.
+      try {
+        await injectFor(spec);
+      } catch (e) {
+        watches.delete(spec.watchId);
+        throw e;
+      }
+      ensurePageReinjection();
+    } else {
+      bindSource(spec.source);
+      bindings.get(spec.source).subscribers.add(spec.watchId);
+    }
 
     await persist();
     return { watchId: spec.watchId, armed: true };
+  }
+
+  /**
+   * Re-inject page watches when their tab navigates.
+   *
+   * ⚠️ Not an optimisation. A content script dies with its document, so
+   * without this the watch survives in both registries, reports armed, and
+   * silently never fires again — the exact fail-quiet this design exists to
+   * prevent, reintroduced one layer down.
+   */
+  let pageReinjectListener = null;
+  function ensurePageReinjection() {
+    if (pageReinjectListener || !chrome.webNavigation?.onCommitted) return;
+    pageReinjectListener = (details) => {
+      if (details.frameId !== 0) return; // top frame only; a sub-frame nav does not kill it
+      for (const w of watches.values()) {
+        if (!w.page || w.spec.tabId !== details.tabId) continue;
+        void injectFor(w.spec).catch((e) =>
+          console.warn(`[Watch] re-inject of ${w.spec.watchId} failed:`, e?.message),
+        );
+      }
+    };
+    chrome.webNavigation.onCommitted.addListener(pageReinjectListener);
+  }
+
+  /**
+   * A page-home watch matched, reported by the injected content script.
+   *
+   * ⛔ The predicate is NOT re-run here. It already ran in the page, which is
+   * the only place its DOM references resolve; re-running it in the worker
+   * would throw and be swallowed as "no match", so every page watch would go
+   * permanently silent. Flood control, `once` and the breaker still apply.
+   */
+  function feedMatch(watchId, payload) {
+    const w = watches.get(watchId);
+    if (!w) return;
+
+    const res = w.gate.offer(payload);
+    if (res.breaker) {
+      deliver(watchId, payload, res.breaker);
+      void disarm(watchId);
+      return;
+    }
+    if (res.action === "deliver") {
+      deliver(watchId, payload);
+      if (w.spec.options?.once) void disarm(watchId);
+    } else if (res.action === "hold") {
+      scheduleFlush(watchId);
+    }
   }
 
   async function disarm(watchId, { persist: doPersist = true } = {}) {
@@ -432,7 +528,9 @@ function createWatchEngine({ chrome, sendToServer, now = Date.now }) {
       watchId: w.spec.watchId,
       source: w.spec.source,
       tabId: w.spec.tabId ?? null,
-      armed: bindings.get(w.spec.source)?.subscribers.has(w.spec.watchId) === true,
+      armed: w.page
+        ? true // injected; a failed injection never reaches the map at all
+        : bindings.get(w.spec.source)?.subscribers.has(w.spec.watchId) === true,
       ...w.gate.state(),
     }));
   }
@@ -468,7 +566,7 @@ function createWatchEngine({ chrome, sendToServer, now = Date.now }) {
     onSourceEvent(sourceId, event);
   }
 
-  return { arm, disarm, list, rearmAll, persistedSpecs, feed };
+  return { arm, disarm, list, rearmAll, persistedSpecs, feed, feedMatch };
 }
 
 // Classic-script publication — see the header note in watch-flood.js.

@@ -641,10 +641,58 @@ var UNIBROWSE_SOURCES = [
     description: "A session recording stopped."
   }
 ];
+var PAGE_SOURCES = [
+  {
+    id: "dom.mutation",
+    home: "page",
+    permission: "GRANTED",
+    predicateArg: "(e: { type: 'mutation'; count: number; addedNodes: number; removedNodes: number; text: string; selector: string; url: string }) => boolean",
+    cost: "high",
+    scope: "tab",
+    description: "DOM changed under a selector. config: {selector?, subtree?, attributes?, characterData?}. Very chatty on modern frameworks \u2014 prefer a network source when the state round-trips to a server."
+  },
+  {
+    id: "dom.elementText",
+    home: "page",
+    permission: "GRANTED",
+    predicateArg: "(e: { type: 'elementText'; selector: string; text: string | null; previous: string | null; present: boolean; url: string }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "An element's text changed. config: {selector} (required). Backed by a MutationObserver, not a poll. `present` distinguishes 'element gone' from 'text empty'."
+  },
+  {
+    id: "dom.intersection",
+    home: "page",
+    permission: "GRANTED",
+    predicateArg: "(e: { type: 'intersection'; selector: string; isIntersecting: boolean; ratio: number; url: string }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "An element entered or left the viewport. config: {selector} (required), {threshold?}. Good for infinite scroll and lazily-rendered content."
+  },
+  {
+    id: "page.event",
+    home: "page",
+    permission: "GRANTED",
+    predicateArg: "(e: { type: 'pageEvent'; eventName: string; detail: unknown; targetTag: string | null; targetId: string | null; url: string }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description: "Any DOM event, including the page's own CustomEvents. config: {eventName} (required), {selector?} to bind to an element instead of window, {capture?}. This is how you watch an app that already announces its own state changes."
+  },
+  {
+    id: "page.error",
+    home: "page",
+    permission: "GRANTED",
+    predicateArg: "(e: { type: 'pageError'; message: string; filename: string | null; lineno: number | null; url: string }) => boolean",
+    cost: "low",
+    scope: "tab",
+    description: "An uncaught error or unhandled promise rejection in the page. Complements cdp.Runtime.exceptionThrown with the in-page view."
+  }
+];
 var SOURCES = [
   ...CDP_SOURCES,
   ...CHROME_SOURCES,
-  ...UNIBROWSE_SOURCES
+  ...UNIBROWSE_SOURCES,
+  ...PAGE_SOURCES
 ];
 var BY_ID = new Map(SOURCES.map((s) => [s.id, s]));
 function distance(a, b) {

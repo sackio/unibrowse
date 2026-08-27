@@ -5,8 +5,9 @@
  * the predicate will be handed. `browser_watch_sources` returns this verbatim,
  * so a caller never has to guess whether their predicate can see the DOM.
  *
- * Phase 1 is worker-home only: CDP events, chrome.* events, and unibrowse's
- * own automation events. The page/DOM tier lands in Phase 2.
+ * Four tiers. CDP events, chrome API events and unibrowse's own automation
+ * events all run in the service worker. The `dom.` and `page.` sources run
+ * INSIDE the document, because a MutationObserver has no meaning in a worker.
  *
  * ⛔ Two sources are deliberately ABSENT rather than disabled:
  *   - cdp.Fetch.requestPaused — interception BLOCKS the request until the
@@ -544,10 +545,81 @@ const UNIBROWSE_SOURCES: SourceDescriptor[] = [
   },
 ];
 
+
+/**
+ * Tier 3 — the page. Predicates run INSIDE the document, injected via
+ * chrome.scripting, because a MutationObserver has no meaning in the worker.
+ *
+ * ⚠️ A page-home watch dies with its document and is re-injected on
+ * navigation. That re-injection is part of the fail-quiet fix, not an
+ * optimisation.
+ *
+ * Extra arguments go in `options.config` — the per-source fields are named in
+ * each description.
+ */
+const PAGE_SOURCES: SourceDescriptor[] = [
+  {
+    id: "dom.mutation",
+    home: "page",
+    permission: "GRANTED",
+    predicateArg:
+      "(e: { type: 'mutation'; count: number; addedNodes: number; removedNodes: number; text: string; selector: string; url: string }) => boolean",
+    cost: "high",
+    scope: "tab",
+    description:
+      "DOM changed under a selector. config: {selector?, subtree?, attributes?, characterData?}. Very chatty on modern frameworks — prefer a network source when the state round-trips to a server.",
+  },
+  {
+    id: "dom.elementText",
+    home: "page",
+    permission: "GRANTED",
+    predicateArg:
+      "(e: { type: 'elementText'; selector: string; text: string | null; previous: string | null; present: boolean; url: string }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description:
+      "An element's text changed. config: {selector} (required). Backed by a MutationObserver, not a poll. `present` distinguishes 'element gone' from 'text empty'.",
+  },
+  {
+    id: "dom.intersection",
+    home: "page",
+    permission: "GRANTED",
+    predicateArg:
+      "(e: { type: 'intersection'; selector: string; isIntersecting: boolean; ratio: number; url: string }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description:
+      "An element entered or left the viewport. config: {selector} (required), {threshold?}. Good for infinite scroll and lazily-rendered content.",
+  },
+  {
+    id: "page.event",
+    home: "page",
+    permission: "GRANTED",
+    predicateArg:
+      "(e: { type: 'pageEvent'; eventName: string; detail: unknown; targetTag: string | null; targetId: string | null; url: string }) => boolean",
+    cost: "medium",
+    scope: "tab",
+    description:
+      "Any DOM event, including the page's own CustomEvents. config: {eventName} (required), {selector?} to bind to an element instead of window, {capture?}. This is how you watch an app that already announces its own state changes.",
+  },
+  {
+    id: "page.error",
+    home: "page",
+    permission: "GRANTED",
+    predicateArg:
+      "(e: { type: 'pageError'; message: string; filename: string | null; lineno: number | null; url: string }) => boolean",
+    cost: "low",
+    scope: "tab",
+    description:
+      "An uncaught error or unhandled promise rejection in the page. Complements cdp.Runtime.exceptionThrown with the in-page view.",
+  },
+];
+
 export const SOURCES: SourceDescriptor[] = [
   ...CDP_SOURCES,
   ...CHROME_SOURCES,
   ...UNIBROWSE_SOURCES,
+  ...PAGE_SOURCES,
 ];
 
 const BY_ID = new Map(SOURCES.map((s) => [s.id, s]));

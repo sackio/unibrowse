@@ -3,7 +3,7 @@
  * Central coordinator for WebSocket, Chrome Debugger, and message routing
  */
 
-importScripts('config.js', 'utils/browser-env.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js', 'watch-flood.js', 'watch-engine.js');
+importScripts('config.js', 'utils/browser-env.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js', 'watch-flood.js', 'watch-page.js', 'watch-engine.js');
 
 // ─── Auto session-capture on attach (ben 2026-08-02) ────────────────────────
 // "Anytime we attach a tab we should be doing a session recording so that we
@@ -1812,6 +1812,17 @@ class BackgroundController {
 
     // Messages from popup
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      // A page-home watch matched inside a document. The predicate already ran
+      // there — this is a match, not an event to re-filter.
+      if (message?.type === 'WATCH_PAGE_MATCH') {
+        try {
+          this.watchEngine?.feedMatch(message.watchId, message.payload);
+        } catch (e) {
+          console.warn('[Watch] feedMatch failed:', e?.message);
+        }
+        sendResponse?.({ ok: true });
+        return false;
+      }
       // Handle offscreen document ready signal
       if (message.type === 'OFFSCREEN_READY') {
         console.log('[Background] Offscreen document ready');
@@ -2258,6 +2269,32 @@ class BackgroundController {
       chrome,
       sendToServer: (msg) => {
         try { this.ws.sendNoResponse(msg); } catch { /* best-effort; the event is droppable by design */ }
+      },
+      // Page-home watches (dom.*, page.*) need their predicate INSIDE the
+      // document. Inject into the ISOLATED world of the top frame only — the
+      // same world session-recorder.js uses, so it can talk to chrome.runtime.
+      injectPageWatch: async (spec) => {
+        try {
+          const src = buildPageWatchSource({
+            watchId: spec.watchId,
+            source: spec.source,
+            predicate: spec.predicate,
+            config: (spec.options && spec.options.config) || {},
+          });
+          await chrome.scripting.executeScript({
+            target: { tabId: spec.tabId, frameIds: [0] },
+            world: 'ISOLATED',
+            func: (code) => {
+              // eslint-disable-next-line no-eval
+              (0, eval)(code);
+            },
+            args: [src],
+          });
+          return true;
+        } catch (e) {
+          console.warn('[Watch] page injection failed:', e?.message);
+          return false;
+        }
       },
     });
     this.handlers['browser_watch_arm'] = async (params) => this.watchEngine.arm(params);
