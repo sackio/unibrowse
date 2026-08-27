@@ -2271,28 +2271,72 @@ class BackgroundController {
         try { this.ws.sendNoResponse(msg); } catch { /* best-effort; the event is droppable by design */ }
       },
       // Page-home watches (dom.*, page.*) need their predicate INSIDE the
-      // document. Inject into the ISOLATED world of the top frame only — the
-      // same world session-recorder.js uses, so it can talk to chrome.runtime.
+      // document.
+      //
+      // ⛔ MAIN world, not ISOLATED. An isolated-world script is still governed
+      // by the EXTENSION's CSP, so `eval` is refused there exactly as it is in
+      // the service worker — measured 2026-08-27, the page tier failed silently
+      // until this was found. In MAIN world the PAGE's CSP applies instead,
+      // which is what makes the caller's predicate compilable at all.
+      //
+      // MAIN world has no chrome.runtime, so matches are posted to the window
+      // and relayed by a small ISOLATED-world listener (installed once per tab,
+      // and static — it needs no eval of its own).
       injectPageWatch: async (spec) => {
         try {
+          // 1. Relay: ISOLATED world, static function, idempotent per tab.
+          await chrome.scripting.executeScript({
+            target: { tabId: spec.tabId, frameIds: [0] },
+            world: 'ISOLATED',
+            func: () => {
+              if (window.__unibrowseWatchRelay) return;
+              window.__unibrowseWatchRelay = true;
+              window.addEventListener('message', (e) => {
+                if (e.source !== window) return;
+                const d = e.data;
+                if (!d || d.__unibrowseWatch !== true) return;
+                try {
+                  chrome.runtime.sendMessage({
+                    type: 'WATCH_PAGE_MATCH', watchId: d.watchId, payload: d.payload,
+                  });
+                } catch (err) { /* extension context invalidated */ }
+              });
+            },
+          });
+
+          // 2. The watch itself: MAIN world, under the page's CSP.
           const src = buildPageWatchSource({
             watchId: spec.watchId,
             source: spec.source,
             predicate: spec.predicate,
-            config: (spec.options && spec.options.config) || {},
+            config: spec.config || (spec.options && spec.options.config) || {},
           });
-          await chrome.scripting.executeScript({
+          const res = await chrome.scripting.executeScript({
             target: { tabId: spec.tabId, frameIds: [0] },
-            world: 'ISOLATED',
+            world: 'MAIN',
             func: (code) => {
-              // eslint-disable-next-line no-eval
-              (0, eval)(code);
+              // Returns a status rather than throwing, so the caller can tell
+              // "installed" from "the page refused to compile it".
+              try { (0, eval)(code); return { ok: true }; }
+              catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
             },
             args: [src],
           });
+
+          // ⛔ CHECK THE RESULT. Returning true unconditionally is how a page
+          // watch reports armed while being dead — the exact fail-quiet this
+          // subsystem exists to remove.
+          const r = res && res[0] && res[0].result;
+          if (!r || r.ok !== true) {
+            const why = (r && r.error) || 'no result from the page';
+            console.warn(`[Watch] page injection refused for ${spec.watchId}: ${why}`);
+            this._lastPageInjectError = why;
+            return false;
+          }
           return true;
         } catch (e) {
           console.warn('[Watch] page injection failed:', e?.message);
+          this._lastPageInjectError = e?.message || String(e);
           return false;
         }
       },

@@ -68,6 +68,8 @@ export interface SocketMessageMap {
     prefilter?: unknown;
     /** Only sent for page-home sources, where it is injected into the page. */
     predicate?: string;
+    /** Per-source config for page-home sources (selector, eventName, …). */
+    config?: Record<string, unknown>;
     options?: Record<string, unknown>;
     tabId?: number | null;
     extensionId?: string;

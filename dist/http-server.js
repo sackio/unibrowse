@@ -119,7 +119,7 @@ import {
   wait,
   watchBuffer,
   watchRegistry
-} from "./chunk-XAJN3QQO.js";
+} from "./chunk-ZLF4E2J3.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -793,6 +793,17 @@ var watchCreate = {
       const descriptor = check.source;
       const pred = validatePredicate(args.predicate);
       if (!pred.ok) return errorResponse(pred.error);
+      const NEEDS_SELECTOR = ["dom.mutation", "dom.elementText", "dom.intersection"];
+      if (NEEDS_SELECTOR.includes(args.source) && args.source !== "dom.mutation" && !args.config?.selector) {
+        return errorResponse(
+          `Source "${args.source}" requires config.selector, e.g. config: {selector: "#status"}.`
+        );
+      }
+      if (args.source === "page.event" && !args.config?.eventName) {
+        return errorResponse(
+          `Source "page.event" requires config.eventName, e.g. config: {eventName: "my-app-ready"}.`
+        );
+      }
       const sink = args.sink ?? { kind: "atc" };
       if (sink.kind === "atc" && !sink.to && !args.agent) {
         return errorResponse(
@@ -827,6 +838,7 @@ var watchCreate = {
           source: args.source,
           prefilter: args.prefilter,
           predicate: args.predicate,
+          config: args.config,
           sink,
           options: args.options,
           tabId,
@@ -848,6 +860,7 @@ var watchCreate = {
             // document and runs under the page's CSP.
             prefilter: record.prefilter,
             predicate: descriptor.home === "page" ? record.predicate : void 0,
+            config: record.config,
             options: record.options,
             tabId: record.tabId,
             extensionId

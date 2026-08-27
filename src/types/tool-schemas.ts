@@ -1837,6 +1837,12 @@ export const WatchCreateTool = z.object({
       })
       .optional()
       .describe("Delivery target. Defaults to {kind:'atc'}, which DMs your own agent session."),
+    config: z
+      .record(z.any())
+      .optional()
+      .describe(
+        "Per-source configuration for dom.*/page.* sources — e.g. {selector:'#chat'} for dom.mutation and dom.elementText, {eventName:'my-app-ready'} for page.event. The required keys are named in each source's description from browser_watch_sources."
+      ),
     tabTarget: z
       .union([z.number(), z.string()])
       .optional()

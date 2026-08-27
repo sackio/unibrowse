@@ -161,12 +161,14 @@ function buildPageWatchSource({ watchId, source, predicate, config }) {
   let teardown = () => {};
   const cleanup = (fn) => { teardown = fn; window.__unibrowseWatches[WATCH_ID] = fn; };
 
+  // ⛔ MAIN world — there is no chrome.runtime here. Post to the window and let
+  // the ISOLATED-world relay forward it. (ISOLATED would have chrome.runtime
+  // but is governed by the EXTENSION's CSP, where the predicate below cannot
+  // be compiled at all.)
   const report = (payload) => {
     try {
-      chrome.runtime.sendMessage({ type: 'WATCH_PAGE_MATCH', watchId: WATCH_ID, payload });
+      window.postMessage({ __unibrowseWatch: true, watchId: WATCH_ID, payload }, '*');
     } catch (e) {
-      // The extension context can be invalidated by a reload while the page
-      // lives on. Stop observing rather than throwing on every event.
       try { teardown(); } catch (e2) { /* best-effort */ }
     }
   };

@@ -101,6 +101,22 @@ export const watchCreate: Tool = {
       const pred = validatePredicate(args.predicate);
       if (!pred.ok) return errorResponse(pred.error);
 
+      // Page sources that need a selector must get one at CREATE time. The
+      // injected observer does report the mistake, but only after arming — and
+      // "armed, fires one error, then nothing" is a worse thing to hand back
+      // than a refusal.
+      const NEEDS_SELECTOR = ["dom.mutation", "dom.elementText", "dom.intersection"];
+      if (NEEDS_SELECTOR.includes(args.source) && args.source !== "dom.mutation" && !args.config?.selector) {
+        return errorResponse(
+          `Source "${args.source}" requires config.selector, e.g. config: {selector: "#status"}.`,
+        );
+      }
+      if (args.source === "page.event" && !args.config?.eventName) {
+        return errorResponse(
+          `Source "page.event" requires config.eventName, e.g. config: {eventName: "my-app-ready"}.`,
+        );
+      }
+
       const sink = (args.sink ?? { kind: "atc" }) as SinkSpec;
 
       // Fail at CREATE time, not at fire time. An atc sink with nowhere to go
@@ -145,6 +161,7 @@ export const watchCreate: Tool = {
           source: args.source,
           prefilter: args.prefilter,
           predicate: args.predicate,
+          config: args.config,
           sink,
           options: args.options,
           tabId,
@@ -168,6 +185,7 @@ export const watchCreate: Tool = {
             // document and runs under the page's CSP.
             prefilter: record.prefilter,
             predicate: descriptor.home === "page" ? record.predicate : undefined,
+            config: record.config,
             options: record.options as Record<string, unknown> | undefined,
             tabId: record.tabId,
             extensionId,

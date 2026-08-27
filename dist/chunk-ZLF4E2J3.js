@@ -1025,6 +1025,7 @@ function specsToRearm(extensionId) {
     // document, so it must travel.
     prefilter: w.prefilter,
     predicate: w.home === "page" ? w.predicate : void 0,
+    config: w.config,
     options: w.options,
     tabId: w.tabId ?? null,
     extensionId: w.extensionId
@@ -2517,6 +2518,9 @@ var WatchCreateTool = z.object({
       headers: z.record(z.string()).optional().describe("webhook only: extra request headers."),
       maxBuffered: z.number().optional().describe("buffer only: queue depth (default 100).")
     }).optional().describe("Delivery target. Defaults to {kind:'atc'}, which DMs your own agent session."),
+    config: z.record(z.any()).optional().describe(
+      "Per-source configuration for dom.*/page.* sources \u2014 e.g. {selector:'#chat'} for dom.mutation and dom.elementText, {eventName:'my-app-ready'} for page.event. The required keys are named in each source's description from browser_watch_sources."
+    ),
     tabTarget: z.union([z.number(), z.string()]).optional().describe("Tab id or label to scope the watch to. Omit for a browser-wide source."),
     extensionId: z.string().optional().describe("Which browser to arm in. Required when several extensions are connected."),
     agent: z.string().optional().describe("Your agent identifier. The atc sink delivers here by default \u2014 set it or events have nowhere to go."),

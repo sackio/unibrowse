@@ -68,6 +68,11 @@ export interface WatchSpec {
    * strongly wanted on high-volume sources. See extension/watch-prefilter.js.
    */
   prefilter?: unknown;
+  /**
+   * Per-source configuration for page-home sources (selector, eventName, …).
+   * Travels to the extension and is baked into the injected script.
+   */
+  config?: Record<string, unknown>;
   /** Arbitrary JS. Omitted = fire on every event from the source.
    *  ⛔ Admin-trust code — see the security section of WATCH_DESIGN.md. */
   predicate?: string;

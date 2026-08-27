@@ -160,6 +160,7 @@ export function specsToRearm(extensionId: string) {
     // document, so it must travel.
     prefilter: w.prefilter,
     predicate: w.home === "page" ? w.predicate : undefined,
+    config: w.config,
     options: w.options,
     tabId: w.tabId ?? null,
     extensionId: w.extensionId,
