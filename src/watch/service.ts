@@ -104,9 +104,13 @@ export async function rehydrateWatches(): Promise<void> {
     const plan = planRehydration(rows, Date.now());
 
     for (const c of plan.rehydrate) {
+      if (c.requiresUrl) (c.record as any).armedAgainstUrl = c.requiresUrl;
       watchRegistry.restore(c.record);
       if (c.requiresUrl) pendingUrlVerification.set(c.watchId, c.requiresUrl);
     }
+    console.log(
+      `[Watch] ${pendingUrlVerification.size} page watch(es) pending URL verification before re-arm`,
+    );
     for (const id of plan.lostBuffers) buffersLostToRestart.add(id);
 
     if (plan.drop.length > 0) {
@@ -212,6 +216,29 @@ export async function handleWatchFired(
   }
 }
 
+/**
+ * The extension reports that it refused to re-inject a page watch because the
+ * tab no longer shows the document the watch was created against.
+ *
+ * ⛔ This is the LIVE-navigation case, and it is far more common than a
+ * restart. Found by shopping-27, 2026-08-27: a dom.* watch created against an
+ * order page silently re-attached to a contact-us page and kept firing, same
+ * watchId, still reporting armed:true.
+ */
+export function onWatchDocumentChanged(
+  watchId: string,
+  detail: { was?: string; now?: string },
+): void {
+  const rec = watchRegistry.get(watchId);
+  if (!rec) return;
+  watchRegistry.delete(watchId, "document-changed");
+  watchBuffer.drop(watchId);
+  void unpersistWatch(watchId);
+  console.log(
+    `[Watch] ${watchId} cleared as document-changed: was ${detail.was ?? "?"}, now ${detail.now ?? "?"}`,
+  );
+}
+
 /** Deliver an event straight to a sink, bypassing the extension. Used by tests. */
 export async function deliverForTest(record: WatchRecord, event: WatchEvent) {
   return dispatcher.deliver(record, event);
@@ -263,7 +290,7 @@ export function onExtensionGone(extensionId: string): string[] {
  */
 export async function rearmForExtension(
   extensionId: string,
-  listTabs: () => Promise<Array<{ tabId: number; url?: string }>>,
+  liveUrlOf: (tabId: number) => Promise<string | undefined>,
 ): Promise<{ specs: any[]; dropped: Array<{ watchId: string; reason: string }> }> {
   const specs = specsToRearm(extensionId);
   const dropped: Array<{ watchId: string; reason: string }> = [];
@@ -271,18 +298,6 @@ export async function rearmForExtension(
   const needsCheck = specs.filter((s) => pendingUrlVerification.has(s.watchId));
   if (needsCheck.length === 0) return { specs, dropped };
 
-  let tabs: Array<{ tabId: number; url?: string }> = [];
-  try {
-    tabs = await listTabs();
-  } catch (e) {
-    // ⛔ Cannot verify ⇒ do not arm the page watches. Arming blind is the
-    // failure this check exists to prevent; a watch that stays unknown and is
-    // reported as such is strictly better.
-    console.log(`[Watch] tab list for ${extensionId} failed; holding ${needsCheck.length} page watch(es) unarmed: ${(e as Error)?.message}`);
-    return { specs: specs.filter((s) => !pendingUrlVerification.has(s.watchId)), dropped };
-  }
-
-  const urlOf = new Map(tabs.map((t) => [t.tabId, t.url]));
   const survivors: any[] = [];
   for (const s of specs) {
     const wanted = pendingUrlVerification.get(s.watchId);
@@ -290,20 +305,33 @@ export async function rearmForExtension(
       survivors.push(s);
       continue;
     }
-    const actual = s.tabId != null ? urlOf.get(s.tabId) : undefined;
+    pendingUrlVerification.delete(s.watchId);
+
+    // ⛔ THE LIVE URL, NOT THE TAB RECORD.
+    //
+    // browser_list_attached_tabs reports the URL captured when the tab was
+    // ATTACHED and never updates it on navigation. Verifying against it
+    // compared two copies of the same stale value, so this guard could never
+    // detect the very thing it exists to detect — it passed a test where the
+    // tab had demonstrably navigated (shopping-27, 2026-08-27). Ask the page.
+    let actual: string | undefined;
+    try {
+      actual = s.tabId != null ? await liveUrlOf(s.tabId) : undefined;
+    } catch {
+      actual = undefined; // tab gone, or unreachable — treated as changed
+    }
+
     if (typeof actual === "string" && actual === wanted) {
-      pendingUrlVerification.delete(s.watchId);
       survivors.push(s);
       continue;
     }
-    // The document moved, or the tab is gone. Say so rather than re-arm.
-    pendingUrlVerification.delete(s.watchId);
+
     watchRegistry.delete(s.watchId, "document-changed");
     watchBuffer.drop(s.watchId);
     void unpersistWatch(s.watchId);
     dropped.push({ watchId: s.watchId, reason: "document-changed" });
     console.log(
-      `[Watch] ${s.watchId} not re-armed: was created against ${wanted}, tab ${s.tabId} now shows ${actual ?? "(gone)"}`,
+      `[Watch] ${s.watchId} NOT re-armed: created against ${wanted}, tab ${s.tabId} now shows ${actual ?? "(unreachable/gone)"}`,
     );
   }
   return { specs: survivors, dropped };
@@ -346,6 +374,10 @@ export function specsToRearm(extensionId: string) {
     prefilter: w.prefilter,
     predicate: w.home === "page" ? w.predicate : undefined,
     config: w.config,
+    // The document a page watch belongs to. The extension re-injects on every
+    // navigation of that tab, and without this it would attach to whatever
+    // page is now there — the live-navigation twin of the restart case.
+    armedAgainstUrl: (w as any).armedAgainstUrl,
     options: w.options,
     tabId: w.tabId ?? null,
     extensionId: w.extensionId,

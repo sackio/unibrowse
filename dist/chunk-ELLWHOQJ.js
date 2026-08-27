@@ -1296,9 +1296,13 @@ async function rehydrateWatches() {
     if (rows.length === 0) return;
     const plan = planRehydration(rows, Date.now());
     for (const c of plan.rehydrate) {
+      if (c.requiresUrl) c.record.armedAgainstUrl = c.requiresUrl;
       watchRegistry.restore(c.record);
       if (c.requiresUrl) pendingUrlVerification.set(c.watchId, c.requiresUrl);
     }
+    console.log(
+      `[Watch] ${pendingUrlVerification.size} page watch(es) pending URL verification before re-arm`
+    );
     for (const id of plan.lostBuffers) buffersLostToRestart.add(id);
     if (plan.drop.length > 0) {
       await unpersistMany(plan.drop.map((d) => d.watchId));
@@ -1360,6 +1364,16 @@ async function handleWatchFired(payload, disarmInExtension) {
     void unpersistWatch(watchId);
   }
 }
+function onWatchDocumentChanged(watchId, detail) {
+  const rec = watchRegistry.get(watchId);
+  if (!rec) return;
+  watchRegistry.delete(watchId, "document-changed");
+  watchBuffer.drop(watchId);
+  void unpersistWatch(watchId);
+  console.log(
+    `[Watch] ${watchId} cleared as document-changed: was ${detail.was ?? "?"}, now ${detail.now ?? "?"}`
+  );
+}
 function onTabGone(extensionId, tabId) {
   const removed = watchRegistry.deleteByTab(extensionId, tabId);
   for (const id of removed) watchBuffer.drop(id);
@@ -1377,19 +1391,11 @@ function onExtensionGone(extensionId) {
   }
   return removed;
 }
-async function rearmForExtension(extensionId, listTabs2) {
+async function rearmForExtension(extensionId, liveUrlOf) {
   const specs = specsToRearm(extensionId);
   const dropped = [];
   const needsCheck = specs.filter((s) => pendingUrlVerification.has(s.watchId));
   if (needsCheck.length === 0) return { specs, dropped };
-  let tabs = [];
-  try {
-    tabs = await listTabs2();
-  } catch (e) {
-    console.log(`[Watch] tab list for ${extensionId} failed; holding ${needsCheck.length} page watch(es) unarmed: ${e?.message}`);
-    return { specs: specs.filter((s) => !pendingUrlVerification.has(s.watchId)), dropped };
-  }
-  const urlOf = new Map(tabs.map((t) => [t.tabId, t.url]));
   const survivors = [];
   for (const s of specs) {
     const wanted = pendingUrlVerification.get(s.watchId);
@@ -1397,19 +1403,23 @@ async function rearmForExtension(extensionId, listTabs2) {
       survivors.push(s);
       continue;
     }
-    const actual = s.tabId != null ? urlOf.get(s.tabId) : void 0;
+    pendingUrlVerification.delete(s.watchId);
+    let actual;
+    try {
+      actual = s.tabId != null ? await liveUrlOf(s.tabId) : void 0;
+    } catch {
+      actual = void 0;
+    }
     if (typeof actual === "string" && actual === wanted) {
-      pendingUrlVerification.delete(s.watchId);
       survivors.push(s);
       continue;
     }
-    pendingUrlVerification.delete(s.watchId);
     watchRegistry.delete(s.watchId, "document-changed");
     watchBuffer.drop(s.watchId);
     void unpersistWatch(s.watchId);
     dropped.push({ watchId: s.watchId, reason: "document-changed" });
     console.log(
-      `[Watch] ${s.watchId} not re-armed: was created against ${wanted}, tab ${s.tabId} now shows ${actual ?? "(gone)"}`
+      `[Watch] ${s.watchId} NOT re-armed: created against ${wanted}, tab ${s.tabId} now shows ${actual ?? "(unreachable/gone)"}`
     );
   }
   return { specs: survivors, dropped };
@@ -1437,6 +1447,10 @@ function specsToRearm(extensionId) {
     prefilter: w.prefilter,
     predicate: w.home === "page" ? w.predicate : void 0,
     config: w.config,
+    // The document a page watch belongs to. The extension re-injects on every
+    // navigation of that tab, and without this it would attach to whatever
+    // page is now there — the live-navigation twin of the restart case.
+    armedAgainstUrl: w.armedAgainstUrl,
     options: w.options,
     tabId: w.tabId ?? null,
     extensionId: w.extensionId
@@ -1520,13 +1534,14 @@ async function createServerWithTools(options) {
       void globalContext.rebuildTabOwnership(extensionId).then((n) => {
         if (n > 0) console.log(`[Server] Rebuilt tab ownership for ${extensionId}: ${n} tab(s)`);
       }).catch((e) => console.log(`[Server] Tab-ownership rebuild for ${extensionId} failed (non-fatal): ${e?.message ?? e}`));
-      void rearmForExtension(extensionId, async () => {
+      void rearmForExtension(extensionId, async (tabId) => {
         const res = await globalContext.sendSocketMessage(
-          "browser_list_attached_tabs",
-          {},
-          { extensionId, timeoutMs: 8e3 }
+          "browser_evaluate",
+          { expression: "location.href", tabTarget: tabId },
+          { extensionId, tabTarget: tabId, timeoutMs: 8e3 }
         );
-        return res?.tabs ?? [];
+        const raw = typeof res === "string" ? res : res?.result ?? res?.value;
+        return typeof raw === "string" ? raw.replace(/^"|"$/g, "") : void 0;
       }).then(({ specs, dropped }) => {
         if (dropped.length > 0) {
           console.log(`[Watch] ${dropped.length} page watch(es) cleared as document-changed`);
@@ -1547,6 +1562,14 @@ async function createServerWithTools(options) {
           return res?.watches ?? [];
         });
       }).catch((e) => console.log(`[Watch] re-push to ${extensionId} failed (non-fatal): ${e?.message}`));
+      return;
+    }
+    if (type2 === "WATCH_DOCUMENT_CHANGED") {
+      const p = payload ?? {};
+      onWatchDocumentChanged(String(p.watchId ?? ""), {
+        was: p.was,
+        now: p.now
+      });
       return;
     }
     if (type2 === "WATCH_FIRED") {

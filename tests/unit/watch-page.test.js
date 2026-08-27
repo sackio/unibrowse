@@ -166,3 +166,35 @@ test("an injection that fails leaves the watch un-armed rather than silently dea
   const { e } = engine({ injectPageWatch: async () => false });
   await assert.rejects(() => e.arm(pageSpec()), /inject/i);
 });
+
+// ─── The live-navigation twin of the restart guard (shopping-27, 2026-08-27) ──
+
+test("⛔ a page watch does NOT re-inject when the tab navigated to a different document", async () => {
+  const { e, chrome, injected, sent } = engine();
+  await e.arm(pageSpec({ armedAgainstUrl: "https://x.test/order" }));
+  assert.equal(injected.length, 1);
+  chrome._fire("webNavigation.onCommitted", { tabId: 5, frameId: 0, url: "https://x.test/other" });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(injected.length, 1, "must NOT attach to the new document");
+  const msg = sent.find((m) => m.type === "WATCH_DOCUMENT_CHANGED");
+  assert.ok(msg, "and must SAY so rather than going quiet");
+  assert.equal(msg.payload.was, "https://x.test/order");
+  assert.equal(msg.payload.now, "https://x.test/other");
+  assert.equal(e.list().length, 0, "and disarm itself");
+});
+
+test("a reload of the SAME url still re-injects", async () => {
+  const { e, chrome, injected } = engine();
+  await e.arm(pageSpec({ armedAgainstUrl: "https://x.test/order" }));
+  chrome._fire("webNavigation.onCommitted", { tabId: 5, frameId: 0, url: "https://x.test/order" });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(injected.length, 2, "same document, so the observer is restored");
+});
+
+test("a watch with no recorded url re-injects as before (back-compat)", async () => {
+  const { e, chrome, injected } = engine();
+  await e.arm(pageSpec());
+  chrome._fire("webNavigation.onCommitted", { tabId: 5, frameId: 0, url: "https://x.test/anything" });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(injected.length, 2);
+});

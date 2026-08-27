@@ -15,6 +15,7 @@ import {
   handleWatchFired,
   onExtensionGone,
   onTabGone,
+  onWatchDocumentChanged,
   rearmForExtension,
   recordArmedFromExtension,
   rehydrateWatches,
@@ -144,13 +145,20 @@ export async function createServerWithTools(options: Options): Promise<Server> {
       // Verify page-home watches against the document they were created for
       // before re-arming any of them. Deliberately not awaited inline — the
       // registration must not block on it.
-      void rearmForExtension(extensionId, async () => {
+      void rearmForExtension(extensionId, async (tabId: number) => {
+        // ⛔ EVALUATE IN THE PAGE. Both browser_list_attached_tabs AND getUrl
+        // return tabInfo.url — the URL captured when the tab was ATTACHED,
+        // never updated on navigation. Verifying against either compares two
+        // copies of the same stale value, which is why this guard passed a
+        // test where the tab had demonstrably navigated. location.href is the
+        // only source that reflects where the tab actually is.
         const res: any = await globalContext.sendSocketMessage(
-          "browser_list_attached_tabs",
-          {},
-          { extensionId, timeoutMs: 8000 },
+          "browser_evaluate",
+          { expression: "location.href", tabTarget: tabId },
+          { extensionId, tabTarget: tabId, timeoutMs: 8000 },
         );
-        return (res?.tabs ?? []) as Array<{ tabId: number; url?: string }>;
+        const raw = typeof res === "string" ? res : (res?.result ?? res?.value);
+        return typeof raw === "string" ? raw.replace(/^"|"$/g, "") : undefined;
       })
         .then(({ specs, dropped }) => {
           if (dropped.length > 0) {
@@ -177,6 +185,17 @@ export async function createServerWithTools(options: Options): Promise<Server> {
           });
         })
         .catch((e) => console.log(`[Watch] re-push to ${extensionId} failed (non-fatal): ${e?.message}`));
+      return;
+    }
+
+    // A page watch refused to re-inject because its tab navigated away from
+    // the document it was created against. Unsolicited, like WATCH_FIRED.
+    if (type === 'WATCH_DOCUMENT_CHANGED') {
+      const p = (payload ?? {}) as Record<string, unknown>;
+      onWatchDocumentChanged(String(p.watchId ?? ''), {
+        was: p.was as string | undefined,
+        now: p.now as string | undefined,
+      });
       return;
     }
 

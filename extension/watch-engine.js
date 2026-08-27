@@ -462,6 +462,30 @@ function createWatchEngine({ chrome, sendToServer, now = Date.now, injectPageWat
       if (details.frameId !== 0) return; // top frame only; a sub-frame nav does not kill it
       for (const w of watches.values()) {
         if (!w.page || w.spec.tabId !== details.tabId) continue;
+
+        // ⛔ A PAGE WATCH BELONGS TO A DOCUMENT, NOT A TAB.
+        //
+        // Re-injecting on any navigation attaches the caller's observer to
+        // whatever page is now loaded. Measured by shopping-27 (2026-08-27): a
+        // watch created against an Amazon order page silently re-attached to a
+        // contact-us page and kept firing under the same watchId, still
+        // reporting armed:true, with the only clue buried in the payload's
+        // `url` field.
+        //
+        // ⚠️ Compared as a FULL url on purpose. This listener is
+        // onCommitted, which does NOT fire for history.pushState — SPA route
+        // changes arrive on onHistoryStateUpdated and never reach here — so a
+        // strict comparison cannot punish an app that legitimately stays put.
+        const want = w.spec.armedAgainstUrl;
+        if (want && details.url && details.url !== want) {
+          sendToServer({
+            type: 'WATCH_DOCUMENT_CHANGED',
+            payload: { watchId: w.spec.watchId, was: want, now: details.url },
+          });
+          void disarm(w.spec.watchId);
+          continue;
+        }
+
         void injectFor(w.spec).catch((e) =>
           console.warn(`[Watch] re-inject of ${w.spec.watchId} failed:`, e?.message),
         );

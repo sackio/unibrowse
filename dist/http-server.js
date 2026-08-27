@@ -122,7 +122,7 @@ import {
   wait,
   watchBuffer,
   watchRegistry
-} from "./chunk-IQRZHUB2.js";
+} from "./chunk-ELLWHOQJ.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -850,6 +850,19 @@ var watchCreate = {
         },
         descriptor.home
       );
+      let armedAgainstUrl;
+      if (descriptor.home === "page" && tabId != null) {
+        try {
+          const u = await context.sendSocketMessage(
+            "browser_evaluate",
+            { expression: "location.href", tabTarget: tabId },
+            { extensionId, tabTarget: tabId, timeoutMs: 5e3 }
+          );
+          const raw = typeof u === "string" ? u : u?.result ?? u?.value;
+          armedAgainstUrl = typeof raw === "string" ? raw.replace(/^"|"$/g, "") : void 0;
+        } catch {
+        }
+      }
       let armed;
       try {
         const res = await context.sendSocketMessage(
@@ -864,6 +877,7 @@ var watchCreate = {
             prefilter: record.prefilter,
             predicate: descriptor.home === "page" ? record.predicate : void 0,
             config: record.config,
+            armedAgainstUrl,
             options: record.options,
             tabId: record.tabId,
             extensionId
@@ -887,18 +901,6 @@ var watchCreate = {
       if (sink.kind === "buffer") {
         watchBuffer.setCapacity(record.watchId, sink.maxBuffered);
       }
-      let armedAgainstUrl;
-      if (descriptor.home === "page" && tabId != null) {
-        try {
-          const info = await context.sendSocketMessage(
-            "browser_list_attached_tabs",
-            {},
-            { extensionId, timeoutMs: 5e3 }
-          );
-          armedAgainstUrl = (info?.tabs ?? []).find((t) => t.tabId === tabId)?.url;
-        } catch {
-        }
-      }
       void persistWatch({ ...record, armedAgainstUrl });
       let out = `# Watch armed
 
@@ -919,7 +921,14 @@ var watchCreate = {
       out += `
 `;
       out += `**predicate**: ${record.predicate ? `\`${record.predicate}\`` : "none \u2014 fires on every event"}
-
+`;
+      if (descriptor.home === "page") {
+        out += armedAgainstUrl ? `**document**: ${armedAgainstUrl}
+  (if this tab navigates elsewhere the watch is cleared as \`document-changed\` rather than re-attached to the new page)
+` : `\u26A0\uFE0F **document**: could not be read, so this watch is NOT url-guarded \u2014 if the tab navigates it may re-attach to a different page, and it will not survive a server restart.
+`;
+      }
+      out += `
 `;
       out += `Events are dropped if nothing is listening when they fire; they are never queued.
 `;
@@ -1129,7 +1138,8 @@ var CLEARED_EXPLANATION = {
   "extension-disconnected": "its extension's WebSocket closed \u2014 note that an mcp-server restart closes every extension socket at once, so this can affect every watch in the fleet simultaneously",
   ttl: "its ttlMs elapsed",
   once: "it was created with once:true and has fired",
-  breaker: "the rate-cap breaker tripped and disarmed it"
+  breaker: "the rate-cap breaker tripped and disarmed it",
+  "document-changed": "its tab navigated away from the document it was created against \u2014 re-arming would have attached your observer to a different page"
 };
 function renderCleared(cleared) {
   let out = "";

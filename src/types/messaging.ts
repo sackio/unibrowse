@@ -70,6 +70,8 @@ export interface SocketMessageMap {
     predicate?: string;
     /** Per-source config for page-home sources (selector, eventName, …). */
     config?: Record<string, unknown>;
+    /** The document a page watch belongs to; guards the re-inject path. */
+    armedAgainstUrl?: string;
     options?: Record<string, unknown>;
     tabId?: number | null;
     extensionId?: string;
@@ -83,6 +85,13 @@ export interface SocketMessageMap {
   browser_observe_navigations_start: { pattern: string; flags?: string; tabTarget?: number | string };
   browser_observe_navigations_first: { subscriptionId: string; timeoutMs?: number };
   browser_observe_navigations_dispose: { subscriptionId: string };
+
+  // Evaluate JS in the page's MAIN world. Declared here because it is the only
+  // source of a tab's LIVE url — both browser_list_attached_tabs and getUrl
+  // report tabInfo.url, captured at ATTACH time and never updated on
+  // navigation. routine-runner has always sent this type; it was simply
+  // undeclared.
+  browser_evaluate: { expression: string; tabTarget?: number | string; extensionId?: string };
 
   // Information tools
   browser_get_console_logs: Record<string, never>;

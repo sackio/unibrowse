@@ -178,6 +178,30 @@ export const watchCreate: Tool = {
         descriptor.home,
       );
 
+      // Resolve the document a page watch belongs to BEFORE arming, so the
+      // extension can guard its own re-inject path with it.
+      let armedAgainstUrl: string | undefined;
+      if (descriptor.home === "page" && tabId != null) {
+        try {
+          // ⛔ Live URL, not the tab record: browser_list_attached_tabs reports
+          // the URL from ATTACH time and never updates it on navigation, so a
+          // tab that had already moved would be recorded against the wrong
+          // document and cleared on its very next navigation.
+          // ⛔ location.href, not getUrl / list_attached_tabs — both of those
+          // report the URL from ATTACH time and never update on navigation.
+          const u: any = await context.sendSocketMessage(
+            "browser_evaluate",
+            { expression: "location.href", tabTarget: tabId },
+            { extensionId, tabTarget: tabId, timeoutMs: 5000 },
+          );
+          const raw = typeof u === "string" ? u : (u?.result ?? u?.value);
+          armedAgainstUrl = typeof raw === "string" ? raw.replace(/^"|"$/g, "") : undefined;
+        } catch {
+          // Without a URL the watch is armed but not URL-guarded, and will not
+          // be rehydrated after a restart. Safe direction, and stated below.
+        }
+      }
+
       // Arm it in the extension, and record what the extension actually said.
       let armed: boolean;
       try {
@@ -193,6 +217,7 @@ export const watchCreate: Tool = {
             prefilter: record.prefilter,
             predicate: descriptor.home === "page" ? record.predicate : undefined,
             config: record.config,
+            armedAgainstUrl,
             options: record.options as Record<string, unknown> | undefined,
             tabId: record.tabId,
             extensionId,
@@ -226,23 +251,7 @@ export const watchCreate: Tool = {
       }
 
       // Persist only a CONFIRMED arm, so a refused one leaves nothing to
-      // rehydrate. Page-home watches record the URL they were armed against:
-      // they observe a document, and a tab that navigated while the server was
-      // down would otherwise be re-armed silently onto the wrong page.
-      let armedAgainstUrl: string | undefined;
-      if (descriptor.home === "page" && tabId != null) {
-        try {
-          const info: any = await context.sendSocketMessage(
-            "browser_list_attached_tabs",
-            {},
-            { extensionId, timeoutMs: 5000 },
-          );
-          armedAgainstUrl = (info?.tabs ?? []).find((t: any) => t.tabId === tabId)?.url;
-        } catch {
-          // Not fatal: without a URL the watch simply will not be rehydrated
-          // after a restart, which is the safe direction.
-        }
-      }
+      // rehydrate.
       void persistWatch({ ...record, armedAgainstUrl });
 
       let out = `# Watch armed\n\n`;
@@ -255,7 +264,13 @@ export const watchCreate: Tool = {
       if (sink.kind === "atc") out += ` → ${sink.to ?? args.agent}`;
       if (sink.kind === "webhook") out += ` → ${sink.url}`;
       out += `\n`;
-      out += `**predicate**: ${record.predicate ? `\`${record.predicate}\`` : "none — fires on every event"}\n\n`;
+      out += `**predicate**: ${record.predicate ? `\`${record.predicate}\`` : "none — fires on every event"}\n`;
+      if (descriptor.home === "page") {
+        out += armedAgainstUrl
+          ? `**document**: ${armedAgainstUrl}\n  (if this tab navigates elsewhere the watch is cleared as \`document-changed\` rather than re-attached to the new page)\n`
+          : `⚠️ **document**: could not be read, so this watch is NOT url-guarded — if the tab navigates it may re-attach to a different page, and it will not survive a server restart.\n`;
+      }
+      out += `\n`;
       out += `Events are dropped if nothing is listening when they fire; they are never queued.\n`;
       out += `This watch is cleared when the tab detaches, the extension disconnects`;
       if (record.options?.ttlMs) out += `, after ${record.options.ttlMs}ms`;
@@ -475,6 +490,8 @@ const CLEARED_EXPLANATION: Record<string, string> = {
   ttl: "its ttlMs elapsed",
   once: "it was created with once:true and has fired",
   breaker: "the rate-cap breaker tripped and disarmed it",
+  "document-changed":
+    "its tab navigated away from the document it was created against — re-arming would have attached your observer to a different page",
 };
 
 function renderCleared(cleared: WatchTombstone[]): string {
