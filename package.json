@@ -29,7 +29,8 @@
     "test:advanced-macros": "node tests/test-advanced-macros.js",
     "store:macros": "node tests/store-utility-macros.js",
     "store:advanced-macros": "node tests/store-advanced-macros.js",
-    "backup:test": "./scripts/backup-and-test.sh"
+    "backup:test": "./scripts/backup-and-test.sh",
+    "test:unit": "node --test --experimental-strip-types tests/unit/"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",
