@@ -2660,6 +2660,9 @@ var ListAttachedTabsTool = z.object({
     "List all tabs that have debugger attached with their labels and IDs. Use this to find valid tabTarget values for browser_navigate, browser_snapshot, browser_click, and all other tab-targeting operations. Only attached tabs can be targeted \u2014 use browser_attach_tab or browser_create_tab to attach new tabs. URL query-string values and fragments are redacted by default (origin, path and parameter names are kept) because a long-attached tab puts its URL into every caller's context; pass fullUrls:true if you genuinely need them."
   ),
   arguments: z.object({
+    live: z.boolean().optional().describe(
+      "Add liveUrl/liveTitle read from Chrome's CURRENT tab state, plus urlChanged/titleChanged flags. \u26D4 The plain `url` and `title` fields are captured when a tab is ATTACHED and are NEVER updated on navigation \u2014 a tab that has since navigated still reports the page it left. Pass live:true whenever you need to know where a tab actually is now: picking a tab by title or URL, or verifying one has not moved. Costs one chrome.tabs.get per attached tab."
+    ),
     // ⛔ Opt-IN, never opt-out. A tab attached and left broadcasts its query
     // string to every agent that lists tabs, and on 2026-08-17 that was a
     // stranger's name, home address, phone, email and card last-4 landing in
@@ -6218,11 +6221,11 @@ var listAttachedTabs = {
     inputSchema: zodToJsonSchema20(ListAttachedTabsTool.shape.arguments)
   },
   handle: async (context, params) => {
-    const { max_tokens, fullUrls } = params || {};
+    const { max_tokens, fullUrls, live } = params || {};
     try {
       const results = await context.broadcastSocketMessage(
         "browser_list_attached_tabs",
-        {}
+        { live: live === true }
       );
       const tabs = [];
       const errors = [];
@@ -6256,9 +6259,18 @@ var listAttachedTabs = {
 ` + tabs.map((tab) => {
         const res = tab.reservation ? ` [reserved: ${tab.reservation.owner} since ${new Date(tab.reservation.claimedAt).toISOString()}]` : "";
         const ext = ` [ext: ${tab.extensionId}]`;
+        const liveUnavailable = live === true && tab.liveUrl === void 0 && tab.liveError === void 0;
+        const moved = tab.urlChanged === true || tab.titleChanged === true;
+        const liveNote = liveUnavailable ? `
+  \u26A0\uFE0F LIVE STATE UNAVAILABLE: this extension is running a build that predates the live:true option, so url/title above are attach-time only and may be stale. Reload the extension, or verify with browser_evaluate("location.href").` : tab.liveError ? `
+  \u26A0\uFE0F LIVE STATE UNREADABLE: ${tab.liveError}` : moved ? `
+  \u26A0\uFE0F THIS TAB HAS NAVIGATED since it was attached \u2014 the url/title above are the ATTACH-TIME record.
+  Now at: ${tab.liveUrl}
+  Now titled: ${tab.liveTitle}` : tab.liveUrl ? `
+  (live url/title confirmed unchanged since attach)` : "";
         return `- Tab ${tab.tabId} (${tab.label}): ${tab.title}${ext}${res}
   URL: ${tab.url}
-  Last used: ${new Date(tab.lastUsedAt).toLocaleString()}`;
+  Last used: ${new Date(tab.lastUsedAt).toLocaleString()}${liveNote}`;
       }).join("\n");
       return jsonResponse({
         tabs,

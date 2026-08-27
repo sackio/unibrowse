@@ -1344,6 +1344,12 @@ export const ListAttachedTabsTool = z.object({
     "puts its URL into every caller's context; pass fullUrls:true if you genuinely need them."
   ),
   arguments: z.object({
+    live: z
+      .boolean()
+      .optional()
+      .describe(
+        "Add liveUrl/liveTitle read from Chrome's CURRENT tab state, plus urlChanged/titleChanged flags. ⛔ The plain `url` and `title` fields are captured when a tab is ATTACHED and are NEVER updated on navigation — a tab that has since navigated still reports the page it left. Pass live:true whenever you need to know where a tab actually is now: picking a tab by title or URL, or verifying one has not moved. Costs one chrome.tabs.get per attached tab."
+      ),
     // ⛔ Opt-IN, never opt-out. A tab attached and left broadcasts its query
     // string to every agent that lists tabs, and on 2026-08-17 that was a
     // stranger's name, home address, phone, email and card last-4 landing in

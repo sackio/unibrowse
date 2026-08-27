@@ -147,7 +147,8 @@ export interface SocketMessageMap {
   browser_request_user_action: { request: string };
 
   // Multi-tab management tools
-  browser_list_attached_tabs: Record<string, never>;
+  /** `live: true` adds liveUrl/liveTitle/urlChanged/titleChanged per tab. */
+  browser_list_attached_tabs: { live?: boolean } | Record<string, never>;
   browser_set_tab_label: { tabId: number; label: string };
   browser_detach_tab: { tabId: number };
   browser_get_active_tab: Record<string, never>;

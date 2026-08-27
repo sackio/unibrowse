@@ -3206,10 +3206,65 @@ class BackgroundController {
   /**
    * List all attached tabs with their labels and reservation info.
    */
-  async handleListAttachedTabs() {
+  /**
+   * @param {{live?: boolean}} params
+   *
+   * ⛔ `url` and `title` in the tab record are captured when the tab is
+   * ATTACHED and are never updated on navigation. They are kept exactly as
+   * they are — external consumers read this response and some may be using
+   * the frozen value as an identifier ("the tab I attached at the order
+   * page"), so changing what they mean could break callers silently.
+   *
+   * Pass `live: true` for ADDITIONAL `liveUrl` / `liveTitle` fields read from
+   * Chrome's own current tab state, plus `urlChanged` / `titleChanged` so a
+   * caller does not have to compare strings to notice divergence.
+   *
+   * Opt-in because it costs one chrome.tabs.get per attached tab. That is
+   * cheap (no CDP, no page evaluation) but not free, and the common caller
+   * only wants the roster.
+   *
+   * ⚠️ Measured 2026-08-27: a tab whose record said
+   * "/your-orders/order-details… · Order Details" was actually on
+   * "/hz/contact-us/… · Contact Us". Both fields described a page it had left
+   * 15 minutes earlier, and that silently disabled a correctness check written
+   * against them.
+   */
+  async handleListAttachedTabs({ live } = {}) {
     try {
       const tabs = this.tabManager.listTabs();
-      return { tabs };
+      if (live !== true) return { tabs };
+
+      const enriched = await Promise.all(tabs.map(async (t) => {
+        try {
+          const cur = await chrome.tabs.get(t.tabId);
+          // ⛔ Strip our own indicator before comparing. The extension prefixes
+          // every ATTACHED tab's title with "🟢 [MCP] ", so a raw comparison
+          // reports titleChanged:true for every attached tab whose title we
+          // decorated — a flag that is always true is a flag nobody can use,
+          // and it would bury the real changes it exists to surface.
+          const strip = (x) => (typeof x === 'string' ? x.replace(/^🟢 \[MCP\] /, '') : x);
+          const liveTitle = strip(cur.title);
+          return {
+            ...t,
+            liveUrl: cur.url ?? null,
+            liveTitle: liveTitle ?? null,
+            urlChanged: typeof cur.url === 'string' && cur.url !== t.url,
+            titleChanged: typeof liveTitle === 'string' && liveTitle !== strip(t.title),
+          };
+        } catch (e) {
+          // ⛔ The tab is gone or unreadable. Say so rather than omitting the
+          // fields, which would read as "unchanged".
+          return {
+            ...t,
+            liveUrl: null,
+            liveTitle: null,
+            liveError: e?.message || String(e),
+            urlChanged: null,
+            titleChanged: null,
+          };
+        }
+      }));
+      return { tabs: enriched };
     } catch (error) {
       console.error('[Background] handleListAttachedTabs failed:', error);
       throw error;

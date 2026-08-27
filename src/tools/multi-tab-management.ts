@@ -87,7 +87,7 @@ export const listAttachedTabs: Tool = {
     inputSchema: zodToJsonSchema(ListAttachedTabsTool.shape.arguments),
   },
   handle: async (context: Context, params) => {
-    const { max_tokens, fullUrls } = (params || {}) as any;
+    const { max_tokens, fullUrls, live } = (params || {}) as any;
     try {
       // Aggregate across every registered extension. With multiple extensions
       // (ben's main Chrome + container chromiums launched via
@@ -96,7 +96,7 @@ export const listAttachedTabs: Tool = {
       // rather than dropped so a broken connection is visible.
       const results = await context.broadcastSocketMessage(
         "browser_list_attached_tabs",
-        {} as any,
+        { live: live === true } as any,
       );
 
       const tabs: any[] = [];
@@ -135,7 +135,30 @@ export const listAttachedTabs: Tool = {
             ? ` [reserved: ${tab.reservation.owner} since ${new Date(tab.reservation.claimedAt).toISOString()}]`
             : "";
           const ext = ` [ext: ${tab.extensionId}]`;
-          return `- Tab ${tab.tabId} (${tab.label}): ${tab.title}${ext}${res}\n  URL: ${tab.url}\n  Last used: ${new Date(tab.lastUsedAt).toLocaleString()}`;
+          // ⛔ url/title are the ATTACH-TIME record and never update on
+          // navigation. When live:true was requested, show where the tab
+          // actually is and say plainly that it moved — a caller matching on
+          // title or URL is otherwise reading a page the tab has left.
+          // ⛔ An extension whose build predates live tab state simply ignores
+          // `live` and returns no such fields. Absent flags would otherwise
+          // read as "nothing changed" — the same false all-clear this option
+          // exists to remove. Say the data is UNAVAILABLE, not that it agrees.
+          const liveUnavailable =
+            live === true && tab.liveUrl === undefined && tab.liveError === undefined;
+          const moved = tab.urlChanged === true || tab.titleChanged === true;
+          const liveNote = liveUnavailable
+            ? `\n  ⚠️ LIVE STATE UNAVAILABLE: this extension is running a build that predates the ` +
+              `live:true option, so url/title above are attach-time only and may be stale. ` +
+              `Reload the extension, or verify with browser_evaluate("location.href").`
+            : tab.liveError
+            ? `\n  ⚠️ LIVE STATE UNREADABLE: ${tab.liveError}`
+            : moved
+              ? `\n  ⚠️ THIS TAB HAS NAVIGATED since it was attached — the url/title above are the ATTACH-TIME record.` +
+                `\n  Now at: ${tab.liveUrl}\n  Now titled: ${tab.liveTitle}`
+              : tab.liveUrl
+                ? `\n  (live url/title confirmed unchanged since attach)`
+                : "";
+          return `- Tab ${tab.tabId} (${tab.label}): ${tab.title}${ext}${res}\n  URL: ${tab.url}\n  Last used: ${new Date(tab.lastUsedAt).toLocaleString()}${liveNote}`;
         }).join("\n");
       return jsonResponse({ tabs, // Identity, not bare ids. A caller cannot tell which machine an opaque
       // UUID refers to, and on 2026-08-11 that cost an hour of debugging a
