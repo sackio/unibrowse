@@ -115,6 +115,36 @@ export interface WatchRecord extends WatchSpec {
   armedReportedAt: number | null;
 }
 
+/** Why a watch stopped existing. */
+export type ClearedReason =
+  | "deleted"
+  | "tab-detached"
+  | "extension-disconnected"
+  | "ttl"
+  | "once"
+  | "breaker";
+
+/**
+ * A cleared watch, kept briefly so it stays EXPLAINABLE.
+ *
+ * ⛔ Without this, `browser_watch_list` answered "No watches" for a watch that
+ * had been armed and cleared and for one that never existed — identical output
+ * for opposite situations. A caller waiting on a live conversation could not
+ * tell the doorbell had been unplugged from nothing having happened
+ * (shopping-27, 2026-08-27). That is the exact fail-quiet this subsystem was
+ * built to remove, reappearing inside it.
+ */
+export interface WatchTombstone {
+  watchId: string;
+  source: string;
+  reason: ClearedReason;
+  at: number;
+  agent?: string;
+  extensionId: string;
+  tabId?: number | null;
+  firedCount: number;
+}
+
 export interface WatchEvent {
   watchId: string;
   source: string;

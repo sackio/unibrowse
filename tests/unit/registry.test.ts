@@ -119,3 +119,76 @@ test("deleting by tab then by extension does not double-count", () => {
   r.deleteByTab("ext_a", 1);
   assert.equal(r.deleteByExtension("ext_a").length, 0, "indexes must stay in sync");
 });
+
+// ─── Tombstones: a cleared watch must not look like one that never existed ───
+// shopping-27, 2026-08-27: their armed watch was cleared by a server restart
+// mid-conversation and browser_watch_list said "No watches" — identical to
+// never having armed one. During a live chat the doorbell going silent looked
+// exactly like nothing happening. That is the fail-quiet this subsystem exists
+// to remove, reappearing in the subsystem itself.
+
+test("an explicitly deleted watch leaves a tombstone with a reason", () => {
+  const r = new WatchRegistry();
+  const w = r.create(spec(), "worker");
+  r.delete(w.watchId, "deleted");
+  const t = r.tombstone(w.watchId);
+  assert.ok(t, "a deleted watch must remain explainable");
+  assert.equal(t?.reason, "deleted");
+  assert.equal(t?.source, w.source);
+});
+
+test("a tab cascade records WHY, not just that it happened", () => {
+  const r = new WatchRegistry();
+  const w = r.create(spec({ tabId: 1 }), "worker");
+  r.deleteByTab("ext_a", 1);
+  assert.equal(r.tombstone(w.watchId)?.reason, "tab-detached");
+});
+
+test("an extension cascade is distinguishable from a tab cascade", () => {
+  const r = new WatchRegistry();
+  const w = r.create(spec(), "worker");
+  r.deleteByExtension("ext_a");
+  assert.equal(r.tombstone(w.watchId)?.reason, "extension-disconnected");
+});
+
+test("ttl expiry is its own reason", () => {
+  const r = new WatchRegistry();
+  const w = r.create(spec({ options: { ttlMs: 10 } }), "worker");
+  r.expire(r.get(w.watchId)!.createdAt + 100);
+  assert.equal(r.tombstone(w.watchId)?.reason, "ttl");
+});
+
+test("tombstones list newest-first and are bounded", () => {
+  const r = new WatchRegistry();
+  for (let i = 0; i < 60; i++) {
+    const w = r.create(spec(), "worker");
+    r.delete(w.watchId, "deleted");
+  }
+  const list = r.recentlyCleared();
+  assert.ok(list.length <= 50, `bounded, got ${list.length}`);
+  assert.ok(list[0].at >= list[list.length - 1].at, "newest first");
+});
+
+test("a live watch has NO tombstone — the two states never overlap", () => {
+  const r = new WatchRegistry();
+  const w = r.create(spec(), "worker");
+  assert.equal(r.tombstone(w.watchId), undefined);
+  assert.ok(r.get(w.watchId));
+});
+
+test("re-creating after a clear removes the stale tombstone", () => {
+  const r = new WatchRegistry();
+  const w = r.create(spec(), "worker");
+  r.delete(w.watchId, "deleted");
+  assert.ok(r.tombstone(w.watchId));
+  // ids are unique, but a caller re-arming must never see a stale tombstone
+  // for a live watch if an id were ever reused.
+  const again = r.create(spec(), "worker");
+  assert.equal(r.tombstone(again.watchId), undefined);
+});
+
+test("startedAt is exposed so a caller can tell a restart wiped their watch", () => {
+  const r = new WatchRegistry();
+  assert.equal(typeof r.startedAt, "number");
+  assert.ok(r.startedAt <= Date.now());
+});

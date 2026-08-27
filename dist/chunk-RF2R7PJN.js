@@ -709,8 +709,22 @@ function validatePredicate(src) {
 }
 
 // src/watch/registry.ts
+var MAX_TOMBSTONES = 50;
 var WatchRegistry = class {
   watches = /* @__PURE__ */ new Map();
+  /**
+   * Recently-cleared watches, newest last. Bounded — this is an explanation
+   * buffer, not a history.
+   */
+  tombstones = /* @__PURE__ */ new Map();
+  /**
+   * When THIS registry came into being. The registry is in memory, so an
+   * mcp-server restart takes every watch with it and leaves no tombstone to
+   * find. Exposing the start time lets a caller work out that their watch was
+   * created before this process existed, which is the only honest answer
+   * available for that case.
+   */
+  startedAt = Date.now();
   /** extensionId -> watchIds. Kept in sync on every create/delete. */
   byExtension = /* @__PURE__ */ new Map();
   /** `${extensionId}:${tabId}` -> watchIds, for the tab-detach cascade. */
@@ -773,6 +787,7 @@ var WatchRegistry = class {
       armedReportedAt: null
     };
     this.watches.set(rec.watchId, rec);
+    this.tombstones.delete(rec.watchId);
     this.index(rec);
     return rec;
   }
@@ -798,19 +813,46 @@ var WatchRegistry = class {
     if (!ids) return [];
     return [...ids].map((id) => this.watches.get(id)).filter(Boolean);
   }
-  delete(watchId) {
+  delete(watchId, reason = "deleted") {
     const rec = this.watches.get(watchId);
     if (!rec) return false;
     this.deindex(rec);
     this.watches.delete(watchId);
+    this.tombstones.set(watchId, {
+      watchId,
+      source: rec.source,
+      reason,
+      at: Date.now(),
+      agent: rec.agent,
+      extensionId: rec.extensionId,
+      tabId: rec.tabId ?? null,
+      firedCount: rec.firedCount
+    });
+    while (this.tombstones.size > MAX_TOMBSTONES) {
+      const oldest = this.tombstones.keys().next().value;
+      if (oldest === void 0) break;
+      this.tombstones.delete(oldest);
+    }
     return true;
+  }
+  /** Why a watch that no longer exists was cleared, if we still know. */
+  tombstone(watchId) {
+    return this.tombstones.get(watchId);
+  }
+  /** Recently-cleared watches, NEWEST FIRST. */
+  recentlyCleared(filter = {}) {
+    let out = [...this.tombstones.values()].reverse();
+    if (filter.extensionId !== void 0) out = out.filter((t) => t.extensionId === filter.extensionId);
+    if (filter.tabId !== void 0) out = out.filter((t) => t.tabId === filter.tabId);
+    if (filter.agent !== void 0) out = out.filter((t) => t.agent === filter.agent);
+    return out;
   }
   /** Cascade for TAB_DETACHED / tab close. Browser-wide watches survive. */
   deleteByTab(extensionId, tabId) {
     const ids = this.byExtensionTab.get(this.tabKey(extensionId, tabId));
     if (!ids) return [];
     const removed = [...ids];
-    for (const id of removed) this.delete(id);
+    for (const id of removed) this.delete(id, "tab-detached");
     return removed;
   }
   /** Cascade for socket close / extension disconnect. Takes everything. */
@@ -818,7 +860,7 @@ var WatchRegistry = class {
     const ids = this.byExtension.get(extensionId);
     if (!ids) return [];
     const removed = [...ids];
-    for (const id of removed) this.delete(id);
+    for (const id of removed) this.delete(id, "extension-disconnected");
     return removed;
   }
   /** Remove watches whose ttl has elapsed. Returns the removed ids. */
@@ -828,7 +870,7 @@ var WatchRegistry = class {
       const ttl = rec.options?.ttlMs;
       if (ttl == null) continue;
       if (now - rec.createdAt >= ttl) {
-        this.delete(rec.watchId);
+        this.delete(rec.watchId, "ttl");
         removed.push(rec.watchId);
       }
     }
@@ -1012,12 +1054,12 @@ async function handleWatchFired(payload, disarmInExtension) {
     );
   }
   if (event.breakerTripped) {
-    watchRegistry.delete(watchId);
+    watchRegistry.delete(watchId, "breaker");
     watchBuffer.drop(watchId);
     return;
   }
   if (record.options?.once) {
-    watchRegistry.delete(watchId);
+    watchRegistry.delete(watchId, "once");
   }
 }
 function onTabGone(extensionId, tabId) {

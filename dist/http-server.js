@@ -119,7 +119,7 @@ import {
   wait,
   watchBuffer,
   watchRegistry
-} from "./chunk-YP3QJY5U.js";
+} from "./chunk-RF2R7PJN.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -960,7 +960,31 @@ var watchList = {
         ...tabId !== void 0 ? { tabId } : {},
         agent: args.agent
       });
-      if (rows.length === 0) return textResponse(`No watches.`);
+      const cleared = watchRegistry.recentlyCleared({
+        extensionId: args.extensionId,
+        ...tabId !== void 0 ? { tabId } : {},
+        agent: args.agent
+      });
+      if (rows.length === 0) {
+        let out2 = `No live watches.
+`;
+        if (cleared.length > 0) {
+          out2 += `
+\u26A0\uFE0F But ${cleared.length} watch(es) were CLEARED recently \u2014 this is not the same
+`;
+          out2 += `as never having armed one:
+
+`;
+          out2 += renderCleared(cleared);
+        } else {
+          out2 += `
+No recently-cleared watches either.
+`;
+        }
+        out2 += `
+${restartNote()}`;
+        return textResponse(out2);
+      }
       let out = `# Watches (${rows.length})
 
 `;
@@ -986,11 +1010,20 @@ var watchList = {
         out += `
 `;
       }
+      if (cleared.length > 0) {
+        out += `
+## Recently cleared (${cleared.length})
+
+`;
+        out += renderCleared(cleared);
+      }
       out += `
 \`armed\` is the extension's own last answer, recorded verbatim. "unknown" means it
 `;
       out += `has never reported \u2014 which is not the same as false. Pass \`refresh: true\` to re-ask.
 `;
+      out += `
+${restartNote()}`;
       return textResponse(out);
     } catch (e) {
       return errorResponse(`browser_watch_list failed: ${e?.message ?? e}`);
@@ -1007,7 +1040,7 @@ var watchDelete = {
     try {
       const args = WatchDeleteTool.shape.arguments.parse(params ?? {});
       const rec = watchRegistry.get(args.watchId);
-      if (!rec) return errorResponse(`No watch with id "${args.watchId}".`);
+      if (!rec) return errorResponse(explainMissing(args.watchId));
       let disarmNote = "";
       try {
         await context.sendSocketMessage(
@@ -1038,7 +1071,7 @@ var watchPoll = {
     try {
       const args = WatchPollTool.shape.arguments.parse(params ?? {});
       const rec = watchRegistry.get(args.watchId);
-      if (!rec) return errorResponse(`No watch with id "${args.watchId}".`);
+      if (!rec) return errorResponse(explainMissing(args.watchId));
       if (rec.sink.kind !== "buffer") {
         return errorResponse(
           `Watch "${args.watchId}" has a "${rec.sink.kind}" sink, so its events are delivered rather than buffered. Only a watch created with sink {kind:"buffer"} can be polled.`
@@ -1068,6 +1101,36 @@ var watchPoll = {
     }
   })
 };
+var CLEARED_EXPLANATION = {
+  deleted: "you deleted it",
+  "tab-detached": "its tab detached or closed",
+  "extension-disconnected": "its extension's WebSocket closed \u2014 note that an mcp-server restart closes every extension socket at once, so this can affect every watch in the fleet simultaneously",
+  ttl: "its ttlMs elapsed",
+  once: "it was created with once:true and has fired",
+  breaker: "the rate-cap breaker tripped and disarmed it"
+};
+function renderCleared(cleared) {
+  let out = "";
+  for (const t of cleared) {
+    out += `- **\`${t.watchId}\`** \`${t.source}\` \u2014 cleared ${new Date(t.at).toISOString()}: `;
+    out += `**${t.reason}** (${CLEARED_EXPLANATION[t.reason] ?? "reason not recorded"}), `;
+    out += `after firing ${t.firedCount} time(s)
+`;
+  }
+  return out;
+}
+function restartNote() {
+  const started = new Date(watchRegistry.startedAt).toISOString();
+  return `\u26A0\uFE0F Watches do not survive an mcp-server restart: the registry is in memory, and a restart also closes every extension socket. This server started at ${started} \u2014 any watch created before then is gone, with no tombstone recorded.
+`;
+}
+function explainMissing(watchId) {
+  const t = watchRegistry.tombstone(watchId);
+  if (t) {
+    return `Watch \`${watchId}\` was CLEARED at ${new Date(t.at).toISOString()} \u2014 reason: **${t.reason}** (${CLEARED_EXPLANATION[t.reason] ?? "reason not recorded"}). It fired ${t.firedCount} time(s) before that. It is not armed and will deliver nothing; re-create it with browser_watch_create.`;
+  }
+  return `No watch with id "${watchId}", and no record of one having been cleared. ${restartNote()}`;
+}
 
 // src/install.ts
 import fs from "fs";

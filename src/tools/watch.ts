@@ -11,6 +11,7 @@ import { textResponse, errorResponse } from "@/utils/response-helpers";
 import { validatePredicate } from "@/watch/predicate";
 import { SOURCES, validateSourceId } from "@/watch/sources";
 import { watchBuffer, watchRegistry } from "@/watch/service";
+import type { WatchTombstone } from "@/watch/types";
 import type { SinkSpec } from "@/watch/types";
 
 import type { Tool } from "./tool";
@@ -294,7 +295,28 @@ export const watchList: Tool = {
         agent: args.agent,
       });
 
-      if (rows.length === 0) return textResponse(`No watches.`);
+      const cleared = watchRegistry.recentlyCleared({
+        extensionId: args.extensionId,
+        ...(tabId !== undefined ? { tabId } : {}),
+        agent: args.agent,
+      });
+
+      // ⛔ "No watches" used to mean BOTH "you never armed one" and "yours was
+      // cleared out from under you". Those are opposite situations and they
+      // rendered identically, which during a live conversation looks exactly
+      // like nothing happening (shopping-27, 2026-08-27).
+      if (rows.length === 0) {
+        let out = `No live watches.\n`;
+        if (cleared.length > 0) {
+          out += `\n⚠️ But ${cleared.length} watch(es) were CLEARED recently — this is not the same\n`;
+          out += `as never having armed one:\n\n`;
+          out += renderCleared(cleared);
+        } else {
+          out += `\nNo recently-cleared watches either.\n`;
+        }
+        out += `\n${restartNote()}`;
+        return textResponse(out);
+      }
 
       let out = `# Watches (${rows.length})\n\n`;
       for (const r of rows) {
@@ -312,8 +334,14 @@ export const watchList: Tool = {
         if (r.predicate) out += `- predicate: \`${r.predicate}\`\n`;
         out += `\n`;
       }
+      if (cleared.length > 0) {
+        out += `\n## Recently cleared (${cleared.length})\n\n`;
+        out += renderCleared(cleared);
+      }
+
       out += `\n\`armed\` is the extension's own last answer, recorded verbatim. "unknown" means it\n`;
       out += `has never reported — which is not the same as false. Pass \`refresh: true\` to re-ask.\n`;
+      out += `\n${restartNote()}`;
       return textResponse(out);
     } catch (e) {
       return errorResponse(`browser_watch_list failed: ${(e as Error)?.message ?? e}`);
@@ -331,7 +359,7 @@ export const watchDelete: Tool = {
     try {
       const args = WatchDeleteTool.shape.arguments.parse(params ?? {});
       const rec = watchRegistry.get(args.watchId);
-      if (!rec) return errorResponse(`No watch with id "${args.watchId}".`);
+      if (!rec) return errorResponse(explainMissing(args.watchId));
 
       let disarmNote = "";
       try {
@@ -368,7 +396,7 @@ export const watchPoll: Tool = {
     try {
       const args = WatchPollTool.shape.arguments.parse(params ?? {});
       const rec = watchRegistry.get(args.watchId);
-      if (!rec) return errorResponse(`No watch with id "${args.watchId}".`);
+      if (!rec) return errorResponse(explainMissing(args.watchId));
       if (rec.sink.kind !== "buffer") {
         return errorResponse(
           `Watch "${args.watchId}" has a "${rec.sink.kind}" sink, so its events are delivered ` +
@@ -399,3 +427,56 @@ export const watchPoll: Tool = {
     }
   }) as Tool["handle"],
 };
+
+
+const CLEARED_EXPLANATION: Record<string, string> = {
+  deleted: "you deleted it",
+  "tab-detached": "its tab detached or closed",
+  "extension-disconnected":
+    "its extension's WebSocket closed — note that an mcp-server restart closes every extension socket at once, so this can affect every watch in the fleet simultaneously",
+  ttl: "its ttlMs elapsed",
+  once: "it was created with once:true and has fired",
+  breaker: "the rate-cap breaker tripped and disarmed it",
+};
+
+function renderCleared(cleared: WatchTombstone[]): string {
+  let out = "";
+  for (const t of cleared) {
+    out += `- **\`${t.watchId}\`** \`${t.source}\` — cleared ${new Date(t.at).toISOString()}: `;
+    out += `**${t.reason}** (${CLEARED_EXPLANATION[t.reason] ?? "reason not recorded"}), `;
+    out += `after firing ${t.firedCount} time(s)\n`;
+  }
+  return out;
+}
+
+/**
+ * The registry lives in memory, so a restart takes every watch with it and
+ * leaves NO tombstone behind. Naming the process start time is the only honest
+ * answer available for that case — a caller can see their watch predates this
+ * server and stop looking for a reason that was never recorded.
+ */
+function restartNote(): string {
+  const started = new Date(watchRegistry.startedAt).toISOString();
+  return (
+    `⚠️ Watches do not survive an mcp-server restart: the registry is in memory, and a restart ` +
+    `also closes every extension socket. This server started at ${started} — any watch created ` +
+    `before then is gone, with no tombstone recorded.\n`
+  );
+}
+
+/** Explain a watchId that is not live, distinguishing cleared from never-existed. */
+function explainMissing(watchId: string): string {
+  const t = watchRegistry.tombstone(watchId);
+  if (t) {
+    return (
+      `Watch \`${watchId}\` was CLEARED at ${new Date(t.at).toISOString()} — reason: ` +
+      `**${t.reason}** (${CLEARED_EXPLANATION[t.reason] ?? "reason not recorded"}). ` +
+      `It fired ${t.firedCount} time(s) before that. It is not armed and will deliver nothing; ` +
+      `re-create it with browser_watch_create.`
+    );
+  }
+  return (
+    `No watch with id "${watchId}", and no record of one having been cleared. ` +
+    `${restartNote()}`
+  );
+}

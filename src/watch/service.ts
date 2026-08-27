@@ -107,13 +107,13 @@ export async function handleWatchFired(
   // The breaker already disarmed this watch in the extension; drop the
   // server's record so browser_watch_list stops advertising it.
   if (event.breakerTripped) {
-    watchRegistry.delete(watchId);
+    watchRegistry.delete(watchId, "breaker");
     watchBuffer.drop(watchId);
     return;
   }
 
   if (record.options?.once) {
-    watchRegistry.delete(watchId);
+    watchRegistry.delete(watchId, "once");
     // The buffer is NOT dropped here: a once-watch's whole point is that
     // somebody polls for the single event, and they may not have polled yet.
   }
