@@ -530,18 +530,23 @@ class TabManager {
       const urlObj = new URL(url);
       const domain = urlObj.hostname.replace('www.', '');
 
-      // Count existing tabs for this domain
-      let count = 1;
+      // ⛔ UNIQUE AGAINST EXISTING LABELS, not a count of same-domain tabs.
+      //
+      // The old version counted attached tabs whose domain matched and returned
+      // `domain-N`. Two things broke that:
+      //   1. it counted DOMAINS, not labels, so a tab that had navigated to
+      //      another domain stopped being counted while keeping its label; and
+      //   2. it read `tab.url`, which is the ATTACH-TIME url and never updates
+      //      on navigation, so the count was computed from stale data.
+      // Either way `domain-N` could be handed to a second tab while the first
+      // still held it. `shopping` hit exactly this on 2026-08-27 with two tabs
+      // sharing `amazon.com-4`.
+      const taken = new Set();
       for (const tab of this.attachedTabs.values()) {
-        try {
-          const tabDomain = new URL(tab.url).hostname.replace('www.', '');
-          if (tabDomain === domain) {
-            count++;
-          }
-        } catch (e) {
-          // Ignore invalid URLs
-        }
+        if (tab.label) taken.add(tab.label);
       }
+      let count = 1;
+      while (taken.has(count === 1 ? domain : `${domain}-${count}`)) count++;
 
       // Return "domain.com" for first, "domain.com-2" for subsequent
       return count === 1 ? domain : `${domain}-${count}`;
@@ -831,14 +836,35 @@ class TabManager {
       if (byId) return byId;
     }
 
-    // Lookup by label
+    // Lookup by label.
+    //
+    // ⛔ REFUSE TO GUESS ON A COLLISION. This used to return the FIRST match
+    // and never look for a second, so when two attached tabs shared a label a
+    // caller silently got whichever came first in Map order — another page's
+    // content, reported as success with no error and no warning. Measured by
+    // `shopping` 2026-08-27 on ext_018237f9: browser_evaluate by label returned
+    // a different Amazon order than the one they had navigated to, and they
+    // only noticed because their expression happened to read location.href.
+    //
+    // ⚠️ This also repairs an assumption the SERVER-side fix rested on.
+    // c7598b1 refuses to route a label present in several BROWSERS, on the
+    // stated grounds that "labels are unique WITHIN an extension". They are
+    // not, and were not being made so — see generateLabel.
+    const matches = [];
     for (const tabInfo of this.attachedTabs.values()) {
-      if (tabInfo.label === tabIdOrLabel) {
-        return tabInfo;
-      }
+      if (tabInfo.label === tabIdOrLabel) matches.push(tabInfo);
     }
-
-    return null;
+    if (matches.length > 1) {
+      const err = new Error(
+        `Ambiguous tabTarget "${tabIdOrLabel}": ${matches.length} attached tabs share that label ` +
+        `(${matches.map(m => m.tabId).join(', ')}). Refusing to guess — target one by its numeric ` +
+        `tabId, or re-label with browser_set_tab_label. Wrong-tab data reported as success is far ` +
+        `worse than this error.`
+      );
+      err.code = 'AMBIGUOUS_LABEL';
+      throw err;
+    }
+    return matches[0] || null;
   }
 
   /**
@@ -3325,6 +3351,22 @@ class BackgroundController {
       const tabInfo = this.tabManager.resolveTab(tabTarget);
       if (!tabInfo) {
         throw new Error(`Tab ${tabTarget} not found`);
+      }
+
+      // ⛔ REFUSE TO CREATE A COLLISION. attachTab already rejects a
+      // caller-supplied label that another tab holds; this path did not, so it
+      // was the remaining way to end up with two attached tabs answering to one
+      // name — after which targeting by that label returns another page's data
+      // as success. Same failure `shopping` hit on 2026-08-27 via the
+      // auto-generated route.
+      for (const [otherId, other] of this.tabManager.attachedTabs) {
+        if (otherId !== tabInfo.tabId && other.label === label) {
+          throw new Error(
+            `Label "${label}" is already held by attached tab ${otherId}. Labels must be unique ` +
+            `within a browser — two tabs sharing one makes every tabTarget using it ambiguous. ` +
+            `Pick another name, or re-label tab ${otherId} first.`
+          );
+        }
       }
 
       // Update the label
