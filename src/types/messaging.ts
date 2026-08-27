@@ -54,6 +54,23 @@ export interface SocketMessageMap {
     extensionId?: string;
   };
 
+  // Watch — arm/disarm/list a push subscription in the extension. The
+  // generalisation of the navigation observer below: any source, an arbitrary
+  // predicate, evaluated in the extension so non-matches never cross the wire.
+  // Matches come back UNSOLICITED as a WATCH_FIRED message, not as a response.
+  // See docs/WATCH_DESIGN.md.
+  browser_watch_arm: {
+    watchId: string;
+    source: string;
+    predicate?: string;
+    options?: Record<string, unknown>;
+    tabId?: number | null;
+    extensionId?: string;
+  };
+  browser_watch_disarm: { watchId: string };
+  browser_watch_list_armed: Record<string, never>;
+  browser_watch_rearm: { specs: unknown[] };
+
   // Navigation observer — routine ctx.observeNavigations() backing primitives.
   // Subscription owns a regex + tabTarget; matches buffer onCommitted events.
   browser_observe_navigations_start: { pattern: string; flags?: string; tabTarget?: number | string };

@@ -11,6 +11,13 @@ import { Context } from "@/context";
 import type { Resource } from "@/resources/resource";
 import type { Tool } from "@/tools/tool";
 import { stripIPv4Mapped, getEffectiveClientIP } from "@/utils/auth";
+import {
+  handleWatchFired,
+  onExtensionGone,
+  onTabGone,
+  specsToRearm,
+  startWatchExpiry,
+} from "@/watch/service";
 import { createWebSocketServer } from "@/ws";
 
 type Options = {
@@ -53,6 +60,9 @@ If a tool errors with "Multiple extensions are connected" it includes a prescrip
 // Create server with WebSocket for browser extension
 export async function createServerWithTools(options: Options): Promise<Server> {
   const { name, version, tools, resources, wss: providedWss } = options;
+  // Reap ttl-expired watches. Idempotent, and unref'd so it never holds the
+  // process open.
+  startWatchExpiry();
   const server = new Server(
     { name, version },
     {
@@ -117,6 +127,43 @@ export async function createServerWithTools(options: Options): Promise<Server> {
           if (n > 0) console.log(`[Server] Rebuilt tab ownership for ${extensionId}: ${n} tab(s)`);
         })
         .catch((e) => console.log(`[Server] Tab-ownership rebuild for ${extensionId} failed (non-fatal): ${e?.message ?? e}`));
+
+      // Re-push this extension's watches, for exactly the reason above: the
+      // extension may have been evicted and re-woken, or this process may have
+      // restarted, and a watch the server still lists but the extension is not
+      // holding is the fail-quiet the whole design guards against.
+      //
+      // ⛔ The extension's answer is recorded VERBATIM — never inferred. A
+      // registry that reports armed because it holds a row is the isActive bug
+      // (memo 9fb367c0) under a new name.
+      const toRearm = specsToRearm(extensionId);
+      if (toRearm.length > 0) {
+        try {
+          ws.send(JSON.stringify({
+            type: 'browser_watch_rearm',
+            payload: { specs: toRearm },
+          }));
+          console.log(`[Watch] re-pushed ${toRearm.length} watch(es) to ${extensionId}`);
+        } catch (e) {
+          console.log(`[Watch] re-push to ${extensionId} failed (non-fatal): ${(e as Error)?.message}`);
+        }
+      }
+      return;
+    }
+
+    // A watch matched in the extension. Unsolicited — no request is waiting on
+    // it. Everything the caller configured (sink, once, rate accounting) is
+    // applied here, on the server, because the extension must never hold a
+    // webhook credential or make an outbound call to a third party.
+    if (type === 'WATCH_FIRED') {
+      void handleWatchFired(
+        (payload ?? {}) as Record<string, unknown>,
+        (watchId) => {
+          try {
+            ws.send(JSON.stringify({ type: 'browser_watch_disarm', payload: { watchId } }));
+          } catch { /* best-effort */ }
+        },
+      ).catch((e) => console.log(`[Watch] handleWatchFired failed: ${e?.message ?? e}`));
       return;
     }
 
@@ -157,6 +204,8 @@ export async function createServerWithTools(options: Options): Promise<Server> {
         } else {
           globalContext.forgetTabOwner(tabId);
           console.log(`[Server] TAB_DETACHED: tab=${tabId} ext=${extensionId}`);
+          // Ben's lifetime rule: watches are cleared when the attachment ends.
+          onTabGone(extensionId, tabId);
         }
       }
       return;
@@ -308,6 +357,10 @@ export async function createServerWithTools(options: Options): Promise<Server> {
       // evidence about which browser had gone or how.
       const dyingId = globalContext.findExtensionIdByWs(websocket);
       if (dyingId) {
+        // Ben's lifetime rule again: an extension disconnect ends every
+        // attachment it held, so it ends every watch too. Done here, while the
+        // id is still resolvable, for the same reason the identity is.
+        onExtensionGone(dyingId);
         const ident = globalContext.describeExtension(dyingId);
         const conn = globalContext.getExtension(dyingId);
         const connectedMs = conn ? Date.now() - conn.registeredAt : 0;

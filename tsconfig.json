@@ -3,6 +3,12 @@
     "target": "ES2022",
     "module": "esnext",
     "moduleResolution": "bundler",
+    // The watch/* modules import each other with explicit .ts extensions so
+    // Node's --experimental-strip-types loader can run the unit tests directly
+    // against source (tests/unit/*). tsup rewrites them at build time; this
+    // flag stops tsc from rejecting them. Safe here because typecheck runs
+    // with --noEmit.
+    "allowImportingTsExtensions": true,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
