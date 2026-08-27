@@ -1814,7 +1814,13 @@ export const WatchCreateTool = z.object({
       .string()
       .optional()
       .describe(
-        "JS arrow function evaluated in the extension on each event, e.g. \"(e) => e.data.includes('[DONE]')\". Omit to fire on every event. A predicate that throws at runtime does not fire and does not kill the watch. NOTE: this is admin-trust code — it runs in the extension context."
+        "JS arrow function deciding whether to fire, e.g. \"(e) => e.data.includes('[DONE]')\". Omit to fire on every event that passes the prefilter. Evaluated ON THE SERVER for worker-home sources (MV3's CSP forbids evaluating a string as JS in a service worker) and IN THE PAGE for dom.*/page.* sources. A predicate that throws at runtime does not fire and does not kill the watch. NOTE: admin-trust code, same boundary as a stored routine."
+      ),
+    prefilter: z
+      .any()
+      .optional()
+      .describe(
+        "Declarative, eval-free matcher applied IN THE EXTENSION so non-matching events never cross the WebSocket. Strongly wanted on high-volume sources (see `volume` in browser_watch_sources). Shape: {path, op, value} where op is includes|equals|notEquals|regex|startsWith|endsWith|exists|missing|gt|lt, combined with {all:[…]}, {any:[…]}, {not:{…}}. Example: {path:'request.url', op:'includes', value:'/api/chat'}. Without one, EVERY event of that source crosses the wire before your predicate is applied."
       ),
     sink: z
       .object({

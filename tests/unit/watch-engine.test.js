@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import "../../extension/watch-flood.js";
+import "../../extension/watch-prefilter.js";
 import "../../extension/watch-engine.js";
 
 // Classic scripts — loaded for side-effect, published on globalThis.
-const { createWatchEngine, compilePredicate } = globalThis;
+const { createWatchEngine } = globalThis;
 
 /** Minimal chrome stub: records listeners so a test can fire them by hand. */
 function chromeStub() {
@@ -53,30 +54,6 @@ const navSpec = (over = {}) => ({
   ...over,
 });
 
-test("a predicate compiles and filters", () => {
-  const p = compilePredicate("(e) => e.data.includes('DONE')");
-  assert.equal(p({ data: "xx DONE" }), true);
-  assert.equal(p({ data: "nope" }), false);
-});
-
-test("a syntactically invalid predicate is rejected at ARM time, not fire time", () => {
-  assert.throws(() => compilePredicate("(e) => {{{"), /predicate/i);
-});
-
-test("a predicate that throws at runtime does NOT fire and does not kill the watch", () => {
-  const p = compilePredicate("(e) => e.missing.deep");
-  assert.equal(p({}), false);
-});
-
-test("a predicate returning a truthy non-boolean still fires", () => {
-  const p = compilePredicate("(e) => e.url");
-  assert.equal(p({ url: "https://x" }), true);
-});
-
-test("an omitted predicate fires on every event", () => {
-  assert.equal(compilePredicate(undefined)({ anything: 1 }), true);
-});
-
 test("arm rejects an unknown source rather than silently doing nothing", async () => {
   const { e } = engine();
   await assert.rejects(
@@ -111,7 +88,7 @@ test("list reports armed as ACTUAL binding state", async () => {
 
 test("a matching event sends WATCH_FIRED to the server", async () => {
   const { e, chrome, sent } = engine();
-  await e.arm(navSpec({ predicate: "(ev) => ev.url.includes('target')" }));
+  await e.arm(navSpec({ prefilter: { path: "url", op: "includes", value: "target" } }));
   chrome._fire("webNavigation.onCommitted", { tabId: 1, url: "https://x/target", frameId: 0 });
   assert.equal(sent.length, 1);
   assert.equal(sent[0].type, "WATCH_FIRED");
@@ -120,7 +97,7 @@ test("a matching event sends WATCH_FIRED to the server", async () => {
 
 test("a NON-matching event sends nothing — layer 1 of flood control", async () => {
   const { e, chrome, sent } = engine();
-  await e.arm(navSpec({ predicate: "(ev) => ev.url.includes('target')" }));
+  await e.arm(navSpec({ prefilter: { path: "url", op: "includes", value: "target" } }));
   chrome._fire("webNavigation.onCommitted", { tabId: 1, url: "https://x/other", frameId: 0 });
   assert.equal(sent.length, 0, "non-matches must never cross the WebSocket");
 });
@@ -152,13 +129,16 @@ test("disarming one watch leaves the other bound to the shared listener", async 
   assert.equal(sent[0].payload.watchId, "b");
 });
 
-test("once:true disarms after the first fire", async () => {
+test("once is NOT honoured at the worker tier — a prefilter match is not a predicate match", async () => {
+  // Disarming on a prefilter hit would drop the watch on the first event that
+  // merely passed the cheap test, before the real predicate ever ran. The
+  // server disarms after the predicate fires.
   const { e, chrome, sent } = engine();
   await e.arm(navSpec({ options: { once: true } }));
   chrome._fire("webNavigation.onCommitted", { tabId: 1, url: "https://x", frameId: 0 });
   chrome._fire("webNavigation.onCommitted", { tabId: 1, url: "https://x", frameId: 0 });
-  assert.equal(sent.length, 1);
-  assert.equal(e.list().length, 0);
+  assert.equal(sent.length, 2);
+  assert.equal(e.list().length, 1);
 });
 
 test("rearmAll restores every spec the server re-pushes", async () => {

@@ -62,6 +62,12 @@ export interface WatchOptions {
 
 export interface WatchSpec {
   source: string;
+  /**
+   * Declarative, eval-free matcher applied IN THE EXTENSION, so a chatty
+   * source is narrowed before anything crosses the WebSocket. Optional, but
+   * strongly wanted on high-volume sources. See extension/watch-prefilter.js.
+   */
+  prefilter?: unknown;
   /** Arbitrary JS. Omitted = fire on every event from the source.
    *  ⛔ Admin-trust code — see the security section of WATCH_DESIGN.md. */
   predicate?: string;
@@ -80,7 +86,15 @@ export interface WatchRecord extends WatchSpec {
   home: WatchHome;
   createdAt: number;
   firedCount: number;
+  /** Delivery failures — the sink refused or was unreachable. */
   droppedCount: number;
+  /**
+   * Events that passed the extension's cheap prefilter but not the caller's
+   * server-side predicate. Distinct from droppedCount: this one says "your
+   * prefilter is looser than your predicate", which is normal and sometimes
+   * worth tightening, not a failure.
+   */
+  prefilteredCount: number;
   lastFiredAt: number | null;
   /**
    * ⛔ THE EXTENSION'S RAW ANSWER — never inferred from server state, and

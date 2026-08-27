@@ -8,6 +8,7 @@ import {
   WatchSourcesTool,
 } from "@/types/tool-schemas";
 import { textResponse, errorResponse } from "@/utils/response-helpers";
+import { validatePredicate } from "@/watch/predicate";
 import { SOURCES, validateSourceId } from "@/watch/sources";
 import { watchBuffer, watchRegistry } from "@/watch/service";
 import type { SinkSpec } from "@/watch/types";
@@ -95,6 +96,11 @@ export const watchCreate: Tool = {
       if (!check.ok) return errorResponse(check.error);
       const descriptor = check.source;
 
+      // Compile the predicate NOW so a syntax error is refused at create time
+      // rather than arming a watch that could never match.
+      const pred = validatePredicate(args.predicate);
+      if (!pred.ok) return errorResponse(pred.error);
+
       const sink = (args.sink ?? { kind: "atc" }) as SinkSpec;
 
       // Fail at CREATE time, not at fire time. An atc sink with nowhere to go
@@ -137,6 +143,7 @@ export const watchCreate: Tool = {
       const record = watchRegistry.create(
         {
           source: args.source,
+          prefilter: args.prefilter,
           predicate: args.predicate,
           sink,
           options: args.options,
@@ -155,7 +162,12 @@ export const watchCreate: Tool = {
           {
             watchId: record.watchId,
             source: record.source,
-            predicate: record.predicate,
+            // ⛔ The extension gets the PREFILTER, not the predicate: MV3's CSP
+            // forbids evaluating a string as JS in a service worker. A page
+            // watch is the exception — its predicate is injected into the
+            // document and runs under the page's CSP.
+            prefilter: record.prefilter,
+            predicate: descriptor.home === "page" ? record.predicate : undefined,
             options: record.options as Record<string, unknown> | undefined,
             tabId: record.tabId,
             extensionId,
@@ -270,6 +282,7 @@ export const watchList: Tool = {
         out += `- extension: ${r.extensionId}${r.tabId != null ? `, tab ${r.tabId}` : ", browser-wide"}\n`;
         out += `- fired: ${r.firedCount}`;
         if (r.lastFiredAt) out += ` (last ${new Date(r.lastFiredAt).toISOString()})`;
+        if (r.prefilteredCount) out += `, passed prefilter but not predicate: ${r.prefilteredCount}`;
         if (r.droppedCount) out += `, delivery failures: ${r.droppedCount}`;
         out += `\n`;
         if (r.predicate) out += `- predicate: \`${r.predicate}\`\n`;

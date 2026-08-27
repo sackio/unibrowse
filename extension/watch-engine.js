@@ -18,36 +18,23 @@
  */
 
 /**
- * Compile a predicate string into a filter function.
+ * ⛔ THE PREDICATE DOES NOT RUN HERE, AND CANNOT.
  *
- * Two different failure modes, deliberately handled differently:
- *   - A SYNTAX error throws HERE, at arm time, so the caller is told
- *     immediately rather than discovering it when the watch never fires.
- *   - A RUNTIME throw returns false. A predicate that blows up on one odd
- *     event must not fire the watch and must not kill it — the next event
- *     still gets evaluated.
+ * MV3's extension CSP forbids evaluating a string as JavaScript — `new
+ * Function` and `eval` both throw in the service worker. Measured 2026-08-27
+ * on the first live arm:
  *
- * ⛔ This is admin-trust code: it runs in the extension context, which holds
- * every live cookie and session in the pool. See the security section of
- * docs/WATCH_DESIGN.md.
+ *   "Evaluating a string as JavaScript violates the following Content Security
+ *    Policy directive because 'unsafe-eval' is not an allowed source of script"
+ *
+ * So the split is:
+ *   - PREFILTER  (here)   declarative, no eval, keeps chatty sources off the wire
+ *   - PREDICATE  (server) arbitrary JS, evaluated in Node where there is no CSP
+ *
+ * Page-home watches are the exception: their predicate is injected INTO the
+ * document and runs under the PAGE's CSP, not the extension's, so those keep
+ * full JS at the source. See watch-page.js.
  */
-function compilePredicate(src) {
-  if (src == null || src === "") return () => true;
-  let fn;
-  try {
-    // eslint-disable-next-line no-new-func
-    fn = new Function("e", `"use strict"; return (${src})(e);`);
-  } catch (err) {
-    throw new Error(`Invalid watch predicate: ${err.message}`);
-  }
-  return (event) => {
-    try {
-      return Boolean(fn(event));
-    } catch {
-      return false;
-    }
-  };
-}
 
 const STORAGE_KEY = "unibrowse_watches";
 
@@ -332,9 +319,10 @@ function createWatchEngine({ chrome, sendToServer, now = Date.now, injectPageWat
       // Tab scoping. A tab-scoped watch never sees another tab's events.
       if (w.spec.tabId != null && tabIdOf(rawEvent) !== w.spec.tabId) continue;
 
-      // Layer 1: the predicate runs HERE. A non-match costs nothing beyond
-      // this call and never touches the WebSocket.
-      if (!w.predicate(rawEvent)) continue;
+      // Layer 1: the PREFILTER runs here. A non-match costs one structured
+      // comparison and never touches the WebSocket. The caller's JS predicate
+      // is applied on the server — see the header note.
+      if (!w.prefilter(rawEvent)) continue;
 
       const res = w.gate.offer(rawEvent);
       if (res.breaker) {
@@ -345,8 +333,11 @@ function createWatchEngine({ chrome, sendToServer, now = Date.now, injectPageWat
         continue;
       }
       if (res.action === "deliver") {
+        // ⛔ `once` is NOT honoured here any more. A prefilter match is not a
+        // predicate match, so disarming now would drop the watch on the first
+        // event that merely passed the cheap test. The server disarms us after
+        // the real predicate fires.
         deliver(watchId, rawEvent);
-        if (w.spec.options?.once) void disarm(watchId);
       } else if (res.action === "hold") {
         scheduleFlush(watchId);
       }
@@ -426,14 +417,15 @@ function createWatchEngine({ chrome, sendToServer, now = Date.now, injectPageWat
     // Replace rather than duplicate, so a server re-push is idempotent.
     if (watches.has(spec.watchId)) await disarm(spec.watchId, { persist: false });
 
-    const predicate = compilePredicate(spec.predicate);
+    // Declarative, eval-free. The JS predicate is applied server-side.
+    const prefilter = compilePrefilter(spec.prefilter);
     const gate = globalThis.createFloodGate({
       maxPerMin: spec.options?.maxPerMin,
       coalesce: spec.options?.coalesce,
       now,
     });
 
-    watches.set(spec.watchId, { spec, predicate, gate, flushTimer: null, page });
+    watches.set(spec.watchId, { spec, prefilter, gate, flushTimer: null, page });
 
     if (page) {
       // The predicate travels into the document and runs there; matches come
@@ -497,6 +489,8 @@ function createWatchEngine({ chrome, sendToServer, now = Date.now, injectPageWat
       return;
     }
     if (res.action === "deliver") {
+      // Page-home watches DID evaluate the real predicate (in the page), so a
+      // match here is a true match and `once` is correct to honour.
       deliver(watchId, payload);
       if (w.spec.options?.once) void disarm(watchId);
     } else if (res.action === "hold") {
@@ -570,5 +564,4 @@ function createWatchEngine({ chrome, sendToServer, now = Date.now, injectPageWat
 }
 
 // Classic-script publication — see the header note in watch-flood.js.
-globalThis.compilePredicate = compilePredicate;
 globalThis.createWatchEngine = createWatchEngine;

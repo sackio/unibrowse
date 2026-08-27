@@ -657,6 +657,40 @@ var WatchBuffer = class {
   }
 };
 
+// src/watch/predicate.ts
+var cache = /* @__PURE__ */ new Map();
+function compilePredicate(src) {
+  if (src == null || src === "") return () => true;
+  const hit = cache.get(src);
+  if (hit) return hit;
+  let fn;
+  try {
+    fn = new Function("e", `"use strict"; return (${src})(e);`);
+  } catch (err) {
+    throw new Error(
+      `Invalid watch predicate: ${err.message}. Expected a JS arrow function, e.g. "(e) => e.url.includes('done')".`
+    );
+  }
+  const compiled = (event) => {
+    try {
+      return Boolean(fn(event));
+    } catch {
+      return false;
+    }
+  };
+  if (cache.size > 500) cache.clear();
+  cache.set(src, compiled);
+  return compiled;
+}
+function validatePredicate(src) {
+  try {
+    compilePredicate(src);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 // src/watch/registry.ts
 var WatchRegistry = class {
   watches = /* @__PURE__ */ new Map();
@@ -713,6 +747,7 @@ var WatchRegistry = class {
       createdAt: Date.now(),
       firedCount: 0,
       droppedCount: 0,
+      prefilteredCount: 0,
       lastFiredAt: null,
       // ⛔ null, not true. The server has not heard from the extension yet, and
       // "unknown" is a different state from "armed" — conflating them is the
@@ -787,6 +822,17 @@ var WatchRegistry = class {
     if (!rec) return;
     rec.firedCount += 1;
     rec.lastFiredAt = at;
+  }
+  /**
+   * An event passed the extension's prefilter but not the server-side
+   * predicate. Tracked separately from droppedCount, which means a DELIVERY
+   * failure — conflating "your filter is loose" with "the sink is broken"
+   * would hide both.
+   */
+  recordPrefiltered(watchId, count = 1) {
+    const rec = this.watches.get(watchId);
+    if (!rec) return;
+    rec.prefilteredCount += count;
   }
   recordDropped(watchId, count = 1) {
     const rec = this.watches.get(watchId);
@@ -925,6 +971,18 @@ async function handleWatchFired(payload, disarmInExtension) {
     payload: payload.payload,
     breakerTripped: payload.breakerTripped
   };
+  if (!event.breakerTripped && record.home !== "page") {
+    let matched;
+    try {
+      matched = compilePredicate(record.predicate)(event.payload);
+    } catch {
+      matched = false;
+    }
+    if (!matched) {
+      watchRegistry.recordPrefiltered(watchId);
+      return;
+    }
+  }
   watchRegistry.recordFired(watchId, event.firedAt);
   const result = await dispatcher.deliver(record, event);
   if (!result.ok) {
@@ -962,7 +1020,11 @@ function specsToRearm(extensionId) {
   return watchRegistry.specsFor(extensionId).map((w) => ({
     watchId: w.watchId,
     source: w.source,
-    predicate: w.predicate,
+    // The prefilter is what the extension applies; the predicate stays here.
+    // A page-home watch is the exception — its predicate is injected into the
+    // document, so it must travel.
+    prefilter: w.prefilter,
+    predicate: w.home === "page" ? w.predicate : void 0,
     options: w.options,
     tabId: w.tabId ?? null,
     extensionId: w.extensionId
@@ -2441,7 +2503,10 @@ var WatchCreateTool = z.object({
   arguments: z.object({
     source: z.string().describe("Source id from browser_watch_sources, e.g. 'cdp.Network.eventSourceMessageReceived'."),
     predicate: z.string().optional().describe(
-      `JS arrow function evaluated in the extension on each event, e.g. "(e) => e.data.includes('[DONE]')". Omit to fire on every event. A predicate that throws at runtime does not fire and does not kill the watch. NOTE: this is admin-trust code \u2014 it runs in the extension context.`
+      `JS arrow function deciding whether to fire, e.g. "(e) => e.data.includes('[DONE]')". Omit to fire on every event that passes the prefilter. Evaluated ON THE SERVER for worker-home sources (MV3's CSP forbids evaluating a string as JS in a service worker) and IN THE PAGE for dom.*/page.* sources. A predicate that throws at runtime does not fire and does not kill the watch. NOTE: admin-trust code, same boundary as a stored routine.`
+    ),
+    prefilter: z.any().optional().describe(
+      "Declarative, eval-free matcher applied IN THE EXTENSION so non-matching events never cross the WebSocket. Strongly wanted on high-volume sources (see `volume` in browser_watch_sources). Shape: {path, op, value} where op is includes|equals|notEquals|regex|startsWith|endsWith|exists|missing|gt|lt, combined with {all:[\u2026]}, {any:[\u2026]}, {not:{\u2026}}. Example: {path:'request.url', op:'includes', value:'/api/chat'}. Without one, EVERY event of that source crosses the wire before your predicate is applied."
     ),
     sink: z.object({
       kind: z.enum(["atc", "webhook", "buffer"]).describe("Where matches are delivered."),
@@ -6700,6 +6765,7 @@ var package_default = {
 
 export {
   appConfig,
+  validatePredicate,
   watchRegistry,
   watchBuffer,
   globalContext,

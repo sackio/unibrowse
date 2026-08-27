@@ -115,10 +115,11 @@ import {
   type,
   updateMacro,
   updateRecording,
+  validatePredicate,
   wait,
   watchBuffer,
   watchRegistry
-} from "./chunk-4PLWS5SI.js";
+} from "./chunk-XAJN3QQO.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -790,6 +791,8 @@ var watchCreate = {
       const check = validateSourceId(args.source);
       if (!check.ok) return errorResponse(check.error);
       const descriptor = check.source;
+      const pred = validatePredicate(args.predicate);
+      if (!pred.ok) return errorResponse(pred.error);
       const sink = args.sink ?? { kind: "atc" };
       if (sink.kind === "atc" && !sink.to && !args.agent) {
         return errorResponse(
@@ -822,6 +825,7 @@ var watchCreate = {
       const record = watchRegistry.create(
         {
           source: args.source,
+          prefilter: args.prefilter,
           predicate: args.predicate,
           sink,
           options: args.options,
@@ -838,7 +842,12 @@ var watchCreate = {
           {
             watchId: record.watchId,
             source: record.source,
-            predicate: record.predicate,
+            // ⛔ The extension gets the PREFILTER, not the predicate: MV3's CSP
+            // forbids evaluating a string as JS in a service worker. A page
+            // watch is the exception — its predicate is injected into the
+            // document and runs under the page's CSP.
+            prefilter: record.prefilter,
+            predicate: descriptor.home === "page" ? record.predicate : void 0,
             options: record.options,
             tabId: record.tabId,
             extensionId
@@ -952,6 +961,7 @@ var watchList = {
 `;
         out += `- fired: ${r.firedCount}`;
         if (r.lastFiredAt) out += ` (last ${new Date(r.lastFiredAt).toISOString()})`;
+        if (r.prefilteredCount) out += `, passed prefilter but not predicate: ${r.prefilteredCount}`;
         if (r.droppedCount) out += `, delivery failures: ${r.droppedCount}`;
         out += `
 `;

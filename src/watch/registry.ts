@@ -76,6 +76,7 @@ export class WatchRegistry {
       createdAt: Date.now(),
       firedCount: 0,
       droppedCount: 0,
+      prefilteredCount: 0,
       lastFiredAt: null,
       // ⛔ null, not true. The server has not heard from the extension yet, and
       // "unknown" is a different state from "armed" — conflating them is the
@@ -158,6 +159,18 @@ export class WatchRegistry {
     if (!rec) return;
     rec.firedCount += 1;
     rec.lastFiredAt = at;
+  }
+
+  /**
+   * An event passed the extension's prefilter but not the server-side
+   * predicate. Tracked separately from droppedCount, which means a DELIVERY
+   * failure — conflating "your filter is loose" with "the sink is broken"
+   * would hide both.
+   */
+  recordPrefiltered(watchId: string, count = 1): void {
+    const rec = this.watches.get(watchId);
+    if (!rec) return;
+    rec.prefilteredCount += count;
   }
 
   recordDropped(watchId: string, count = 1): void {

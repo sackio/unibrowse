@@ -8,6 +8,7 @@
  */
 
 import { WatchBuffer } from "./buffer.ts";
+import { compilePredicate } from "./predicate.ts";
 import { WatchRegistry } from "./registry.ts";
 import { createSinkDispatcher } from "./sinks.ts";
 import type { WatchEvent, WatchRecord } from "./types.ts";
@@ -66,6 +67,32 @@ export async function handleWatchFired(
     payload: payload.payload,
     breakerTripped: payload.breakerTripped as WatchEvent["breakerTripped"],
   };
+
+  // ⛔ THE PREDICATE RUNS HERE, not in the extension — MV3's CSP forbids
+  // evaluating a string as JS in a service worker. The extension applied only
+  // the cheap declarative prefilter, so this event has passed a coarse test,
+  // not the caller's actual condition.
+  //
+  // A breaker notice bypasses the predicate deliberately: it is the watch
+  // reporting its own death, and a predicate that does not match it would
+  // suppress exactly the message the caller most needs.
+  //
+  // Page-home watches also bypass it — their predicate already ran inside the
+  // document, which is the only place its DOM references resolve.
+  if (!event.breakerTripped && record.home !== "page") {
+    let matched: boolean;
+    try {
+      matched = compilePredicate(record.predicate)(event.payload);
+    } catch {
+      matched = false;
+    }
+    if (!matched) {
+      // Not a delivery failure — a non-match. Counted so a caller can tell
+      // "my prefilter is too loose" from "nothing is happening".
+      watchRegistry.recordPrefiltered(watchId);
+      return;
+    }
+  }
 
   watchRegistry.recordFired(watchId, event.firedAt);
 
@@ -128,7 +155,11 @@ export function specsToRearm(extensionId: string) {
   return watchRegistry.specsFor(extensionId).map((w) => ({
     watchId: w.watchId,
     source: w.source,
-    predicate: w.predicate,
+    // The prefilter is what the extension applies; the predicate stays here.
+    // A page-home watch is the exception — its predicate is injected into the
+    // document, so it must travel.
+    prefilter: w.prefilter,
+    predicate: w.home === "page" ? w.predicate : undefined,
     options: w.options,
     tabId: w.tabId ?? null,
     extensionId: w.extensionId,

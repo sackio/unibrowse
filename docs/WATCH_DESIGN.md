@@ -38,7 +38,48 @@ Ben, 2026-08-27, in `#unibrowse`:
 - **Build for every source we can enumerate.**
 - **ATC delivery must reach the calling agent's own session.**
 
-## Architecture — predicate at the source, delivery at the server
+## ⛔ Correction, 2026-08-27: the predicate cannot run in the extension
+
+The design below said the predicate runs in the extension, next to the event.
+**It cannot.** MV3's extension Content Security Policy forbids evaluating a
+string as JavaScript in a service worker; `new Function` and `eval` both throw:
+
+> Evaluating a string as JavaScript violates the following Content Security
+> Policy directive because `'unsafe-eval'` is not an allowed source of script
+
+Found on the first live arm, not in design. What ships instead:
+
+| stage | where | what |
+|---|---|---|
+| **prefilter** | extension service worker | declarative, eval-free — `{path, op, value}` with `all`/`any`/`not`. Keeps chatty sources off the WebSocket. |
+| **predicate** | mcp-server (Node, no CSP) | the caller's arbitrary JS. Fully general, as specified. |
+
+Both properties the design wanted survive: non-matching events still do not
+cross the wire, and the predicate is still one general evaluate.
+
+**Page-home sources are the exception** — their predicate is injected into the
+document and runs under the *page's* CSP, not the extension's, so those keep
+arbitrary JS at the source.
+
+⭐ Two consequences worth stating:
+
+1. **`once` moved to the server.** A prefilter match is not a predicate match,
+   so disarming on the first prefilter hit would drop the watch before the real
+   condition was ever tested.
+2. **Predicate execution stays on the trust boundary `routine-runner` already
+   occupies** — the server's Node runtime — instead of widening it into the
+   browser context that holds every live cookie in the pool. The security
+   section below gets simpler as a result, not more complicated.
+
+⚠️ The rejected alternative was a manifest `sandbox` page, which would allow
+eval inside the extension. It was rejected because every evaluation becomes an
+async postMessage hop (worker → offscreen → sandboxed iframe → back), which for
+a source like `Network.requestWillBeSent` is worse than a local WebSocket
+message — while *appearing* to preserve the "cheap at the source" property.
+
+---
+
+## Architecture — prefilter at the source, predicate and delivery at the server
 
 Three homes, one API.
 

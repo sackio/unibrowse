@@ -3,7 +3,7 @@
  * Central coordinator for WebSocket, Chrome Debugger, and message routing
  */
 
-importScripts('config.js', 'utils/browser-env.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js', 'watch-flood.js', 'watch-page.js', 'watch-engine.js');
+importScripts('config.js', 'utils/browser-env.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js', 'watch-flood.js', 'watch-prefilter.js', 'watch-page.js', 'watch-engine.js');
 
 // ─── Auto session-capture on attach (ben 2026-08-02) ────────────────────────
 // "Anytime we attach a tab we should be doing a session recording so that we

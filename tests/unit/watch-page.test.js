@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import "../../extension/watch-flood.js";
+import "../../extension/watch-prefilter.js";
 import "../../extension/watch-engine.js";
 import "../../extension/watch-page.js";
 
@@ -72,8 +73,8 @@ test("a page-home watch requires a tabId — there is no browser-wide DOM", asyn
 });
 
 test("feedMatch delivers WITHOUT re-running the predicate", async () => {
-  // The page already evaluated it; re-running server-side would need the DOM,
-  // which the worker does not have. A second evaluation would always fail.
+  // The page already evaluated it; re-running in the worker is impossible
+  // anyway — MV3's CSP forbids evaluating a string as JS there.
   const { e, sent } = engine();
   await e.arm(pageSpec({ predicate: "(e) => e.definitely.not.here" }));
   e.feedMatch("p1", { text: "hello" });

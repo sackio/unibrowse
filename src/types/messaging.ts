@@ -55,13 +55,18 @@ export interface SocketMessageMap {
   };
 
   // Watch — arm/disarm/list a push subscription in the extension. The
-  // generalisation of the navigation observer below: any source, an arbitrary
-  // predicate, evaluated in the extension so non-matches never cross the wire.
-  // Matches come back UNSOLICITED as a WATCH_FIRED message, not as a response.
+  // generalisation of the navigation observer below: any source, plus a cheap
+  // declarative prefilter evaluated in the extension so non-matching events
+  // never cross the wire. The caller's JS predicate runs on the SERVER — MV3's
+  // CSP forbids evaluating a string as JS in a service worker. Matches come
+  // back UNSOLICITED as a WATCH_FIRED message, not as a response.
   // See docs/WATCH_DESIGN.md.
   browser_watch_arm: {
     watchId: string;
     source: string;
+    /** Declarative matcher applied in the extension; no eval, MV3-CSP-safe. */
+    prefilter?: unknown;
+    /** Only sent for page-home sources, where it is injected into the page. */
     predicate?: string;
     options?: Record<string, unknown>;
     tabId?: number | null;
