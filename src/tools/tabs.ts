@@ -115,6 +115,9 @@ export const createTab: Tool = {
   },
   handle: async (context: Context, params) => {
     const { max_tokens } = params || {};
+    // Stamped BEFORE the send so a reconciliation can tell a tab this call
+    // created from one that was already open on the same URL.
+    const sentAt = Date.now();
     try {
       const validatedParams = CreateTabTool.shape.arguments.parse(params);
       const result: any = await context.sendSocketMessage(
@@ -132,10 +135,107 @@ export const createTab: Tool = {
       }, true, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
-      return errorResponse(`Failed to create tab: ${error.message}`, false, error, max_tokens);
+      const err = error instanceof Error ? error : new Error(String(error));
+      const msg = err.message;
+
+      // ⛔ A TIMEOUT IS NOT EVIDENCE THAT THE TAB WAS NOT CREATED.
+      //
+      // The write completes in the extension before the response gives up, so
+      // "Failed to create tab: WebSocket response timeout" was returned for
+      // calls that had in fact created AND attached a tab. A caller that
+      // retries on it gets a duplicate — which is exactly what happened to
+      // `shopping` on 2026-08-27 (tabs 41932981 and 41932990, same URL).
+      //
+      // So on a timeout specifically, go and look before reporting failure.
+      if (/timeout/i.test(msg)) {
+        const reconciled = await findTabCreatedSince(context, params, sentAt);
+
+        if (reconciled.kind === "found") {
+          const t = reconciled.tab;
+          return jsonResponse({
+            tabId: t.tabId,
+            label: t.label,
+            url: t.url ?? null,
+            incognito: t.incognito ?? false,
+            reconciledAfterTimeout: true,
+            message:
+              `The response timed out, but the tab WAS created — found tab ${t.tabId} ` +
+              `(label: "${t.label}") attached after this call started. Use it; do NOT retry, ` +
+              `a retry would open a duplicate.`,
+          }, true, max_tokens);
+        }
+
+        if (reconciled.kind === "ambiguous") {
+          // Refuse to guess, the same way tabTarget-by-label does on a
+          // collision: naming the candidates is more useful than picking one.
+          return errorResponse(
+            `The create timed out and reconciliation is AMBIGUOUS: ${reconciled.tabs.length} tabs ` +
+              `attached since this call started that match the requested URL ` +
+              `(${reconciled.tabs.map((t: any) => `${t.tabId} "${t.label}"`).join(", ")}). ` +
+              `Do not retry — inspect these with browser_list_attached_tabs and close any duplicate.`,
+            false, err, max_tokens,
+          );
+        }
+
+        return errorResponse(
+          `Failed to create tab: ${msg}. ⚠️ Reconciliation found no matching tab attached since ` +
+            `this call started${reconciled.kind === "unchecked" ? ` (the check itself failed: ${reconciled.why})` : ""}, ` +
+            `so the tab probably was not created — but a timeout cannot prove that. Before retrying, ` +
+            `confirm with browser_list_attached_tabs; a blind retry on this error is how duplicate tabs happen.`,
+          false, err, max_tokens,
+        );
+      }
+
+      return errorResponse(`Failed to create tab: ${msg}`, false, err, max_tokens);
     }
   },
 };
+
+/**
+ * After a create timed out, ask the browser whether the tab exists anyway.
+ *
+ * Matches on "attached at or after the moment we sent the request", so a tab
+ * the user already had open on the same URL cannot be mistaken for one this
+ * call created.
+ */
+async function findTabCreatedSince(
+  context: Context,
+  params: any,
+  sentAt: number,
+): Promise<
+  | { kind: "found"; tab: any }
+  | { kind: "ambiguous"; tabs: any[] }
+  | { kind: "none" }
+  | { kind: "unchecked"; why: string }
+> {
+  try {
+    const res: any = await context.sendSocketMessage(
+      "browser_list_attached_tabs",
+      {},
+      { extensionId: params?.extensionId, timeoutMs: 10000 },
+    );
+    const tabs: any[] = res?.tabs ?? [];
+    const wanted = params?.url ? String(params.url) : null;
+
+    // A small negative allowance: the extension stamps attachedAt from its own
+    // clock, which can sit fractionally behind ours.
+    const since = sentAt - 2000;
+    const candidates = tabs.filter((t) => {
+      if (typeof t?.attachedAt !== "number" || t.attachedAt < since) return false;
+      if (!wanted) return true;
+      return typeof t.url === "string" && (t.url === wanted || t.url.startsWith(wanted));
+    });
+
+    if (candidates.length === 1) return { kind: "found", tab: candidates[0] };
+    if (candidates.length > 1) return { kind: "ambiguous", tabs: candidates };
+    return { kind: "none" };
+  } catch (e) {
+    // The check failing is its own answer, and must not be reported as "no
+    // tab was created" — that is the false-negative this whole path exists
+    // to stop being confident about.
+    return { kind: "unchecked", why: (e as Error)?.message ?? String(e) };
+  }
+}
 
 /**
  * Close a specific browser tab

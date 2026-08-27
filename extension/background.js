@@ -3,7 +3,7 @@
  * Central coordinator for WebSocket, Chrome Debugger, and message routing
  */
 
-importScripts('config.js', 'utils/browser-env.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js', 'watch-flood.js', 'watch-prefilter.js', 'watch-page.js', 'watch-engine.js');
+importScripts('config.js', 'utils/browser-env.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js', 'error-detail.js', 'watch-flood.js', 'watch-prefilter.js', 'watch-page.js', 'watch-engine.js');
 
 // ─── Auto session-capture on attach (ben 2026-08-02) ────────────────────────
 // "Anytime we attach a tab we should be doing a session recording so that we
@@ -4126,7 +4126,9 @@ class BackgroundController {
     console.warn('[Background] Temporary failure:', error.message);
 
     await this.safeSendResponse(requestId, {
-      error: error.message,
+      // describeError, not error.message: a non-Error throw has no .message,
+      // and the empty string that produced was read by the server as SUCCESS.
+      error: describeError(error),
       errorType: 'temporary_failure',
       suggestion: 'This is a temporary issue. Please retry the operation.',
       recoverable: true
@@ -4149,7 +4151,9 @@ class BackgroundController {
     }
 
     await this.safeSendResponse(requestId, {
-      error: error.message,
+      // describeError, not error.message: a non-Error throw has no .message,
+      // and the empty string that produced was read by the server as SUCCESS.
+      error: describeError(error),
       errorType: 'recoverable_error',
       suggestion: 'Automatic recovery in progress. The operation was not completed.',
       recoverable: true
@@ -4167,7 +4171,9 @@ class BackgroundController {
     this.recordBackgroundError({ level: 'critical', source: 'handler', message: error.message || String(error), stack: error.stack || null });
 
     await this.safeSendResponse(requestId, {
-      error: error.message,
+      // describeError, not error.message: a non-Error throw has no .message,
+      // and the empty string that produced was read by the server as SUCCESS.
+      error: describeError(error),
       errorType: 'critical_error',
       suggestion: 'This is an unexpected error. The extension state has been preserved.',
       recoverable: false

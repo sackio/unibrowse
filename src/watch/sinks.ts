@@ -39,7 +39,19 @@ export interface SinkDispatcherOpts {
   atcFrom?: string;
 }
 
-const DEFAULT_ATC_FROM = "unibrowse-watch";
+/**
+ * ⛔ MUST BE A REGISTERED ATC SUBSCRIBER.
+ *
+ * This was "unibrowse-watch", which is not in the registry: recipients could
+ * receive a watch event but not reply to it — atc_reply returned sent:0 with
+ * drop_reason "no_resolution", so an ack or a "stop sending me this" went
+ * nowhere. Reported by `shopping` 2026-08-27 after their sink probe arrived
+ * intact and the reply path did not.
+ *
+ * `unibrowse` is the seat that owns this subsystem, so a reply reaches
+ * somebody who can actually disarm the watch.
+ */
+const DEFAULT_ATC_FROM = "unibrowse";
 
 /** A compact, human-readable summary plus the raw payload. */
 function renderContent(record: WatchRecord, event: WatchEvent): string {
@@ -61,7 +73,13 @@ function renderContent(record: WatchRecord, event: WatchEvent): string {
   // Keep a runaway payload from becoming a runaway message.
   if (payload.length > 4000) payload = payload.slice(0, 4000) + "\n… truncated";
 
-  return `${head}\n\n${payload}`;
+  // A one-way notification that does not say how to stop it is a nuisance the
+  // recipient cannot end. Replies reach `unibrowse` (see DEFAULT_ATC_FROM).
+  const foot = event.breakerTripped
+    ? ""
+    : `\n\nStop this watch: browser_watch_delete({watchId: "${record.watchId}"}) — or reply to this message.`;
+
+  return `${head}\n\n${payload}${foot}`;
 }
 
 export function createSinkDispatcher(opts: SinkDispatcherOpts) {

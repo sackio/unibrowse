@@ -78,8 +78,9 @@ function createSocketMessageSender(ws) {
             return;
           }
           const { result, error } = responsePayload;
-          if (error) {
-            reject(new Error(error));
+          if (error !== void 0 && error !== null) {
+            const text = typeof error === "string" && error.trim().length > 0 ? error : `${type2} failed, but the extension reported no error detail (received ${JSON.stringify(error)}). This usually means the throw was not an Error object. If this browser is running an extension build older than 2026-08-27, reload it to get described errors.`;
+            reject(new Error(text));
           } else {
             resolve2(result);
           }
@@ -871,7 +872,7 @@ var WatchRegistry = class {
 };
 
 // src/watch/sinks.ts
-var DEFAULT_ATC_FROM = "unibrowse-watch";
+var DEFAULT_ATC_FROM = "unibrowse";
 function renderContent(record, event) {
   const head = event.breakerTripped ? `\u26D4 WATCH DISARMED \u2014 ${event.breakerTripped.reason}
 watch ${record.watchId} on ${record.source} fired ${event.breakerTripped.firedInWindow} times in one minute against a cap of ${event.breakerTripped.cap}. It is no longer armed; re-create it with a narrower predicate or a higher maxPerMin.` : `watch ${record.watchId} fired \u2014 ${record.source}` + (record.tabId != null ? ` (tab ${record.tabId})` : "");
@@ -882,9 +883,12 @@ watch ${record.watchId} on ${record.source} fired ${event.breakerTripped.firedIn
     payload = String(event.payload);
   }
   if (payload.length > 4e3) payload = payload.slice(0, 4e3) + "\n\u2026 truncated";
+  const foot = event.breakerTripped ? "" : `
+
+Stop this watch: browser_watch_delete({watchId: "${record.watchId}"}) \u2014 or reply to this message.`;
   return `${head}
 
-${payload}`;
+${payload}${foot}`;
 }
 function createSinkDispatcher(opts) {
   const { fetchImpl, buffer, atcUrl, atcFrom = DEFAULT_ATC_FROM } = opts;
@@ -4286,6 +4290,7 @@ var createTab = {
   },
   handle: async (context, params) => {
     const { max_tokens } = params || {};
+    const sentAt = Date.now();
     try {
       const validatedParams = CreateTabTool.shape.arguments.parse(params);
       const result = await context.sendSocketMessage(
@@ -4301,10 +4306,62 @@ var createTab = {
       }, true, max_tokens);
     } catch (error) {
       const { max_tokens: max_tokens2 } = params || {};
-      return errorResponse(`Failed to create tab: ${error.message}`, false, error, max_tokens2);
+      const err = error instanceof Error ? error : new Error(String(error));
+      const msg = err.message;
+      if (/timeout/i.test(msg)) {
+        const reconciled = await findTabCreatedSince(context, params, sentAt);
+        if (reconciled.kind === "found") {
+          const t = reconciled.tab;
+          return jsonResponse({
+            tabId: t.tabId,
+            label: t.label,
+            url: t.url ?? null,
+            incognito: t.incognito ?? false,
+            reconciledAfterTimeout: true,
+            message: `The response timed out, but the tab WAS created \u2014 found tab ${t.tabId} (label: "${t.label}") attached after this call started. Use it; do NOT retry, a retry would open a duplicate.`
+          }, true, max_tokens2);
+        }
+        if (reconciled.kind === "ambiguous") {
+          return errorResponse(
+            `The create timed out and reconciliation is AMBIGUOUS: ${reconciled.tabs.length} tabs attached since this call started that match the requested URL (${reconciled.tabs.map((t) => `${t.tabId} "${t.label}"`).join(", ")}). Do not retry \u2014 inspect these with browser_list_attached_tabs and close any duplicate.`,
+            false,
+            err,
+            max_tokens2
+          );
+        }
+        return errorResponse(
+          `Failed to create tab: ${msg}. \u26A0\uFE0F Reconciliation found no matching tab attached since this call started${reconciled.kind === "unchecked" ? ` (the check itself failed: ${reconciled.why})` : ""}, so the tab probably was not created \u2014 but a timeout cannot prove that. Before retrying, confirm with browser_list_attached_tabs; a blind retry on this error is how duplicate tabs happen.`,
+          false,
+          err,
+          max_tokens2
+        );
+      }
+      return errorResponse(`Failed to create tab: ${msg}`, false, err, max_tokens2);
     }
   }
 };
+async function findTabCreatedSince(context, params, sentAt) {
+  try {
+    const res = await context.sendSocketMessage(
+      "browser_list_attached_tabs",
+      {},
+      { extensionId: params?.extensionId, timeoutMs: 1e4 }
+    );
+    const tabs = res?.tabs ?? [];
+    const wanted = params?.url ? String(params.url) : null;
+    const since = sentAt - 2e3;
+    const candidates = tabs.filter((t) => {
+      if (typeof t?.attachedAt !== "number" || t.attachedAt < since) return false;
+      if (!wanted) return true;
+      return typeof t.url === "string" && (t.url === wanted || t.url.startsWith(wanted));
+    });
+    if (candidates.length === 1) return { kind: "found", tab: candidates[0] };
+    if (candidates.length > 1) return { kind: "ambiguous", tabs: candidates };
+    return { kind: "none" };
+  } catch (e) {
+    return { kind: "unchecked", why: e?.message ?? String(e) };
+  }
+}
 var closeTab = {
   schema: {
     name: CloseTabTool.shape.name.value,

@@ -79,8 +79,27 @@ export function createSocketMessageSender<TMessageMap>(ws: WebSocket) {
               return;
             }
             const { result, error } = responsePayload;
-            if (error) {
-              reject(new Error(error));
+            // ⛔ PRESENCE, not truthiness. `if (error)` treated an empty or
+            // undefined error string as SUCCESS and resolved with `result`,
+            // which in a failure is also undefined — so a failed call came
+            // back as a silent success carrying nothing. That is how a
+            // create-tab failure reached callers as an empty message they
+            // could not distinguish from a permission refusal or a dead
+            // browser (2026-08-27, agents + shopping).
+            //
+            // The extension now sends a described error for every failure
+            // (extension/error-detail.js), but this branch must not depend on
+            // that: an older extension build is still out there, and one that
+            // sends `error: ""` must not be read as having succeeded.
+            if (error !== undefined && error !== null) {
+              const text =
+                typeof error === "string" && error.trim().length > 0
+                  ? error
+                  : `${type} failed, but the extension reported no error detail ` +
+                    `(received ${JSON.stringify(error)}). This usually means the throw was ` +
+                    `not an Error object. If this browser is running an extension build ` +
+                    `older than 2026-08-27, reload it to get described errors.`;
+              reject(new Error(text));
             } else {
               resolve(result);
             }
