@@ -1216,7 +1216,15 @@ class BackgroundController {
     this.badgeBlinkInterval = null;
     this.recordingSessions = new Map(); // Track active recording sessions
     this.backgroundRecorder = new BackgroundRecorder(500); // Background interaction log
-    this.sessionRecording = null; // { sessionId, tabId, tabIds[], startTime, startUrl, rrwebEvents[], networkEntries[], interactions[], pages[], videoStarted }
+    // ⛔ N INDEPENDENT RECORDINGS, keyed by sessionId (ben, 2026-08-31).
+    // Was a SINGLE object: every attached tab folded into one shared timeline,
+    // so a per-tab recording could not be started, stopped or shipped on its
+    // own. Child tabs still join their OPENER's recording — a popup/oauth hop
+    // belongs to the flow that spawned it, and splitting those apart is what
+    // made the shared timeline worth having in the first place.
+    // ⛔ Resolve by tab with recordingForTab(); never assume "the" recording.
+    /** @type {Map<string, object>} sessionId -> recording */
+    this.sessionRecordings = new Map();
     this.state = {
       connected: false,
       tabId: null, // DEPRECATED: Use tabManager.lastUsedTabId instead
@@ -1529,7 +1537,7 @@ class BackgroundController {
     // frame use webNavigation.onCompleted (details.frameId !== 0).
     chrome.webNavigation.onCompleted.addListener((details) => {
       if (details.frameId === 0) return; // main frame handled by tabs.onUpdated
-      if (!this.sessionRecording?.tabIds?.includes(details.tabId)) return;
+      if (!this.recordingForTab(details.tabId)) return;
       const { tabId, frameId } = details;
       chrome.scripting.executeScript({
         target: { tabId, frameIds: [frameId] },
@@ -1674,7 +1682,8 @@ class BackgroundController {
       }
 
       // Re-inject session recorder scripts on navigation for any session-recorded tab
-      if (changeInfo.status === 'complete' && this.sessionRecording?.tabIds?.includes(tabId)) {
+      const srForTab = changeInfo.status === 'complete' ? this.recordingForTab(tabId) : null;
+      if (srForTab) {
         console.log('[Background] Re-injecting session recorder after navigation:', tab.url);
         // MAIN world first (bypasses CSP, must precede isolated world injection)
         // allFrames: true injects into all loaded frames; child frames that load later
@@ -1700,7 +1709,7 @@ class BackgroundController {
         // recording is stopped.
         // ⛔ Not for auto-started recordings — the pill intercepts page clicks.
         // See the long note at the injection site in handleStartSessionRecording.
-        if (tabId === this.sessionRecording.tabId && !this.sessionRecording.autoStarted) {
+        if (tabId === srForTab.tabId && !srForTab.autoStarted) {
           chrome.scripting.executeScript({
             target: { tabId },
             files: ['annotation-tool.js', 'session-record-overlay.js'],
@@ -1715,9 +1724,9 @@ class BackgroundController {
         // auto-started (deliberately DOM-only) session would silently acquire
         // video the first time any page navigated — quietly reintroducing the
         // exact always-on capture ben asked not to have.
-        if (!this.sessionRecording.recordedTabIds?.includes(tabId) &&
-            (!this.sessionRecording.autoStarted || SESSION_AUTO_CAPTURE_VIDEO)) {
-          this.startSessionTabVideo(tabId);
+        if (!srForTab.recordedTabIds?.includes(tabId) &&
+            (!srForTab.autoStarted || SESSION_AUTO_CAPTURE_VIDEO)) {
+          this.startSessionTabVideo(tabId, srForTab.sessionId);
         }
       }
 
@@ -1745,13 +1754,16 @@ class BackgroundController {
 
     // New tab opened — extend session recording to tabs opened from a recorded tab
     chrome.tabs.onCreated.addListener((tab) => {
-      if (!this.sessionRecording) return;
-      if (tab.openerTabId && this.sessionRecording.tabIds?.includes(tab.openerTabId)) {
-        if (!this.sessionRecording.tabIds.includes(tab.id)) {
-          this.sessionRecording.tabIds.push(tab.id);
-          console.log(`[Background] Session recording extended to new tab ${tab.id} (opened from ${tab.openerTabId})`);
-          // Injection happens in tabs.onUpdated when the tab finishes loading
-        }
+      if (!tab.openerTabId) return;
+      // ⛔ Joins the OPENER's recording specifically, not "the" recording —
+      // with N sessions live, picking the wrong one silently files a popup's
+      // events under an unrelated flow.
+      const opener = this.recordingForTab(tab.openerTabId);
+      if (!opener) return;
+      if (!opener.tabIds.includes(tab.id)) {
+        opener.tabIds.push(tab.id);
+        console.log(`[Background] Session ${opener.sessionId} extended to new tab ${tab.id} (opened from ${tab.openerTabId})`);
+        // Injection happens in tabs.onUpdated when the tab finishes loading
       }
     });
 
@@ -1966,22 +1978,23 @@ class BackgroundController {
       }
 
       // Session recording event accumulation (from session-recorder.js content script)
-      if (this.sessionRecording && this.sessionRecording.tabIds?.includes(sender?.tab?.id)) {
+      const srMsg = this.recordingForTab(sender?.tab?.id);
+      if (srMsg) {
         if (message.type === 'SR_RRWEB') {
-          this.sessionRecording.rrwebEvents.push(message.event);
-          this._trimSessionBuffers();
+          srMsg.rrwebEvents.push(message.event);
+          this._trimSessionBuffers(srMsg);
           return false;
         }
         if (message.type === 'SR_NETWORK') {
-          this.sessionRecording.networkEntries.push({
+          srMsg.networkEntries.push({
             ...message.entry,
             frameId: sender.frameId || 0,
           });
-          this._trimSessionBuffers();
+          this._trimSessionBuffers(srMsg);
           return false;
         }
         if (message.type === 'SR_PAGE_START') {
-          this.sessionRecording.pages.push({
+          srMsg.pages.push({
             url: message.url,
             title: message.title,
             startTime: message.timestamp,
@@ -1999,12 +2012,12 @@ class BackgroundController {
           return false;
         }
         if (message.type === 'SR_PAGE_END') {
-          const lastPage = this.sessionRecording.pages[this.sessionRecording.pages.length - 1];
+          const lastPage = srMsg.pages[srMsg.pages.length - 1];
           if (lastPage && !lastPage.endTime) lastPage.endTime = message.timestamp;
           return false;
         }
         if (message.type === 'SR_INTERACTION') {
-          this.sessionRecording.interactions.push({
+          srMsg.interactions.push({
             ...message.interaction,
             tabId: sender.tab.id,
             frameId: sender.frameId || 0,
@@ -2075,7 +2088,7 @@ class BackgroundController {
                 screenshotPng: croppedDataUrl || null,
                 fullViewportPng: screenshotDataUrl || null,
               };
-              this.sessionRecording.annotations.push(annotation);
+              srMsg.annotations.push(annotation);
               console.log(`[Background] Annotation ${annotationId} captured (${annotation.tool}, note=${(annotation.note || '').slice(0, 40)})`);
               sendResponse({ success: true, annotationId });
             } catch (e) {
@@ -2415,23 +2428,16 @@ class BackgroundController {
       // Mirror the popup's get_session_recording_state shape so agents can
       // query "am I recording? on which tab? for how long?" without having
       // to start/stop or poll storage themselves.
-      if (!this.sessionRecording) {
-        return { isRecording: false };
-      }
-      const r = this.sessionRecording;
+      // ⛔ `recordings` is ALWAYS an array, even for one. A caller that reads
+      // a single object cannot notice a second recording exists.
+      const all = this.allRecordings();
+      const scoped = params?.tabTarget != null
+        ? all.filter(r => r.tabIds?.includes(this.tabManager.resolveTab(params.tabTarget)?.tabId))
+        : all;
       return {
-        isRecording: true,
-        sessionId: r.sessionId,
-        startedAt: r.startTime,
-        elapsedMs: Date.now() - r.startTime,
-        primaryTabId: r.tabId,
-        recordedTabIds: r.recordedTabIds || [],
-        startUrl: r.startUrl,
-        rrwebEventCount: (r.rrwebEvents || []).length,
-        networkEntryCount: (r.networkEntries || []).length,
-        interactionCount: (r.interactions || []).length,
-        annotationCount: (r.annotations || []).length,
-        pageCount: (r.pages || []).length,
+        isRecording: scoped.length > 0,
+        count: scoped.length,
+        recordings: scoped.map(r => this.describeRecording(r)),
       };
     };
 
@@ -2942,7 +2948,7 @@ class BackgroundController {
    *   ⚠️ LOAD-BEARING: handleStartSessionRecording() calls this method to
    *   attach the tab it is about to record. Without this flag that call would
    *   re-enter _maybeAutoCapture() → handleStartSessionRecording() → attach →
-   *   … and recurse without bound, because `this.sessionRecording` is not
+   *   … and recurse without bound, because the recording for this tab is not
    *   assigned until AFTER that internal attach returns, so the usual
    *   "already recording" guard is still null and cannot break the cycle.
    */
@@ -4318,7 +4324,7 @@ class BackgroundController {
               tabTitle: this.state.tabTitle,
               recordingRequest: this.currentRecordingRequest || null,
               isRecording: false,
-              sessionRecording: this.sessionRecording ? { startTime: this.sessionRecording.startTime } : null,
+              sessionRecordings: this.allRecordings().map(r => ({ sessionId: r.sessionId, tabId: r.tabId, startTime: r.startTime })),
             }
           });
         } catch (error) {
@@ -4333,7 +4339,7 @@ class BackgroundController {
               tabTitle: this.state.tabTitle,
               recordingRequest: this.currentRecordingRequest || null,
               isRecording: false,
-              sessionRecording: this.sessionRecording ? { startTime: this.sessionRecording.startTime } : null,
+              sessionRecordings: this.allRecordings().map(r => ({ sessionId: r.sessionId, tabId: r.tabId, startTime: r.startTime })),
             }
           });
         }
@@ -4392,7 +4398,10 @@ class BackgroundController {
 
       case 'stop_session_recording':
         try {
-          await this.handleStopSessionRecording(sendResponse);
+          // ⛔ Forward the payload — the popup names WHICH recording to stop.
+          // Dropping it here made every popup stop an unqualified one, which
+          // now refuses outright when several are live.
+          await this.handleStopSessionRecording(sendResponse, message.payload || message || {});
         } catch (error) {
           sendResponse({ success: false, error: error.message });
         }
@@ -4401,15 +4410,7 @@ class BackgroundController {
       case 'get_session_recording_state':
         sendResponse({
           success: true,
-          sessionRecording: this.sessionRecording ? {
-            sessionId: this.sessionRecording.sessionId,
-            tabId: this.sessionRecording.tabId,
-            startTime: this.sessionRecording.startTime,
-            startUrl: this.sessionRecording.startUrl,
-            rrwebEventCount: this.sessionRecording.rrwebEvents.length,
-            networkEntryCount: this.sessionRecording.networkEntries.length,
-            pageCount: this.sessionRecording.pages.length,
-          } : null,
+          sessionRecordings: this.allRecordings().map(r => this.describeRecording(r)),
         });
         break;
 
@@ -4463,24 +4464,90 @@ class BackgroundController {
   async _maybeAutoCapture(tabId, enabled) {
     if (!enabled || !SESSION_AUTO_CAPTURE_ON_ATTACH) return;
     try {
-      if (this.sessionRecording) {
-        // Defensive: a recording rehydrated from chrome.storage.session after a
-        // service-worker restart can come back without its arrays.
-        if (!Array.isArray(this.sessionRecording.tabIds)) this.sessionRecording.tabIds = [];
-        if (!this.sessionRecording.tabIds.includes(tabId)) {
-          this.sessionRecording.tabIds.push(tabId);
-          await this._injectSessionRecorderInto(tabId);
-          console.log(`[Background] Auto-capture: tab ${tabId} joined session ${this.sessionRecording.sessionId}`);
-        }
+      // ⛔ Each attached tab gets its OWN recording (ben, 2026-08-31). It used
+      // to fold every tab into one shared timeline, which is exactly what made
+      // a single tab's recording impossible to stop or ship on its own.
+      const existing = this.recordingForTab(tabId);
+      if (existing) {
+        // Already covered — as its own session, or as a child of its opener.
+        if (!Array.isArray(existing.tabIds)) existing.tabIds = [];
         return;
       }
       await new Promise((resolve) =>
         this.handleStartSessionRecording(resolve, { tabTarget: tabId, autoStarted: true })
       );
-      console.log(`[Background] Auto-capture: started session recording on attach of tab ${tabId}`);
+      console.log(`[Background] Auto-capture: started an independent recording for tab ${tabId}`);
     } catch (err) {
       console.warn('[Background] Auto-capture failed (the attach itself is unaffected):', err?.message || err);
     }
+  }
+
+  /**
+   * The recording that owns a tab, or null.
+   *
+   * ⛔ THE ONLY SANCTIONED WAY to go from a tab to its recording. With N
+   * sessions live there is no "the" recording, and every event that arrives
+   * carries a tab, not a session. Guessing files a tab's events under an
+   * unrelated flow — which corrupts BOTH replays and reports success.
+   * First match wins: a tab belongs to exactly one session (start refuses a
+   * second on the same tab, and children join only their opener).
+   */
+  recordingForTab(tabId) {
+    if (tabId == null) return null;
+    for (const r of this.sessionRecordings.values()) {
+      if (r.tabIds?.includes(tabId)) return r;
+    }
+    return null;
+  }
+
+  /** All live recordings, newest first. */
+  allRecordings() {
+    return Array.from(this.sessionRecordings.values()).sort((a, b) => b.startTime - a.startTime);
+  }
+
+  /** Compact per-recording summary — the shape the popup and agents both read. */
+  describeRecording(r) {
+    return {
+      sessionId: r.sessionId,
+      tabId: r.tabId,
+      tabIds: r.tabIds || [],
+      startTime: r.startTime,
+      elapsedMs: Date.now() - r.startTime,
+      startUrl: r.startUrl,
+      autoStarted: !!r.autoStarted,
+      videoStarted: !!r.videoStarted,
+      recordedTabIds: r.recordedTabIds || [],
+      rrwebEventCount: (r.rrwebEvents || []).length,
+      networkEntryCount: (r.networkEntries || []).length,
+      interactionCount: (r.interactions || []).length,
+      annotationCount: (r.annotations || []).length,
+      pageCount: (r.pages || []).length,
+    };
+  }
+
+  /**
+   * Persist the live set. Stores an ARRAY of light descriptors — never the
+   * buffers, which run to tens of MB and would blow the storage quota.
+   */
+  _persistRecordings() {
+    const light = this.allRecordings().map(r => ({
+      sessionId: r.sessionId, tabId: r.tabId, tabIds: r.tabIds,
+      startTime: r.startTime, startUrl: r.startUrl, autoStarted: !!r.autoStarted,
+    }));
+    if (light.length) chrome.storage.session.set({ sessionRecordings: light }).catch(() => {});
+    else chrome.storage.session.remove('sessionRecordings').catch(() => {});
+  }
+
+  /** Badge shows HOW MANY are running — 'SR' could not distinguish 1 from 7. */
+  _updateRecordingBadge() {
+    // Matches the call style used elsewhere in this file — setBadgeText's
+    // return shape differs across contexts and `.catch?.()` on a non-promise
+    // throws, which would take the whole start path down with it.
+    const n = this.sessionRecordings.size;
+    try {
+      chrome.action.setBadgeText({ text: n ? (n === 1 ? 'SR' : `SR${n}`) : '' });
+      if (n) chrome.action.setBadgeBackgroundColor({ color: '#6f42c1' });
+    } catch { /* badge is cosmetic; never fail a recording over it */ }
   }
 
   /**
@@ -4500,8 +4567,7 @@ class BackgroundController {
    * and NOTHING here can trim. If you ever see the buffer running far past
    * SESSION_MAX_RRWEB_EVENTS, check that option first.
    */
-  _trimSessionBuffers() {
-    const r = this.sessionRecording;
+  _trimSessionBuffers(r) {
     if (!r) return;
 
     const ev = r.rrwebEvents;
@@ -4540,10 +4606,10 @@ class BackgroundController {
   }
 
   async handleStartSessionRecording(sendResponse, params = {}) {
-    if (this.sessionRecording) {
-      sendResponse({ success: false, error: 'A session recording is already in progress' });
-      return;
-    }
+    // ⛔ Not "is anything recording?" — N are allowed. Only a second recording
+    // on the SAME tab is refused, because two rrweb recorders on one document
+    // produce two interleaved event streams and neither replays.
+    // The tab is resolved below; the duplicate check happens once we know it.
 
     // When called from the popup with no params, fall back to the legacy
     // "active tab in last-focused window" behavior. When an agent calls with
@@ -4580,7 +4646,7 @@ class BackgroundController {
     if (!this.tabManager.attachedTabs.has(tabId)) {
       try {
         // autoCapture:false breaks the attach → auto-capture → start-recording
-        // → attach cycle. `this.sessionRecording` is still null at this point,
+        // → attach cycle. This tab has no recording yet at this point,
         // so the "already recording" guard above cannot stop the recursion.
         await this.handleEnsureAttached({ tabId, autoCapture: false });
       } catch (attachErr) {
@@ -4597,7 +4663,20 @@ class BackgroundController {
     const sessionId = `sr-${Date.now()}`;
     const startTime = Date.now();
 
-    this.sessionRecording = {
+    const existingForTab = this.recordingForTab(tabId);
+    if (existingForTab) {
+      sendResponse({
+        success: false,
+        error: `Tab ${tabId} is already being recorded by session ${existingForTab.sessionId} ` +
+          `(started ${new Date(existingForTab.startTime).toISOString()}). Stop that one first, ` +
+          `or pass a different tabTarget. Refusing to run two recorders on one document — ` +
+          `their rrweb streams interleave and neither replays.`,
+        sessionId: existingForTab.sessionId,
+      });
+      return;
+    }
+
+    const recording = {
       sessionId,
       tabId,              // Primary tab (for video capture)
       tabIds: [tabId],    // All tabs being recorded (grows as new tabs open)
@@ -4618,6 +4697,7 @@ class BackgroundController {
       autoStarted: params.autoStarted === true,
       droppedRrwebEvents: 0,
     };
+    this.sessionRecordings.set(sessionId, recording);
 
     // Inject network interceptor into page's MAIN world (bypasses CSP)
     // allFrames: true injects into the main frame AND all already-loaded child frames.
@@ -4662,7 +4742,7 @@ class BackgroundController {
     // started recording. The pill is a human affordance (drag, annotate); an
     // agent driving a page needs none of it. So an implicit recording captures
     // silently and paints nothing.
-    if (!this.sessionRecording.autoStarted) {
+    if (!recording.autoStarted) {
       try {
         await chrome.scripting.executeScript({
           target: { tabId },
@@ -4683,28 +4763,34 @@ class BackgroundController {
     // costs real CPU/disk and shows a capture indicator on every tab — so an
     // implicit, possibly-days-long recording must not start one. An explicit
     // browser_start_session_recording or popup click still does.
-    if (!this.sessionRecording.autoStarted || SESSION_AUTO_CAPTURE_VIDEO) {
-      this.startSessionTabVideo(tabId);
+    if (!recording.autoStarted || SESSION_AUTO_CAPTURE_VIDEO) {
+      this.startSessionTabVideo(tabId, sessionId);
     } else {
       console.log('[Background] Auto-started session: DOM+network only, video suppressed by design');
     }
 
-    // Set badge
-    chrome.action.setBadgeText({ text: 'SR' });
-    chrome.action.setBadgeBackgroundColor({ color: '#6f42c1' });
+    this._updateRecordingBadge();
 
-    // Persist
-    chrome.storage.session.set({ sessionRecording: this.sessionRecording }).catch(() => {});
+    // Persist every live recording, not just one.
+    this._persistRecordings();
 
-    sendResponse({ success: true, sessionId, startTime });
+    sendResponse({ success: true, sessionId, startTime, tabId });
   }
 
   /**
-   * Start tab capture video for a specific tab within the current session recording.
+   * Start tab-capture video for one tab inside ONE named recording.
+   *
+   * ⛔ sessionId is required. The async callback below lands after an await,
+   * by which time the recording may have been stopped — or a DIFFERENT one
+   * started. Re-reading the Map by id there means a late frame can only ever
+   * land in the session it was started for, or nowhere.
+   * ⚠️ tabCapture is gesture-gated and fails for agent-driven tabs by design;
+   * that failure is logged, never surfaced as a recording failure.
    */
-  startSessionTabVideo(tabId) {
-    if (!this.sessionRecording) return;
-    if (this.sessionRecording.recordedTabIds.includes(tabId)) return; // Already recording
+  startSessionTabVideo(tabId, sessionId) {
+    const rec = this.sessionRecordings.get(sessionId);
+    if (!rec) return;
+    if (rec.recordedTabIds.includes(tabId)) return; // Already recording
 
     chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (streamId) => {
       if (chrome.runtime.lastError || !streamId) {
@@ -4712,13 +4798,12 @@ class BackgroundController {
         return;
       }
       chrome.runtime.sendMessage({ type: 'OFFSCREEN_START_TAB_RECORDING', streamId, tabId }).then(() => {
-        if (!this.sessionRecording) return;
-        this.sessionRecording.recordedTabIds.push(tabId);
-        this.sessionRecording.videoStartTimes[tabId] = Date.now();
-        if (!this.sessionRecording.videoStarted) {
-          this.sessionRecording.videoStarted = true;
-        }
-        console.log(`[Background] Session video started for tab ${tabId}`);
+        const live = this.sessionRecordings.get(sessionId);
+        if (!live) return; // stopped while we were awaiting — drop it
+        live.recordedTabIds.push(tabId);
+        live.videoStartTimes[tabId] = Date.now();
+        live.videoStarted = true;
+        console.log(`[Background] Session ${sessionId} video started for tab ${tabId}`);
       }).catch(err => {
         console.warn(`[Background] Could not start video for tab ${tabId}:`, err.message);
       });
@@ -4729,8 +4814,47 @@ class BackgroundController {
    * Stop a session recording: finalize video, upload everything to server, open review.
    */
   async handleStopSessionRecording(sendResponse, params = {}) {
-    if (!this.sessionRecording) {
+    const live = this.allRecordings();
+    if (live.length === 0) {
       sendResponse({ success: false, error: 'No session recording in progress' });
+      return;
+    }
+
+    // ⛔ WHICH recording. With N live, an unqualified stop used to be
+    // unambiguous and no longer is — so it refuses rather than picking one.
+    // Silently stopping the wrong session destroys the wrong evidence and
+    // reports success, which is worse than making the caller name it.
+    let target = null;
+    if (params.sessionId) {
+      target = this.sessionRecordings.get(params.sessionId) || null;
+      if (!target) {
+        sendResponse({
+          success: false,
+          error: `No live recording with sessionId "${params.sessionId}". Live: ` +
+            (live.map(r => `${r.sessionId} (tab ${r.tabId})`).join(', ') || 'none'),
+        });
+        return;
+      }
+    } else if (params.tabTarget !== undefined && params.tabTarget !== null && params.tabTarget !== '') {
+      const t = this.tabManager.resolveTab(params.tabTarget);
+      target = t ? this.recordingForTab(t.tabId) : null;
+      if (!target) {
+        sendResponse({
+          success: false,
+          error: `No live recording covers tabTarget "${params.tabTarget}". Live: ` +
+            live.map(r => `${r.sessionId} (tab ${r.tabId})`).join(', '),
+        });
+        return;
+      }
+    } else if (live.length === 1) {
+      target = live[0];
+    } else {
+      sendResponse({
+        success: false,
+        error: `${live.length} recordings are live — name one with sessionId or tabTarget. ` +
+          `Refusing to guess: ` + live.map(r => `${r.sessionId} (tab ${r.tabId}, ${Math.round((Date.now() - r.startTime) / 1000)}s)`).join(', '),
+        recordings: live.map(r => this.describeRecording(r)),
+      });
       return;
     }
     // Agents driving headless sidecar chromiums often don't want a review tab
@@ -4740,12 +4864,11 @@ class BackgroundController {
     // from agent tool calls.
     const shouldOpenReview = params.openReview !== false;
 
-    const recording = this.sessionRecording;
-    this.sessionRecording = null;
+    const recording = target;
+    this.sessionRecordings.delete(recording.sessionId);
 
-    // Clear badge
-    chrome.action.setBadgeText({ text: '' });
-    chrome.storage.session.remove('sessionRecording').catch(() => {});
+    this._updateRecordingBadge();
+    this._persistRecordings();
 
     // Tear down the floating "Recording / ✏️ Annotate" overlay in every
     // recorded tab so the user doesn't see a stale indicator while the
@@ -6221,7 +6344,7 @@ class BackgroundController {
         attachedTabCount: tabs.length,
         unhealthyTabCount: tabs.filter(t => !t.cdpAlive).length,
         wsConnected,
-        sessionRecordingActive: !!this.sessionRecording,
+        sessionRecordingCount: this.sessionRecordings.size,
       },
       pageErrors,
       backgroundErrors: bgErrors,

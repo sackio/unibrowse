@@ -1647,10 +1647,13 @@ export const StartSessionRecordingTool = z.object({
 export const StopSessionRecordingTool = z.object({
   name: z.literal("browser_stop_session_recording"),
   description: z.literal(
-    "Stop the active session recording, save all captured data (DOM events, network traffic, video) " +
-    "to the server, and return the review URL. By default a review tab opens automatically; pass " +
-    "openReview:false to suppress (useful for headless agent flows where opening a tab in the sidecar " +
-    "would just be noise). Review URL is always returned in the response regardless."
+    "Stop ONE session recording, save its captured data (DOM events, network traffic, video) to the " +
+    "server, and return the review URL. Recordings are per-tab and SEVERAL can run at once: name which " +
+    "one with sessionId, or with tabTarget to stop whichever recording covers that tab. If exactly one " +
+    "is live you may omit both. ⛔ If several are live and you name neither, this REFUSES and lists them " +
+    "rather than guessing — stopping the wrong session destroys the wrong evidence. " +
+    "By default a review tab opens automatically; pass openReview:false to suppress (useful for headless " +
+    "agent flows). Review URL is always returned in the response regardless."
   ),
   arguments: z.object({
     openReview: z.boolean().optional().describe(
@@ -1658,16 +1661,21 @@ export const StopSessionRecordingTool = z.object({
       "Pass false for headless / programmatic flows that just want the reviewUrl back without polluting " +
       "the browser with a new tab."
     ),
+    sessionId: z.string().optional().describe(
+      "Which recording to stop, as returned by browser_start_session_recording. Required when more " +
+      "than one recording is live, unless you identify it by tabTarget instead."
+    ),
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
 export const GetSessionRecordingStateTool = z.object({
   name: z.literal("browser_get_session_recording_state"),
   description: z.literal(
-    "Check whether a session recording is currently in progress on the targeted browser. Returns " +
-    "{ isRecording, sessionId?, startedAt?, primaryTabId?, rrwebEventCount?, networkEntryCount? } so " +
-    "agents can decide whether to start, stop, or extend. Useful at the start of a flow to avoid " +
-    "double-starting, or before stop to know whether a stop call would actually do anything."
+    "List the session recordings in progress on the targeted browser. Recordings are per-tab and " +
+    "several can run at once, so this returns { isRecording, count, recordings: [...] } — `recordings` " +
+    "is ALWAYS an array, one entry per live recording with its sessionId, tabId, elapsedMs and event " +
+    "counts. Pass tabTarget to ask only about the recording covering that tab. Use it before stopping " +
+    "to learn which sessionId you mean, or at the start of a flow to avoid double-starting a tab."
   ),
   arguments: z.object({}).merge(TabTargetSchema).merge(MaxTokensSchema),
 });

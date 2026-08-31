@@ -19,6 +19,7 @@ class PopupController {
       sessionRecordSection: document.getElementById('session-record-section'),
       sessionRecordBtn: document.getElementById('session-record-btn'),
       sessionRecordStats: document.getElementById('session-record-stats'),
+      sessionRecordList: document.getElementById('session-record-list'),
       attachCurrentTabBtn: document.getElementById('attach-current-tab-btn'),
     };
 
@@ -26,7 +27,6 @@ class PopupController {
     this.attachedTabs = [];
     this.windows = [];
     this.tabs = [];
-    this.sessionTimerInterval = null;
 
     this.setupEventListeners();
     this.loadState();
@@ -161,73 +161,81 @@ class PopupController {
    * (rrweb DOM + network interceptor + video, survives cross-domain navigation)
    */
   async handleSessionRecordClick() {
+    // ⛔ START ONLY. Recordings are per-tab and several can run at once, so a
+    // single toggle has no defensible meaning — "stop" would have to pick one
+    // of N. Each live recording carries its own Stop button in the list below.
     const btn = this.elements.sessionRecordBtn;
-    const isRecording = btn.classList.contains('recording');
-
     try {
       btn.disabled = true;
-
-      if (!isRecording) {
-        btn.textContent = '⏳ Starting session...';
-        const response = await chrome.runtime.sendMessage({ type: 'start_session_recording' });
-        if (response && response.success) {
-          btn.textContent = '⏹ Stop Session';
-          btn.classList.add('recording');
-          btn.disabled = false;
-          this._startSessionTimer(response.startTime || Date.now(), 0, 0);
-        } else {
-          btn.textContent = '⏺ Session Record';
-          btn.disabled = false;
-          this.showError(response?.error || 'Failed to start session recording');
-        }
-      } else {
-        btn.textContent = '⏳ Saving...';
-        const response = await chrome.runtime.sendMessage({ type: 'stop_session_recording' });
-        this._stopSessionTimer();
-        btn.textContent = '⏺ Session Record';
-        btn.classList.remove('recording');
-        btn.disabled = false;
-        this.elements.sessionRecordStats.classList.remove('visible');
-        // NOTE: background.js auto-opens the review tab now (it survives
-        // popup closure during the multi-second chunked upload — the MV3
-        // popup may close before sendMessage's response arrives). Leaving
-        // this branch as a defensive no-op for the case where the popup
-        // IS still open (background's open + this one would race; popup's
-        // is fine since it just shows the same URL). Either way, the user
-        // gets the review tab.
-        if (response && response.success && response.reviewUrl) {
-          // background already opened it; no-op here
-        } else if (response && response.error) {
-          this.showError(response.error);
-        }
+      btn.textContent = '⏳ Starting...';
+      const response = await chrome.runtime.sendMessage({ type: 'start_session_recording' });
+      if (!response || !response.success) {
+        this.showError(response?.error || 'Failed to start session recording');
       }
     } catch (error) {
       console.error('Session record click failed:', error);
-      btn.textContent = '⏺ Session Record';
-      btn.classList.remove('recording');
-      btn.disabled = false;
-      this._stopSessionTimer();
       this.showError(error.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '⏺ Record This Tab';
+      this.loadState();
     }
   }
 
-  _startSessionTimer(startTime, rrwebCount, networkCount) {
-    const stats = this.elements.sessionRecordStats;
-    stats.classList.add('visible');
-    const update = () => {
-      const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
-      const s = (elapsed % 60).toString().padStart(2, '0');
-      stats.textContent = `${m}:${s} recording`;
-    };
-    update();
-    this.sessionTimerInterval = setInterval(update, 1000);
+  /** Stop ONE named recording. Never an unqualified stop — see the click handler. */
+  async stopRecording(sessionId) {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'stop_session_recording', sessionId });
+      if (response && response.error) this.showError(response.error);
+    } catch (error) {
+      this.showError(error.message);
+    } finally {
+      this.loadState();
+    }
   }
 
-  _stopSessionTimer() {
-    if (this.sessionTimerInterval) {
-      clearInterval(this.sessionTimerInterval);
-      this.sessionTimerInterval = null;
+  /**
+   * Render one row per live recording.
+   * ⚠️ Rows are rebuilt from state each poll rather than mutated, so a
+   * recording that ended elsewhere (agent tool, tab closed) cannot leave a
+   * stale row with a Stop button that silently targets nothing.
+   */
+  _renderRecordingList(recordings) {
+    const list = this.elements.sessionRecordList;
+    if (!list) return;
+    list.textContent = '';
+    for (const r of recordings) {
+      const elapsed = Math.floor((Date.now() - (r.startTime || Date.now())) / 1000);
+      const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
+      const s = (elapsed % 60).toString().padStart(2, '0');
+
+      const row = document.createElement('div');
+      row.className = 'sr-row';
+
+      const main = document.createElement('span');
+      main.className = 'sr-row-main';
+      main.textContent = `tab ${r.tabId}`;
+      main.title = r.startUrl || '';
+      if (r.autoStarted) {
+        const auto = document.createElement('span');
+        auto.className = 'sr-row-auto';
+        auto.textContent = ' (auto)';
+        main.appendChild(auto);
+      }
+
+      const el = document.createElement('span');
+      el.className = 'sr-row-elapsed';
+      el.textContent = `${m}:${s}`;
+
+      const stop = document.createElement('button');
+      stop.className = 'sr-stop';
+      stop.textContent = 'Stop';
+      stop.addEventListener('click', () => this.stopRecording(r.sessionId));
+
+      row.appendChild(main);
+      row.appendChild(el);
+      row.appendChild(stop);
+      list.appendChild(row);
     }
   }
 
@@ -601,21 +609,16 @@ class PopupController {
 
     // Update session record button state
     const btn = this.elements.sessionRecordBtn;
-    if (state.sessionRecording) {
-      if (!btn.classList.contains('recording')) {
-        btn.textContent = '⏹ Stop Session';
-        btn.classList.add('recording');
-        btn.disabled = false;
-        this._startSessionTimer(state.sessionRecording.startTime || Date.now(), 0, 0);
-      }
+    const recs = Array.isArray(state.sessionRecordings) ? state.sessionRecordings : [];
+    this._renderRecordingList(recs);
+    btn.classList.toggle('recording', recs.length > 0);
+    const stats = this.elements.sessionRecordStats;
+    if (recs.length) {
+      stats.classList.add('visible');
+      stats.textContent = recs.length === 1 ? '1 recording' : `${recs.length} recordings`;
     } else {
-      if (btn.classList.contains('recording')) {
-        btn.textContent = '⏺ Session Record';
-        btn.classList.remove('recording');
-        btn.disabled = false;
-        this._stopSessionTimer();
-        this.elements.sessionRecordStats.classList.remove('visible');
-      }
+      stats.classList.remove('visible');
+      stats.textContent = '';
     }
   }
 

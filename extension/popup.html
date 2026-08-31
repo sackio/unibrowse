@@ -435,6 +435,56 @@
     .session-record-stats.visible {
       display: block;
     }
+
+    /* One row per live recording — N are possible now. */
+    .session-record-list {
+      margin-top: 4px;
+    }
+
+    .sr-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      padding: 3px 4px;
+      border-radius: 3px;
+      background: #f5f3fa;
+      margin-bottom: 3px;
+    }
+
+    .sr-row-main {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .sr-row-elapsed {
+      color: #6f42c1;
+      font-variant-numeric: tabular-nums;
+      flex: 0 0 auto;
+    }
+
+    .sr-row-auto {
+      color: #999;
+      font-size: 10px;
+    }
+
+    .sr-stop {
+      flex: 0 0 auto;
+      background: #dc3545;
+      color: #fff;
+      border: none;
+      border-radius: 3px;
+      padding: 2px 6px;
+      font-size: 10px;
+      cursor: pointer;
+      width: auto;
+      margin: 0;
+    }
+
+    .sr-stop:hover { background: #c82333; }
   </style>
 </head>
 <body>
@@ -460,7 +510,8 @@
     </div>
     <button class="primary" id="attach-current-tab-btn" style="margin-top:10px;margin-bottom:0;display:none;">📌 Attach this tab</button>
     <div class="session-record-section" id="session-record-section" style="display:none;">
-      <button class="session-record-btn" id="session-record-btn">⏺ Session Record</button>
+      <button class="session-record-btn" id="session-record-btn">⏺ Record This Tab</button>
+      <div class="session-record-list" id="session-record-list"></div>
       <div class="session-record-stats" id="session-record-stats"></div>
     </div>
   </div>
