@@ -485,6 +485,54 @@
     }
 
     .sr-stop:hover { background: #c82333; }
+
+    /* Send page / selection to an agent */
+    .send-agent-section {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid #e0e0e0;
+    }
+
+    .send-agent-row {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+
+    .send-agent-row select {
+      flex: 1;
+      min-width: 0;
+      padding: 6px;
+      font-size: 12px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background: #fff;
+    }
+
+    .send-agent-buttons { display: flex; gap: 6px; }
+
+    .send-agent-buttons button {
+      flex: 1;
+      margin: 0;
+      padding: 8px;
+      font-size: 12px;
+      background-color: #0d6efd;
+      color: #fff;
+    }
+
+    .send-agent-buttons button:hover:not(:disabled) { background-color: #0b5ed7; }
+
+    .send-agent-status {
+      font-size: 11px;
+      margin-top: 6px;
+      display: none;
+      padding: 6px;
+      border-radius: 4px;
+    }
+
+    .send-agent-status.visible { display: block; }
+    .send-agent-status.ok { background: #d4edda; color: #155724; }
+    .send-agent-status.bad { background: #fee; color: #c33; }
   </style>
 </head>
 <body>
@@ -513,6 +561,22 @@
       <button class="session-record-btn" id="session-record-btn">⏺ Record This Tab</button>
       <div class="session-record-list" id="session-record-list"></div>
       <div class="session-record-stats" id="session-record-stats"></div>
+    </div>
+
+    <div class="send-agent-section" id="send-agent-section" style="display:none;">
+      <div class="send-agent-row">
+        <select id="send-agent-target"><option value="">Loading agents…</option></select>
+        <select id="send-agent-format">
+          <option value="markdown">Markdown</option>
+          <option value="html">HTML</option>
+          <option value="text">Text</option>
+        </select>
+      </div>
+      <div class="send-agent-buttons">
+        <button id="send-page-btn">Send page</button>
+        <button id="send-selection-btn">Send selection</button>
+      </div>
+      <div class="send-agent-status" id="send-agent-status"></div>
     </div>
   </div>
 

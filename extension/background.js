@@ -3,7 +3,7 @@
  * Central coordinator for WebSocket, Chrome Debugger, and message routing
  */
 
-importScripts('config.js', 'utils/browser-env.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js', 'error-detail.js', 'watch-flood.js', 'watch-prefilter.js', 'watch-page.js', 'watch-engine.js');
+importScripts('config.js', 'utils/browser-env.js', 'utils/server-resolver.js', 'utils/websocket-offscreen.js', 'utils/cdp.js', 'error-detail.js', 'watch-flood.js', 'watch-prefilter.js', 'watch-page.js', 'watch-engine.js', 'page-extract.js');
 
 // ─── Auto session-capture on attach (ben 2026-08-02) ────────────────────────
 // "Anytime we attach a tab we should be doing a session recording so that we
@@ -2296,6 +2296,22 @@ class BackgroundController {
     this.handlers['browser_observe_navigations_first'] = this.handleObserveNavFirst.bind(this);
     this.handlers['browser_observe_navigations_dispose'] = this.handleObserveNavDispose.bind(this);
 
+    // ─── Send a page or selection to an agent ──────────────────────────────
+    // ⛔ The server does the sending; this side only extracts and reports.
+    // The result comes back asynchronously as SEND_TO_AGENT_RESULT, keyed by
+    // requestId, so the popup can show DELIVERY rather than "we posted it".
+    this.pendingSends = new Map();
+    this.handlers['SEND_TO_AGENT_RESULT'] = async (params) => {
+      const rid = params?.requestId;
+      const pending = rid != null ? this.pendingSends.get(rid) : null;
+      if (pending) {
+        clearTimeout(pending.timeoutId);
+        this.pendingSends.delete(rid);
+        pending.resolve(params);
+      }
+      return { ok: true };
+    };
+
     // ─── Watch — push events out of the browser ────────────────────────────
     // The generalisation of the nav observer above: any source, an arbitrary
     // predicate, and delivery to a sink on the server. The predicate runs HERE
@@ -4407,6 +4423,32 @@ class BackgroundController {
         }
         break;
 
+      case 'get_destinations':
+        // ⭐ Proxied through the SERVER's /destinations, which is itself a
+        // proxy of the broker's. One list feeds both the picker and the
+        // send-time validation, so the picker cannot offer a name the sender
+        // will reject.
+        try {
+          const base = this.serverConfig?.httpUrl;
+          if (!base) throw new Error('Not connected to a unibrowse server yet.');
+          const resp = await fetch(`${base.replace(/\/$/, '')}/destinations`);
+          if (!resp.ok) throw new Error(`server returned HTTP ${resp.status}`);
+          const body = await resp.json();
+          sendResponse({ success: true, destinations: body.destinations || [] });
+        } catch (error) {
+          sendResponse({ success: false, error: describeError(error) });
+        }
+        break;
+
+      case 'send_to_agent':
+        try {
+          const r = await this.handleSendToAgent(message.payload || {});
+          sendResponse({ success: r.ok, ...r });
+        } catch (error) {
+          sendResponse({ success: false, error: describeError(error) });
+        }
+        break;
+
       case 'get_session_recording_state':
         sendResponse({
           success: true,
@@ -4480,6 +4522,81 @@ class BackgroundController {
     } catch (err) {
       console.warn('[Background] Auto-capture failed (the attach itself is unaffected):', err?.message || err);
     }
+  }
+
+  /**
+   * Extract the page (or the selection) from a tab and hand it to the server
+   * to deliver. Returns the DELIVERY outcome, not the posting outcome.
+   *
+   * ⚠️ `ha` lost a day to the difference (scanfile, 2026-08-31): an address the
+   * broker does not recognise is accepted and dropped with no error, so
+   * "we sent it" and "they got it" are genuinely different answers.
+   */
+  async handleSendToAgent({ to, scope = 'page', format = 'markdown', tabId } = {}) {
+    if (!to) throw new Error('No recipient. Pick an agent to send to.');
+
+    let targetId = tabId;
+    if (targetId == null) {
+      const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      targetId = active?.id;
+    }
+    if (targetId == null) throw new Error('No tab to read. Open or focus a tab first.');
+
+    let injected;
+    try {
+      injected = await chrome.scripting.executeScript({
+        target: { tabId: targetId },
+        func: extractPageContent,
+        args: [scope, format],
+      });
+    } catch (err) {
+      throw new Error(
+        `Could not read the page: ${describeError(err)}. ` +
+        'Chrome blocks extension scripting on chrome:// pages, the Web Store, and PDF viewers.',
+      );
+    }
+
+    // ⛔ Check the injected function's RESULT, not just that injection resolved.
+    // executeScript resolves successfully when the injected code returned
+    // nothing at all — I shipped exactly that bug in the watch injector.
+    const out = injected && injected[0] && injected[0].result;
+    if (!out) throw new Error('The page returned nothing to send (it may have navigated mid-read).');
+    if (!out.ok) throw new Error(out.error || 'Extraction failed.');
+    if (!out.content || !out.content.trim()) {
+      throw new Error(
+        scope === 'selection'
+          ? 'The selection came back empty.'
+          : 'The page came back empty — it may render its content in a frame this cannot reach.',
+      );
+    }
+
+    const requestId = `s2a-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const settled = new Promise((resolve) => {
+      const timeoutId = setTimeout(() => {
+        this.pendingSends.delete(requestId);
+        resolve({
+          ok: false,
+          sent: 0,
+          detail: 'The server did not report back within 20s. It may still have delivered; check with the recipient.',
+        });
+      }, 20000);
+      this.pendingSends.set(requestId, { resolve, timeoutId });
+    });
+
+    this.ws.sendNoResponse({
+      id: requestId,
+      type: 'SEND_TO_AGENT',
+      payload: {
+        requestId, to, scope,
+        format: out.format,
+        url: out.url,
+        title: out.title,
+        content: out.content,
+      },
+    });
+
+    const result = await settled;
+    return { ...result, bytes: out.content.length, format: out.format, scope, to };
   }
 
   /**

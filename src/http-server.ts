@@ -34,6 +34,7 @@ import { requireApiKey, requireLan, isAuthEnabled, isLocalClient, getEffectiveCl
 import * as realisticInput from "@/tools/realistic-input";
 import * as multiTabManagement from "@/tools/multi-tab-management";
 import * as videoRecording from "@/tools/video-recording";
+import { fetchDestinations, getParked } from "@/tools/send-to-agent";
 import * as frames from "@/tools/frames";
 import * as errors from "@/tools/errors";
 import * as chromeLauncher from "@/tools/chrome-launcher";
@@ -320,6 +321,40 @@ async function main() {
 
   // Extension distribution — public landing page; the zip download itself is
   // gated by the same API key middleware when UNIBROWSE_API_KEYS is set.
+  /**
+   * The broker's live seat list, proxied for the extension popup's picker.
+   *
+   * ⛔ Proxied rather than fetched directly by the extension, for the same
+   * reason the send itself is: the extension does not talk to third parties.
+   * ⭐ The picker and the send-time validation read the SAME list, so a name
+   * the picker offers can never be one the sender rejects.
+   */
+  app.get("/destinations", async (_req: any, res: any) => {
+    try {
+      const destinations = await fetchDestinations();
+      res.json({ status: "ok", count: destinations.length, destinations });
+    } catch (e: any) {
+      res.status(502).json({ status: "error", error: e?.message || String(e) });
+    }
+  });
+
+  /**
+   * A page body too large to inline in an ATC message. Plain GET, no auth —
+   * the id is unguessable and the content is a web page the recipient could
+   * have fetched themselves. Expires after 6h.
+   */
+  app.get("/shared/:id", (req: any, res: any) => {
+    const entry = getParked(String(req.params.id));
+    if (!entry) {
+      res.status(404).type("text/plain").send(
+        "Not found. Parked page bodies expire 6 hours after they are sent; " +
+        "ask the sender to re-send.",
+      );
+      return;
+    }
+    res.type(entry.format === "html" ? "text/html" : "text/plain").send(entry.body);
+  });
+
   app.get("/install", installLandingHandler);
   app.get("/install/extension.zip", installZipHandler);
 

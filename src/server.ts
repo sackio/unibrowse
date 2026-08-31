@@ -1,4 +1,5 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { createSender } from "@/tools/send-to-agent";
 import {
   CallToolRequestSchema,
   ListResourcesRequestSchema,
@@ -36,6 +37,16 @@ type Options = {
 // GET /extensions. That endpoint is deliberately readable WITHOUT a working
 // extension — it is the only view of "the browser died" that survives the
 // browser dying. http-server imports from here already; there is no cycle.
+/**
+ * ⛔ Base URL the RECIPIENT will fetch a parked body from — not this process's
+ * bind address. Inside the compose network that is the service name; override
+ * with UNIBROWSE_PUBLIC_URL if a recipient lives outside it, or oversized
+ * sends will hand out a URL only this container can resolve.
+ */
+const sendToAgent = createSender({
+  selfBaseUrl: process.env.UNIBROWSE_PUBLIC_URL || "http://mcp-server:9010",
+});
+
 export const globalContext = new Context();
 
 // MCP `instructions` field — surfaced to clients via the initialize handshake.
@@ -185,6 +196,38 @@ export async function createServerWithTools(options: Options): Promise<Server> {
           });
         })
         .catch((e) => console.log(`[Watch] re-push to ${extensionId} failed (non-fatal): ${e?.message}`));
+      return;
+    }
+
+    // The popup's "send to agent" button. Unsolicited, like WATCH_FIRED, and
+    // handled HERE rather than in the extension for the same reason: the
+    // extension must never make an outbound call to a third party.
+    if (type === 'SEND_TO_AGENT') {
+      const p = (payload ?? {}) as Record<string, unknown>;
+      void sendToAgent({
+        to: String(p.to ?? ''),
+        url: String(p.url ?? ''),
+        title: p.title ? String(p.title) : undefined,
+        content: String(p.content ?? ''),
+        format: (p.format as 'markdown' | 'html' | 'text') ?? 'markdown',
+        scope: String(p.scope ?? 'page'),
+      }).then((result) => {
+        // ⛔ Report the OUTCOME back to the extension so the popup can show it.
+        // Without this the button would go green on "we posted it", which is
+        // not the same as "it was delivered" — the failure this whole module
+        // exists to make visible.
+        try {
+          ws.send(JSON.stringify({
+            id: `send-to-agent-${Date.now()}`,
+            type: 'SEND_TO_AGENT_RESULT',
+            payload: { requestId: p.requestId ?? null, ...result },
+          }));
+        } catch { /* popup may be gone; the log below is the record */ }
+        console.log(
+          `[SendToAgent] -> ${p.to}: ok=${result.ok} sent=${result.sent}` +
+          (result.detail ? ` detail=${result.detail}` : ''),
+        );
+      });
       return;
     }
 

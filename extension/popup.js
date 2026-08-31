@@ -20,6 +20,12 @@ class PopupController {
       sessionRecordBtn: document.getElementById('session-record-btn'),
       sessionRecordStats: document.getElementById('session-record-stats'),
       sessionRecordList: document.getElementById('session-record-list'),
+      sendAgentSection: document.getElementById('send-agent-section'),
+      sendAgentTarget: document.getElementById('send-agent-target'),
+      sendAgentFormat: document.getElementById('send-agent-format'),
+      sendPageBtn: document.getElementById('send-page-btn'),
+      sendSelectionBtn: document.getElementById('send-selection-btn'),
+      sendAgentStatus: document.getElementById('send-agent-status'),
       attachCurrentTabBtn: document.getElementById('attach-current-tab-btn'),
     };
 
@@ -54,6 +60,10 @@ class PopupController {
     this.elements.refreshAttachedTabsBtn.addEventListener('click', () => {
       this.loadAttachedTabs();
     });
+
+    this.elements.sendPageBtn.addEventListener('click', () => this.sendToAgent('page'));
+    this.elements.sendSelectionBtn.addEventListener('click', () => this.sendToAgent('selection'));
+    this.loadDestinations();
 
     this.elements.sessionRecordBtn.addEventListener('click', () => {
       this.handleSessionRecordClick();
@@ -179,6 +189,74 @@ class PopupController {
       btn.disabled = false;
       btn.textContent = '⏺ Record This Tab';
       this.loadState();
+    }
+  }
+
+  /**
+   * Fill the agent picker from the server's /destinations.
+   * ⛔ Never a hand-typed list: the option's value IS the ATC address, and an
+   * address that is not a real subscriber is accepted by the broker and never
+   * delivered, with no error anywhere (`ha`, scanfile, 2026-08-31).
+   */
+  async loadDestinations() {
+    const sel = this.elements.sendAgentTarget;
+    try {
+      const resp = await chrome.runtime.sendMessage({ type: 'get_destinations' });
+      if (!resp || !resp.success) throw new Error(resp?.error || 'could not load');
+      sel.textContent = '';
+      const blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = `Send to… (${resp.destinations.length})`;
+      sel.appendChild(blank);
+      for (const d of resp.destinations) {
+        const o = document.createElement('option');
+        o.value = d.id;
+        o.textContent = d.hostname ? `${d.id} · ${d.hostname}` : d.id;
+        sel.appendChild(o);
+      }
+      const last = (await chrome.storage.local.get('lastSendTarget')).lastSendTarget;
+      if (last && resp.destinations.some(d => d.id === last)) sel.value = last;
+    } catch (e) {
+      sel.textContent = '';
+      const o = document.createElement('option');
+      o.value = '';
+      o.textContent = 'Agent list unavailable';
+      sel.appendChild(o);
+      this._sendStatus(false, `Could not load the agent list: ${e.message}`);
+    }
+  }
+
+  _sendStatus(ok, text) {
+    const el = this.elements.sendAgentStatus;
+    el.textContent = text;
+    el.classList.remove('ok', 'bad');
+    el.classList.add('visible', ok ? 'ok' : 'bad');
+  }
+
+  /** Send the page or the selection. Reports DELIVERY, not "we posted it". */
+  async sendToAgent(scope) {
+    const to = this.elements.sendAgentTarget.value;
+    if (!to) { this._sendStatus(false, 'Pick an agent first.'); return; }
+    const format = this.elements.sendAgentFormat.value;
+    const buttons = [this.elements.sendPageBtn, this.elements.sendSelectionBtn];
+    buttons.forEach(b => { b.disabled = true; });
+    this._sendStatus(true, `Sending ${scope} to ${to}…`);
+    try {
+      chrome.storage.local.set({ lastSendTarget: to }).catch(() => {});
+      const r = await chrome.runtime.sendMessage({
+        type: 'send_to_agent',
+        payload: { to, scope, format },
+      });
+      if (r && r.success) {
+        const kb = Math.max(1, Math.round((r.bytes || 0) / 1024));
+        this._sendStatus(true, `Delivered to ${to} (${kb} KB of ${r.format}).`);
+      } else {
+        this._sendStatus(false, r?.detail || r?.error || 'Send failed.');
+      }
+    } catch (e) {
+      this._sendStatus(false, e.message);
+    } finally {
+      buttons.forEach(b => { b.disabled = false; });
     }
   }
 
@@ -599,11 +677,13 @@ class PopupController {
       this.elements.attachedTabsSection.style.display = 'block';
       this.elements.tabsSection.style.display = 'block';
       this.elements.sessionRecordSection.style.display = 'block';
+      this.elements.sendAgentSection.style.display = 'block';
       this.elements.attachCurrentTabBtn.style.display = 'block';
     } else {
       this.elements.attachedTabsSection.style.display = 'none';
       this.elements.tabsSection.style.display = 'none';
       this.elements.sessionRecordSection.style.display = 'none';
+      this.elements.sendAgentSection.style.display = 'none';
       this.elements.attachCurrentTabBtn.style.display = 'none';
     }
 
