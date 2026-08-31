@@ -2100,8 +2100,18 @@ class BackgroundController {
         }
       }
 
-      // Only handle popup-specific messages here
-      const popupMessages = ['connect', 'disconnect', 'get_state', 'ensure_attached', 'list_attached_tabs', 'set_tab_label', 'detach_tab', 'start_session_recording', 'stop_session_recording', 'get_session_recording_state'];
+      // Only handle popup-specific messages here.
+      //
+      // ⛔ THIS LIST AND THE SWITCH IN handlePopupMessage() MUST AGREE. A type
+      // handled there but missing here never reaches a listener at all: this
+      // listener returns false, no other listener answers, and Chrome reports
+      // "A listener indicated an asynchronous response by returning true, but
+      // the message channel closed before a response was received" — which
+      // reads like an async/timeout bug and is actually a missing string.
+      // ⚠️ Adding a `case` to that switch WITHOUT adding it here is silent at
+      // build time and at load time. Measured 2026-08-31: shipped exactly that
+      // for get_destinations/send_to_agent; ben hit it on the first click.
+      const popupMessages = BackgroundController.POPUP_MESSAGE_TYPES;
       if (popupMessages.includes(message.type)) {
         this.handlePopupMessage(message, sendResponse);
         return true; // Keep channel open for async response
@@ -4304,6 +4314,14 @@ class BackgroundController {
   /**
    * Handle message from popup
    */
+  // ⛔ Must list EVERY `case` in handlePopupMessage below. Kept adjacent to
+  // that switch on purpose — the two were 2200 lines apart when they drifted.
+  static POPUP_MESSAGE_TYPES = [
+    'connect', 'disconnect', 'get_state', 'ensure_attached', 'list_attached_tabs',
+    'set_tab_label', 'detach_tab', 'start_session_recording', 'stop_session_recording',
+    'get_session_recording_state', 'get_destinations', 'send_to_agent',
+  ];
+
   async handlePopupMessage(message, sendResponse) {
     console.log('[Background] Popup message:', message);
 
