@@ -39,6 +39,7 @@ import {
   errorResponse,
   evaluate,
   executeMacro,
+  fetchDestinations,
   fillForm,
   findByText,
   forgetWatch,
@@ -60,6 +61,7 @@ import {
   getNetworkLogs,
   getNetworkState,
   getPageMetadata,
+  getParked,
   getRecording,
   getRecordingScreenshot,
   getSessionRecordingState,
@@ -122,7 +124,7 @@ import {
   wait,
   watchBuffer,
   watchRegistry
-} from "./chunk-3CLEABRR.js";
+} from "./chunk-DMRRR4ET.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -1601,6 +1603,24 @@ async function main() {
       // close (worker shutdown), 1006 = socket vanished with no close frame.
       recentDisconnects: globalContext.getDisconnects()
     });
+  });
+  app.get("/destinations", async (_req, res) => {
+    try {
+      const destinations = await fetchDestinations();
+      res.json({ status: "ok", count: destinations.length, destinations });
+    } catch (e) {
+      res.status(502).json({ status: "error", error: e?.message || String(e) });
+    }
+  });
+  app.get("/shared/:id", (req, res) => {
+    const entry = getParked(String(req.params.id));
+    if (!entry) {
+      res.status(404).type("text/plain").send(
+        "Not found. Parked page bodies expire 6 hours after they are sent; ask the sender to re-send."
+      );
+      return;
+    }
+    res.type(entry.format === "html" ? "text/html" : "text/plain").send(entry.body);
   });
   app.get("/install", installLandingHandler);
   app.get("/install/extension.zip", installZipHandler);
