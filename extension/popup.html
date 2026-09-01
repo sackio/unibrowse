@@ -370,6 +370,23 @@
       background-color: #c82333;
     }
 
+    /* Share sits LEFT of Detach and is deliberately not red: the two sit a few
+       pixels apart and one of them ends the recipient's access to the tab. */
+    .share-btn {
+      padding: 4px 8px;
+      font-size: 11px;
+      background-color: #0d6efd;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      width: auto;
+      margin: 0 6px 0 0;
+    }
+
+    .share-btn:hover:not(:disabled) { background-color: #0b5ed7; }
+    .share-btn:disabled { background-color: #9ec5fe; cursor: default; }
+
     .attached-tab-info {
       font-size: 11px;
       color: #666;
@@ -575,6 +592,10 @@
       <div class="send-agent-buttons">
         <button id="send-page-btn">Send page</button>
         <button id="send-selection-btn">Send selection</button>
+      </div>
+      <div class="send-agent-row" style="margin-top:6px;">
+        <select id="share-recording-select"><option value="">Share a recording…</option></select>
+        <button id="share-recording-btn" class="share-btn" style="margin:0;padding:6px 10px;">Share</button>
       </div>
       <div class="send-agent-status" id="send-agent-status"></div>
     </div>

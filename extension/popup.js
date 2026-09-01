@@ -26,6 +26,8 @@ class PopupController {
       sendPageBtn: document.getElementById('send-page-btn'),
       sendSelectionBtn: document.getElementById('send-selection-btn'),
       sendAgentStatus: document.getElementById('send-agent-status'),
+      shareRecordingSelect: document.getElementById('share-recording-select'),
+      shareRecordingBtn: document.getElementById('share-recording-btn'),
       attachCurrentTabBtn: document.getElementById('attach-current-tab-btn'),
     };
 
@@ -63,7 +65,9 @@ class PopupController {
 
     this.elements.sendPageBtn.addEventListener('click', () => this.sendToAgent('page'));
     this.elements.sendSelectionBtn.addEventListener('click', () => this.sendToAgent('selection'));
+    this.elements.shareRecordingBtn.addEventListener('click', () => this.shareRecording());
     this.loadDestinations();
+    this.loadSavedRecordings();
 
     this.elements.sessionRecordBtn.addEventListener('click', () => {
       this.handleSessionRecordClick();
@@ -260,11 +264,116 @@ class PopupController {
     }
   }
 
+  /**
+   * Fill the recording picker from the SERVER's saved list.
+   *
+   * ⚠️ Saved, never the live rows above. A recording still running has no id
+   * on the server yet, so offering it would hand a recipient an address that
+   * resolves to nothing until someone presses Stop.
+   */
+  async loadSavedRecordings() {
+    const sel = this.elements.shareRecordingSelect;
+    try {
+      const resp = await chrome.runtime.sendMessage({ type: 'list_saved_recordings' });
+      if (!resp || !resp.success) throw new Error(resp?.error || 'could not load');
+      sel.textContent = '';
+      const blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = resp.recordings.length
+        ? `Share a recording… (${resp.recordings.length})`
+        : 'No saved recordings';
+      sel.appendChild(blank);
+      for (const r of resp.recordings) {
+        const o = document.createElement('option');
+        o.value = r.id;
+        const secs = Math.round((r.duration || 0) / 1000);
+        const len = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m`;
+        o.textContent = `${r.title || r.id} · ${len}`;
+        o.title = r.startUrl || '';
+        sel.appendChild(o);
+      }
+    } catch (e) {
+      sel.textContent = '';
+      const o = document.createElement('option');
+      o.value = '';
+      o.textContent = 'Recording list unavailable';
+      sel.appendChild(o);
+    }
+  }
+
+  /**
+   * Share a LIVE attached tab. Reports what the recipient was actually told to
+   * address it by, because the background auto-labels an unlabelled tab and
+   * the user would otherwise not know the tab now has a name.
+   */
+  async shareTab(tabId, btn) {
+    const to = this.elements.sendAgentTarget.value;
+    if (!to) { this._sendStatus(false, 'Pick an agent first (the dropdown above).'); return; }
+    if (btn) btn.disabled = true;
+    this._sendStatus(true, `Sharing tab with ${to}…`);
+    try {
+      chrome.storage.local.set({ lastSendTarget: to }).catch(() => {});
+      const r = await chrome.runtime.sendMessage({ type: 'share_tab', payload: { to, tabId } });
+      if (r && r.success) {
+        this._sendStatus(
+          true,
+          `Shared with ${to} as "${r.label}"` +
+          (r.labelWasGenerated ? ' (label generated — it had none).' : '.'),
+        );
+        await this.loadAttachedTabs();
+      } else {
+        this._sendStatus(false, r?.detail || r?.error || 'Share failed.');
+      }
+    } catch (e) {
+      this._sendStatus(false, e.message);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  /** Share a saved recording — the id and the review link, not the events. */
+  async shareRecording() {
+    const to = this.elements.sendAgentTarget.value;
+    if (!to) { this._sendStatus(false, 'Pick an agent first.'); return; }
+    const recordingId = this.elements.shareRecordingSelect.value;
+    if (!recordingId) { this._sendStatus(false, 'Pick a recording first.'); return; }
+    const btn = this.elements.shareRecordingBtn;
+    btn.disabled = true;
+    this._sendStatus(true, `Sharing recording with ${to}…`);
+    try {
+      chrome.storage.local.set({ lastSendTarget: to }).catch(() => {});
+      const r = await chrome.runtime.sendMessage({
+        type: 'share_recording',
+        payload: { to, recordingId },
+      });
+      if (r && r.success) {
+        this._sendStatus(true, `Recording shared with ${to}.`);
+      } else {
+        this._sendStatus(false, r?.detail || r?.error || 'Share failed.');
+      }
+    } catch (e) {
+      this._sendStatus(false, e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   /** Stop ONE named recording. Never an unqualified stop — see the click handler. */
   async stopRecording(sessionId) {
     try {
       const response = await chrome.runtime.sendMessage({ type: 'stop_session_recording', sessionId });
       if (response && response.error) this.showError(response.error);
+      // The recording exists on the server only once stop() has finished
+      // uploading, which is exactly now — so refresh the share picker here and
+      // preselect what was just made. "Share the recording I just took" is the
+      // common case and should not require finding it in a list.
+      if (response && response.recordingId) {
+        await this.loadSavedRecordings();
+        const sel = this.elements.shareRecordingSelect;
+        if ([...sel.options].some(o => o.value === response.recordingId)) {
+          sel.value = response.recordingId;
+        }
+      }
     } catch (error) {
       this.showError(error.message);
     } finally {
@@ -550,6 +659,16 @@ class PopupController {
       const controls = document.createElement('div');
       controls.className = 'attached-tab-controls';
 
+      // Share button — hands this live tab to the agent picked above.
+      const shareBtn = document.createElement('button');
+      shareBtn.className = 'share-btn';
+      shareBtn.textContent = 'Share';
+      shareBtn.title = 'Send this live tab to the agent selected above — you both keep using it';
+      shareBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await this.shareTab(tab.tabId, shareBtn);
+      });
+
       // Detach button
       const detachBtn = document.createElement('button');
       detachBtn.className = 'detach-btn';
@@ -559,6 +678,7 @@ class PopupController {
         await this.detachTab(tab.tabId);
       });
 
+      controls.appendChild(shareBtn);
       controls.appendChild(detachBtn);
       header.appendChild(controls);
 

@@ -49,6 +49,24 @@ const sendToAgent = createSender({
 
 export const globalContext = new Context();
 
+/**
+ * The human label the server publishes for an extensionId, or undefined.
+ *
+ * ⚠️ Best-effort by design. An extension can share a tab in the moment its own
+ * registration is being re-minted (a service-worker restart does exactly
+ * that), and a share that arrives with no label is still a perfectly good
+ * share — the LABEL of the tab is the handle, not this. So a miss omits the
+ * line rather than failing the send.
+ */
+function describeExtensionLabel(extensionId: string): string | undefined {
+  if (!extensionId) return undefined;
+  try {
+    return globalContext.describeExtensions().find((e) => e.extensionId === extensionId)?.label;
+  } catch {
+    return undefined;
+  }
+}
+
 // MCP `instructions` field — surfaced to clients via the initialize handshake.
 // Documents the multi-agent shared-server model that confused several callers
 // (ha, shopping, storybook all hit it in one day). Agents that read this on
@@ -204,14 +222,48 @@ export async function createServerWithTools(options: Options): Promise<Server> {
     // extension must never make an outbound call to a third party.
     if (type === 'SEND_TO_AGENT') {
       const p = (payload ?? {}) as Record<string, unknown>;
-      void sendToAgent({
-        to: String(p.to ?? ''),
-        url: String(p.url ?? ''),
-        title: p.title ? String(p.title) : undefined,
-        content: String(p.content ?? ''),
-        format: (p.format as 'markdown' | 'html' | 'text') ?? 'markdown',
-        scope: String(p.scope ?? 'page'),
-      }).then((result) => {
+      const kind = (p.kind as 'content' | 'tab' | 'recording') ?? 'content';
+      // ⛔ Build the input per kind rather than spreading the payload. The
+      // extension is the only sender today, but this is a websocket frame:
+      // spreading it would let any field the extension happens to carry —
+      // cookies, auth headers, a whole tab record — ride into an outbound
+      // message to a third party. Name every field that crosses.
+      const share =
+        kind === 'tab'
+          ? {
+              kind: 'tab' as const,
+              to: String(p.to ?? ''),
+              label: String(p.label ?? ''),
+              url: String(p.url ?? ''),
+              title: p.title ? String(p.title) : undefined,
+              tabId: typeof p.tabId === 'number' ? p.tabId : undefined,
+              extensionId: p.extensionId ? String(p.extensionId) : undefined,
+              // ⭐ The extension does not know its own human label — the server
+              // derives it (kind + platform + address). Fill it here so the
+              // recipient can tell WHICH browser they were handed, without the
+              // extension having to mirror a naming scheme it does not own.
+              extensionLabel: describeExtensionLabel(String(p.extensionId ?? '')),
+            }
+          : kind === 'recording'
+            ? {
+                kind: 'recording' as const,
+                to: String(p.to ?? ''),
+                recordingId: String(p.recordingId ?? ''),
+                title: p.title ? String(p.title) : undefined,
+                startUrl: p.startUrl ? String(p.startUrl) : undefined,
+                durationMs: typeof p.durationMs === 'number' ? p.durationMs : undefined,
+                reviewUrl: p.reviewUrl ? String(p.reviewUrl) : undefined,
+                pageCount: typeof p.pageCount === 'number' ? p.pageCount : undefined,
+              }
+            : {
+                to: String(p.to ?? ''),
+                url: String(p.url ?? ''),
+                title: p.title ? String(p.title) : undefined,
+                content: String(p.content ?? ''),
+                format: (p.format as 'markdown' | 'html' | 'text') ?? 'markdown',
+                scope: String(p.scope ?? 'page'),
+              };
+      void sendToAgent(share).then((result) => {
         // ⛔ Report the OUTCOME back to the extension so the popup can show it.
         // Without this the button would go green on "we posted it", which is
         // not the same as "it was delivered" — the failure this whole module
@@ -224,7 +276,7 @@ export async function createServerWithTools(options: Options): Promise<Server> {
           }));
         } catch { /* popup may be gone; the log below is the record */ }
         console.log(
-          `[SendToAgent] -> ${p.to}: ok=${result.ok} sent=${result.sent}` +
+          `[SendToAgent] ${kind} -> ${p.to}: ok=${result.ok} sent=${result.sent}` +
           (result.detail ? ` detail=${result.detail}` : ''),
         );
       });

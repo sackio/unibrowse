@@ -4320,6 +4320,7 @@ class BackgroundController {
     'connect', 'disconnect', 'get_state', 'ensure_attached', 'list_attached_tabs',
     'set_tab_label', 'detach_tab', 'start_session_recording', 'stop_session_recording',
     'get_session_recording_state', 'get_destinations', 'send_to_agent',
+    'share_tab', 'share_recording', 'list_saved_recordings',
   ];
 
   async handlePopupMessage(message, sendResponse) {
@@ -4467,6 +4468,37 @@ class BackgroundController {
         }
         break;
 
+      // ⛔ `success` MIRRORS r.ok, NOT "the handler returned". r.ok is the
+      // server's delivery verdict; a share the broker accepted and dropped
+      // comes back ok:false with a detail, and reporting it green is the
+      // failure this feature exists to surface.
+      case 'share_tab':
+        try {
+          const r = await this.handleShareTab(message.payload || {});
+          sendResponse({ success: r.ok, ...r });
+        } catch (error) {
+          sendResponse({ success: false, error: describeError(error) });
+        }
+        break;
+
+      case 'share_recording':
+        try {
+          const r = await this.handleShareRecording(message.payload || {});
+          sendResponse({ success: r.ok, ...r });
+        } catch (error) {
+          sendResponse({ success: false, error: describeError(error) });
+        }
+        break;
+
+      case 'list_saved_recordings':
+        try {
+          const recordings = await this.handleListSavedRecordings(message.payload || {});
+          sendResponse({ success: true, recordings });
+        } catch (error) {
+          sendResponse({ success: false, error: describeError(error) });
+        }
+        break;
+
       case 'get_session_recording_state':
         sendResponse({
           success: true,
@@ -4588,6 +4620,28 @@ class BackgroundController {
       );
     }
 
+    const result = await this._dispatchSend({
+      kind: 'content',
+      to, scope,
+      format: out.format,
+      url: out.url,
+      title: out.title,
+      content: out.content,
+    });
+    return { ...result, bytes: out.content.length, format: out.format, scope, to };
+  }
+
+  /**
+   * Hand one share to the server and wait for its DELIVERY verdict.
+   *
+   * ⛔ ALL THREE SHARE KINDS GO THROUGH HERE, and the reason is the timeout,
+   * not the tidiness. The server answers asynchronously on a separate frame
+   * (SEND_TO_AGENT_RESULT); a caller that fired and returned would report
+   * success for "we put it on the socket", which is the exact failure this
+   * whole feature was built to make visible. A second copy of this plumbing is
+   * a second chance to omit the timeout and hang the popup forever.
+   */
+  async _dispatchSend(payload) {
     const requestId = `s2a-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const settled = new Promise((resolve) => {
       const timeoutId = setTimeout(() => {
@@ -4604,17 +4658,148 @@ class BackgroundController {
     this.ws.sendNoResponse({
       id: requestId,
       type: 'SEND_TO_AGENT',
-      payload: {
-        requestId, to, scope,
-        format: out.format,
-        url: out.url,
-        title: out.title,
-        content: out.content,
-      },
+      payload: { requestId, ...payload },
     });
 
-    const result = await settled;
-    return { ...result, bytes: out.content.length, format: out.format, scope, to };
+    return settled;
+  }
+
+  /**
+   * Share a LIVE attached tab with an agent, so both can drive it.
+   *
+   * ⛔ NOT A COPY. handleSendToAgent extracts the page and mails the text; this
+   * mails a HANDLE and the tab keeps moving. The distinction matters at the
+   * far end: a recipient who thinks they have a snapshot will reason about
+   * stale content, and one who thinks they have exclusive control will reserve
+   * or close a tab the sender is still using. The envelope says which; see
+   * renderTabShare in src/tools/send-to-agent.ts.
+   */
+  async handleShareTab({ to, tabId } = {}) {
+    if (!to) throw new Error('No recipient. Pick an agent to send to.');
+    if (tabId == null) throw new Error('No tab to share.');
+
+    const info = this.tabManager.attachedTabs.get(tabId);
+    if (!info) {
+      throw new Error(
+        `Tab ${tabId} is not attached, so the recipient could not drive it. ` +
+        'Attach it first — a shared tab is a live handle, not a snapshot.',
+      );
+    }
+
+    // ⚠️ RE-READ THE LIVE URL AND TITLE. `info.url` is the ATTACH-TIME value
+    // and never updates on navigation (the same staleness that broke label
+    // generation — see generateLabel). Sharing the attach-time url would send
+    // a recipient to a page the tab left hours ago, and it would look right.
+    let url = info.url;
+    let title = info.title;
+    try {
+      const live = await chrome.tabs.get(tabId);
+      if (live && live.url) url = live.url;
+      if (live && live.title) title = live.title;
+    } catch {
+      throw new Error(`Tab ${tabId} has closed — nothing to share.`);
+    }
+
+    // ⛔ THE LABEL IS THE HANDLE, so a tab without one cannot be shared. Mint
+    // it here rather than refusing: the alternative is telling a user who
+    // clicked Share to go and name a tab first, for a reason that is entirely
+    // about our routing. generateLabel() is collision-checked against every
+    // label in use, so this cannot hand out one already taken.
+    let label = (info.label || '').trim();
+    let labelWasGenerated = false;
+    if (!label) {
+      label = this.tabManager.generateLabel(url);
+      this.tabManager.setTabLabel(tabId, label);
+      labelWasGenerated = true;
+    }
+
+    let extensionId = null;
+    try { extensionId = await ensureExtensionId(); } catch { /* label-only share is still valid */ }
+
+    const result = await this._dispatchSend({
+      kind: 'tab', to, label, url, title, tabId, extensionId,
+    });
+    return { ...result, label, labelWasGenerated, url, to };
+  }
+
+  /**
+   * Share a SAVED session recording with an agent.
+   *
+   * ⚠️ Saved, not live. A recording that is still running has no id, no
+   * duration and no events on the server yet — sharing one would send a
+   * recipient an address that resolves to nothing until the sender happens to
+   * press Stop. The popup therefore picks from the server's list, which by
+   * construction contains only recordings that finished uploading.
+   */
+  async handleShareRecording({ to, recordingId } = {}) {
+    if (!to) throw new Error('No recipient. Pick an agent to send to.');
+    if (!recordingId) throw new Error('No recording chosen.');
+
+    const { base, headers } = await this._recordingsEndpoint();
+
+    // ⚠️ THE TWO RECORDING ENDPOINTS RETURN DIFFERENT SHAPES.
+    //   GET /api/v1/recordings      -> { count, recordings: [ ... ] }
+    //   GET /api/v1/recordings/:id  -> { recording: { ... } }
+    // Reading the second like the first yields an object with every field
+    // undefined and NO error — which reaches the recipient as a message about
+    // a recording with no title, no length and no id. Caught here 2026-09-01
+    // only because the server-side guard refuses an empty recordingId.
+    let meta = null;
+    try {
+      const resp = await fetch(`${base}/api/v1/recordings/${encodeURIComponent(recordingId)}`, { headers });
+      if (resp.ok) {
+        const body = await resp.json();
+        meta = body && body.recording ? body.recording : null;
+      }
+    } catch (err) {
+      console.warn('[Background] Could not read recording metadata:', err.message);
+    }
+
+    // ⛔ NO reviewUrl HERE. `base` is what THIS browser uses to reach the
+    // server — `localhost:9010` on the host, `mcp-server:9010` in a sidecar —
+    // and neither resolves for a recipient anywhere else. The server builds
+    // the replay link from UNIBROWSE_PUBLIC_URL, which is the only place that
+    // knows what is reachable from outside the container.
+    //
+    // A metadata miss is not a reason to refuse: the id the user picked is the
+    // payload, and the recipient fetches the rest themselves. The extra fields
+    // only make the message readable, so they degrade to absent.
+
+    const result = await this._dispatchSend({
+      kind: 'recording',
+      to,
+      recordingId,
+      title: meta ? meta.title : undefined,
+      startUrl: meta ? meta.startUrl : undefined,
+      durationMs: meta ? meta.duration : undefined,
+      pageCount: meta && Array.isArray(meta.pages) ? meta.pages.length : undefined,
+    });
+    return { ...result, recordingId, to };
+  }
+
+  /** Base URL + auth headers for this browser's recordings server. */
+  async _recordingsEndpoint() {
+    const cfg = this.serverConfig || await resolveServerConfig();
+    return {
+      base: (cfg.httpUrl || 'http://localhost:9010').replace(/\/$/, ''),
+      headers: cfg.apiKey ? { 'Authorization': `Bearer ${cfg.apiKey}` } : {},
+    };
+  }
+
+  /** The saved recordings the popup's picker offers. Newest first. */
+  async handleListSavedRecordings({ limit = 25 } = {}) {
+    const { base, headers } = await this._recordingsEndpoint();
+    const resp = await fetch(`${base}/api/v1/recordings?limit=${encodeURIComponent(limit)}`, { headers });
+    if (!resp.ok) throw new Error(`Server returned HTTP ${resp.status}`);
+    const data = await resp.json();
+    const list = Array.isArray(data.recordings) ? data.recordings : [];
+    return list.map(r => ({
+      id: r.id,
+      title: r.title,
+      startUrl: r.startUrl,
+      duration: r.duration,
+      createdAt: r.createdAt,
+    }));
   }
 
   /**
