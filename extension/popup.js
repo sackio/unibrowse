@@ -333,6 +333,23 @@ class PopupController {
     if (resolve) resolve(value);
   }
 
+  /**
+   * "…but your note did not go" — appended to an otherwise successful send.
+   *
+   * ⛔ A DROPPED NOTE LOOKS EXACTLY LIKE A DELIVERED ONE from here. The share
+   * itself succeeds, the status goes green, and the only party who could
+   * notice the missing text is the recipient — who has no idea it was ever
+   * written. This popup can be newer than the background answering it (popup
+   * documents re-read from disk on every open; a service worker does not), so
+   * that mismatch is expected, not exotic.
+   */
+  _noteWarning(choice, r) {
+    if (!choice.note) return '';
+    if (r && r.noteApplied) return '';
+    return ' ⚠️ Your note was NOT sent — this browser is still running an older ' +
+      'background script. Reload the extension, then send again.';
+  }
+
   async sendToAgent(scope) {
     const to = this.elements.sendAgentTarget.value;
     if (!to) { this._sendStatus(false, 'Pick an agent first.'); return; }
@@ -355,7 +372,7 @@ class PopupController {
       });
       if (r && r.success) {
         const kb = Math.max(1, Math.round((r.bytes || 0) / 1024));
-        this._sendStatus(true, `Delivered to ${to} (${kb} KB of ${r.format}).`);
+        this._sendStatus(true, `Delivered to ${to} (${kb} KB of ${r.format}).` + this._noteWarning(choice, r));
       } else {
         this._sendStatus(false, r?.detail || r?.error || 'Send failed.');
       }
@@ -436,7 +453,8 @@ class PopupController {
           `Shared with ${to} as "${r.label}"` +
           (r.labelWasGenerated ? ' (label generated — it had none)' : '') +
           (r.recording ? ' · recording so far attached' : '') + '.' +
-          (r.recordingError ? ` ⚠️ The recording did NOT go: ${r.recordingError}` : ''),
+          (r.recordingError ? ` ⚠️ The recording did NOT go: ${r.recordingError}` : '') +
+          this._noteWarning(choice, r),
         );
         await this.loadAttachedTabs();
       } else {
@@ -473,7 +491,7 @@ class PopupController {
         payload: { to, recordingId, note: choice.note },
       });
       if (r && r.success) {
-        this._sendStatus(true, `Recording shared with ${to}.`);
+        this._sendStatus(true, `Recording shared with ${to}.` + this._noteWarning(choice, r));
       } else {
         this._sendStatus(false, r?.detail || r?.error || 'Share failed.');
       }

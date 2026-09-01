@@ -4643,7 +4643,7 @@ class BackgroundController {
       title: out.title,
       content: out.content,
     });
-    return { ...result, bytes: out.content.length, format: out.format, scope, to };
+    return { ...result, bytes: out.content.length, format: out.format, scope, to, noteApplied: !!(note && note.trim()) };
   }
 
   /**
@@ -4655,6 +4655,19 @@ class BackgroundController {
    * success for "we put it on the socket", which is the exact failure this
    * whole feature was built to make visible. A second copy of this plumbing is
    * a second chance to omit the timeout and hang the popup forever.
+   */
+  /**
+   * ⛔ `noteApplied` ON EVERY SHARE RESULT IS A VERSION PROBE, not a field the
+   * popup needs. extension/* reaches a running browser only when its service
+   * worker restarts, so the popup (which re-reads from disk on every open) can
+   * be NEWER than the background answering it. An old background ignores the
+   * `note` it was handed and reports a clean success — the user types a note,
+   * watches the send go green, and the recipient gets nothing. Echoing the
+   * flag makes that mismatch visible instead of silent.
+   *
+   * ⚠️ It attests only that THIS half forwarded the note to the server. It
+   * cannot speak for the server's own version; that half is deployed by
+   * restarting mcp-server and is not observable from here.
    */
   async _dispatchSend(payload) {
     const requestId = `s2a-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -4915,7 +4928,7 @@ class BackgroundController {
     // ⛔ recordingError rides back on a SUCCESSFUL share. The tab went; the
     // history did not, and the sender is the only one who can still notice —
     // the recipient cannot miss a section that was never in their message.
-    return { ...result, label, labelWasGenerated, url, to, recording, recordingError };
+    return { ...result, label, labelWasGenerated, url, to, recording, recordingError, noteApplied: !!(note && note.trim()) };
   }
 
   /**
@@ -4971,7 +4984,7 @@ class BackgroundController {
       durationMs: meta ? meta.duration : undefined,
       pageCount: meta && Array.isArray(meta.pages) ? meta.pages.length : undefined,
     });
-    return { ...result, recordingId, to };
+    return { ...result, recordingId, to, noteApplied: !!(note && note.trim()) };
   }
 
   /** Base URL + auth headers for this browser's recordings server. */
