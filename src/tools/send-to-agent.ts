@@ -35,6 +35,15 @@ export const ATC_URL = process.env.UNIBROWSE_ATC_URL || DEFAULT_ATC_URL;
 export const INLINE_CONTENT_LIMIT = 200 * 1024;
 
 /**
+ * ⛔ A NOTE IS THE ONLY PART OF A SHARE A HUMAN TYPED, and it lands in an
+ * agent's context next to instructions the agent is meant to follow. So it is
+ * fenced, labelled as the sender's words, and capped — an unbounded paste from
+ * the popup would otherwise ride into an ATC message with no limit but the
+ * broker's 1 MB, and arrive looking exactly like part of our envelope.
+ */
+export const NOTE_LIMIT = 2000;
+
+/**
  * ⛔ A SHARE IS NOT ALWAYS A COPY. Three kinds travel this one path:
  *
  *   "content"   — a page or selection, copied into the message. What it says
@@ -54,6 +63,31 @@ export type ShareKind = "content" | "tab" | "recording";
 interface ShareBase {
   to: string;
   from?: string;
+  /**
+   * Free text the sender typed in the popup's send dialog. Optional on every
+   * kind — "here, look at this" is the whole reason a share gets opened, and
+   * a share with nothing to say is still a valid share.
+   */
+  note?: string;
+}
+
+/**
+ * A recording carried ALONGSIDE another share (today: a tab).
+ *
+ * ⛔ `partial` IS NOT DECORATION. A recording shared with a live tab is a
+ * snapshot taken while the sender's recorder was still running: it stops at
+ * the instant of the share, it will never grow, and it has NO VIDEO — tab
+ * video is one continuous encode that cannot be split without ending the
+ * capture. A recipient who assumes otherwise waits for frames that are not
+ * coming, or reports the replay as broken. The envelope has to say so.
+ */
+export interface SharedRecordingRef {
+  recordingId: string;
+  partial: boolean;
+  /** How far into the recording the snapshot was cut. */
+  durationMs?: number;
+  eventCount?: number;
+  reviewUrl?: string;
 }
 
 export interface ContentShare extends ShareBase {
@@ -79,6 +113,12 @@ export interface TabShare extends ShareBase {
   tabId?: number;
   extensionId?: string;
   extensionLabel?: string;
+  /**
+   * ⭐ HOW THE TAB GOT HERE. A live tab is a position with no history — the
+   * recipient sees the current DOM and nothing about the twelve steps that
+   * produced it. When the sender is recording, the share carries that history.
+   */
+  recording?: SharedRecordingRef;
 }
 
 export interface RecordingShare extends ShareBase {
@@ -137,6 +177,24 @@ function head(what: string): string {
   return `This is from unibrowse — ${what}\n`;
 }
 
+/**
+ * The sender's own words, fenced off from ours.
+ *
+ * ⛔ THE FENCE IS LOAD-BEARING. Everything else in these envelopes is written
+ * by unibrowse and is meant to be acted on; this is text a person typed into a
+ * browser popup. Unfenced, "ignore the tab, just do X" reads to the recipient
+ * exactly like our own instruction to do X. So it is labelled, and a note that
+ * contains the closing fence has it defanged rather than being allowed to end
+ * the block early and continue in our voice.
+ */
+function renderNote(note?: string): string {
+  const n = (note ?? "").trim();
+  if (!n) return "";
+  const safe = n.slice(0, NOTE_LIMIT).replace(/^(--- end note ---)$/gim, " $1");
+  const truncated = n.length > NOTE_LIMIT ? `\n[note truncated at ${NOTE_LIMIT} characters]` : "";
+  return `\n--- note from the sender ---\n${safe}${truncated}\n--- end note ---\n`;
+}
+
 function renderContentShare(input: ContentShare, parkedUrl?: string): string {
   const h =
     head(input.scope === "selection" ? "a selection from:" : "the page at:") +
@@ -145,14 +203,14 @@ function renderContentShare(input: ContentShare, parkedUrl?: string): string {
 
   if (parkedUrl) {
     return (
-      `${h}\n` +
+      `${h}${renderNote(input.note)}\n` +
       `The content was too large to send inline (${input.content.length} bytes as ${input.format}).\n` +
       `Fetch it here — plain GET, no auth:\n${parkedUrl}\n\n` +
       `⚠️ That URL is served from unibrowse's mcp-server and expires in 6 hours.`
     );
   }
 
-  return `${h}\n--- ${input.format} ---\n${input.content}`;
+  return `${h}${renderNote(input.note)}\n--- ${input.format} ---\n${input.content}`;
 }
 
 /**
@@ -173,10 +231,58 @@ function renderContentShare(input: ContentShare, parkedUrl?: string): string {
  * only as diagnostics, and says which is which — a recipient who picks wrong
  * gets no error until they have already acted on someone else's page.
  */
+/**
+ * The recording that rode along with a tab share, or "".
+ *
+ * ⛔ EVERY LIMIT IS STATED, because each one is invisible at the far end and
+ * each one reads as a bug when it surprises someone: the stream stops at the
+ * share, it never grows, and there is no video in it. A recipient who scrubs
+ * to the end and finds the flow unfinished — or opens the replay expecting
+ * screen capture — concludes the recording is broken, not bounded.
+ */
+function renderTabRecording(rec?: SharedRecordingRef): string {
+  if (!rec || !rec.recordingId) return "";
+  const id = JSON.stringify(rec.recordingId);
+  // Not `head` — that is the module's envelope-opener, and shadowing it here
+  // would make a later call to it inside this function silently unreachable.
+  const lead =
+    `\n\n` +
+    `⭐ HOW THE TAB GOT HERE — a recording came with it.\n` +
+    `\n` +
+    `  browser_get_recording({ recordingId: ${id} })\n` +
+    (rec.reviewUrl ? `  Replay (for a human): ${rec.reviewUrl}\n` : "");
+
+  if (!rec.partial) {
+    return (
+      lead +
+      `\n` +
+      `⚠️ Metadata only by default. Pass includeEvents:true — and a filter — when\n` +
+      `   you actually need the stream, or it will fill your context with frames.`
+    );
+  }
+
+  return (
+    lead +
+    `\n` +
+    `⛔ THIS IS A SNAPSHOT OF A RECORDING THAT IS STILL RUNNING. It was cut at\n` +
+    `   the moment of the share (${humanDuration(rec.durationMs)} in` +
+    `${rec.eventCount != null ? `, ${rec.eventCount} rrweb events` : ""}) and it will\n` +
+    `   NEVER GROW. The sender's recorder carried on and saves separately when\n` +
+    `   they stop it — so an unfinished-looking flow at the end of this one is\n` +
+    `   the cut, not the truth about what they did.\n` +
+    `⛔ NO VIDEO in it. Tab video is one continuous encode and cannot be split\n` +
+    `   without ending the capture, which would stop the sender's recording.\n` +
+    `   You have DOM (rrweb), network and interactions.\n` +
+    `⚠️ Metadata only by default. Pass includeEvents:true — and a filter — when\n` +
+    `   you actually need the stream, or it will fill your context with frames.`
+  );
+}
+
 function renderTabShare(input: TabShare): string {
   const t = JSON.stringify(input.label);
   return (
     head("a LIVE browser tab has been shared with you.") +
+    renderNote(input.note) +
     `\n` +
     `  Tab      ${input.label}\n` +
     `  URL      ${input.url}\n` +
@@ -200,7 +306,8 @@ function renderTabShare(input: TabShare): string {
     `⚠️ SHARED, NOT HANDED OVER. The sender is working this tab too.\n` +
     `   Nobody has reserved it — do not call browser_reserve_tab on it, do not\n` +
     `   detach it, and do not close it. If you need it to yourself for a few\n` +
-    `   steps, ask them first.`
+    `   steps, ask them first.` +
+    renderTabRecording(input.recording)
   );
 }
 
@@ -214,6 +321,7 @@ function renderRecordingShare(input: RecordingShare): string {
   const id = JSON.stringify(input.recordingId);
   return (
     head("a session recording has been shared with you.") +
+    renderNote(input.note) +
     `\n` +
     (input.title ? `  Title    ${input.title}\n` : "") +
     `  Id       ${input.recordingId}\n` +
@@ -321,10 +429,27 @@ export function createSender(opts: { fetchImpl?: typeof fetch; selfBaseUrl?: str
     // sidecar. Both are correct for the sender and dead for every recipient,
     // and the message delivers cleanly either way. Measured 2026-09-01: a real
     // share went out carrying `http://localhost:9010/review/...`.
-    const share: SendToAgentInput =
-      input.kind === "recording" && !input.reviewUrl && opts.selfBaseUrl
-        ? { ...input, reviewUrl: `${opts.selfBaseUrl.replace(/\/$/, "")}/review/${input.recordingId}` }
-        : input;
+    //
+    // ⚠️ BOTH KINDS THAT CARRY A RECORDING NEED IT. A tab share with a
+    // ride-along recording has exactly the same problem as a recording share,
+    // and it is easier to miss: the recording is a sub-object, so a link built
+    // for the top-level case leaves the nested one at whatever the extension
+    // guessed, or absent.
+    const reviewBase = opts.selfBaseUrl ? opts.selfBaseUrl.replace(/\/$/, "") : null;
+    let share: SendToAgentInput = input;
+    if (reviewBase) {
+      if (input.kind === "recording" && !input.reviewUrl) {
+        share = { ...input, reviewUrl: `${reviewBase}/review/${input.recordingId}` };
+      } else if (input.kind === "tab" && input.recording?.recordingId && !input.recording.reviewUrl) {
+        share = {
+          ...input,
+          recording: {
+            ...input.recording,
+            reviewUrl: `${reviewBase}/review/${input.recording.recordingId}`,
+          },
+        };
+      }
+    }
 
     const body = {
       to,

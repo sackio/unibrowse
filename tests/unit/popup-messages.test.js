@@ -121,11 +121,15 @@ test("⛔ every message the POPUP sends is one the background answers", () => {
   );
 });
 
-test("the share feature's three messages are wired end to end", () => {
+test("the share feature's messages are wired end to end", () => {
   const allowed = allowlist();
   const cases = switchCases();
   const sends = popupSends();
-  for (const t of ["share_tab", "share_recording", "list_saved_recordings"]) {
+  // get_tab_recording is what the send dialog asks before offering to attach
+  // the recording so far. If it goes unanswered the dialog still opens, the
+  // checkbox never appears, and the tab shares without its history — a
+  // missing feature that looks exactly like "there was no recording".
+  for (const t of ["share_tab", "share_recording", "list_saved_recordings", "get_tab_recording"]) {
     assert.ok(sends.includes(t), `popup.js must actually send ${t}`);
     assert.ok(allowed.includes(t), `${t} must be allowlisted`);
     assert.ok(cases.includes(t), `${t} must have a case in handlePopupMessage`);

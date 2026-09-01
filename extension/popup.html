@@ -550,6 +550,107 @@
     .send-agent-status.visible { display: block; }
     .send-agent-status.ok { background: #d4edda; color: #155724; }
     .send-agent-status.bad { background: #fee; color: #c33; }
+    /* ── Send dialog ────────────────────────────────────────────────────────
+       ⛔ A REAL MODAL, not window.prompt(). Chrome ignores prompt()/confirm()
+       inside an extension popup entirely — the call returns null with no error
+       and no dialog, so a note collected that way is silently always empty.
+       Fixed inside the popup's own 400px viewport. */
+    .send-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 100;
+    }
+
+    .send-modal[hidden] { display: none; }
+
+    .send-modal-card {
+      background: #fff;
+      border-radius: 8px;
+      padding: 14px;
+      width: 100%;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25);
+    }
+
+    .send-modal-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #1a1a1a;
+      margin-bottom: 2px;
+    }
+
+    .send-modal-summary {
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 10px;
+      word-break: break-all;
+    }
+
+    .send-modal-card textarea {
+      width: 100%;
+      min-height: 68px;
+      resize: vertical;
+      padding: 7px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .send-modal-card textarea:focus {
+      outline: none;
+      border-color: #0d6efd;
+    }
+
+    /* Only shown when a recording actually covers the tab — see openSendDialog. */
+    .send-modal-recording {
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+      margin-top: 9px;
+      padding: 8px;
+      background: #f3f0fa;
+      border-radius: 4px;
+      font-size: 11px;
+      color: #4a3f6b;
+      line-height: 1.4;
+    }
+
+    .send-modal-recording input { margin-top: 2px; flex: 0 0 auto; }
+
+    .send-modal-hint {
+      font-size: 10px;
+      color: #888;
+      margin-top: 8px;
+    }
+
+    .send-modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .send-modal-actions button {
+      width: auto;
+      margin: 0;
+      padding: 6px 14px;
+      font-size: 13px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    #send-modal-cancel { background: #e9ecef; color: #333; }
+    #send-modal-cancel:hover { background: #dee2e6; }
+    #send-modal-send { background: #0d6efd; color: #fff; }
+    #send-modal-send:hover { background: #0b5ed7; }
+
   </style>
 </head>
 <body>
@@ -629,6 +730,27 @@
   </div>
 
   <div class="error" id="error"></div>
+
+  <!-- ⛔ Every id here is read by popup.js via getElementById; the pair is
+       guarded by tests/unit/popup-dom.test.js, because a renamed id fails as a
+       null dereference at click time and nothing before that notices. -->
+  <div class="send-modal" id="send-modal" hidden>
+    <div class="send-modal-card">
+      <div class="send-modal-title" id="send-modal-title">Send to agent</div>
+      <div class="send-modal-summary" id="send-modal-summary"></div>
+      <textarea id="send-modal-note" maxlength="2000"
+                placeholder="Optional note — what you want them to do with it"></textarea>
+      <label class="send-modal-recording" id="send-modal-recording" hidden>
+        <input type="checkbox" id="send-modal-recording-check" checked>
+        <span id="send-modal-recording-text"></span>
+      </label>
+      <div class="send-modal-hint">⌘/Ctrl+Enter sends · Esc cancels</div>
+      <div class="send-modal-actions">
+        <button id="send-modal-cancel">Cancel</button>
+        <button id="send-modal-send">Send</button>
+      </div>
+    </div>
+  </div>
 
   <script src="config.js"></script>
   <script src="utils/browser-env.js"></script>

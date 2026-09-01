@@ -228,11 +228,31 @@ export async function createServerWithTools(options: Options): Promise<Server> {
       // spreading it would let any field the extension happens to carry —
       // cookies, auth headers, a whole tab record — ride into an outbound
       // message to a third party. Name every field that crosses.
+      // ⛔ The note crosses the same named-field boundary as everything else —
+      // it is the one field a human typed, and it is the reason this is not a
+      // spread. See the comment above.
+      const note = p.note ? String(p.note) : undefined;
+      // A recording riding along with a tab share. Named field by field for the
+      // same reason: the extension builds this object, and only these five keys
+      // may reach a third party.
+      const r = (p.recording ?? null) as Record<string, unknown> | null;
+      const rideAlong =
+        r && r.recordingId
+          ? {
+              recordingId: String(r.recordingId),
+              partial: r.partial !== false,
+              durationMs: typeof r.durationMs === 'number' ? r.durationMs : undefined,
+              eventCount: typeof r.eventCount === 'number' ? r.eventCount : undefined,
+              reviewUrl: r.reviewUrl ? String(r.reviewUrl) : undefined,
+            }
+          : undefined;
       const share =
         kind === 'tab'
           ? {
               kind: 'tab' as const,
               to: String(p.to ?? ''),
+              note,
+              recording: rideAlong,
               label: String(p.label ?? ''),
               url: String(p.url ?? ''),
               title: p.title ? String(p.title) : undefined,
@@ -248,6 +268,7 @@ export async function createServerWithTools(options: Options): Promise<Server> {
             ? {
                 kind: 'recording' as const,
                 to: String(p.to ?? ''),
+                note,
                 recordingId: String(p.recordingId ?? ''),
                 title: p.title ? String(p.title) : undefined,
                 startUrl: p.startUrl ? String(p.startUrl) : undefined,
@@ -257,6 +278,7 @@ export async function createServerWithTools(options: Options): Promise<Server> {
               }
             : {
                 to: String(p.to ?? ''),
+                note,
                 url: String(p.url ?? ''),
                 title: p.title ? String(p.title) : undefined,
                 content: String(p.content ?? ''),

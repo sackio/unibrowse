@@ -29,9 +29,20 @@ class PopupController {
       shareRecordingSelect: document.getElementById('share-recording-select'),
       shareRecordingBtn: document.getElementById('share-recording-btn'),
       attachCurrentTabBtn: document.getElementById('attach-current-tab-btn'),
+      sendModal: document.getElementById('send-modal'),
+      sendModalTitle: document.getElementById('send-modal-title'),
+      sendModalSummary: document.getElementById('send-modal-summary'),
+      sendModalNote: document.getElementById('send-modal-note'),
+      sendModalRecording: document.getElementById('send-modal-recording'),
+      sendModalRecordingCheck: document.getElementById('send-modal-recording-check'),
+      sendModalRecordingText: document.getElementById('send-modal-recording-text'),
+      sendModalCancel: document.getElementById('send-modal-cancel'),
+      sendModalSend: document.getElementById('send-modal-send'),
     };
 
     this.currentState = null;
+    /** Resolver for the open send dialog, or null. See openSendDialog. */
+    this._sendDialogResolve = null;
     this.attachedTabs = [];
     this.windows = [];
     this.tabs = [];
@@ -66,6 +77,20 @@ class PopupController {
     this.elements.sendPageBtn.addEventListener('click', () => this.sendToAgent('page'));
     this.elements.sendSelectionBtn.addEventListener('click', () => this.sendToAgent('selection'));
     this.elements.shareRecordingBtn.addEventListener('click', () => this.shareRecording());
+
+    // ⛔ Bound ONCE, here — not per open. Re-binding on each openSendDialog
+    // would stack a listener per dialog and fire every stale resolver on the
+    // next click, sending the same thing several times.
+    this.elements.sendModalCancel.addEventListener('click', () => this._closeSendDialog(null));
+    this.elements.sendModalSend.addEventListener('click', () => this._submitSendDialog());
+    this.elements.sendModal.addEventListener('click', (e) => {
+      // Backdrop only. A click that started inside the card must not cancel.
+      if (e.target === this.elements.sendModal) this._closeSendDialog(null);
+    });
+    this.elements.sendModal.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); this._closeSendDialog(null); }
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); this._submitSendDialog(); }
+    });
     this.loadDestinations();
     this.loadSavedRecordings();
 
@@ -238,10 +263,87 @@ class PopupController {
   }
 
   /** Send the page or the selection. Reports DELIVERY, not "we posted it". */
+  /**
+   * Ask for an optional note before sending, and resolve with what the user
+   * chose — or null if they cancelled.
+   *
+   * ⛔ RESOLVES NULL ON CANCEL, never a default object. A cancel that resolved
+   * `{ note: '' }` would be indistinguishable from "sent with no note", and
+   * every caller would go on to send the thing the user just backed out of.
+   *
+   * ⚠️ Only ONE dialog at a time. A second open while one is pending cancels
+   * the first — an abandoned resolver never settles, and its caller's `await`
+   * would hang with the send button disabled forever.
+   *
+   * `tabId` turns on the recording row: the background is asked whether a
+   * recording actually covers THAT tab (get_tab_recording), so the checkbox is
+   * offered only when there is something to attach.
+   */
+  async openSendDialog({ title, summary, tabId = null }) {
+    if (this._sendDialogResolve) this._closeSendDialog(null);
+
+    const el = this.elements;
+    el.sendModalTitle.textContent = title;
+    el.sendModalSummary.textContent = summary || '';
+    el.sendModalNote.value = '';
+    el.sendModalRecording.hidden = true;
+    el.sendModalRecordingCheck.checked = true;
+
+    const opened = new Promise((resolve) => { this._sendDialogResolve = resolve; });
+    el.sendModal.hidden = false;
+    el.sendModalNote.focus();
+
+    // Asked AFTER the dialog is up: the round trip is short but not free, and
+    // a dialog that appears only once the background answers reads as a
+    // dropped click. The row fades in late instead.
+    if (tabId != null) {
+      try {
+        const r = await chrome.runtime.sendMessage({ type: 'get_tab_recording', payload: { tabId } });
+        // ⚠️ Re-check the resolver: the user can cancel during the round trip,
+        // and writing into a closed dialog leaves the row visible on the next
+        // open — for a tab that may have no recording at all.
+        if (r && r.success && r.recording && this._sendDialogResolve) {
+          const secs = Math.round((r.recording.elapsedMs || 0) / 1000);
+          const len = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, '0')}s`;
+          el.sendModalRecordingText.textContent =
+            `Also send the recording so far (${len}, ${r.recording.rrwebEventCount} events). ` +
+            `It is a snapshot — no video, and your recording keeps running.`;
+          el.sendModalRecording.hidden = false;
+        }
+      } catch { /* no row is the correct degradation — the tab still shares */ }
+    }
+
+    return opened;
+  }
+
+  _submitSendDialog() {
+    const el = this.elements;
+    this._closeSendDialog({
+      note: el.sendModalNote.value.trim(),
+      // ⚠️ A hidden row means there was nothing to attach, so false is right —
+      // the checkbox's `checked` default must not be read when it was never shown.
+      includeRecording: !el.sendModalRecording.hidden && el.sendModalRecordingCheck.checked,
+    });
+  }
+
+  _closeSendDialog(value) {
+    const resolve = this._sendDialogResolve;
+    this._sendDialogResolve = null;
+    this.elements.sendModal.hidden = true;
+    if (resolve) resolve(value);
+  }
+
   async sendToAgent(scope) {
     const to = this.elements.sendAgentTarget.value;
     if (!to) { this._sendStatus(false, 'Pick an agent first.'); return; }
     const format = this.elements.sendAgentFormat.value;
+
+    const choice = await this.openSendDialog({
+      title: `Send ${scope} to ${to}`,
+      summary: `${format} · read from the active tab`,
+    });
+    if (!choice) return;
+
     const buttons = [this.elements.sendPageBtn, this.elements.sendSelectionBtn];
     buttons.forEach(b => { b.disabled = true; });
     this._sendStatus(true, `Sending ${scope} to ${to}…`);
@@ -249,7 +351,7 @@ class PopupController {
       chrome.storage.local.set({ lastSendTarget: to }).catch(() => {});
       const r = await chrome.runtime.sendMessage({
         type: 'send_to_agent',
-        payload: { to, scope, format },
+        payload: { to, scope, format, note: choice.note },
       });
       if (r && r.success) {
         const kb = Math.max(1, Math.round((r.bytes || 0) / 1024));
@@ -309,16 +411,32 @@ class PopupController {
   async shareTab(tabId, btn) {
     const to = this.elements.sendAgentTarget.value;
     if (!to) { this._sendStatus(false, 'Pick an agent first (the dropdown above).'); return; }
+
+    const choice = await this.openSendDialog({
+      title: `Share this tab with ${to}`,
+      summary: 'A live handle — you both keep driving it.',
+      tabId,
+    });
+    if (!choice) return;
+
     if (btn) btn.disabled = true;
     this._sendStatus(true, `Sharing tab with ${to}…`);
     try {
       chrome.storage.local.set({ lastSendTarget: to }).catch(() => {});
-      const r = await chrome.runtime.sendMessage({ type: 'share_tab', payload: { to, tabId } });
+      const r = await chrome.runtime.sendMessage({
+        type: 'share_tab',
+        payload: { to, tabId, note: choice.note, includeRecording: choice.includeRecording },
+      });
       if (r && r.success) {
+        // ⛔ recordingError is reported on a SUCCESSFUL share. The tab went and
+        // the history did not; the recipient cannot notice a section that was
+        // never in their message, so the sender is the only one who can.
         this._sendStatus(
           true,
           `Shared with ${to} as "${r.label}"` +
-          (r.labelWasGenerated ? ' (label generated — it had none).' : '.'),
+          (r.labelWasGenerated ? ' (label generated — it had none)' : '') +
+          (r.recording ? ' · recording so far attached' : '') + '.' +
+          (r.recordingError ? ` ⚠️ The recording did NOT go: ${r.recordingError}` : ''),
         );
         await this.loadAttachedTabs();
       } else {
@@ -335,8 +453,16 @@ class PopupController {
   async shareRecording() {
     const to = this.elements.sendAgentTarget.value;
     if (!to) { this._sendStatus(false, 'Pick an agent first.'); return; }
-    const recordingId = this.elements.shareRecordingSelect.value;
+    const sel = this.elements.shareRecordingSelect;
+    const recordingId = sel.value;
     if (!recordingId) { this._sendStatus(false, 'Pick a recording first.'); return; }
+
+    const choice = await this.openSendDialog({
+      title: `Share this recording with ${to}`,
+      summary: sel.options[sel.selectedIndex]?.textContent || recordingId,
+    });
+    if (!choice) return;
+
     const btn = this.elements.shareRecordingBtn;
     btn.disabled = true;
     this._sendStatus(true, `Sharing recording with ${to}…`);
@@ -344,7 +470,7 @@ class PopupController {
       chrome.storage.local.set({ lastSendTarget: to }).catch(() => {});
       const r = await chrome.runtime.sendMessage({
         type: 'share_recording',
-        payload: { to, recordingId },
+        payload: { to, recordingId, note: choice.note },
       });
       if (r && r.success) {
         this._sendStatus(true, `Recording shared with ${to}.`);

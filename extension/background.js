@@ -4320,7 +4320,7 @@ class BackgroundController {
     'connect', 'disconnect', 'get_state', 'ensure_attached', 'list_attached_tabs',
     'set_tab_label', 'detach_tab', 'start_session_recording', 'stop_session_recording',
     'get_session_recording_state', 'get_destinations', 'send_to_agent',
-    'share_tab', 'share_recording', 'list_saved_recordings',
+    'share_tab', 'share_recording', 'list_saved_recordings', 'get_tab_recording',
   ];
 
   async handlePopupMessage(message, sendResponse) {
@@ -4481,6 +4481,21 @@ class BackgroundController {
         }
         break;
 
+      // ⛔ ASK, DON'T DERIVE. The send dialog needs to know whether a recording
+      // covers ONE tab. get_state's list omits tabIds, so a popup working it
+      // out itself would be right for single-tab recordings and quietly wrong
+      // for every recording a child tab joined. recordingForTab owns that
+      // question; this is the popup's way to ask it.
+      case 'get_tab_recording':
+        try {
+          const { tabId } = message.payload || {};
+          const r = tabId == null ? null : this.recordingForTab(tabId);
+          sendResponse({ success: true, recording: r ? this.describeRecording(r) : null });
+        } catch (error) {
+          sendResponse({ success: false, error: describeError(error) });
+        }
+        break;
+
       case 'share_recording':
         try {
           const r = await this.handleShareRecording(message.payload || {});
@@ -4582,7 +4597,7 @@ class BackgroundController {
    * broker does not recognise is accepted and dropped with no error, so
    * "we sent it" and "they got it" are genuinely different answers.
    */
-  async handleSendToAgent({ to, scope = 'page', format = 'markdown', tabId } = {}) {
+  async handleSendToAgent({ to, scope = 'page', format = 'markdown', tabId, note } = {}) {
     if (!to) throw new Error('No recipient. Pick an agent to send to.');
 
     let targetId = tabId;
@@ -4622,7 +4637,7 @@ class BackgroundController {
 
     const result = await this._dispatchSend({
       kind: 'content',
-      to, scope,
+      to, scope, note,
       format: out.format,
       url: out.url,
       title: out.title,
@@ -4665,6 +4680,160 @@ class BackgroundController {
   }
 
   /**
+   * Upload EVERYTHING A LIVE RECORDING HAS SO FAR as its own saved recording,
+   * without touching the recording itself.
+   *
+   * ⛔ THIS IS THE ONLY WAY TO SHARE A RUNNING RECORDING, and it costs a second
+   * recording id. The alternative — handing out the live sessionId — hands out
+   * an address that resolves to nothing until the sender happens to press Stop,
+   * which is the failure handleShareRecording's picker exists to avoid.
+   *
+   * ⛔ NOTHING HERE MAY MUTATE `recording`. It is still being written to by
+   * every capture path in the extension, and the sender's real recording is
+   * uploaded from it later. So the buffers are COPIED on entry (an upload runs
+   * for seconds; events keep arriving throughout) and the open page entry is
+   * closed in the copy only — stamping endTime on the live one would mark a
+   * page finished that the user is still on, and that corruption would not
+   * surface until the full recording replayed.
+   *
+   * ⛔ NO VIDEO, and not by omission. The offscreen encoder is one continuous
+   * MediaRecorder per tab; the only way to get bytes out of it is to stop it,
+   * which would end the sender's video capture as a side effect of them
+   * sharing a tab. DOM, network and interactions are all a snapshot can carry,
+   * and renderTabRecording tells the recipient exactly that.
+   *
+   * Never throws: a failed snapshot must not take the tab share down with it.
+   * The tab is the payload; the recording is the context.
+   */
+  async _uploadRecordingSnapshot(recording) {
+    const cutAt = Date.now();
+    // ⚠️ Copy FIRST, before any await. Everything below reads the copies.
+    const rrwebEvents = (recording.rrwebEvents || []).slice();
+    const networkEntries = (recording.networkEntries || []).slice();
+    const interactions = (recording.interactions || []).slice();
+    const annotations = (recording.annotations || []).slice();
+    const pages = (recording.pages || []).map(pg => ({ ...pg }));
+    if (pages.length && !pages[pages.length - 1].endTime) {
+      pages[pages.length - 1].endTime = cutAt;
+    }
+
+    const durationMs = cutAt - recording.startTime;
+    const secs = Math.round(durationMs / 1000);
+    const elapsed = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, '0')}s`;
+    let hostname = recording.startUrl;
+    try { hostname = new URL(recording.startUrl).hostname; } catch { /* startUrl may not be a URL */ }
+    const baseTitle = recording.title || `Session: ${hostname} @ ${new Date(recording.startTime).toLocaleTimeString()}`;
+
+    const metadata = {
+      sessionId: recording.sessionId,
+      // ⭐ The title is the only thing distinguishing this from the full
+      // recording in the popup's picker, which lists both. Say what it is.
+      title: `${baseTitle} · partial @ ${elapsed}`,
+      description: `Snapshot taken while the recording was still running, shared with a live tab.`,
+      tags: ['session-recording', 'partial-snapshot'],
+      startUrl: recording.startUrl,
+      startTime: recording.startTime,
+      endTime: cutAt,
+      duration: durationMs,
+      pages,
+      rrwebEventCount: rrwebEvents.length,
+      networkEntryCount: networkEntries.length,
+      interactionCount: interactions.length,
+      annotationCount: annotations.length,
+      // ⛔ Read by the review UI and by anyone listing recordings. "complete"
+      // here would claim a flow ends where a share happened to interrupt it.
+      status: 'partial',
+      primaryTabId: recording.tabId,
+      // Deliberately empty: no video rode along, so nothing should advertise a
+      // recorded tab whose video will never arrive.
+      recordedTabIds: [],
+      videoStartTimes: {},
+    };
+
+    // Same routing rule as the stop path: a tab bound to a remote server
+    // uploads to THAT server, not the extension's default.
+    const primaryTabId = recording.tabId || (recording.tabIds || [])[0] || null;
+    const cfg = primaryTabId != null
+      ? await getServerForTab(primaryTabId)
+      : (this.serverConfig || await resolveServerConfig());
+    const SERVER_BASE = (cfg.httpUrl || 'http://localhost:9010').replace(/\/$/, '');
+    const authHeaders = cfg.apiKey ? { 'Authorization': `Bearer ${cfg.apiKey}` } : {};
+
+    try {
+      const createResp = await fetch(`${SERVER_BASE}/api/v1/recordings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(metadata),
+      });
+      if (!createResp.ok) throw new Error(`server returned HTTP ${createResp.status}`);
+      const createData = await createResp.json();
+      if (!createData.id) throw new Error('server did not return a recording id');
+      const recordingId = createData.id;
+
+      // Annotations carry base64 screenshots, so they go one per request —
+      // same reason as the stop path: they cannot ride inside a size-capped
+      // event chunk predictably.
+      for (const a of annotations) {
+        try {
+          await fetch(`${SERVER_BASE}/api/v1/recordings/${recordingId}/annotations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders },
+            body: JSON.stringify(a),
+          });
+        } catch (err) {
+          console.warn('[Background] Snapshot annotation upload failed:', err.message);
+        }
+      }
+
+      // ⛔ AWAIT every chunk. An MV3 service worker that returns before its
+      // fetches settle can be killed mid-upload, and the recipient gets a
+      // recording id whose events never arrived.
+      let uploadedChunks = 0;
+      let chunkCount = 0;
+      if (rrwebEvents.length || networkEntries.length || interactions.length) {
+        const CHUNK_BYTES = 12 * 1024 * 1024;
+        const chunks = chunkEventsBySize(rrwebEvents, networkEntries, interactions, CHUNK_BYTES);
+        chunkCount = chunks.length;
+        for (let i = 0; i < chunks.length; i++) {
+          try {
+            const url = `${SERVER_BASE}/api/v1/recordings/${recordingId}/events${i === 0 ? '?reset=1' : ''}`;
+            const resp = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...authHeaders },
+              body: JSON.stringify({ ...chunks[i], chunkIndex: i }),
+            });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            await resp.json();
+            uploadedChunks++;
+          } catch (err) {
+            console.error(`[Background] Snapshot chunk ${i}/${chunks.length} failed:`, err.message);
+          }
+        }
+      }
+
+      // ⛔ A recording whose metadata saved but whose events all failed is
+      // WORSE than none: the recipient gets a valid id that replays blank and
+      // no reason to doubt it. Report the shortfall rather than the id.
+      if (chunkCount > 0 && uploadedChunks === 0) {
+        return {
+          error: `the recording snapshot uploaded no events (${chunkCount} chunks all failed), ` +
+            `so it would have replayed blank`,
+        };
+      }
+
+      return {
+        recordingId,
+        partial: true,
+        durationMs,
+        eventCount: rrwebEvents.length,
+        incomplete: uploadedChunks < chunkCount ? { uploadedChunks, chunkCount } : undefined,
+      };
+    } catch (err) {
+      return { error: describeError(err) };
+    }
+  }
+
+  /**
    * Share a LIVE attached tab with an agent, so both can drive it.
    *
    * ⛔ NOT A COPY. handleSendToAgent extracts the page and mails the text; this
@@ -4673,8 +4842,13 @@ class BackgroundController {
    * stale content, and one who thinks they have exclusive control will reserve
    * or close a tab the sender is still using. The envelope says which; see
    * renderTabShare in src/tools/send-to-agent.ts.
+   *
+   * ⭐ A LIVE TAB IS A POSITION WITH NO HISTORY. If a recording covers this
+   * tab, the share carries a snapshot of it — see _uploadRecordingSnapshot —
+   * so the recipient can see the twelve steps that produced the page they are
+   * looking at. Ben, 2026-09-01: "it should also send the recording this far".
    */
-  async handleShareTab({ to, tabId } = {}) {
+  async handleShareTab({ to, tabId, note, includeRecording = true } = {}) {
     if (!to) throw new Error('No recipient. Pick an agent to send to.');
     if (tabId == null) throw new Error('No tab to share.');
 
@@ -4716,10 +4890,32 @@ class BackgroundController {
     let extensionId = null;
     try { extensionId = await ensureExtensionId(); } catch { /* label-only share is still valid */ }
 
+    // ⚠️ recordingForTab, never allRecordings()[0]. With several sessions live
+    // there is no "the" recording, and attaching an unrelated one would hand
+    // the recipient a convincing history of a completely different flow.
+    const live = includeRecording ? this.recordingForTab(tabId) : null;
+    let recording;
+    let recordingError;
+    if (live) {
+      const snap = await this._uploadRecordingSnapshot(live);
+      if (snap.error) recordingError = snap.error;
+      else {
+        recording = {
+          recordingId: snap.recordingId,
+          partial: true,
+          durationMs: snap.durationMs,
+          eventCount: snap.eventCount,
+        };
+      }
+    }
+
     const result = await this._dispatchSend({
-      kind: 'tab', to, label, url, title, tabId, extensionId,
+      kind: 'tab', to, label, url, title, tabId, extensionId, note, recording,
     });
-    return { ...result, label, labelWasGenerated, url, to };
+    // ⛔ recordingError rides back on a SUCCESSFUL share. The tab went; the
+    // history did not, and the sender is the only one who can still notice —
+    // the recipient cannot miss a section that was never in their message.
+    return { ...result, label, labelWasGenerated, url, to, recording, recordingError };
   }
 
   /**
@@ -4731,7 +4927,7 @@ class BackgroundController {
    * press Stop. The popup therefore picks from the server's list, which by
    * construction contains only recordings that finished uploading.
    */
-  async handleShareRecording({ to, recordingId } = {}) {
+  async handleShareRecording({ to, recordingId, note } = {}) {
     if (!to) throw new Error('No recipient. Pick an agent to send to.');
     if (!recordingId) throw new Error('No recording chosen.');
 
@@ -4768,6 +4964,7 @@ class BackgroundController {
     const result = await this._dispatchSend({
       kind: 'recording',
       to,
+      note,
       recordingId,
       title: meta ? meta.title : undefined,
       startUrl: meta ? meta.startUrl : undefined,
