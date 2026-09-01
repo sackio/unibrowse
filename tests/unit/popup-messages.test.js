@@ -25,6 +25,20 @@ const src = fs.readFileSync(
   "utf8",
 );
 
+const popupSrc = fs.readFileSync(
+  path.join(import.meta.dirname, "../../extension/popup.js"),
+  "utf8",
+);
+
+/** Every `type:` the popup actually puts on the wire. */
+function popupSends() {
+  return [
+    ...new Set(
+      [...popupSrc.matchAll(/type:\s*'([a-z_]+)'/g)].map((m) => m[1]),
+    ),
+  ].sort();
+}
+
 function allowlist() {
   const m = src.match(/static POPUP_MESSAGE_TYPES = \[([\s\S]*?)\];/);
   assert.ok(m, "POPUP_MESSAGE_TYPES must exist — the listener reads it by name");
@@ -78,5 +92,42 @@ test("the message types the send-to-agent feature needs are actually wired", () 
   const allowed = allowlist();
   for (const t of ["get_destinations", "send_to_agent"]) {
     assert.ok(allowed.includes(t), `${t} must be reachable from the popup`);
+  }
+});
+
+/**
+ * ⛔ THE THIRD LIST. The two tests at the top of this file keep the allowlist
+ * and the switch in agreement with each other — and they would both pass
+ * happily while the popup sent a name neither of them has ever heard of.
+ *
+ * That is not hypothetical: the popup is where the message names are TYPED,
+ * and a typo there produces the same "message channel closed before a response
+ * was received" that a missing allowlist entry does. Nothing else in the
+ * toolchain reads these strings — they are string literals crossing a runtime
+ * message boundary, so the parser, the bundler and the typecheck are all blind
+ * to a mismatch.
+ */
+test("⛔ every message the POPUP sends is one the background answers", () => {
+  const allowed = allowlist();
+  const cases = switchCases();
+  const unanswered = popupSends().filter(
+    (t) => !allowed.includes(t) || !cases.includes(t),
+  );
+  assert.deepEqual(
+    unanswered,
+    [],
+    "popup.js sends these and nothing answers them — the click does nothing and " +
+      `Chrome reports an async-response error: ${unanswered.join(", ")}`,
+  );
+});
+
+test("the share feature's three messages are wired end to end", () => {
+  const allowed = allowlist();
+  const cases = switchCases();
+  const sends = popupSends();
+  for (const t of ["share_tab", "share_recording", "list_saved_recordings"]) {
+    assert.ok(sends.includes(t), `popup.js must actually send ${t}`);
+    assert.ok(allowed.includes(t), `${t} must be allowlisted`);
+    assert.ok(cases.includes(t), `${t} must have a case in handlePopupMessage`);
   }
 });
