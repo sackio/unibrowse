@@ -41,6 +41,17 @@ services:
       MONGODB_DB: unibrowse
       NODE_ENV: production
       RECORDINGS_DIR: /app/recordings
+      # ⛔ THE URL WE HAND TO OTHER PEOPLE — not this process's bind address.
+      # Two features mail a link out of this container: a parked oversized
+      # send body (/shared/:id) and a shared recording's replay page
+      # (/review/:id). The default, `http://mcp-server:9010`, is the compose
+      # service name: it resolves inside this network and NOWHERE else, so a
+      # recipient on any other host gets a link that fails DNS. Nothing errors
+      # at send time — the message is delivered, correctly, containing a URL
+      # only we can open.
+      # ⚠️ LAN address, not localhost: recipients are agent seats on office,
+      # server4 and server5. Matches the second port binding above.
+      UNIBROWSE_PUBLIC_URL: ${UNIBROWSE_PUBLIC_URL:-http://192.168.1.199:9010}
       # Comma-separated list of valid API keys. Empty/unset = open mode (auth disabled).
       # When set: /ws + /install/extension.zip + /api/v1/recordings/* require a valid
       # key for REMOTE clients (LAN clients never need one). /mcp is LAN-only (403 for
