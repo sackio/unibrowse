@@ -297,8 +297,21 @@ class PopupController {
     // a dialog that appears only once the background answers reads as a
     // dropped click. The row fades in late instead.
     if (tabId != null) {
+      // ⛔ SEND IS HELD until the probe answers. Without this, a fast click
+      // sends with includeRecording:false while a recording DOES cover the
+      // tab — the recording is dropped, the share reports success, and
+      // nothing anywhere says the history was left behind. Same silent-drop
+      // class as a note swallowed by an old background, one race over.
+      el.sendModalSend.disabled = true;
       try {
-        const r = await chrome.runtime.sendMessage({ type: 'get_tab_recording', payload: { tabId } });
+        // ⚠️ Raced against a deadline, not awaited bare. An unanswered
+        // sendMessage normally rejects, but a background that accepts the
+        // message and never replies would leave Send disabled forever — the
+        // dialog would look permanently broken with no error to read.
+        const r = await Promise.race([
+          chrome.runtime.sendMessage({ type: 'get_tab_recording', payload: { tabId } }),
+          new Promise((res) => setTimeout(() => res(null), 1500)),
+        ]);
         // ⚠️ Re-check the resolver: the user can cancel during the round trip,
         // and writing into a closed dialog leaves the row visible on the next
         // open — for a tab that may have no recording at all.
@@ -311,6 +324,7 @@ class PopupController {
           el.sendModalRecording.hidden = false;
         }
       } catch { /* no row is the correct degradation — the tab still shares */ }
+      finally { el.sendModalSend.disabled = false; }
     }
 
     return opened;
