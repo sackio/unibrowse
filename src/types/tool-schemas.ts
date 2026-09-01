@@ -528,12 +528,44 @@ export const GetErrorsTool = z.object({
 
 export const ReloadExtensionTool = z.object({
   name: z.literal("browser_reload_extension"),
+  // ⛔ THE OLD DESCRIPTION PROMISED "reconnects automatically within ~2
+  // seconds". That is FALSE, and it is the sentence that caused the damage:
+  // it is why this tool was fired at ben's primary desktop Chrome on
+  // 2026-08-31 (3+ minutes dead, every attached tab lost) and it would have
+  // been fired at it again on 2026-09-01. A tool description IS the safety
+  // interlock for a tool that has no other one.
+  //
+  // MEASURED 2026-09-01 on `unibrowse-reload-probe`, a throwaway sidecar
+  // chromium launched for the purpose: socket closed 1001 on reload, and 70s
+  // later — two full sw-keepalive periods — it had NOT reconnected. Read the
+  // extension's own heartbeat ring out of chrome.storage.local on disk
+  // afterwards: ZERO records for the whole window, so the service worker never
+  // started even once. That is the discriminator; everything before this was
+  // inference.
+  //
+  // ⭐ THE MECHANISM, so nobody re-derives it: chrome.runtime.reload() tears
+  // the extension down, which CLEARS the `sw-keepalive` alarm. That alarm is
+  // the only thing that can wake a dormant MV3 service worker, and Chrome
+  // starts a worker only to deliver it an event. No alarm, no event, no
+  // worker, no reconnect — by construction, not by bug.
+  //
+  // ⚠️ Scope: NOT container-only, NOT desktop-only. Measured on both. It is a
+  // property of the tool, not of the target.
   description: z.literal(
-    "Reload the unibrowse Chrome extension (calls chrome.runtime.reload()). " +
-    "Use this to recover from extension crashes, stale state, or after background.js errors. " +
-    "The extension will reconnect automatically within ~2 seconds. " +
-    "All attached tab sessions will need to be re-established after reload. " +
-    "Pass extensionId to choose WHICH browser to reload when several are connected."
+    "⛔ DANGEROUS — READ BEFORE CALLING. Calls chrome.runtime.reload(), which " +
+    "LEAVES THE BROWSER PERMANENTLY DISCONNECTED from unibrowse and DROPS EVERY " +
+    "ATTACHED TAB. It does NOT reconnect on its own, on any browser kind: the " +
+    "reload clears the sw-keepalive alarm, and that alarm is the only thing that " +
+    "can wake an MV3 service worker, so nothing inside the extension can revive " +
+    "it (measured 2026-08-31 on desktop Chrome, again 2026-09-01 on a sidecar " +
+    "chromium — 70s and zero service-worker starts). " +
+    "⛔ NEVER call this on a browser someone is using. " +
+    "USE INSTEAD: for a server-launched chromium, browser_launch_isolated_chrome" +
+    "({profileName, freshProfile:false}) — a process-only relaunch that also picks " +
+    "up current extension code; for a desktop browser, the ↻ Reload control on the " +
+    "unibrowse card at chrome://extensions, or scripts/unibrowse-extension-reload.mjs " +
+    "over CDP where --remote-debugging-port is open. " +
+    "Pass extensionId to choose WHICH browser when several are connected."
   ),
   // ⚠️ This took no target at all until 2026-08-14, while GetErrorsTool
   // directly above it had been given one. Same file, same domain, same
