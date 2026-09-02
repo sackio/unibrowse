@@ -684,10 +684,15 @@
     <div class="send-agent-section" id="send-agent-section" style="display:none;">
       <div class="send-agent-row">
         <select id="send-agent-target"><option value="">Loading agents…</option></select>
+        <!-- ⚠️ This is "what to send", not "what format". `session` is not a
+             third encoding of the page text — it attaches the tab and hands
+             over a live handle, so it takes a different path in popup.js and
+             the two buttons below do not both apply to it. -->
         <select id="send-agent-format">
           <option value="markdown">Markdown</option>
           <option value="html">HTML</option>
           <option value="text">Text</option>
+          <option value="session">Session — attach &amp; hand over the tab</option>
         </select>
       </div>
       <div class="send-agent-buttons">

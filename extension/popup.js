@@ -77,6 +77,8 @@ class PopupController {
     this.elements.sendPageBtn.addEventListener('click', () => this.sendToAgent('page'));
     this.elements.sendSelectionBtn.addEventListener('click', () => this.sendToAgent('selection'));
     this.elements.shareRecordingBtn.addEventListener('click', () => this.shareRecording());
+    this.elements.sendAgentFormat.addEventListener('change', () => this._syncSendButtonsForFormat());
+    this._syncSendButtonsForFormat();
 
     // ⛔ Bound ONCE, here — not per open. Re-binding on each openSendDialog
     // would stack a listener per dialog and fire every stale resolver on the
@@ -364,10 +366,125 @@ class PopupController {
       'background script. Reload the extension, then send again.';
   }
 
+  /**
+   * Keep the two send buttons honest about what the selector will do.
+   *
+   * ⛔ "Send selection" IS MEANINGLESS FOR A SESSION. A session send hands over
+   * the whole live tab; there is no such thing as handing over a selection of
+   * one. Left enabled it would either silently send the whole tab (a different
+   * thing than the button says) or quietly do nothing — so it is disabled, and
+   * the title says why rather than leaving a dead control to puzzle over.
+   */
+  _syncSendButtonsForFormat() {
+    const isSession = this.elements.sendAgentFormat.value === 'session';
+    this.elements.sendPageBtn.textContent = isSession ? 'Attach & send session' : 'Send page';
+    this.elements.sendSelectionBtn.disabled = isSession;
+    this.elements.sendSelectionBtn.title = isSession
+      ? 'A session hands over the whole live tab — there is no selection to send.'
+      : '';
+  }
+
+  /**
+   * Send the active tab AS A SESSION: attach it, then hand the agent a live
+   * handle and the instructions to drive it.
+   *
+   * Ben, 2026-09-02: "md, html, text or a session — which will attach the tab,
+   * and send info to the agent on how to drive the tab etc".
+   *
+   * ⛔ NOTHING IS ATTACHED UNTIL THE USER CONFIRMS. Attaching is a visible,
+   * lasting side effect — it injects the page indicator, reserves nothing but
+   * shows up in every agent's tab list, and survives the popup closing. Doing
+   * it before the dialog would leave a tab attached behind a cancelled send,
+   * with nothing telling the user it happened.
+   *
+   * ⭐ Reuses ensure_attached and share_tab rather than growing a third path.
+   * The tab envelope already explains how to drive a shared tab (renderTabShare
+   * in src/tools/send-to-agent.ts), and a session IS that message — the only
+   * new part is guaranteeing the tab is attached before it goes.
+   */
+  async sendSessionToAgent() {
+    const to = this.elements.sendAgentTarget.value;
+    if (!to) { this._sendStatus(false, 'Pick an agent first.'); return; }
+
+    const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!active) { this._sendStatus(false, 'No active tab to send.'); return; }
+
+    // ⛔ Refuse BEFORE the dialog, not after. A chrome:// page can never be
+    // attached, so opening the dialog would take a note the user typed and
+    // then throw it away with an error — reuse the same guard and the same
+    // wording the Attach button already uses rather than a second opinion.
+    if (this._isUnattachableUrl(active.url)) {
+      this._sendStatus(false, this._unattachableHint(active.url));
+      return;
+    }
+
+    // ⚠️ The tabId is read BEFORE the dialog so the recording probe has
+    // something to ask about — not because anything is attached yet.
+    const choice = await this.openSendDialog({
+      title: `Send this tab as a session to ${to}`,
+      summary: `${active.title || active.url} — it will be attached, and you both keep driving it.`,
+      tabId: active.id,
+    });
+    if (!choice) return;
+
+    const buttons = [this.elements.sendPageBtn, this.elements.sendSelectionBtn];
+    buttons.forEach(b => { b.disabled = true; });
+    this._sendStatus(true, `Attaching the tab…`);
+    try {
+      chrome.storage.local.set({ lastSendTarget: to }).catch(() => {});
+
+      // ⛔ Check `success`, not just that the message came back. ensure_attached
+      // refuses outright on a restricted URL (chrome://, the Web Store, the PDF
+      // viewer) rather than silently attaching a DIFFERENT tab — so a failure
+      // here is a real answer the user needs, not a retry.
+      const att = await chrome.runtime.sendMessage({
+        type: 'ensure_attached',
+        payload: { tabId: active.id },
+      });
+      if (!att || !att.success) {
+        this._sendStatus(false, this._friendlyAttachError({ message: att?.error }) || 'Could not attach this tab.');
+        return;
+      }
+
+      this._sendStatus(true, `Sending the session to ${to}…`);
+      const r = await chrome.runtime.sendMessage({
+        type: 'share_tab',
+        payload: {
+          to,
+          tabId: att.data?.tabId ?? active.id,
+          note: choice.note,
+          includeRecording: choice.includeRecording,
+        },
+      });
+      if (r && r.success) {
+        this._sendStatus(
+          true,
+          `Session sent to ${to} as "${r.label}"` +
+          (r.labelWasGenerated ? ' (label generated — it had none)' : '') +
+          (r.recording ? ' · recording so far attached' : '') + '.' +
+          (r.recordingError ? ` ⚠️ The recording did NOT go: ${r.recordingError}` : '') +
+          this._noteWarning(choice, r),
+        );
+        await this.loadAttachedTabs();
+      } else {
+        this._sendStatus(false, r?.detail || r?.error || 'Send failed.');
+      }
+    } catch (e) {
+      this._sendStatus(false, e.message);
+    } finally {
+      buttons.forEach(b => { b.disabled = false; });
+      this._syncSendButtonsForFormat();
+    }
+  }
+
   async sendToAgent(scope) {
     const to = this.elements.sendAgentTarget.value;
     if (!to) { this._sendStatus(false, 'Pick an agent first.'); return; }
     const format = this.elements.sendAgentFormat.value;
+    // `session` is a different KIND of send, not a fourth encoding — it hands
+    // over a live tab instead of copying text out of one. Branch here so the
+    // content path never has to know the word.
+    if (format === 'session') return this.sendSessionToAgent();
 
     const choice = await this.openSendDialog({
       title: `Send ${scope} to ${to}`,
