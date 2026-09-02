@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createSender, getParked, INLINE_CONTENT_LIMIT, NOTE_LIMIT } from "../../src/tools/send-to-agent.ts";
+import { createSender, fetchDestinations, getParked, INLINE_CONTENT_LIMIT, NOTE_LIMIT } from "../../src/tools/send-to-agent.ts";
 
 /**
  * The failure this module exists to prevent is a send that LOOKS fine.
@@ -420,4 +420,142 @@ test("a ride-along recording with no id is dropped, not rendered half-formed", a
   const c = calls.find((x) => x.url.endsWith("/messages"))!.body.content;
   assert.doesNotMatch(c, /HOW THE TAB GOT HERE/);
   assert.doesNotMatch(c, /review\/$/m);
+});
+
+/**
+ * ── Destinations: threads, and how recently anything was active ────────────
+ * Ben, 2026-09-02: "the list of seats is not active i.e. tradedesk threads".
+ */
+
+function destFetch(over: Record<string, any> = {}) {
+  const calls: string[] = [];
+  const impl = (async (url: string) => {
+    calls.push(url);
+    if (url.endsWith("/destinations")) {
+      return over.destinations ?? {
+        ok: true,
+        json: async () => ({ destinations: [{ id: "tradedesk", hostname: "server5" }, { id: "ha" }] }),
+      };
+    }
+    if (url.endsWith("/subscribers")) {
+      return over.subscribers ?? {
+        ok: true,
+        json: async () => [{ id: "tradedesk", last_activity_ms: 1_000 }],
+      };
+    }
+    if (url.endsWith("/conversations")) {
+      return over.conversations ?? {
+        ok: true,
+        json: async () => ({
+          registries: [{
+            seat: "tradedesk",
+            conversations: [
+              { conv_id: "tradedesk", label: "main", status: "live" },
+              { conv_id: "tradedesk.earnings", label: "earnings", status: "live" },
+              { conv_id: "tradedesk.old", label: "old", status: "ended" },
+            ],
+          }],
+        }),
+      };
+    }
+    throw new Error(`unexpected url ${url}`);
+  }) as unknown as typeof fetch;
+  return { impl, calls };
+}
+
+test("live threads are offered as their own destinations", async () => {
+  const { impl } = destFetch();
+  const ds = await fetchDestinations(impl);
+  const t = ds.find((d) => d.id === "tradedesk.earnings")!;
+  assert.ok(t, "a live thread must be addressable");
+  assert.equal(t.kind, "thread");
+  assert.equal(t.seat, "tradedesk");
+  assert.match(t.label!, /tradedesk › earnings/);
+});
+
+test("⛔ the seat's own 'main' row is not listed twice", async () => {
+  // conv_id === seat IS the seat. Two rows for one destination invites the
+  // reader to believe they address different things.
+  const { impl } = destFetch();
+  const ds = await fetchDestinations(impl);
+  assert.equal(ds.filter((d) => d.id === "tradedesk").length, 1);
+});
+
+test("an ENDED thread is dropped, an 'unknown' one is kept", async () => {
+  // ⚠️ status is the registry's report, not a probe. "unknown" means nobody
+  // said — which is not "dead", so it stays offerable.
+  const { impl } = destFetch({
+    conversations: {
+      ok: true,
+      json: async () => ({
+        registries: [{
+          seat: "tradedesk",
+          conversations: [
+            { conv_id: "tradedesk.gone", label: "gone", status: "ended" },
+            { conv_id: "tradedesk.quiet", label: "quiet", status: "unknown" },
+          ],
+        }],
+      }),
+    },
+  });
+  const ids = (await fetchDestinations(impl)).map((d) => d.id);
+  assert.ok(!ids.includes("tradedesk.gone"));
+  assert.ok(ids.includes("tradedesk.quiet"));
+});
+
+test("last activity rides along, and is absent rather than invented when unknown", async () => {
+  const { impl } = destFetch();
+  const ds = await fetchDestinations(impl);
+  assert.equal(ds.find((d) => d.id === "tradedesk")!.lastActivityMs, 1_000);
+  assert.equal(ds.find((d) => d.id === "ha")!.lastActivityMs, undefined);
+});
+
+/**
+ * ⛔ THE COUPLING THAT MAKES ANY OF THIS WORK. createSender refuses a `to`
+ * that is not in fetchDestinations' list. Adding threads to the popup WITHOUT
+ * adding them here would have every thread send rejected at the last moment as
+ * "not a registered ATC subscriber" — the picker offering a name the sender
+ * then refuses is the exact drift the shared list exists to prevent.
+ */
+test("⛔ a share addressed to a THREAD passes validation and is sent", async () => {
+  const posted: any[] = [];
+  const impl = (async (url: string, init?: any) => {
+    if (url.endsWith("/destinations")) {
+      return { ok: true, json: async () => ({ destinations: [{ id: "tradedesk" }] }) };
+    }
+    if (url.endsWith("/subscribers")) return { ok: true, json: async () => [] };
+    if (url.endsWith("/conversations")) {
+      return {
+        ok: true,
+        json: async () => ({
+          registries: [{ seat: "tradedesk", conversations: [{ conv_id: "tradedesk.earnings", label: "earnings", status: "live" }] }],
+        }),
+      };
+    }
+    posted.push(JSON.parse(init.body));
+    return { ok: true, json: async () => ({ sent: 1 }) };
+  }) as unknown as typeof fetch;
+
+  const r = await createSender({ fetchImpl: impl })({ ...base, to: "tradedesk.earnings" });
+  assert.equal(r.ok, true, r.detail);
+  assert.equal(posted[0].to, "tradedesk.earnings");
+});
+
+test("⛔ threads or activity being down must not stop a send to a seat", async () => {
+  // Enrichment failing is not a reason to refuse the main path. A share
+  // refused because a thread listing was unavailable is a self-inflicted
+  // outage on the thing that was working.
+  const impl = (async (url: string, init?: any) => {
+    if (url.endsWith("/destinations")) {
+      return { ok: true, json: async () => ({ destinations: [{ id: "ha" }] }) };
+    }
+    if (url.endsWith("/subscribers")) throw new Error("subscribers down");
+    if (url.endsWith("/conversations")) return { ok: false, status: 500 };
+    return { ok: true, json: async () => ({ sent: 1 }) };
+  }) as unknown as typeof fetch;
+
+  const ds = await fetchDestinations(impl);
+  assert.deepEqual(ds.map((d) => d.id), ["ha"]);
+  const r = await createSender({ fetchImpl: impl })({ ...base, to: "ha" });
+  assert.equal(r.ok, true, r.detail);
 });

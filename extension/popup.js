@@ -229,6 +229,69 @@ class PopupController {
    * address that is not a real subscriber is accepted by the broker and never
    * delivered, with no error anywhere (`ha`, scanfile, 2026-08-31).
    */
+  /**
+   * Fill the picker so the things actually in use are at the top.
+   *
+   * Ben, 2026-09-02: "the list of seats is not active i.e. tradedesk threads".
+   * Measured the same day: of 73 offered destinations, 39 had not been active
+   * in over 24h and the stalest in four weeks, while tradedesk's four live
+   * threads were not offered at all. So the list was simultaneously too long
+   * and missing the things being worked in.
+   *
+   * ⛔ NOTHING IS HIDDEN. An idle seat still receives queued mail — "quiet" and
+   * "gone" are different claims, and dropping a name from the picker makes a
+   * perfectly good destination unreachable through the UI. They are grouped
+   * and sunk, not removed.
+   *
+   * ⚠️ THE HEADINGS SAY "ACTIVE", NEVER "REACHABLE". True reachability is
+   * computed by the broker and exposed only through its MCP tool — no HTTP
+   * route returns it (probed 2026-09-02). What we have is last-activity, so
+   * that is what the labels claim. Promoting it to "reachable" would be
+   * inventing a guarantee out of a timestamp.
+   */
+  _renderDestinationOptions(sel, destinations) {
+    const HOUR = 3600 * 1000;
+    const now = Date.now();
+    const idle = (d) => (d.lastActivityMs ? now - d.lastActivityMs : Infinity);
+
+    const bands = [
+      { name: 'Active (last hour)', test: (ms) => ms < HOUR },
+      { name: 'Today', test: (ms) => ms < 24 * HOUR },
+      { name: 'Idle', test: () => true },
+    ];
+
+    const rest = [...destinations].sort((a, b) => idle(a) - idle(b));
+    for (const band of bands) {
+      const members = rest.filter((d) => band.test(idle(d)));
+      if (!members.length) continue;
+      for (const m of members) rest.splice(rest.indexOf(m), 1);
+
+      const group = document.createElement('optgroup');
+      group.label = `${band.name} — ${members.length}`;
+      for (const d of members) {
+        const o = document.createElement('option');
+        o.value = d.id;
+        o.textContent = d.kind === 'thread'
+          ? `  ↳ ${d.label || d.id}`
+          : (d.hostname ? `${d.id} · ${d.hostname}` : d.id);
+        o.title = this._describeIdle(idle(d));
+        group.appendChild(o);
+      }
+      sel.appendChild(group);
+    }
+  }
+
+  /** ⚠️ Says when it was last ACTIVE. Never that it is reachable now. */
+  _describeIdle(ms) {
+    if (!Number.isFinite(ms)) return 'No activity recorded by the broker.';
+    const mins = Math.round(ms / 60000);
+    if (mins < 1) return 'Active just now.';
+    if (mins < 60) return `Last active ${mins}m ago.`;
+    const hrs = Math.round(mins / 60);
+    if (hrs < 48) return `Last active ${hrs}h ago.`;
+    return `Last active ${Math.round(hrs / 24)}d ago.`;
+  }
+
   async loadDestinations() {
     const sel = this.elements.sendAgentTarget;
     try {
@@ -239,12 +302,7 @@ class PopupController {
       blank.value = '';
       blank.textContent = `Send to… (${resp.destinations.length})`;
       sel.appendChild(blank);
-      for (const d of resp.destinations) {
-        const o = document.createElement('option');
-        o.value = d.id;
-        o.textContent = d.hostname ? `${d.id} · ${d.hostname}` : d.id;
-        sel.appendChild(o);
-      }
+      this._renderDestinationOptions(sel, resp.destinations);
       const last = (await chrome.storage.local.get('lastSendTarget')).lastSendTarget;
       if (last && resp.destinations.some(d => d.id === last)) sel.value = last;
     } catch (e) {

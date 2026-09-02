@@ -159,17 +159,105 @@ export function getParked(id: string) {
   return e;
 }
 
+export interface Destination {
+  id: string;
+  label?: string;
+  hostname?: string;
+  /** "seat" addresses a whole seat; "thread" addresses one conversation under one. */
+  kind: "seat" | "thread";
+  /** For a thread, the seat it belongs to. */
+  seat?: string;
+  /** Epoch ms of the seat's last activity, or undefined when the broker has none. */
+  lastActivityMs?: number;
+}
+
 /**
- * The broker's live seat list. Used to validate a recipient before sending and
- * to populate the popup's picker, so the two can never disagree.
+ * Everything a share can be addressed to, and how recently it showed signs of life.
+ *
+ * ⛔ THIS ONE LIST FEEDS BOTH THE PICKER AND THE SEND-TIME VALIDATION. That is
+ * not tidiness — createSender refuses any `to` that is not in it, so anything
+ * missing here is unsendable no matter what the UI offers, and anything offered
+ * that is missing here is refused at the last moment. Threads had to be added
+ * HERE, not in the popup, or picking one would have been rejected as "not a
+ * registered ATC subscriber".
+ *
+ * ⭐ A CONVERSATION ID IS A REAL ADDRESS. Verified 2026-09-02 against the live
+ * broker: POST /messages with to:"test-agent.monkeyball" returned
+ * sent:1 live:1 recipients:["thread-test-agent-5"] — the broker resolves the
+ * conv_id to the thread's wire id and delivers it. Checked before offering
+ * threads in the UI precisely because an address the broker accepts and never
+ * delivers is the silent failure this whole module exists to prevent.
+ *
+ * ⚠️ `lastActivityMs` IS NOT REACHABILITY, and nothing here should present it
+ * as such. The broker computes true reachability (channel / recent_poll /
+ * registration_grace / none) and exposes it ONLY through its MCP tool — no HTTP
+ * route returns it, probed 2026-09-02. Last activity is what CAN be observed
+ * over HTTP, so it is what we show, and it is labelled as what it is. An idle
+ * seat still receives queued mail; "quiet" and "gone" are different claims.
+ *
+ * ⛔ DEGRADES TO SEATS. The thread and activity lookups are enrichment: if
+ * either fails, sending to a seat must still work. A share refused because a
+ * thread listing was down would be a self-inflicted outage on the main path.
  */
 export async function fetchDestinations(
   fetchImpl: typeof fetch = fetch,
-): Promise<Array<{ id: string; label?: string; hostname?: string }>> {
+): Promise<Destination[]> {
   const res = await fetchImpl(`${ATC_URL}/destinations`);
   if (!res.ok) throw new Error(`ATC /destinations returned HTTP ${res.status}`);
-  const body = (await res.json()) as { destinations?: Array<{ id: string; label?: string; hostname?: string }> };
-  return body.destinations ?? [];
+  const body = (await res.json()) as {
+    destinations?: Array<{ id: string; label?: string; hostname?: string }>;
+  };
+  const seats: Destination[] = (body.destinations ?? []).map((d) => ({ ...d, kind: "seat" as const }));
+
+  // Activity, best-effort.
+  try {
+    const r = await fetchImpl(`${ATC_URL}/subscribers`);
+    if (r.ok) {
+      const subs = (await r.json()) as Array<{ id: string; last_activity_ms?: number }>;
+      const byId = new Map(subs.map((x) => [x.id, x.last_activity_ms]));
+      for (const s of seats) {
+        const la = byId.get(s.id);
+        if (typeof la === "number") s.lastActivityMs = la;
+      }
+    }
+  } catch { /* activity is decoration; never fail the list over it */ }
+
+  // Threads, best-effort.
+  const threads: Destination[] = [];
+  try {
+    const r = await fetchImpl(`${ATC_URL}/conversations`);
+    if (r.ok) {
+      const body2 = (await r.json()) as {
+        registries?: Array<{
+          seat: string;
+          conversations?: Array<{ conv_id: string; label?: string; status?: string }>;
+        }>;
+      };
+      const seatActivity = new Map(seats.map((s) => [s.id, s.lastActivityMs]));
+      for (const reg of body2.registries ?? []) {
+        for (const c of reg.conversations ?? []) {
+          // ⛔ Skip the row whose conv_id IS the seat. That is the seat's "main"
+          // conversation, already present as the seat itself — listing it twice
+          // offers two addresses for one destination and invites the reader to
+          // believe they differ.
+          if (!c.conv_id || c.conv_id === reg.seat) continue;
+          // ⚠️ `status` is the registry's REPORT, not a live probe (see the
+          // conversations skill). "unknown" means nobody has said, which is not
+          // "dead" — so only an explicitly ended thread is dropped.
+          if (c.status === "ended") continue;
+          threads.push({
+            id: c.conv_id,
+            label: `${reg.seat} › ${c.label || c.conv_id}`,
+            kind: "thread",
+            seat: reg.seat,
+            lastActivityMs: seatActivity.get(reg.seat),
+          });
+        }
+      }
+    }
+  } catch { /* no threads is the correct degradation — seats still send */ }
+
+  return [...seats, ...threads];
 }
 
 /** Every envelope opens the same way, so a recipient can tell at a glance. */
