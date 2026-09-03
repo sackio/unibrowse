@@ -124,7 +124,7 @@ import {
   wait,
   watchBuffer,
   watchRegistry
-} from "./chunk-6Z2HDTXD.js";
+} from "./chunk-66QRYBHS.js";
 import {
   extractKey,
   getEffectiveClientIP,
@@ -1390,6 +1390,7 @@ var reloadExtension = {
 import { v4 as uuidv4 } from "uuid";
 var __dirname2 = path2.dirname(fileURLToPath2(import.meta.url));
 var RECORDINGS_DIR = process.env.RECORDINGS_DIR || path2.join(__dirname2, "..", "recordings");
+var PROFILES_DIR = process.env.PROFILES_DIR || path2.join(__dirname2, "..", ".chrome-profiles");
 var commonTools = [
   pressKey,
   scroll,

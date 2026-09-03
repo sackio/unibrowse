@@ -3,6 +3,9 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import * as path from "path";
 import * as fs from "fs";
 import { randomUUID } from "crypto";
+// ⚠️ Its own module so the unit tests can import it: this file imports the
+// "@/types" path alias, which the bare `node --test` runner cannot resolve.
+import { sweepDeadProfiles } from "../utils/dead-profiles.ts";
 import { fileURLToPath } from "url";
 import { LaunchIsolatedChromeTool, CloseIsolatedChromeTool } from "@/types/tool-schemas";
 import { textResponse, errorResponse, jsonResponse } from "@/utils/response-helpers";
@@ -512,6 +515,18 @@ export const launchIsolatedChrome: Tool = {
       }
       // Profiles live next to the extension dir for portability
       const profilesDir = path.join(path.dirname(extensionDir), ".chrome-profiles");
+
+      // ⭐ REAP THE .dead-* BACKLOG. The EBUSY fallback below renames a profile
+      // aside and its comment has always said the dir is "left for an external
+      // sweep" — that sweep was never written, so they accumulated for months
+      // (130 found 2026-09-03, all 83-90 days old, 25 MB). This is it, and it
+      // lives here because this process already runs as root inside the
+      // container with the profiles dir bind-mounted, so it needs neither host
+      // sudo nor a new cron entry.
+      // ⛔ NOT AWAITED. See sweepDeadProfiles' header: the synchronous version
+      // of this blocked mcp-server's startup on 2026-09-03 and took the shared
+      // server down. A launch must never wait on housekeeping.
+      void sweepDeadProfiles(profilesDir).catch(() => { /* never surfaces */ });
 
       // Create profiles directory if it doesn't exist
       if (!fs.existsSync(profilesDir)) {

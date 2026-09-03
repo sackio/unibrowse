@@ -29,6 +29,7 @@ import * as tabs from "@/tools/tabs";
 import * as userAction from "@/tools/user-action";
 import * as macros from "@/tools/macros";
 import * as recordings from "@/tools/recordings";
+import { sweepDeadProfiles } from "@/utils/dead-profiles";
 import { installLandingHandler, installZipHandler } from "@/install";
 import { requireApiKey, requireLan, isAuthEnabled, isLocalClient, getEffectiveClientIP } from "@/utils/auth";
 import * as realisticInput from "@/tools/realistic-input";
@@ -46,6 +47,15 @@ import { v4 as uuidv4 } from "uuid";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RECORDINGS_DIR = process.env.RECORDINGS_DIR || path.join(__dirname, "..", "recordings");
+/**
+ * ⚠️ DERIVED, NOT REQUIRED. PROFILES_DIR is set on the chromium-host service but
+ * NOT on mcp-server, so reading only the env var made the startup sweep a
+ * silent no-op here — it ran, found nothing to do, and logged nothing, which is
+ * byte-identical to working. Measured 2026-09-03: a restart left the backlog at
+ * 130. Same shape as RECORDINGS_DIR above; __dirname is /app/dist in the
+ * container, so this resolves to the bind-mounted /app/.chrome-profiles.
+ */
+const PROFILES_DIR = process.env.PROFILES_DIR || path.join(__dirname, "..", ".chrome-profiles");
 
 const commonTools: Tool[] = [
   common.pressKey,
@@ -380,7 +390,15 @@ async function main() {
     fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
   }
 
-  // Ensure MongoDB connected for recording routes
+  // ⛔ SWEEP DEAD PROFILES HERE, NOT ONLY AT LAUNCH. chrome-launcher also calls
+  // this, but that call sits AFTER the early return into the chromium-host
+  // sidecar (UNIBROWSE_CHROMIUM_HOST) — which is the path this whole fleet
+  // takes, so on every real deployment it never runs. Measured 2026-09-03: one
+  // launch reaped nothing and the backlog stayed at 130. Startup always runs,
+  // has nobody waiting on it, and shares the same bind-mounted profiles dir.
+  //
+  // ⚠️ The cap is higher here for the same reason: no caller is blocked, so a
+  // restart can clear a real backlog instead of dribbling it out 25 at a time.
   async function ensureMongoConnected() {
     if (!mongodb.isConnected()) await mongodb.connect();
   }
