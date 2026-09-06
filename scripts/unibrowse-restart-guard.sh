@@ -8,7 +8,7 @@
 #
 # Measured across an actual restart: browser_list_attached_tabs returned the
 # SAME 9 tabs afterwards, with reservations carrying their PRE-restart claim
-# times (quantum-navigator 08-13, ha 13:02, genomics 13:07). Attachments and
+# times (three different agents, claimed 08-13, 13:02 and 13:07). Attachments and
 # reservations live EXTENSION-side and survive the server dying. What resets is
 # the SERVER's routing bookkeeping — /extensions reported tabCount=0 for all
 # four extensions while the extension list still showed 9 tabs.
@@ -16,7 +16,7 @@
 # ⇒ The real cost of a restart is that tabTarget routing degrades until each
 # extension re-announces its tabs, NOT lost form state. A filled, unsubmitted
 # form survives a restart. It does NOT survive a 1006 socket drop, which is
-# what actually destroyed genomics' form on 08-16 — a different failure that
+# what actually destroyed another agent's form on 08-16 — a different failure that
 # this script cannot see and cannot prevent.
 #
 # ⭐ The general error: I inferred "restart destroys attachments" from the
@@ -36,15 +36,15 @@
 # beforehand, says how many seats are mid-task.
 #
 # It bit twice in two days, both times on the same tab:
-#   2026-08-16  a 1006 drop on Laura's MacBook destroyed a filled, unsubmitted
-#               Semantic Scholar API-key form. `genomics` re-filled it.
+#   2026-08-16  a 1006 drop on a remote browser destroyed a filled, unsubmitted
+#               Semantic Scholar API-key form. That agent re-filled it.
 #   2026-08-17  I proposed a restart to deploy an identity fix while that
 #               re-filled form was again sitting unsubmitted, waiting on a
-#               human. `genomics` had to catch it and ask me to hold.
+#               human. The affected agent had to catch it and ask me to hold.
 #
 # ⚠️ Note what the second entry actually was, now that the premise is corrected:
 # a hold I asked for on a false belief. The form was never at risk from the
-# restart. `genomics` was right to flag it and I was wrong about why.
+# restart. They were right to flag it and I was wrong about why.
 #
 # ⛔ A filled-but-unsubmitted form lives ONLY in the tab, and a 1006 SOCKET DROP
 # destroys it with no error, no log line, and no way to tell afterwards — the

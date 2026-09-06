@@ -19,11 +19,12 @@ import type { Tool } from "./tool";
  * Redact query-string VALUES, keeping origin, path and parameter NAMES.
  *
  * ⛔ WHY. A tab attached and left carries its URL into every caller's context
- * forever. `ext_0433615b` (Laura's MacBook) has had a vault.trustcommerce.com
+ * forever. `ext_0433615b` (a remote user's browser) has had a payment-vault
  * receipt tab attached since 2026-08-02 with NO reservation, and its query
- * string carries her name, home address, phone, BWH email, card last-4 and
+ * string carried that person's full billing identity — name, address, contact
+ * details and partial card number — and
  * expiry, and the amount. Every agent that calls browser_list_attached_tabs
- * receives those fields. Two independent seats — `genomics` and `agents` —
+ * receives those fields. Two independent seats —
  * reported getting them on 2026-08-17, which is how the exposure surfaced: not
  * from a scan, but from other people's contexts filling up with a stranger's
  * card details.

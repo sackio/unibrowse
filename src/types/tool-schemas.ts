@@ -574,7 +574,7 @@ export const ReloadExtensionTool = z.object({
   // The consequence was worse here than a missing filter: with several
   // browsers connected there was NO WAY to say which one to reload, so the
   // only honest options were to refuse or to guess. On this fleet a guess can
-  // land on Laura's browser or on the container serving other agents' tabs,
+  // land on another person's browser or on the container serving other agents' tabs,
   // which is why the tool sat unused and Ben kept being asked to reload by
   // hand — twice asking why I wasn't doing it myself.
   //
@@ -1384,7 +1384,7 @@ export const ListAttachedTabsTool = z.object({
       ),
     // ⛔ Opt-IN, never opt-out. A tab attached and left broadcasts its query
     // string to every agent that lists tabs, and on 2026-08-17 that was a
-    // stranger's name, home address, phone, email and card last-4 landing in
+    // stranger's full billing identity landing in
     // two seats' contexts. A default-full flag would have left the exposure in
     // place for everyone who never read this schema, which is everyone.
     fullUrls: z.boolean().optional().describe(

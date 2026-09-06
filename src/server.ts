@@ -441,8 +441,8 @@ export async function createServerWithTools(options: Options): Promise<Server> {
     // describeExtension() then labelled the connection "browser on
     // 192.168.0.109" — naming the PROXY as though it were the machine.
     //
-    // That is not cosmetic. On 2026-08-17 `genomics` had been reporting
-    // 192.168.0.109 to ben for two days as Laura's MacBook's address and
+    // That is not cosmetic. On 2026-08-17 another seat had been reporting
+    // 192.168.0.109 to the operator for two days as a remote laptop's address and
     // comparing it against a real IP for his own machine; neither of them
     // could have caught it, because the tool states it as fact. I repeated the
     // same claim to them from my own notes. `kind` is inferred from this

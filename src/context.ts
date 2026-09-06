@@ -40,7 +40,7 @@ export interface ExtensionConn {
     // connection came through a trusted proxy, in which case this is the
     // proxy. ⛔ Do not use it for identity — until 2026-08-17 remoteAddress
     // held THIS value for proxied extensions, and the resulting label named
-    // server4's NIC as if it were Laura's MacBook.
+    // server4's NIC as if it were the remote user's laptop.
     peerAddress?: string;
     viaProxy?: boolean;
   };

@@ -424,7 +424,8 @@ test("a ride-along recording with no id is dropped, not rendered half-formed", a
 
 /**
  * ── Destinations: threads, and how recently anything was active ────────────
- * Ben, 2026-09-02: "the list of seats is not active i.e. tradedesk threads".
+ * Ben, 2026-09-02: the seat list was not showing what was actually active,
+ * and omitted conversation threads entirely.
  */
 
 function destFetch(over: Record<string, any> = {}) {
@@ -434,13 +435,13 @@ function destFetch(over: Record<string, any> = {}) {
     if (url.endsWith("/destinations")) {
       return over.destinations ?? {
         ok: true,
-        json: async () => ({ destinations: [{ id: "tradedesk", hostname: "server5" }, { id: "ha" }] }),
+        json: async () => ({ destinations: [{ id: "exampleseat", hostname: "server5" }, { id: "ha" }] }),
       };
     }
     if (url.endsWith("/subscribers")) {
       return over.subscribers ?? {
         ok: true,
-        json: async () => [{ id: "tradedesk", last_activity_ms: 1_000 }],
+        json: async () => [{ id: "exampleseat", last_activity_ms: 1_000 }],
       };
     }
     if (url.endsWith("/conversations")) {
@@ -448,11 +449,11 @@ function destFetch(over: Record<string, any> = {}) {
         ok: true,
         json: async () => ({
           registries: [{
-            seat: "tradedesk",
+            seat: "exampleseat",
             conversations: [
-              { conv_id: "tradedesk", label: "main", status: "live" },
-              { conv_id: "tradedesk.earnings", label: "earnings", status: "live" },
-              { conv_id: "tradedesk.old", label: "old", status: "ended" },
+              { conv_id: "exampleseat", label: "main", status: "live" },
+              { conv_id: "exampleseat.earnings", label: "earnings", status: "live" },
+              { conv_id: "exampleseat.old", label: "old", status: "ended" },
             ],
           }],
         }),
@@ -466,11 +467,11 @@ function destFetch(over: Record<string, any> = {}) {
 test("live threads are offered as their own destinations", async () => {
   const { impl } = destFetch();
   const ds = await fetchDestinations(impl);
-  const t = ds.find((d) => d.id === "tradedesk.earnings")!;
+  const t = ds.find((d) => d.id === "exampleseat.earnings")!;
   assert.ok(t, "a live thread must be addressable");
   assert.equal(t.kind, "thread");
-  assert.equal(t.seat, "tradedesk");
-  assert.match(t.label!, /tradedesk › earnings/);
+  assert.equal(t.seat, "exampleseat");
+  assert.match(t.label!, /exampleseat › earnings/);
 });
 
 test("⛔ the seat's own 'main' row is not listed twice", async () => {
@@ -478,7 +479,7 @@ test("⛔ the seat's own 'main' row is not listed twice", async () => {
   // reader to believe they address different things.
   const { impl } = destFetch();
   const ds = await fetchDestinations(impl);
-  assert.equal(ds.filter((d) => d.id === "tradedesk").length, 1);
+  assert.equal(ds.filter((d) => d.id === "exampleseat").length, 1);
 });
 
 test("an ENDED thread is dropped, an 'unknown' one is kept", async () => {
@@ -489,24 +490,24 @@ test("an ENDED thread is dropped, an 'unknown' one is kept", async () => {
       ok: true,
       json: async () => ({
         registries: [{
-          seat: "tradedesk",
+          seat: "exampleseat",
           conversations: [
-            { conv_id: "tradedesk.gone", label: "gone", status: "ended" },
-            { conv_id: "tradedesk.quiet", label: "quiet", status: "unknown" },
+            { conv_id: "exampleseat.gone", label: "gone", status: "ended" },
+            { conv_id: "exampleseat.quiet", label: "quiet", status: "unknown" },
           ],
         }],
       }),
     },
   });
   const ids = (await fetchDestinations(impl)).map((d) => d.id);
-  assert.ok(!ids.includes("tradedesk.gone"));
-  assert.ok(ids.includes("tradedesk.quiet"));
+  assert.ok(!ids.includes("exampleseat.gone"));
+  assert.ok(ids.includes("exampleseat.quiet"));
 });
 
 test("last activity rides along, and is absent rather than invented when unknown", async () => {
   const { impl } = destFetch();
   const ds = await fetchDestinations(impl);
-  assert.equal(ds.find((d) => d.id === "tradedesk")!.lastActivityMs, 1_000);
+  assert.equal(ds.find((d) => d.id === "exampleseat")!.lastActivityMs, 1_000);
   assert.equal(ds.find((d) => d.id === "ha")!.lastActivityMs, undefined);
 });
 
@@ -521,14 +522,14 @@ test("⛔ a share addressed to a THREAD passes validation and is sent", async ()
   const posted: any[] = [];
   const impl = (async (url: string, init?: any) => {
     if (url.endsWith("/destinations")) {
-      return { ok: true, json: async () => ({ destinations: [{ id: "tradedesk" }] }) };
+      return { ok: true, json: async () => ({ destinations: [{ id: "exampleseat" }] }) };
     }
     if (url.endsWith("/subscribers")) return { ok: true, json: async () => [] };
     if (url.endsWith("/conversations")) {
       return {
         ok: true,
         json: async () => ({
-          registries: [{ seat: "tradedesk", conversations: [{ conv_id: "tradedesk.earnings", label: "earnings", status: "live" }] }],
+          registries: [{ seat: "exampleseat", conversations: [{ conv_id: "exampleseat.earnings", label: "earnings", status: "live" }] }],
         }),
       };
     }
@@ -536,9 +537,9 @@ test("⛔ a share addressed to a THREAD passes validation and is sent", async ()
     return { ok: true, json: async () => ({ sent: 1 }) };
   }) as unknown as typeof fetch;
 
-  const r = await createSender({ fetchImpl: impl })({ ...base, to: "tradedesk.earnings" });
+  const r = await createSender({ fetchImpl: impl })({ ...base, to: "exampleseat.earnings" });
   assert.equal(r.ok, true, r.detail);
-  assert.equal(posted[0].to, "tradedesk.earnings");
+  assert.equal(posted[0].to, "exampleseat.earnings");
 });
 
 test("⛔ threads or activity being down must not stop a send to a seat", async () => {

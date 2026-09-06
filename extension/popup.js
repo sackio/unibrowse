@@ -232,9 +232,10 @@ class PopupController {
   /**
    * Fill the picker so the things actually in use are at the top.
    *
-   * Ben, 2026-09-02: "the list of seats is not active i.e. tradedesk threads".
+   * Ben, 2026-09-02: the seat list was not showing what was actually active,
+   * and omitted conversation threads entirely.
    * Measured the same day: of 73 offered destinations, 39 had not been active
-   * in over 24h and the stalest in four weeks, while tradedesk's four live
+   * in over 24h and the stalest in four weeks, while one seat's four live
    * threads were not offered at all. So the list was simultaneously too long
    * and missing the things being worked in.
    *

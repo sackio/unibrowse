@@ -58,3 +58,18 @@ chrome-profiles/
 
 # Session video recordings (runtime output, large binaries)
 recordings/
+
+# ⛔ Moved to the PRIVATE repo sackio/unibrowse-ops on 2026-09-06 and ignored
+# here so they cannot drift back into a public repo. These carry the ATC broker
+# address, seat names, alert routing, host telemetry and personal tooling.
+# The live copies are checked out at /mnt/nas/data/code/unibrowse-ops/ and two
+# of ben's cron entries on office run them from THERE — see that repo's README.
+.claude/skills/ebay-hunter/
+.claude/skills/govdeals-hunter/
+scripts/unibrowse-host-browser-watch.sh
+scripts/office-activity-sample.sh
+scripts/unibrowse-extension-selfheal.py
+scripts/rig148-on-profile.sh
+
+# Build output — reproducible via `npm run build`; was tracked until 2026-09-06.
+dist/
