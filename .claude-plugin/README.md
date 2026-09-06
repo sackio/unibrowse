@@ -1,9 +1,9 @@
 # Unibrowse Browser Automation Plugin
 
-> Advanced browser automation for Claude Code with 5 specialized sub-agents, 57+ macros, and intelligent delegation
+> Advanced browser automation for Claude Code with 5 skill modules, 57+ macros, and intelligent delegation
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/sackio/unibrowse)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/sackio/unibrowse/blob/main/LICENSE)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/sackio/unibrowse)
+[![License](https://img.shields.io/badge/license-Apache_2.0-green.svg)](https://github.com/sackio/unibrowse/blob/main/LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-compatible-purple.svg)](https://modelcontextprotocol.io)
 
 ## 🚀 Quick Start
@@ -91,9 +91,9 @@ npm run test:prereq
 - **High Reliability**: Tested and documented
 - **MongoDB Storage**: Centralized macro management
 
-### Automatic Delegation
+### Automatic Routing
 
-Claude Code automatically delegates to the appropriate sub-agent based on your request:
+The browser skill routes to the appropriate module based on your request:
 
 ```
 "Search Amazon for wireless headphones" → browser-ecommerce
@@ -191,7 +191,7 @@ npm run store:advanced-macros
 # See package.json for additional store commands
 ```
 
-This loads all 57+ macros into MongoDB for use by sub-agents.
+This loads all 57+ macros into MongoDB for use by the browser skill.
 
 ### 5. Load Chrome Extension
 
@@ -332,11 +332,11 @@ The browser-ecommerce agent will:
 ```
 User Request
     ↓
-Browser Skill (guidance + delegation strategy)
+Browser Skill (task detection + module routing)
     ↓
-Main Conversation (delegates to sub-agent)
+Main Conversation (routes to a skill module)
     ↓
-Specialized Sub-Agent
+Skill module — direct MCP tool execution
     ↓
   1. Check site-specific macros
   2. Check universal macros
@@ -348,7 +348,7 @@ Main Conversation (stores tab context, presents results)
 
 ### Macro-First Philosophy
 
-All sub-agents follow this pattern:
+All modules follow this pattern:
 1. Extract domain from URL
 2. Search for site-specific macros: `browser_list_macros({ site: "amazon.com" })`
 3. Search for universal macros: `browser_list_macros({ site: "*" })`
@@ -375,7 +375,7 @@ Main conversation stores tab IDs in context, enabling future operations on speci
 **Plugin Documentation**:
 - [Plugin Guide](../docs/PLUGIN_GUIDE.md) - Complete plugin documentation
 - [Architecture](../docs/ARCHITECTURE.md) - Technical architecture details
-- [Examples](../docs/EXAMPLES.md) - Usage examples for all sub-agents
+- [Examples](../docs/EXAMPLES.md) - Usage examples for all modules
 
 **Macro Documentation**:
 - [Macros Index](../docs/macros/README.md) - Complete macro documentation
@@ -450,7 +450,7 @@ Main conversation stores tab IDs in context, enabling future operations on speci
 **Problem**: Sub-agent can't target specific tabs
 
 **Solutions**:
-1. Ensure tab was created by sub-agent (not manual)
+1. Ensure the tab was created by the agent (not manually)
 2. Verify tab ID was returned in previous response
 3. Check tab is still open and attached
 4. Use `browser_list_attached_tabs` to see available tabs
@@ -501,7 +501,7 @@ Backs up macros from MongoDB and runs comprehensive test suite.
 Contributions welcome! See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines.
 
 **Areas for contribution**:
-- New specialized sub-agents (social media, email, video, etc.)
+- New skill modules (social media, email, video, etc.)
 - Additional macros for common websites
 - Improved error handling and recovery
 - Performance optimizations
@@ -529,7 +529,7 @@ MIT License - see [LICENSE](../LICENSE) for details.
 
 ## 🙏 Credits
 
-Unibrowse is a fork of [browser-mcp](https://github.com/BrowserMCP/mcp), extended with plugin architecture, specialized sub-agents, and 57+ automation macros.
+Unibrowse is a fork of [browser-mcp](https://github.com/BrowserMCP/mcp), extended with plugin architecture, skill modules, and 57+ automation macros.
 
 **Thank you to the browser-mcp team for creating the foundation that made this plugin possible!**
 

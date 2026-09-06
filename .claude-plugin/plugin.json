@@ -2,11 +2,11 @@
   "name": "unibrowse",
   "version": "1.1.0",
   "displayName": "Unibrowse Browser Automation",
-  "description": "Advanced browser automation plugin with 5 specialized skill modules, 91+ macros (40+ universal + 51 site-specific), and direct MCP tool execution for web scraping, form filling, e-commerce automation, QA testing, and screenshot analysis",
+  "description": "Advanced browser automation plugin with 5 skill modules, 91+ macros (40+ universal + 51 site-specific), and direct MCP tool execution for web scraping, form filling, e-commerce automation, QA testing, and screenshot analysis",
   "author": "unibrowse",
   "repository": "https://github.com/sackio/unibrowse",
   "bugs": "https://github.com/sackio/unibrowse/issues",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": [
     "browser",
     "automation",
@@ -25,7 +25,7 @@
       {
         "path": ".claude/skills/browser",
         "name": "browser",
-        "description": "Browser automation with direct MCP tool execution orchestration through 5 specialized skill modules. Provides macro-first strategies, token conservation patterns, and multi-tab context preservation.",
+        "description": "Browser automation with direct MCP tool execution orchestration through 5 skill modules. Provides macro-first strategies, token conservation patterns, and multi-tab context preservation.",
         "triggers": [
           "browser",
           "web",

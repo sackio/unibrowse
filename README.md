@@ -140,12 +140,13 @@ node tests/test-all-tools.js [tool_name]
 
 ### Using Utilities
 
-```bash
-# List available macros
-node scripts/utils/list-macros.js [search_term]
+Macros are listed and run through the MCP tools themselves — there is no
+separate CLI:
 
-# Test a specific macro
-node scripts/utils/test-macro.js <macro_id> [params_json]
+```
+browser_list_macros({ site: "amazon.com" })   # or site: "*" for universal
+browser_get_macro({ id })
+browser_execute_macro({ id, params, tabTarget })
 ```
 
 ### Service Management
@@ -165,7 +166,7 @@ This repo contains all the core MCP code for unibrowse, but currently cannot yet
 ## Credits
 
 unibrowse is a fork of [browser-mcp](https://github.com/BrowserMCP/mcp), adapted and extended with:
-- 🤨 Plugin architecture for Claude Code with 5 specialized sub-agents
+- 🤨 Plugin architecture for Claude Code with 5 skill modules
 - 57+ reusable automation macros stored in MongoDB
 - Intelligent delegation patterns for automatic routing
 - Comprehensive documentation and examples
