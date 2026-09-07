@@ -6931,8 +6931,12 @@ class BackgroundController {
     // Best-effort: populate iframeSelector for child frames by querying the main frame DOM
     if (frames.length > 1) {
       try {
+        // ⛔ `return` is load-bearing here too — same discarded-value trap as
+        // handleQueryDOM. Without it this resolved to null, the Array.isArray
+        // guard below silently skipped, and browser_list_frames reported
+        // iframeSelector:null for EVERY frame while looking perfectly healthy.
         const iframeData = await cdp.evaluate(`
-          Array.from(document.querySelectorAll('iframe, frame')).map((el, i) => ({
+          return Array.from(document.querySelectorAll('iframe, frame')).map((el, i) => ({
             src: el.src || el.getAttribute('src') || null,
             name: el.name || null,
             id: el.id || null,
@@ -7022,8 +7026,14 @@ class BackgroundController {
 
   async handleQueryDOM({ selector, limit = 10, tabTarget, frameTarget }) {
     const cdp = await this.tabManager.requireCDP(tabTarget);
+    // ⛔ The leading `return` is LOAD-BEARING. cdp.evaluate() wraps the script in
+    // an async IIFE and only injects an implicit return for a SINGLE-LINE
+    // expression or a parenthesised IIFE. This template is neither, so without
+    // an explicit return its value is discarded and every caller gets `null` —
+    // not an error, so it reads as "no elements matched". See tests/unit/
+    // cdp-evaluate-return.test.js, which fails if this regresses.
     const queryScript = `
-      Array.from(document.querySelectorAll(${JSON.stringify(selector)}))
+      return Array.from(document.querySelectorAll(${JSON.stringify(selector)}))
         .slice(0, ${limit})
         .map((el, index) => ({
           index,
