@@ -118,7 +118,9 @@ const FrameTargetSchema = z.object({
       "Accepts a CDP frameId string from browser_list_frames, or a CSS selector of an " +
       "<iframe> element (e.g. '#checkout-frame', 'iframe[name=\"payment\"]'). " +
       "Nameless iframes without a stable selector must use frameId from browser_list_frames. " +
-      "CDP bypasses same-origin policy — cross-origin iframes are accessible. " +
+      "⛔ SAME-ORIGIN IFRAMES ONLY. A cross-origin iframe is out-of-process under Chrome's " +
+      "site isolation and browser_list_frames does not list it, so there is no frameId to " +
+      "pass and no selector that will resolve to one — MEASURED 2026-09-11. " +
       "If omitted, operates on the main frame."
     ),
 });
@@ -482,8 +484,9 @@ export const EvaluateTool = z.object({
   name: z.literal("browser_evaluate"),
   description: z.literal(
     "Evaluate JavaScript expression in the page or inside a specific iframe. " +
-    "Use frameTarget with a frameId from browser_list_frames to execute inside an iframe. " +
-    "CDP bypasses same-origin policy, so cross-origin iframes are accessible."
+    "Use frameTarget with a frameId from browser_list_frames to execute inside a SAME-ORIGIN iframe. " +
+    "⛔ Cross-origin iframes cannot be reached: they are out-of-process and browser_list_frames " +
+    "does not enumerate them, so no usable frameId exists (measured 2026-09-11)."
   ),
   arguments: z.object({
     expression: z
@@ -499,7 +502,11 @@ export const ListFramesTool = z.object({
     "Returns frameId, url, parentFrameId, name, and best-effort iframeSelector for each frame. " +
     "Use the frameId with browser_evaluate, browser_click, browser_type, browser_snapshot, " +
     "browser_query_dom, and browser_fill_form via their frameTarget parameter to operate inside a frame. " +
-    "CDP bypasses same-origin policy — cross-origin iframes are accessible."
+    "⛔ LISTS SAME-ORIGIN FRAMES ONLY. Cross-origin iframes are out-of-process under Chrome's " +
+    "site isolation and are owned by a separate CDP target; this tool reads only the tab's own " +
+    "target, so they are absent from the result. An absent frame is NOT evidence the page lacks " +
+    "it, nor that the site refused framing. MEASURED 2026-09-11: two iframes injected in one call, " +
+    "same-origin listed, cross-origin absent, both present in the DOM and rendered."
   ),
   arguments: TabTargetSchema.merge(MaxTokensSchema),
 });
