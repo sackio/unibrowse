@@ -6971,8 +6971,24 @@ class BackgroundController {
    * @param {string} frameTarget
    */
   async resolveFrameId(cdp, frameTarget) {
-    // If it looks like a CDP frameId (uppercase hex dot number), use directly
-    if (/^[0-9A-Fa-f]+\.[0-9]+$/.test(frameTarget)) {
+    // If it looks like a CDP frameId, use it directly.
+    //
+    // ⛔ TWO FORMATS, and only one of them used to be accepted. Chrome emits
+    // frameIds as 32 uppercase hex characters with NO dot — MEASURED
+    // 2026-09-11: `4AB7A962479DEA95542EBC8B4ADD7BF0`. The older
+    // `HEX.NUMBER` shape still shows up on some builds, so both are matched.
+    //
+    // The bug this fixes was self-contradicting and therefore hard to see:
+    // browser_list_frames hands out 32-hex frameIds, every frameTarget tool
+    // description says to pass one, and the throw below tells you to go get
+    // one from browser_list_frames — and then this test rejected exactly that
+    // value, fell through to the CSS-selector branch, and failed with a
+    // message about selectors for an input that was never a selector.
+    //
+    // ⚠️ The {32} length anchor is load-bearing. A bare /^[0-9A-Fa-f]+$/ would
+    // also swallow real CSS type selectors built only from hex letters —
+    // `a`, `b` and `dd` are all valid HTML tags and all valid hex.
+    if (/^[0-9A-Fa-f]+\.[0-9]+$/.test(frameTarget) || /^[0-9A-Fa-f]{32}$/.test(frameTarget)) {
       return frameTarget;
     }
 
