@@ -1042,6 +1042,10 @@ export const FetchToServerTool = z.object({
       .string()
       .optional()
       .describe("Free-text note stored alongside the file — e.g. which agent asked for it and why. Shows up in browser_list_fetched. Any characters are fine, including en-dashes and accents: the server percent-encodes this before it reaches the browser and decodes it on the way back."),
+    allowHtml: z
+      .boolean()
+      .optional()
+      .describe("Store the response even when it is text/html. Default false: an HTML body is refused, because a login wall answers 200 with HTML and storing that as a PDF looks like success on every axis the caller can see. Set this only when you have established the target genuinely IS an HTML document — the error text tells you how to tell the two apart. ⚠️ Enforced in the extension, so it needs that browser's extension reloaded (↻) to take effect; on a browser still running older code the HTML is refused regardless of this flag."),
     destination: z
       .string()
       .optional()

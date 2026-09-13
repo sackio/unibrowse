@@ -8083,10 +8083,24 @@ class BackgroundController {
     // failure this check exists for: it looks like success on every axis the
     // caller can see — status ok, bytes > 0, a file on disk — and is discovered
     // only when someone opens it. Say it plainly instead.
-    if (/^text\/html/i.test(contentType) && !/\.html?($|\?)/i.test(data.url)) {
+    //
+    // ⛔ REPORT THE OBSERVATION, NOT A CAUSE. This message used to say the body
+    // was "almost certainly a login or consent page". MEASURED 2026-09-13 by
+    // `laura-work` on mgb.ellucid.com/pman/documents/view/<docId>/active/1: the
+    // session was fine and the page rendered correctly — it is a document
+    // VIEWER that is HTML by design, with the PDF one level in at
+    // /pman/view/revision/<revisionId>. The guard was right and the sentence
+    // was wrong, and it sent a competent seat off to re-authenticate a session
+    // that had never broken.
+    // ⇒ The two causes need OPPOSITE responses — re-auth, versus go find the
+    // embedded resource — so naming the likelier one as near-certain costs more
+    // than saying nothing. Name both and let the caller look.
+    if (/^text\/html/i.test(contentType) && !/\.html?($|\?)/i.test(data.url) && !data.allowHtml) {
       throw new Error(
-        `fetch returned HTML (${contentType}) for ${data.url} — this is almost certainly a login or consent page, not the file. ` +
-        `The browser's session may not cover this origin. Open the URL in a tab and check before retrying.`
+        `fetch returned HTML (${contentType}) for ${data.url}, not a document. Two very different causes, and this check cannot tell them apart: ` +
+        `(1) the browser's session does not cover this origin and you are looking at a login or consent page — open the URL in a tab and check; or ` +
+        `(2) the target legitimately IS HTML, e.g. a document viewer that embeds the real file in an iframe — look for the embedded resource and fetch that instead. ` +
+        `If you want the HTML itself, pass allowHtml: true.`
       );
     }
 

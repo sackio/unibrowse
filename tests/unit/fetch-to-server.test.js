@@ -20,6 +20,7 @@ import path from "node:path";
 const repoRoot = path.join(import.meta.dirname, "../..");
 const serverSrc = fs.readFileSync(path.join(repoRoot, "src/http-server.ts"), "utf8");
 const bgSrc = fs.readFileSync(path.join(repoRoot, "extension/background.js"), "utf8");
+const schemaSrc = fs.readFileSync(path.join(repoRoot, "src/types/tool-schemas.ts"), "utf8");
 
 /**
  * ⛔ STRIP COMMENTS BEFORE ASSERTING ON SOURCE TEXT.
@@ -373,5 +374,53 @@ test("destination never reaches the browser", () => {
     codeOnly(bgSrc),
     /X-Unibrowse-Destination/,
     "a destination header would do nothing on off-LAN browsers, which cannot be updated — that is why this is server-side",
+  );
+});
+
+/**
+ * ── the HTML guard reports an observation, not a cause ───────────────────────
+ *
+ * The guard itself is correct and load-bearing: a login wall answers 200 with
+ * HTML, and storing that as a PDF looks like success on every axis the caller
+ * can see. What was wrong was the sentence attached to it — it called the body
+ * "almost certainly a login or consent page".
+ *
+ * MEASURED 2026-09-13 on mgb.ellucid.com: the session was fine and the page
+ * rendered; it is a document VIEWER that is HTML by design. The wording sent a
+ * seat off to re-authenticate a session that had never broken. The two causes
+ * need opposite responses, so naming the likelier one as near-certain is worse
+ * than naming neither.
+ */
+test("the HTML refusal does not assert an unmeasured cause", () => {
+  const code = codeOnly(bgSrc);
+  assert.doesNotMatch(
+    code,
+    /almost certainly a login or consent page/,
+    "this wording asserts a cause the check cannot observe, and it demonstrably misdirected a seat",
+  );
+  assert.match(
+    code,
+    /fetch returned HTML \(\$\{contentType\}\) for \$\{data\.url\}, not a document/,
+    "the message must lead with what was actually observed",
+  );
+  for (const branch of [/login or consent page/, /document viewer/]) {
+    assert.match(
+      code,
+      branch,
+      "both causes must be named — one means re-authenticate, the other means go find the embedded resource, and the caller cannot pick without being told there is a choice",
+    );
+  }
+});
+
+test("allowHtml gates the guard and defaults to refusing", () => {
+  assert.match(
+    codeOnly(bgSrc),
+    /\/\^text\\\/html\/i\.test\(contentType\)[\s\S]{0,120}&&\s*!data\.allowHtml/,
+    "the override must be part of the guard condition, and being falsy by default is what keeps the refusal the default",
+  );
+  assert.match(
+    codeOnly(schemaSrc),
+    /allowHtml:\s*z\s*\.boolean\(\)\s*\.optional\(\)/,
+    "a flag the extension honours but the schema does not declare is unreachable through the tool",
   );
 });
