@@ -4114,8 +4114,32 @@ class BackgroundController {
         return; // Explicitly return, don't continue
       }
 
-      // Execute handler with timeout protection
-      const handlerTimeout = 30000; // 30 seconds
+      // Execute handler with timeout protection.
+      //
+      // ⛔ NOT A BLANKET RAISE, DELIBERATELY. 30s is right for the ~90 handlers
+      // that drive a page: a handler still running after 30s is wedged, and
+      // letting it hang longer just delays the error. But a few handlers move
+      // BYTES, and for those 30s is a size limit wearing a timeout's clothes.
+      //
+      // MEASURED 2026-09-13 by `thread-laura-work-1`: browser_fetch_to_server
+      // on a ~79 MB attachment from an off-LAN browser died at 33s with
+      // "Handler timeout", nothing on disk and no index row — a genuine abort,
+      // not the false-failure case. ⚠️ The same tool is DOCUMENTED to carry
+      // 100 MB. It only ever appeared to work because the earlier large files
+      // were fetched over the LAN and finished inside 30s; the ceiling was
+      // always there and the link speed decided whether you met it.
+      //
+      // ⛔ RAISING THE SERVER'S WS WINDOW TO 180s DID NOT FIX THIS, and I told
+      // the fleet it had. The server deadline and this one are independent, and
+      // the transfer dies at whichever is shorter. A server-side change cannot
+      // move an extension-side abort — this needs a ↻ on each browser, same as
+      // allowHtml.
+      const HANDLER_TIMEOUTS_MS = {
+        // Matches the 180s WS window in src/tools/downloads.ts. Both must move
+        // together or the shorter one silently becomes the real limit.
+        browser_fetch_to_server: 180000,
+      };
+      const handlerTimeout = HANDLER_TIMEOUTS_MS[type] ?? 30000;
       const handlerPromise = handler(payload !== undefined ? payload : {});
 
       const result = await Promise.race([

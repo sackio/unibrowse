@@ -520,3 +520,43 @@ test("browser_list_fetched pages, and the parameter is declared", () => {
     "a paging parameter the handler honours but the schema does not declare is unreachable through the tool",
   );
 });
+
+/**
+ * ── the transfer deadline exists in TWO places and they must agree ───────────
+ *
+ * The server's WS response window (src/tools/downloads.ts) and the extension's
+ * per-handler timeout (extension/background.js) are independent, and a transfer
+ * dies at whichever is SHORTER. So raising one alone does nothing — which is
+ * exactly what happened.
+ *
+ * MEASURED 2026-09-13 by `thread-laura-work-1`, AFTER the server window went to
+ * 180s: a ~79 MB attachment from an off-LAN browser still died at 33s with
+ * "Handler timeout", nothing on disk, no index row. A genuine abort.
+ *
+ * ⛔ The blanket 30s had been there all along; the tool is documented for 100 MB.
+ * It only looked fine because earlier large files came over the LAN and finished
+ * inside 30s — the link speed, not the code, decided whether you hit it.
+ */
+test("the extension's fetch handler timeout matches the server's WS window", () => {
+  const ext = codeOnly(bgSrc);
+  const m = /browser_fetch_to_server:\s*(\d+)/.exec(ext);
+  assert.ok(m, "browser_fetch_to_server must have its own handler timeout — the blanket 30s is a size limit on a tool documented for 100MB");
+  const extMs = Number(m[1]);
+
+  const srv = /timeoutMs:\s*([\d_]+)/.exec(codeOnly(toolsSrc));
+  assert.ok(srv, "the server's WS window is gone — the deadline is then whatever the extension says and nothing states it");
+  const srvMs = Number(srv[1].replace(/_/g, ""));
+
+  assert.equal(
+    extMs, srvMs,
+    `⛔ the two deadlines disagree (extension ${extMs}ms, server ${srvMs}ms). The transfer dies at the SHORTER one, so the larger number becomes a comment rather than a limit — raising only the server side is the exact bug this guards.`,
+  );
+});
+
+test("the 30s default still applies to every other handler", () => {
+  assert.match(
+    codeOnly(bgSrc),
+    /HANDLER_TIMEOUTS_MS\[type\]\s*\?\?\s*30000/,
+    "⛔ this must stay a per-handler exception, not a blanket raise — a wedged page handler that hangs 180s instead of 30s just delays the error by six times",
+  );
+});
