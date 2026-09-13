@@ -1042,6 +1042,10 @@ export const FetchToServerTool = z.object({
       .string()
       .optional()
       .describe("Free-text note stored alongside the file — e.g. which agent asked for it and why. Shows up in browser_list_fetched. Any characters are fine, including en-dashes and accents: the server percent-encodes this before it reaches the browser and decodes it on the way back."),
+    destination: z
+      .string()
+      .optional()
+      .describe("Subdirectory of the fetched store to land this file in, e.g. 'laura-work/benefits'. RELATIVE only (letters, digits, dot, underscore, hyphen; max 4 levels) — absolute paths are refused. Created 0700 and owned by the store's owner, so the bytes land private on the FIRST write instead of sitting in the shared directory until you move them. ⛔ This does NOT make the file private from other agent seats and nothing can: every seat on every host runs as the same uid (measured 2026-09-13), so any seat that can read the store can read your subdirectory. What it does buy is that the file is never world-readable even momentarily, and that a non-agent account on the NAS cannot read it."),
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 

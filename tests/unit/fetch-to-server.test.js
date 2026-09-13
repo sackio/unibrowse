@@ -267,3 +267,111 @@ test("a timed-out fetch consults the index before reporting failure", () => {
     "the lookup MUST be bounded to this call — an unbounded sourceUrl match would resurrect an older fetch of the same URL and report it as this one's result",
   );
 });
+
+/**
+ * ── destination ─────────────────────────────────────────────────────────────
+ *
+ * `destination` lands a fetched file in a private subdirectory on the FIRST
+ * write, instead of the caller writing to the shared store and moving it
+ * afterwards — a window in which the bytes are readable by anything that can
+ * read the store.
+ *
+ * ⛔ IT IS ALSO THE ONLY CALLER-CONTROLLED PATH COMPONENT ON THIS ROUTE, on a
+ * server that exposes /mcp. An unconstrained destination is an arbitrary-write
+ * primitive. These tests exist because every one of these failures is SILENT:
+ * a traversing destination writes a file and returns 200.
+ *
+ * ⚠️ What this feature does NOT do, so nobody re-derives it from the name:
+ * it does not isolate one agent seat from another, because every seat on every
+ * host runs as the same uid (measured 2026-09-13). No mode can.
+ */
+const { validateDestination, setFetchDestination, takeFetchDestination } =
+  await import("../../src/utils/fetch-destinations.ts");
+
+test("destination refuses every escape from the fetched store", () => {
+  for (const bad of [
+    "../etc",
+    "a/../../etc",
+    "..",
+    ".",
+    "/etc/passwd",
+    "/tmp/x",
+    "C:/windows",
+    "a/b/../../../c",
+    "a\\..\\b",
+    "a\0b",
+    "a\nb",
+    "a b/c",          // space — rejected by the whitelist, not by enumeration
+    "a;rm -rf /",
+    "",
+    "x".repeat(201),
+    "a/b/c/d/e",      // deeper than the 4-level cap
+  ]) {
+    assert.throws(
+      () => validateDestination(bad),
+      undefined,
+      `destination ${JSON.stringify(bad)} was ACCEPTED — this route writes files, so an accepted escape is an arbitrary write`,
+    );
+  }
+});
+
+test("destination accepts the ordinary shapes and normalises them", () => {
+  assert.equal(validateDestination("laura-work"), "laura-work");
+  assert.equal(validateDestination("laura-work/benefits"), "laura-work/benefits");
+  assert.equal(validateDestination("a/b/c/d"), "a/b/c/d");
+  // Redundant separators collapse rather than producing an empty segment that
+  // path.join would silently swallow.
+  assert.equal(validateDestination("laura-work//benefits/"), "laura-work/benefits");
+  assert.equal(validateDestination("2026_Q3.archive-1"), "2026_Q3.archive-1");
+});
+
+test("a destination is consumed once, so it cannot capture a later fetch", () => {
+  const url = "https://example.invalid/one-shot.pdf";
+  setFetchDestination(url, "seat-a");
+  assert.equal(takeFetchDestination(url), "seat-a");
+  assert.equal(
+    takeFetchDestination(url),
+    null,
+    "a destination that survived its own fetch would silently redirect an unrelated later fetch of the same URL",
+  );
+  assert.equal(takeFetchDestination(undefined), null);
+  assert.equal(takeFetchDestination(null), null);
+});
+
+test("the upload route writes into the destination but guards against FETCHED_DIR", () => {
+  const code = codeOnly(serverSrc);
+  assert.match(
+    code,
+    /takeFetchDestination\(sourceUrl\)/,
+    "the route must claim the destination the tool registered, keyed on the source URL",
+  );
+  assert.match(
+    code,
+    /startsWith\(path\.resolve\(FETCHED_DIR\)\s*\+\s*path\.sep\)/,
+    "⛔ the containment check MUST be rooted at FETCHED_DIR — rooting it at the caller-influenced targetDir makes the guard agree with whatever was asked for, which is not a check",
+  );
+  assert.match(
+    code,
+    /mkdirSync\(targetDir,\s*\{\s*recursive:\s*true,\s*mode:\s*0o700\s*\}\)/,
+    "the subdirectory must be created 0700 — the whole point is that the bytes are never world-readable, not even briefly",
+  );
+  assert.match(
+    code,
+    /chownSync\(targetDir,\s*owner\.uid,\s*owner\.gid\)/,
+    "⛔ the container runs as root, so a 0700 subdirectory left root-owned locks out every agent seat. It must inherit the store's owner.",
+  );
+});
+
+test("destination never reaches the browser", () => {
+  const code = codeOnly(toolsSrc);
+  assert.match(
+    code,
+    /const\s*\{\s*destination,\s*\.\.\.rest\s*\}\s*=\s*validatedParams/,
+    "destination must be destructured OUT of the payload — the extension has no use for it and shipping it would imply the extension honours it",
+  );
+  assert.doesNotMatch(
+    codeOnly(bgSrc),
+    /X-Unibrowse-Destination/,
+    "a destination header would do nothing on off-LAN browsers, which cannot be updated — that is why this is server-side",
+  );
+});

@@ -105,7 +105,16 @@ services:
       # Persistent video recordings storage
       - ./recordings:/app/recordings
       # Files retrieved from a driven browser's authenticated session.
-      # Host-local (see FETCHED_DIR above), not the NAS-backed repo dir.
+      # ⛔ NOT host-local, despite living under /home/ben. This comment used to
+      # claim it was. `/home/ben/files` is a SYMLINK to /mnt/nas/data/files —
+      # the fleet NFS mount — so every fetched file is visible on all four hosts
+      # to every agent seat. Measured 2026-09-13 with `readlink -f`; the earlier
+      # wording is how a reader ends up believing these files are private.
+      # ⇒ A path under /home/<user> is not evidence of host-local. Resolve it.
+      # The store directory is kept 0700 and owned by the seat uid so accounts
+      # OTHER than the agents (e.g. the NAS's own uid 1026) cannot read it.
+      # ⚠️ That is the only isolation available: every agent seat on every host
+      # runs as the same uid, so no mode can separate one seat from another.
       # ⛔ A SUBDIRECTORY, not ~/files itself. That directory is shared and
       # already holds travel/, utilities/, writing/ and employment/; mounting
       # its root would drop every fetched file beside them. Measured 2026-09-12:

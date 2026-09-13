@@ -10,6 +10,7 @@ import {
 } from "@/types/tool-schemas";
 import { jsonResponse, textResponse, errorResponse } from "@/utils/response-helpers";
 import { mongodb } from "@/utils/mongodb";
+import { setFetchDestination, validateDestination } from "@/utils/fetch-destinations";
 
 import type { Tool } from "./tool";
 
@@ -177,9 +178,22 @@ export const fetchToServer: Tool = {
       // field, which cannot be updated without hands on the machine. The server
       // decodes on receipt in http-server.ts. Encoding it in the extension too
       // would double-encode, so the extension leaves `label` alone.
+      // ⛔ `destination` is SERVER-SIDE ONLY and never reaches the wire — hence
+      // destructuring it OUT rather than deleting it from a copy, which also
+      // keeps `rest` typed as the exact payload sendSocketMessage expects.
+      // The extension is deliberately not involved: see
+      // utils/fetch-destinations.ts for why a header would silently do nothing
+      // on exactly the off-LAN browsers this tool exists for.
+      // ⚠️ Validate and register BEFORE the socket call — a bad path must cost
+      // nothing, and the upload can land before this call returns.
+      const { destination, ...rest } = validatedParams;
+      if (destination !== undefined) {
+        setFetchDestination(rest.url, validateDestination(destination));
+      }
+
       const outbound = validatedParams.label === undefined
-        ? validatedParams
-        : { ...validatedParams, label: encodeURIComponent(validatedParams.label) };
+        ? rest
+        : { ...rest, label: encodeURIComponent(validatedParams.label) };
 
       // ⛔ THE WS TIMEOUT IS A RESPONSE DEADLINE, NOT A TRANSFER DEADLINE.
       // The bytes travel browser → /api/v1/fetched, entirely outside this

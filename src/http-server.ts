@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 
 import { appConfig } from "@/config/app.config";
 import { registerCaptchaRoutes, sweepCaptchaSessions } from "@/captcha";
+import { takeFetchDestination } from "@/utils/fetch-destinations";
 
 import type { Resource } from "@/resources/resource";
 import { createServerWithTools, createServerWithoutWebSocket, globalContext } from "@/server";
@@ -586,10 +587,45 @@ async function main() {
         encoded ? safeDecode(rawFilename) : rawFilename,
         id,
       );
-      const absPath = path.join(FETCHED_DIR, storedName);
+      const sourceUrl = (encoded
+        ? safeDecode(req.get("X-Unibrowse-Source-Url"))
+        : req.get("X-Unibrowse-Source-Url")) || null;
+
+      // ⭐ Did the caller ask for a subdirectory? The tool registered it against
+      // this URL before the socket call — the extension is not involved and
+      // needs no update, which is the whole point (utils/fetch-destinations.ts).
+      // Already validated there; the prefix assertion below is still the gate.
+      const destination = takeFetchDestination(sourceUrl);
+      const targetDir = destination ? path.join(FETCHED_DIR, destination) : FETCHED_DIR;
+      if (destination) {
+        // ⛔ 0700, and owned by whoever owns the store — NOT root. The container
+        // runs as root, so anything it creates is root-owned and mode 0700 would
+        // lock out every agent seat (all of which run as uid 1000). Inheriting
+        // the store's owner keeps the subdirectory readable by exactly the
+        // principals that can already read the store, and no one else.
+        // ⚠️ This does NOT isolate one seat from another and cannot: every seat
+        // is the same uid. It keeps the bytes off a world-readable path from the
+        // FIRST write, closing the land-then-move window.
+        fs.mkdirSync(targetDir, { recursive: true, mode: 0o700 });
+        try {
+          const owner = fs.statSync(FETCHED_DIR);
+          fs.chownSync(targetDir, owner.uid, owner.gid);
+          fs.chmodSync(targetDir, 0o700);
+        } catch (err: any) {
+          // Not fatal: the bytes still land somewhere the caller asked for, and
+          // reporting a failed retrieval over an ownership detail would be the
+          // worse outcome. Surfaced on the response so it is not silent.
+          console.warn("[fetched] could not set owner/mode on", targetDir, err?.message || err);
+        }
+      }
+
+      const absPath = path.join(targetDir, storedName);
 
       // Belt and braces: even after sanitising, refuse to write outside the
       // directory. If this ever fires, safeStoredName has a hole.
+      // ⛔ Rooted at FETCHED_DIR, never at targetDir — checking against a
+      // caller-influenced directory would make the guard agree with whatever
+      // the caller asked for, which is not a check.
       const resolved = path.resolve(absPath);
       if (!resolved.startsWith(path.resolve(FETCHED_DIR) + path.sep)) {
         return res.status(400).json({ error: "refusing to write outside the fetched directory" });
@@ -605,9 +641,10 @@ async function main() {
         bytes: body.length,
         sha256,
         contentType: req.get("X-Unibrowse-Content-Type") || req.get("Content-Type") || null,
-        sourceUrl: (encoded
-          ? safeDecode(req.get("X-Unibrowse-Source-Url"))
-          : req.get("X-Unibrowse-Source-Url")) || null,
+        sourceUrl,
+        // null when the file landed in the shared store, so a listing shows at
+        // a glance which files are in a private subdirectory and which are not.
+        destination: destination || null,
         // ⛔ Always decoded, regardless of the marker: WE encoded it on the way
         // out (tools/downloads.ts), so it arrives encoded from every extension
         // vintage. This is the half that fixes an already-deployed browser.
