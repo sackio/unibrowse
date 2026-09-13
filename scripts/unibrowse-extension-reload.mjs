@@ -59,10 +59,23 @@
  *    the SAME extension id and spawns a fresh `service_worker` target for it.
  *    It is the CDP equivalent of the Reload button. Id stability matters:
  *    id rotation was itself one of the earlier bugs (fixed 08-12/13).
- *  · Remote debugging DOES work with Chrome's DEFAULT user-data-dir on this
- *    build. I expected the Chrome 136+ restriction to block it and tested
- *    instead of assuming; it did not apply. (The port takes ~5s to come up —
- *    a probe at 5s can miss it and read as "refused".)
+ *  · ⛔ RETRACTED 2026-09-13. This bullet used to read: "Remote debugging DOES
+ *    work with Chrome's DEFAULT user-data-dir on this build." That is FALSE,
+ *    and it contradicted the table four lines above it — which was right all
+ *    along. Re-measured on office, Chrome 151.0.7922.169, headful, default
+ *    profile, launched with --remote-debugging-port=9222: nothing ever listens
+ *    on 9222 (`ss -ltn` empty, `curl :9222/json/version` no response), and
+ *    Chrome's own stderr says why —
+ *        "DevTools remote debugging requires a non-default data directory.
+ *         Specify this using --user-data-dir."
+ *    ⚠️ How the wrong bullet got here is trap 1, named ten lines above it: the
+ *    "verification" was almost certainly a headless browser, and headless is
+ *    exempt. I wrote the warning and then walked into it in the next bullet.
+ *    ⇒ A caveat placed next to a claim does not protect the claim. Re-read
+ *    your own warnings against what you just wrote, not against what you meant.
+ *    ⛔ Do not re-open this: Ben authorised the restart on both his machines on
+ *    2026-09-13 specifically to settle it, and the answer is no. Memos
+ *    `52ab66c1`, `f7cdb9f9`.
  *  · ⚠️ `Schema.getDomains` reports the Extensions domain as ABSENT on the very
  *    connection where these calls succeed. Do NOT feature-detect with it —
  *    it produces a false negative. Try the call.
