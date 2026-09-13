@@ -43,6 +43,12 @@ function codeOnly(src) {
     .join("\n");
 }
 
+function listFetchedBlock() {
+  const m = /export const ListFetchedTool = z\.object\(\{([\s\S]*?)\n\}\);/.exec(schemaSrc);
+  assert.ok(m, "ListFetchedTool not found in src/types/tool-schemas.ts — did it get renamed?");
+  return codeOnly(m[1]);
+}
+
 function handlerBody() {
   const m = /async handleFetchToServer\(data\) \{([\s\S]*?)\n  \}/.exec(bgSrc);
   assert.ok(m, "handleFetchToServer not found in extension/background.js");
@@ -453,5 +459,64 @@ test("allowHtml gates the guard and defaults to refusing", () => {
     codeOnly(schemaSrc),
     /allowHtml:\s*z\s*\.boolean\(\)\s*\.optional\(\)/,
     "a flag the extension honours but the schema does not declare is unreachable through the tool",
+  );
+});
+
+/**
+ * ── browser_list_fetched must never look like an empty store ─────────────────
+ *
+ * jsonResponse truncates the SERIALISED STRING. So handing it a long list
+ * returns JSON cut off mid-object — unparseable — and `count` is serialised
+ * AFTER `files`, so it sits in the last ~14 characters and is always the first
+ * casualty. The one field that could reveal the truncation is destroyed by it.
+ *
+ * MEASURED 2026-09-13, reported by `laura-work` after 125 fetches on a healthy
+ * server: limit 2 → 2 files, limit 50 → 50 files, limit 200 → read as an EMPTY
+ * STORE. Real numbers: 274 rows serialise to 80,721 tokens against a 25,000
+ * default cap, so the breach starts around 85 rows, not 200.
+ *
+ * ⛔ WHY THIS ONE MATTERS MORE THAN ITS SIZE: `thread-laura-work-1` had just
+ * adopted this index as MORE AUTHORITATIVE than their own fetch manifest. A
+ * false "empty" lands precisely where the caller has no second opinion left.
+ */
+test("a list too big for the budget drops rows and says so, never truncates the JSON", () => {
+  const code = codeOnly(toolsSrc);
+  assert.match(
+    code,
+    /truncatedForSize:\s*true/,
+    "dropping rows silently is the same defect in a new place — the caller must be told the page is short for size, not for lack of files",
+  );
+  assert.match(
+    code,
+    /total,/,
+    "⛔ `count` alone cannot distinguish a short page from an empty store. `total` is what makes the answer checkable.",
+  );
+  assert.match(
+    code,
+    /hasMore:\s*skip \+ files\.length < total/,
+    "a caller paging through needs a termination signal that is not 'the page got shorter'",
+  );
+  assert.match(
+    code,
+    /estimateTokens\(JSON\.stringify\(envelope\(/,
+    "the fit must be measured against the REAL encoder — row sizes vary by an order of magnitude with filename and URL length, so a per-row estimate does not hold",
+  );
+});
+
+test("browser_list_fetched pages, and the parameter is declared", () => {
+  assert.match(
+    codeOnly(toolsSrc),
+    /\.skip\(skip\)/,
+    "without skip the offset argument is accepted and ignored — repeated calls return the same rows and paging silently does nothing",
+  );
+  // ⛔ SCOPE THIS TO ListFetchedTool. `offset` is declared by three different
+  // tools in this file, so matching the whole file passes whether or not THIS
+  // tool has one — caught 2026-09-13 when deleting the declaration left the
+  // test green. Same family as the comment-stripping trap at the top: an
+  // assertion whose haystack is bigger than its claim is not a guard.
+  assert.match(
+    listFetchedBlock(),
+    /offset:\s*z\s*\.number\(\)\s*\.optional\(\)/,
+    "a paging parameter the handler honours but the schema does not declare is unreachable through the tool",
   );
 });

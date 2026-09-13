@@ -1120,10 +1120,13 @@ export const CancelCaptchaSolveTool = z.object({
 export const ListFetchedTool = z.object({
   name: z.literal("browser_list_fetched"),
   description: z.literal(
-    "List files previously retrieved by browser_fetch_to_server — id, filename, size, content type, source URL, sha256 and when it landed."
+    "List files previously retrieved by browser_fetch_to_server — id, filename, size, content type, source URL, sha256 and when it landed. " +
+    "Always returns `total` (how many files are indexed in all) alongside `count` (how many this call returned), so a short page is never mistakable for an empty store. " +
+    "Page with `offset`. If a page would not fit the response token budget, rows are dropped and `truncatedForSize: true` says so — the answer stays valid JSON either way."
   ),
   arguments: z.object({
-    limit: z.number().optional().describe("Maximum entries to return (default 50, newest first)"),
+    limit: z.number().optional().describe("Maximum entries to return per page (default 50, max 500, newest first). ⚠️ A large limit may still return fewer rows than asked: the response has a token budget, and rows past it are dropped with `truncatedForSize: true` rather than being silently cut mid-object. Check `total` and `hasMore`, never `count` alone."),
+    offset: z.number().optional().describe("How many entries to skip, for paging (default 0). Combine with `hasMore` and `total` from the previous response."),
   }).merge(MaxTokensSchema),
 });
 

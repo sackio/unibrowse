@@ -8,7 +8,7 @@ import {
   FetchToServerTool,
   ListFetchedTool,
 } from "@/types/tool-schemas";
-import { jsonResponse, textResponse, errorResponse } from "@/utils/response-helpers";
+import { jsonResponse, textResponse, errorResponse, estimateTokens, DEFAULT_MAX_TOKENS } from "@/utils/response-helpers";
 import { mongodb } from "@/utils/mongodb";
 import { setFetchDestination, validateDestination } from "@/utils/fetch-destinations";
 
@@ -280,14 +280,71 @@ export const listFetched: Tool = {
   handle: async (_context, params) => {
     const { max_tokens } = params || {};
     try {
-      const { limit } = ListFetchedTool.shape.arguments.parse(params);
-      const capped = Math.min(limit ?? 50, 500);
-      const rows = await mongodb.getFetchedFilesCollection()
+      const { limit, offset } = ListFetchedTool.shape.arguments.parse(params);
+      const capped = Math.min(Math.max(limit ?? 50, 1), 500);
+      const skip = Math.max(offset ?? 0, 0);
+
+      const collection = mongodb.getFetchedFilesCollection();
+      const total = await collection.countDocuments({});
+      const rows = await collection
         .find({}, { projection: { _id: 0 } })
         .sort({ createdAt: -1 })
+        .skip(skip)
         .limit(capped)
         .toArray();
-      return jsonResponse({ files: rows, count: rows.length }, true, max_tokens);
+
+      // ⛔ DO NOT HAND THIS STRAIGHT TO jsonResponse. It truncates the
+      // SERIALISED STRING, so an over-budget list comes back as JSON cut off
+      // mid-object — unparseable, and with `count` gone, because `count` is
+      // serialised AFTER `files` and therefore lives in the last ~14 characters
+      // of the payload. The one field that could reveal the truncation is the
+      // first thing destroyed.
+      //
+      // MEASURED 2026-09-13, reported by `laura-work` after 125 fetches:
+      // limit 2 → 2 files, limit 50 → 50 files, limit 200 → read as an EMPTY
+      // STORE. At 200 rows the payload is ~134 KB / well over the 25k-token
+      // default cap. ⚠️ They had just adopted this index as more authoritative
+      // than their own fetch manifest, so "the store is empty" arrived exactly
+      // where the caller has no second opinion to catch it with.
+      //
+      // ⇒ Drop whole ROWS until it fits and SAY SO. A short, valid, honest
+      // answer beats a long one that cannot be parsed and cannot be doubted.
+      const envelope = (files: any[], truncatedForSize: boolean) => ({
+        files,
+        count: files.length,
+        offset: skip,
+        total,
+        hasMore: skip + files.length < total,
+        ...(truncatedForSize
+          ? {
+              truncatedForSize: true,
+              note:
+                `Returned ${files.length} of the ${rows.length} rows requested — the rest would not fit in the response token budget. ` +
+                `This is NOT the end of the store: ${total} files are indexed. ` +
+                `Page with offset=${skip + files.length}, or raise max_tokens.`,
+            }
+          : {}),
+      });
+
+      const budget = max_tokens ?? DEFAULT_MAX_TOKENS;
+      if (estimateTokens(JSON.stringify(envelope(rows, false), null, 2)) <= budget) {
+        return jsonResponse(envelope(rows, false), true, max_tokens);
+      }
+
+      // Binary search the largest row count that fits, rather than guessing a
+      // per-row size — row sizes vary by an order of magnitude with filename
+      // and URL length.
+      let lo = 0;
+      let hi = rows.length;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (estimateTokens(JSON.stringify(envelope(rows.slice(0, mid), true), null, 2)) <= budget) {
+          lo = mid;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      return jsonResponse(envelope(rows.slice(0, lo), true), true, max_tokens);
     } catch (error: any) {
       // ⚠️ `: any` and the surrounding tools' bare `catch (error)` differ on
       // purpose. Under useUnknownInCatchVariables a bare catch param is
