@@ -51,6 +51,16 @@ services:
       # which is shared fleet-wide, so every agent seat would read whatever
       # landed there. Host-local is the weaker exposure and costs nothing.
       FETCHED_DIR: /app/fetched
+      # ⛔ Who owns the fetched store if the server has to CREATE it. This
+      # container runs as root, so without these the store comes back
+      # root:root 0755 — world-readable — the first time anyone deletes it,
+      # silently. With them it is recreated 0700 owned by the agent seat uid.
+      # ⚠️ 1000 is the measured seat uid on every Linux host (office and
+      # 192.168.1.168, 2026-09-13). It is NOT 1026 — that is `ben` on the NAS
+      # itself, a different principal, and chowning to it would lock the seats
+      # out of their own files. REFUTE: `id -u` on any host that runs a seat.
+      FETCHED_OWNER_UID: "${FETCHED_OWNER_UID:-1000}"
+      FETCHED_OWNER_GID: "${FETCHED_OWNER_GID:-1000}"
       # ⛔ THE URL WE HAND TO OTHER PEOPLE — not this process's bind address.
       # Two features mail a link out of this container: a parked oversized
       # send body (/shared/:id) and a shared recording's replay page

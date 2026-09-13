@@ -353,13 +353,44 @@ test("the upload route writes into the destination but guards against FETCHED_DI
   );
   assert.match(
     code,
-    /mkdirSync\(targetDir,\s*\{\s*recursive:\s*true,\s*mode:\s*0o700\s*\}\)/,
-    "the subdirectory must be created 0700 — the whole point is that the bytes are never world-readable, not even briefly",
+    /ensurePrivateDir\(targetDir,\s*FETCHED_DIR\)/,
+    "the subdirectory must be created private AND owned — a bare mkdir leaves it root-owned and world-readable",
+  );
+});
+
+/**
+ * ⛔ THE STORE'S 0700 WAS HOST-SIDE STATE, AND THAT WAS A SILENT REGRESSION
+ * WAITING TO HAPPEN. The route recreates the store if it is missing, as root,
+ * so deleting the directory once brought it back root:root 0755 — protection
+ * gone, nothing failed, nothing logged.
+ *
+ * ⚠️ And the obvious one-line fix is wrong: `mode: 0o700` alone yields a
+ * ROOT-OWNED private directory, which locks out every agent seat (all uid
+ * 1000, measured 2026-09-13). Mode cannot express "private to the agents"
+ * without an owner, which is why this goes through a helper and reads the
+ * owner from the environment.
+ */
+test("recreating the fetched store cannot silently drop it to world-readable", () => {
+  const code = codeOnly(serverSrc);
+  assert.match(
+    code,
+    /if\s*\(!fs\.existsSync\(FETCHED_DIR\)\)\s*ensurePrivateDir\(FETCHED_DIR\)/,
+    "⛔ a bare mkdirSync here recreates the store root:root 0755 the first time anyone deletes it",
   );
   assert.match(
     code,
-    /chownSync\(targetDir,\s*owner\.uid,\s*owner\.gid\)/,
-    "⛔ the container runs as root, so a 0700 subdirectory left root-owned locks out every agent seat. It must inherit the store's owner.",
+    /mkdirSync\(dir,\s*\{\s*recursive:\s*true,\s*mode:\s*0o700\s*\}\)/,
+    "the helper must create private, not chmod afterwards — a window in which the directory is world-readable is the thing being removed",
+  );
+  assert.match(
+    code,
+    /fs\.chownSync\(dir,\s*uid,\s*gid\)/,
+    "⛔ 0700 without a chown is worse than 0755: root-owned and private locks out every seat that needs to read these files",
+  );
+  assert.match(
+    code,
+    /const\s+FETCHED_OWNER_UID\s*=\s*process\.env\.FETCHED_OWNER_UID/,
+    "the owner must be configurable — hardcoding 1000 breaks any deployment whose seats are not uid 1000",
   );
 });
 

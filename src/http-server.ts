@@ -95,6 +95,58 @@ const PROFILES_DIR = process.env.PROFILES_DIR || path.join(__dirname, "..", ".ch
  */
 const FETCHED_DIR = process.env.FETCHED_DIR || path.join(__dirname, "..", "fetched");
 
+/**
+ * Who should own the fetched store, when we are the one creating it.
+ *
+ * ⛔ WHY THIS IS NOT JUST `mode: 0o700` ON THE mkdir. This container runs as
+ * ROOT, so anything it creates is root-owned, and a root-owned 0700 directory
+ * locks out every agent seat — all of which run as uid 1000 (measured
+ * 2026-09-13 on office and 192.168.1.168). Mode alone therefore cannot express
+ * "private to the agents": it needs an owner too.
+ *
+ * ⚠️ THE HAZARD THIS CLOSES, which is silent in both directions. The store's
+ * 0700 was set by hand on the host. The route below recreates the directory if
+ * it is missing, so deleting it once brings it back root:root 0755 — the
+ * protection gone, with nothing failing and nothing logged. Conversely a
+ * hardcoded chown would break any deployment whose seats are not uid 1000.
+ * ⇒ Explicit opt-in via the environment: set, we create it private and owned;
+ * unset, we behave exactly as before. Both compose files set it.
+ */
+const FETCHED_OWNER_UID = process.env.FETCHED_OWNER_UID
+  ? Number(process.env.FETCHED_OWNER_UID)
+  : null;
+const FETCHED_OWNER_GID = process.env.FETCHED_OWNER_GID
+  ? Number(process.env.FETCHED_OWNER_GID)
+  : null;
+
+/**
+ * Create `dir` as a private directory owned by the configured store owner.
+ * Never throws: the bytes are the deliverable, and failing a retrieval over an
+ * ownership detail is the worse outcome. Warns instead.
+ */
+const ensurePrivateDir = (dir: string, inheritFrom?: string): void => {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  let uid = FETCHED_OWNER_UID;
+  let gid = FETCHED_OWNER_GID;
+  if (inheritFrom) {
+    // A subdirectory inherits from the store itself, so it follows whatever the
+    // store actually is rather than whatever the environment claims.
+    try {
+      const owner = fs.statSync(inheritFrom);
+      uid = owner.uid;
+      gid = owner.gid;
+    } catch { /* fall back to the configured owner below */ }
+  }
+  try {
+    if (uid !== null && gid !== null && Number.isFinite(uid) && Number.isFinite(gid)) {
+      fs.chownSync(dir, uid, gid);
+    }
+    fs.chmodSync(dir, 0o700);
+  } catch (err: any) {
+    console.warn("[fetched] could not set owner/mode on", dir, err?.message || err);
+  }
+};
+
 const commonTools: Tool[] = [
   common.pressKey,
   common.scroll,
@@ -578,7 +630,10 @@ async function main() {
       if (!Buffer.isBuffer(body) || body.length === 0) {
         return res.status(400).json({ error: "empty body — nothing to store" });
       }
-      if (!fs.existsSync(FETCHED_DIR)) fs.mkdirSync(FETCHED_DIR, { recursive: true });
+      // ⛔ Recreating this must not silently drop the store back to a
+      // world-readable 0755 — see ensurePrivateDir. Deleting the directory once
+      // used to do exactly that, with nothing logged and nothing failing.
+      if (!fs.existsSync(FETCHED_DIR)) ensurePrivateDir(FETCHED_DIR);
 
       const id = uuidv4();
       const encoded = req.get("X-Unibrowse-Encoding") === "percent";
@@ -606,17 +661,7 @@ async function main() {
         // ⚠️ This does NOT isolate one seat from another and cannot: every seat
         // is the same uid. It keeps the bytes off a world-readable path from the
         // FIRST write, closing the land-then-move window.
-        fs.mkdirSync(targetDir, { recursive: true, mode: 0o700 });
-        try {
-          const owner = fs.statSync(FETCHED_DIR);
-          fs.chownSync(targetDir, owner.uid, owner.gid);
-          fs.chmodSync(targetDir, 0o700);
-        } catch (err: any) {
-          // Not fatal: the bytes still land somewhere the caller asked for, and
-          // reporting a failed retrieval over an ownership detail would be the
-          // worse outcome. Surfaced on the response so it is not silent.
-          console.warn("[fetched] could not set owner/mode on", targetDir, err?.message || err);
-        }
+        ensurePrivateDir(targetDir, FETCHED_DIR);
       }
 
       const absPath = path.join(targetDir, storedName);
