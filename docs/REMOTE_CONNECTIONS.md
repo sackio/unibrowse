@@ -86,19 +86,32 @@ Unknown message type: <tool name>     ⇒ still the old script
 
 | lever | result |
 |---|---|
-| ↻ on the unibrowse card at `chrome://extensions`, on-disk script changed | ✅ **evicts** — measured 2026-09-13, macOS |
-| full Chrome restart + manifest version bump, on-disk script changed | ❌ fails — measured 2026-09-07, macOS |
-| ↻ with the on-disk script unchanged | untested, and not worth testing |
+| ↻ on the unibrowse card at `chrome://extensions` | ✅ **evicts** — measured 2026-09-09 (office, Linux, Chrome 151) and again 2026-09-13 (macOS) |
+| full Chrome restart + manifest version bump | ❌ fails — measured 2026-09-07, macOS |
 
-⭐ **↻ is the remedy.** The 2026-09-13 measurement is tight: same Chrome process
-(PID unchanged, 47-day uptime), `manifest.json` byte-identical and still `1.0.1`
-(diffed against a pre-change backup), no quit — and the worker came back running
-the new script, proven by a tool added after it started answering successfully.
+⭐ **↻ is the remedy**, on two hosts and two platforms. The 2026-09-13 measurement
+is the tight one: same Chrome process (PID unchanged, 47-day uptime),
+`manifest.json` byte-identical and still `1.0.1` (diffed against a pre-change
+backup), no quit — and the worker came back running the new script, proven by a
+tool added after it started answering successfully.
+
+⚠️ **Do not re-open this as unknown.** Memo `441fd0b1` still carries a stale
+"never tested, do not claim either way" line about the reload control. That was
+already false when written — `28c962ee` and `98c8143f` had confirmed it on office
+four days earlier — and it is false twice over now. Two seats have since spent
+effort treating a settled question as open.
 
 ⚠️ **Changed-vs-identical bytes is NOT the discriminator**, though it looks like an
 attractive one. The 2026-09-07 files had changed too: Chrome re-read `manifest.json`
 to `1.0.2` and went on executing the cached `background.js` anyway. What separates
 the two results is the lever, not the bytes.
+
+⛔ **The ↻ control and the `browser_reload_extension` TOOL are not the same thing**,
+and the shared word "reload" is the whole trap. The tool calls
+`chrome.runtime.reload()`, which tears the extension down and clears the
+`sw-keepalive` alarm — the only thing that can wake a dormant MV3 worker — so
+nothing ever restarts it. It strands every browser kind. ↻ in the Chrome UI is
+safe; the tool is not. Memo `52ab66c1`.
 
 A fresh `browser_launch_isolated_chrome` also works, but that is a NEW browser with
 a NEW profile — a different case, and it does not transfer to an existing one.
