@@ -180,8 +180,60 @@ export const fetchToServer: Tool = {
       const outbound = validatedParams.label === undefined
         ? validatedParams
         : { ...validatedParams, label: encodeURIComponent(validatedParams.label) };
-      const result = await context.sendSocketMessage("browser_fetch_to_server", outbound);
-      return jsonResponse(result, true, max_tokens);
+
+      // ⛔ THE WS TIMEOUT IS A RESPONSE DEADLINE, NOT A TRANSFER DEADLINE.
+      // The bytes travel browser → /api/v1/fetched, entirely outside this
+      // socket. When the response window closes first we used to report
+      // `failed` for a file that was already on disk and indexed. MEASURED
+      // 2026-09-13 by `thread-laura-work-1`: two 79 MB pptx files, each
+      // reported failed, retried, reported failed again — and all four
+      // transfers had in fact succeeded. Cost: two good files nearly dropped
+      // from their corpus on our own report, and 76 MB of byte-identical
+      // duplicates created by the retries.
+      // ⇒ A generous window for the common case, and a definitive answer from
+      // our own index for the rest. Never guess from a timeout.
+      const startedAt = new Date(Date.now() - 1000); // 1s of clock slack
+      try {
+        const result = await context.sendSocketMessage(
+          "browser_fetch_to_server",
+          outbound,
+          { timeoutMs: 180_000 },
+        );
+        return jsonResponse(result, true, max_tokens);
+      } catch (wsError: any) {
+        // ⭐ ASK THE INDEX BEFORE CALLING IT A FAILURE. The upload leg does not
+        // depend on this socket, so "no response" and "did not happen" are
+        // different claims and only one of them is ours to make.
+        // ⚠️ Two passes: the POST may still be in flight when the window
+        // closes, so a single miss is not proof either.
+        for (const waitMs of [0, 3000]) {
+          if (waitMs) await new Promise((r) => setTimeout(r, waitMs));
+          try {
+            const landed = await mongodb.getFetchedFilesCollection().findOne(
+              { sourceUrl: validatedParams.url, createdAt: { $gte: startedAt } },
+              { projection: { _id: 0 }, sort: { createdAt: -1 } },
+            );
+            if (landed) {
+              return jsonResponse(
+                {
+                  ...landed,
+                  recoveredAfterTimeout: true,
+                  note:
+                    `The WebSocket response window closed before the browser answered, but the file DID arrive and is indexed. ` +
+                    `This is a success — do not retry, and do not record it as failed. ` +
+                    `(A retry here is what creates byte-identical duplicates.)`,
+                },
+                true,
+                max_tokens,
+              );
+            }
+          } catch {
+            // Index unreachable — fall through and report the original error
+            // rather than inventing an outcome we cannot support.
+          }
+        }
+        throw wsError;
+      }
     } catch (error: any) {
       // ⚠️ `: any` and the surrounding tools' bare `catch (error)` differ on
       // purpose. Under useUnknownInCatchVariables a bare catch param is

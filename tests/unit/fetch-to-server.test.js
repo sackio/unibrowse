@@ -235,3 +235,35 @@ test("the server encodes label before it ever reaches the browser", () => {
     "this is the half that fixes browsers that cannot be redeployed — losing it silently re-breaks every non-ASCII label",
   );
 });
+
+/* ── 7. A closed response window is not a failed transfer ───────────────────
+ *
+ * The bytes travel browser → /api/v1/fetched, outside the WebSocket. So the
+ * WS timeout is a RESPONSE deadline, and "no response" and "did not happen"
+ * are different claims. Measured 2026-09-13: two 79 MB files were reported
+ * failed, retried, reported failed again — and all four transfers had landed.
+ * The caller nearly dropped two good files, and the retries left 76 MB of
+ * byte-identical duplicates.
+ *
+ * ⛔ The recovery is the only thing standing between a slow transfer and a
+ * false negative, and it is invisible in normal operation — nothing fails
+ * loudly if someone removes it.
+ */
+test("a timed-out fetch consults the index before reporting failure", () => {
+  const code = codeOnly(toolsSrc);
+  assert.match(
+    code,
+    /getFetchedFilesCollection\(\)\.findOne\(\s*\{\s*sourceUrl:/,
+    "without this lookup a transfer that succeeded past the response window is reported as failed, and the caller's retry duplicates a large file",
+  );
+  assert.match(
+    code,
+    /recoveredAfterTimeout:\s*true/,
+    "the caller must be able to tell a recovered success from an ordinary one",
+  );
+  assert.match(
+    code,
+    /createdAt:\s*\{\s*\$gte:\s*startedAt\s*\}/,
+    "the lookup MUST be bounded to this call — an unbounded sourceUrl match would resurrect an older fetch of the same URL and report it as this one's result",
+  );
+});
