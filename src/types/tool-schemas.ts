@@ -1045,6 +1045,70 @@ export const FetchToServerTool = z.object({
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
+// ── Remote captcha solving ───────────────────────────────────────────────────
+//
+// ⛔ browser_request_user_action is NOT this, and reaching for it is the mistake
+// these exist to prevent: it draws an overlay IN THE BROWSER and waits for
+// someone sitting at it. Every browser this fleet drives is somewhere the
+// operator is not — a headless sidecar, a laptop across a VPN — so that overlay
+// is shown to an empty room and the agent blocks until timeout.
+//
+// These are ASYNCHRONOUS on purpose. A captcha takes as long as it takes a human
+// to notice a phone buzz, and an MCP call that blocks for minutes is a call that
+// times out. Request returns a session id immediately; poll it.
+export const RequestCaptchaSolveTool = z.object({
+  name: z.literal("browser_request_captcha_solve"),
+  description: z.literal(
+    "Hand a captcha to a human's phone and get a session id back immediately. " +
+    "Serves a phone-sized page showing a live screenshot of the tab; the human taps it, and taps replay as REAL clicks (CDP Input) in that tab. " +
+    "Publishes the page as an ATC artifact so it is reachable off-LAN with no VPN, and DMs the link to the solver. " +
+    "Poll browser_check_captcha_solve for the outcome; do not busy-wait on this call. " +
+    "⚠️ The returned URL lets its holder click inside a live logged-in browser — it is bound to ONE tab, expires (default 10 min), and is single-use, but treat it like any other credential. " +
+    "⚠️ This does not defeat captchas that score the SESSION rather than the answer (mouse paths, timing, IP reputation). It solves 'a human needs to look at this'."
+  ),
+  arguments: z.object({
+    prompt: z
+      .string()
+      .optional()
+      .describe("What to tell the human, e.g. 'Pick all the traffic lights on the Experian opt-out form'. Shown as the page heading. Say which site and why, or they are being asked to click an anonymous grid."),
+    ttlSeconds: z
+      .number()
+      .optional()
+      .describe("How long the link stays live (default 600, min 30, max 3600). After this the session refuses everything."),
+    notify: z
+      .string()
+      .optional()
+      .describe("ATC subscriber to DM the link to (default: the operator). Set this when someone other than the operator should solve it."),
+    rect: z
+      .object({
+        x: z.number(), y: z.number(), width: z.number(), height: z.number(),
+      })
+      .optional()
+      .describe("Optional viewport-CSS-pixel box outside which taps are REFUSED, narrowing what a leaked link can touch. ⚠️ Usually leave unset: reCAPTCHA's tile challenge opens OUTSIDE the checkbox's box, so clamping to the widget you can see makes the puzzle unreachable."),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+});
+
+export const CheckCaptchaSolveTool = z.object({
+  name: z.literal("browser_check_captcha_solve"),
+  description: z.literal(
+    "Poll a captcha session opened by browser_request_captcha_solve. Returns state (pending | solved | expired | cancelled), how many taps and text entries were sent, seconds remaining, and any note the solver left. " +
+    "⭐ 'solved' means the HUMAN pressed Done — it is their assertion that the captcha is dealt with, not a verification that the page accepted it. Check the page yourself afterwards."
+  ),
+  arguments: z.object({
+    sessionId: z.string().describe("The sessionId returned by browser_request_captcha_solve"),
+  }).merge(MaxTokensSchema),
+});
+
+export const CancelCaptchaSolveTool = z.object({
+  name: z.literal("browser_cancel_captcha_solve"),
+  description: z.literal(
+    "Cancel a captcha session and kill its link immediately. Use when you gave up, navigated away, or solved it another way — a live link to a logged-in browser should not outlive the reason it existed."
+  ),
+  arguments: z.object({
+    sessionId: z.string().describe("The sessionId returned by browser_request_captcha_solve"),
+  }).merge(MaxTokensSchema),
+});
+
 export const ListFetchedTool = z.object({
   name: z.literal("browser_list_fetched"),
   description: z.literal(

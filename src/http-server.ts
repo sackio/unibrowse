@@ -8,6 +8,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 import { appConfig } from "@/config/app.config";
+import { registerCaptchaRoutes, sweepCaptchaSessions } from "@/captcha";
 
 import type { Resource } from "@/resources/resource";
 import { createServerWithTools, createServerWithoutWebSocket, globalContext } from "@/server";
@@ -16,6 +17,7 @@ import * as clipboard from "@/tools/clipboard";
 import * as common from "@/tools/common";
 import * as cookies from "@/tools/cookies";
 import * as custom from "@/tools/custom";
+import * as captchaTools from "@/tools/captcha";
 import * as downloads from "@/tools/downloads";
 import * as extensions from "@/tools/extensions";
 import * as exploration from "@/tools/exploration";
@@ -175,6 +177,9 @@ const downloadTools: Tool[] = [
   downloads.getDownloads,
   downloads.fetchToServer,
   downloads.listFetched,
+  captchaTools.requestCaptchaSolve,
+  captchaTools.checkCaptchaSolve,
+  captchaTools.cancelCaptchaSolve,
   downloads.cancelDownload,
   downloads.openDownload,
 ];
@@ -445,6 +450,60 @@ async function main() {
   async function ensureMongoConnected() {
     if (!mongodb.isConnected()) await mongodb.connect();
   }
+
+  // ── remote captcha solving ───────────────────────────────────────────────
+  //
+  // The solver page and its poll/tap endpoints. See src/captcha.ts for why the
+  // token in the path is the credential and why these are not behind
+  // requireApiKey: a phone opening the link has no LAN access and no login, and
+  // that is the entire point of the feature.
+  registerCaptchaRoutes(app, {
+    screenshot: (s) =>
+      globalContext.sendSocketMessage("browser_screenshot", {
+        tabTarget: s.tabTarget,
+        ...(s.extensionId ? { extensionId: s.extensionId } : {}),
+      } as any) as Promise<any>,
+
+    // ⛔ Ask the PAGE for its viewport rather than trusting the screenshot's
+    // pixel dimensions. captureScreenshot returns device pixels, so on any
+    // non-1 devicePixelRatio the image is larger than the CSS viewport and a
+    // tap mapped from image pixels lands short and to the left — consistently,
+    // which reads as "the click is slightly off" rather than as a scaling bug.
+    viewport: async (s) => {
+      const r: any = await globalContext.sendSocketMessage("browser_evaluate", {
+        expression: "({ width: window.innerWidth, height: window.innerHeight })",
+        tabTarget: s.tabTarget,
+        ...(s.extensionId ? { extensionId: s.extensionId } : {}),
+      } as any);
+      const v = r?.result ?? r?.value ?? r;
+      const width = Number(v?.width), height = Number(v?.height);
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        throw new Error(`could not read viewport from tab ${s.tabTarget} (got ${JSON.stringify(v)})`);
+      }
+      return { width, height };
+    },
+
+    click: async (s, x, y) => {
+      await globalContext.sendSocketMessage("browser_realistic_click", {
+        x, y, moveFirst: true, tabTarget: s.tabTarget,
+        ...(s.extensionId ? { extensionId: s.extensionId } : {}),
+      } as any);
+    },
+
+    type: async (s, text) => {
+      await globalContext.sendSocketMessage("browser_realistic_type", {
+        text, tabTarget: s.tabTarget,
+        ...(s.extensionId ? { extensionId: s.extensionId } : {}),
+      } as any);
+    },
+  });
+
+  // Sessions are in-memory and terminal states are reached by reading the clock,
+  // so nothing reaps them on its own. Hourly is far more often than needed.
+  setInterval(() => {
+    const n = sweepCaptchaSessions();
+    if (n) console.log(`[captcha] swept ${n} finished session(s)`);
+  }, 3600_000).unref();
 
   // ── browser_fetch_to_server receiving end ────────────────────────────────
   //

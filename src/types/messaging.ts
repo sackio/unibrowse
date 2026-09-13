@@ -107,6 +107,27 @@ export interface SocketMessageMap {
   getUrl: { tabTarget?: number | string } | undefined;
   getTitle: { tabTarget?: number | string } | undefined;
 
+  // Realistic input — CDP Input domain, real OS-level events. Declared here
+  // because the captcha relay calls both from the SERVER (not from a tool),
+  // and an undeclared message type is a compile error at that call site rather
+  // than at the tool, where every other caller happens to sit.
+  browser_realistic_click: {
+    x: number;
+    y: number;
+    button?: "left" | "right" | "middle";
+    clickCount?: number;
+    moveFirst?: boolean;
+    moveDuration?: number;
+    currentX?: number;
+    currentY?: number;
+    tabTarget?: number | string;
+  };
+  browser_realistic_type: {
+    text: string;
+    selector?: string;
+    tabTarget?: number | string;
+  };
+
   // Retrieval from a driven browser's authenticated session.
   // ⚠️ Most download tools are absent from this file — a long-standing gap, not
   // a signal that they do not exist. Added here because it is new; do not infer
