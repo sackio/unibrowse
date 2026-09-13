@@ -82,12 +82,26 @@ started does:
 Unknown message type: <tool name>     ⇒ still the old script
 ```
 
-**What is NOT established**: no method is measured to reliably evict a cached
-worker on a *desktop* profile. On Ben's MacBook, 2026-09-07, a full Chrome restart
-AND a manifest version bump both failed. The ↻ control on the unibrowse card at
-`chrome://extensions` is the best candidate and is untested there. A fresh
-`browser_launch_isolated_chrome` is measured to work, but that is a NEW browser
-with a NEW profile — a different case, and it does not transfer.
+**What evicts it, on a desktop profile:**
+
+| lever | result |
+|---|---|
+| ↻ on the unibrowse card at `chrome://extensions`, on-disk script changed | ✅ **evicts** — measured 2026-09-13, macOS |
+| full Chrome restart + manifest version bump, on-disk script changed | ❌ fails — measured 2026-09-07, macOS |
+| ↻ with the on-disk script unchanged | untested, and not worth testing |
+
+⭐ **↻ is the remedy.** The 2026-09-13 measurement is tight: same Chrome process
+(PID unchanged, 47-day uptime), `manifest.json` byte-identical and still `1.0.1`
+(diffed against a pre-change backup), no quit — and the worker came back running
+the new script, proven by a tool added after it started answering successfully.
+
+⚠️ **Changed-vs-identical bytes is NOT the discriminator**, though it looks like an
+attractive one. The 2026-09-07 files had changed too: Chrome re-read `manifest.json`
+to `1.0.2` and went on executing the cached `background.js` anyway. What separates
+the two results is the lever, not the bytes.
+
+A fresh `browser_launch_isolated_chrome` also works, but that is a NEW browser with
+a NEW profile — a different case, and it does not transfer to an existing one.
 
 ⛔ **Never call `browser_reload_extension`** to fix this. It strands every browser
 kind, not just containers — memo `52ab66c1`.
