@@ -5,17 +5,27 @@ import {
   GetDownloadsTool,
   CancelDownloadTool,
   OpenDownloadTool,
+  FetchToServerTool,
+  ListFetchedTool,
 } from "@/types/tool-schemas";
 import { jsonResponse, textResponse, errorResponse } from "@/utils/response-helpers";
+import { mongodb } from "@/utils/mongodb";
 
 import type { Tool } from "./tool";
 
 // ⛔ NO TOOL IN THIS FILE MAY CALL ensureAttachedFromParams().
 //
-// All four are BROWSER-scoped, not tab-scoped. Verified against the extension
-// on 2026-08-20 by reading every handler body: handleDownloadFile / handleGetDownloads / handleCancelDownload / handleOpenDownload
+// Every tool here is BROWSER-scoped, not tab-scoped. Verified against the
+// extension on 2026-08-20 by reading every handler body: handleDownloadFile /
+// handleGetDownloads / handleCancelDownload / handleOpenDownload
 // use ONLY the chrome.downloads API and contain zero references to chrome.tabs,
-// chrome.debugger, tabId or tabTarget. The attach pre-flight they used to run
+// chrome.debugger, tabId or tabTarget.
+//
+// ⚠️ Two later additions keep that property for DIFFERENT reasons, so do not
+// re-derive it from the chrome.downloads argument above: browser_fetch_to_server
+// runs its fetch in the SERVICE WORKER (it accepts tabTarget only to route the
+// upload to the server that tab is bound to), and browser_list_fetched never
+// reaches a browser at all — it reads our own Mongo index. The attach pre-flight they used to run
 // was pure liability -- it opened or attached a tab purely to discard it, and
 // the server side never even looked at its return value.
 //
@@ -129,6 +139,84 @@ export const openDownload: Tool = {
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to open download: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+/**
+ * Fetch a URL with the browser's own session and store the bytes server-side.
+ *
+ * ⛔ The three approaches a caller reaches for first all fail — see the comment
+ * above FetchToServerTool in tool-schemas.ts for the measurements. The short
+ * version: browser_download_file leaves the file on the browser's machine,
+ * base64 through a tool response costs ~1 token per byte, and an in-page fetch
+ * is blocked by the page's connect-src CSP on exactly the SSO sites this is for.
+ *
+ * ⚠️ This tool is BROWSER-scoped like the rest of this file — the fetch runs in
+ * the service worker, not in a tab — so it must not call
+ * ensureAttachedFromParams(). tabTarget is accepted only so the extension can
+ * route the upload to the server that tab is bound to.
+ */
+export const fetchToServer: Tool = {
+  schema: {
+    name: FetchToServerTool.shape.name.value,
+    description: FetchToServerTool.shape.description.value,
+    inputSchema: zodToJsonSchema(FetchToServerTool.shape.arguments),
+  },
+  handle: async (context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      const validatedParams = FetchToServerTool.shape.arguments.parse(params);
+      const result = await context.sendSocketMessage("browser_fetch_to_server", validatedParams);
+      return jsonResponse(result, true, max_tokens);
+    } catch (error: any) {
+      // ⚠️ `: any` and the surrounding tools' bare `catch (error)` differ on
+      // purpose. Under useUnknownInCatchVariables a bare catch param is
+      // `unknown`, which is two typecheck errors per tool — this file already
+      // carries eight of them. Not spreading it further; the existing ones are
+      // a separate cleanup.
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to fetch to server: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+/**
+ * List files previously retrieved by browser_fetch_to_server.
+ *
+ * Reads the server's own index rather than asking a browser, so it answers
+ * even when no extension is connected.
+ */
+export const listFetched: Tool = {
+  schema: {
+    name: ListFetchedTool.shape.name.value,
+    description: ListFetchedTool.shape.description.value,
+    inputSchema: zodToJsonSchema(ListFetchedTool.shape.arguments),
+  },
+  // ⛔ Deliberately does NOT go through sendSocketMessage. The index lives in
+  // OUR Mongo, written by the /api/v1/fetched route — asking a browser for it
+  // would make "what have we retrieved" fail whenever no extension happens to
+  // be connected, which is exactly when someone is trying to find a file from
+  // yesterday. Every other tool in this file asks a browser; this one asks us.
+  handle: async (_context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      const { limit } = ListFetchedTool.shape.arguments.parse(params);
+      const capped = Math.min(limit ?? 50, 500);
+      const rows = await mongodb.getFetchedFilesCollection()
+        .find({}, { projection: { _id: 0 } })
+        .sort({ createdAt: -1 })
+        .limit(capped)
+        .toArray();
+      return jsonResponse({ files: rows, count: rows.length }, true, max_tokens);
+    } catch (error: any) {
+      // ⚠️ `: any` and the surrounding tools' bare `catch (error)` differ on
+      // purpose. Under useUnknownInCatchVariables a bare catch param is
+      // `unknown`, which is two typecheck errors per tool — this file already
+      // carries eight of them. Not spreading it further; the existing ones are
+      // a separate cleanup.
+      const { max_tokens } = params || {};
+      return errorResponse(`Failed to list fetched files: ${error.message}`, false, error, max_tokens);
     }
   },
 };

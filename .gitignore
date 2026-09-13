@@ -73,3 +73,9 @@ scripts/rig148-on-profile.sh
 
 # Build output — reproducible via `npm run build`; was tracked until 2026-09-06.
 dist/
+
+# Files pulled out of a driven browser's logged-in session by
+# browser_fetch_to_server. Real user data, never source — and the directory is
+# on the NAS, so anything here is already readable fleet-wide without also
+# being committed.
+fetched/

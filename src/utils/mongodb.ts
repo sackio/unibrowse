@@ -95,6 +95,15 @@ class MongoDB {
     await watches.createIndex({ extensionId: 1 });
     await watches.createIndex({ createdAt: 1 });
 
+    // Files pulled out of a driven browser by browser_fetch_to_server. The
+    // FILE is the deliverable and lives on disk; this is only the index that
+    // makes it findable later, which is why the write path treats an insert
+    // failure here as a warning rather than an error.
+    const fetchedFiles = this.db.collection("fetched_files");
+    await fetchedFiles.createIndex({ id: 1 }, { unique: true });
+    await fetchedFiles.createIndex({ createdAt: -1 });
+    await fetchedFiles.createIndex({ sha256: 1 });
+
     console.log("[MongoDB] Indexes created successfully");
   }
 
@@ -106,6 +115,16 @@ class MongoDB {
       throw new Error("MongoDB not connected. Call connect() first.");
     }
     return this.db.collection("macros");
+  }
+
+  /**
+   * Get fetched_files collection — the index for browser_fetch_to_server.
+   */
+  public getFetchedFilesCollection(): Collection {
+    if (!this.db) {
+      throw new Error("MongoDB not connected. Call connect() first.");
+    }
+    return this.db.collection("fetched_files");
   }
 
   /**

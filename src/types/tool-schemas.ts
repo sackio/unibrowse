@@ -996,6 +996,63 @@ export const OpenDownloadTool = z.object({
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
+// ⛔ WHY THIS EXISTS, AND WHY THE OBVIOUS ALTERNATIVES DO NOT WORK.
+//
+// Getting an authenticated file OFF a browser we drive had no supported path.
+// The three things a caller reaches for first all fail:
+//
+//   1. browser_download_file — lands the file on the BROWSER's machine. For a
+//      remote browser (a laptop over the proxy) the requesting agent has no
+//      shell there, so the bytes are somewhere it cannot read. get_downloads
+//      returns metadata only; open_download opens it on that machine.
+//   2. base64 back through browser_evaluate — arithmetically dead, not merely
+//      wasteful. MEASURED 2026-09-12 with the server's own js-tiktoken encoder:
+//      base64 of binary costs 0.955 TOKENS PER SOURCE BYTE (1.40 chars/token,
+//      stable 64KB→500KB). The 25,000-token response cap therefore carries
+//      ~26KB of file. One 500KB PDF is ~478,000 tokens. Raising
+//      MAX_MCP_OUTPUT_TOKENS does not rescue it, it only moves the cliff.
+//   3. an in-PAGE fetch that POSTs to us — blocked by the page's own
+//      connect-src CSP on exactly the sites that matter (SharePoint, Workday).
+//      ⚠️ That failure surfaces as a network error, not a policy one, so it
+//      reads like our server being down.
+//
+// So the fetch happens in the SERVICE WORKER, which carries the browser's
+// cookies and is not bound by any page's CSP, and the bytes go straight to the
+// server over HTTP — the same out-of-band path _uploadRecordingSnapshot has
+// used for recordings since c2fbd13. Nothing touches a tool response.
+export const FetchToServerTool = z.object({
+  name: z.literal("browser_fetch_to_server"),
+  description: z.literal(
+    "Fetch a URL using the browser's own logged-in session and store the bytes on the unibrowse server. " +
+    "Use this for any file behind a login — SSO-gated PDFs, exports, attachments — that a plain curl cannot reach. " +
+    "The file never passes through the tool response, so size is limited by the server (100MB), not by the token cap. " +
+    "Returns metadata only: id, path on the server, byte count, content type and sha256. " +
+    "⛔ Not for personal records — pay statements, benefits, anything identifying a person — without the operator saying so explicitly and saying where they go. " +
+    "Asked directly on 2026-09-12, Ben scoped this to policy and resource documents only."
+  ),
+  arguments: z.object({
+    url: z.string().describe("URL to fetch. Resolved and fetched BY THE BROWSER, so it may be a login-gated URL that is unreachable from the server."),
+    filename: z
+      .string()
+      .optional()
+      .describe("Suggested filename. Sanitised server-side to a bare basename; the stored name is always prefixed with the generated id, so this cannot collide or escape the directory."),
+    label: z
+      .string()
+      .optional()
+      .describe("Free-text note stored alongside the file — e.g. which agent asked for it and why. Shows up in browser_list_fetched."),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+});
+
+export const ListFetchedTool = z.object({
+  name: z.literal("browser_list_fetched"),
+  description: z.literal(
+    "List files previously retrieved by browser_fetch_to_server — id, filename, size, content type, source URL, sha256 and when it landed."
+  ),
+  arguments: z.object({
+    limit: z.number().optional().describe("Maximum entries to return (default 50, newest first)"),
+  }).merge(MaxTokensSchema),
+});
+
 // Clipboard Tools
 export const GetClipboardTool = z.object({
   name: z.literal("browser_get_clipboard"),

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import crypto from "crypto";
 import express from "express";
 import fs from "fs";
 import path from "path";
@@ -56,6 +57,24 @@ const RECORDINGS_DIR = process.env.RECORDINGS_DIR || path.join(__dirname, "..", 
  * container, so this resolves to the bind-mounted /app/.chrome-profiles.
  */
 const PROFILES_DIR = process.env.PROFILES_DIR || path.join(__dirname, "..", ".chrome-profiles");
+
+/**
+ * Where browser_fetch_to_server puts bytes pulled out of a driven browser.
+ * Same derivation as RECORDINGS_DIR — __dirname is /app/dist in the container,
+ * so this resolves to the bind-mounted /app/fetched.
+ *
+ * ⚠️ THE BIND SOURCE IS HOST-LOCAL AND DELIBERATE. compose maps this to
+ * /home/ben/files on office — Ben's choice, 2026-09-12 ("~/files is fine") —
+ * NOT to the repo's own ./fetched. The repo lives on the NAS, which is the
+ * same bytes on every host, so anything landing there is readable by every
+ * agent seat in the fleet. Host-local is the weaker exposure and costs nothing.
+ *
+ * ⛔ Whatever it points at, this is not a place for personal records. Ben
+ * scoped the first use of this tool to "just policy / resource documents"
+ * after being asked directly about pay statements. A directory being less
+ * exposed is not permission to widen what goes in it.
+ */
+const FETCHED_DIR = process.env.FETCHED_DIR || path.join(__dirname, "..", "fetched");
 
 const commonTools: Tool[] = [
   common.pressKey,
@@ -138,6 +157,8 @@ const cookieTools: Tool[] = [
 const downloadTools: Tool[] = [
   downloads.downloadFile,
   downloads.getDownloads,
+  downloads.fetchToServer,
+  downloads.listFetched,
   downloads.cancelDownload,
   downloads.openDownload,
 ];
@@ -273,6 +294,12 @@ async function main() {
   // Allow large binary uploads for video (matches both /video and /video/:tabId)
   app.use("/api/v1/recordings/:id/video", express.raw({ type: "video/*", limit: "500mb" }));
 
+  // Bytes pulled out of a driven browser arrive as an opaque blob of any type —
+  // PDF, xlsx, zip — so this one cannot filter by Content-Type the way the video
+  // route does. Scoped to the exact path so `type: "*/*"` cannot swallow the
+  // JSON body of any other route.
+  app.use("/api/v1/fetched", express.raw({ type: "*/*", limit: "100mb" }));
+
   // CORS for extension fetch calls
   app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -402,6 +429,107 @@ async function main() {
   async function ensureMongoConnected() {
     if (!mongodb.isConnected()) await mongodb.connect();
   }
+
+  // ── browser_fetch_to_server receiving end ────────────────────────────────
+  //
+  // The extension's service worker fetched a URL with the browser's own
+  // cookies and POSTs the raw bytes here. See FetchToServerTool in
+  // tool-schemas.ts for why neither a tool response nor an in-page fetch can
+  // do this job.
+
+  /**
+   * ⛔ SANITISE THE FILENAME, DO NOT TRUST IT.
+   *
+   * It originates from a remote page — a Content-Disposition header or an
+   * attacker-influenced URL path — and is about to be concatenated into a
+   * filesystem path on our server. `../../etc/cron.d/x` is the obvious attack;
+   * a bare `.` or an empty string is the boring one that writes to the
+   * directory itself.
+   *
+   * basename() strips any directory component, then the allowlist removes
+   * everything that is not plainly a filename character. The stored name is
+   * ALSO prefixed with a server-generated uuid, so two files with the same
+   * name cannot collide and a caller cannot choose the final path even if the
+   * allowlist were wrong.
+   */
+  function safeStoredName(raw: unknown, id: string): string {
+    const fallback = "download";
+    let name = typeof raw === "string" ? raw : "";
+    name = path.basename(name);
+    name = name.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "");
+    if (!name || name === "_") name = fallback;
+    if (name.length > 120) name = name.slice(-120);
+    return `${id}-${name}`;
+  }
+
+  // POST /api/v1/fetched — store bytes the extension pulled with the user's session
+  app.post("/api/v1/fetched", requireApiKey, async (req: any, res: any) => {
+    try {
+      const body = req.body as Buffer;
+      if (!Buffer.isBuffer(body) || body.length === 0) {
+        return res.status(400).json({ error: "empty body — nothing to store" });
+      }
+      if (!fs.existsSync(FETCHED_DIR)) fs.mkdirSync(FETCHED_DIR, { recursive: true });
+
+      const id = uuidv4();
+      const storedName = safeStoredName(req.get("X-Unibrowse-Filename"), id);
+      const absPath = path.join(FETCHED_DIR, storedName);
+
+      // Belt and braces: even after sanitising, refuse to write outside the
+      // directory. If this ever fires, safeStoredName has a hole.
+      const resolved = path.resolve(absPath);
+      if (!resolved.startsWith(path.resolve(FETCHED_DIR) + path.sep)) {
+        return res.status(400).json({ error: "refusing to write outside the fetched directory" });
+      }
+
+      fs.writeFileSync(absPath, body);
+      const sha256 = crypto.createHash("sha256").update(body).digest("hex");
+
+      const record = {
+        id,
+        storedName,
+        path: absPath,
+        bytes: body.length,
+        sha256,
+        contentType: req.get("X-Unibrowse-Content-Type") || req.get("Content-Type") || null,
+        sourceUrl: req.get("X-Unibrowse-Source-Url") || null,
+        label: req.get("X-Unibrowse-Label") || null,
+        extensionId: req.get("X-Unibrowse-Extension-Id") || null,
+        createdAt: new Date(),
+      };
+
+      try {
+        await ensureMongoConnected();
+        await mongodb.getFetchedFilesCollection().insertOne({ ...record });
+      } catch (err: any) {
+        // ⚠️ The FILE is already on disk and is the deliverable. A Mongo failure
+        // must not make a successful retrieval look like a failed one — it only
+        // costs the listing. Say so in the response rather than throwing.
+        console.warn("[fetched] stored on disk but not indexed:", err?.message || err);
+        return res.json({ ...record, indexed: false, indexWarning: String(err?.message || err) });
+      }
+
+      res.json({ ...record, indexed: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/v1/fetched — list what has been retrieved
+  app.get("/api/v1/fetched", async (req: any, res: any) => {
+    try {
+      await ensureMongoConnected();
+      const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 500);
+      const rows = await mongodb.getFetchedFilesCollection()
+        .find({}, { projection: { _id: 0 } })
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .toArray();
+      res.json({ files: rows, count: rows.length, dir: FETCHED_DIR });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // POST /api/v1/recordings — create recording metadata, return id
   app.post("/api/v1/recordings", requireApiKey, async (req: any, res: any) => {

@@ -2529,6 +2529,7 @@ class BackgroundController {
     this.handlers['browser_get_downloads'] = this.handleGetDownloads.bind(this);
     this.handlers['browser_cancel_download'] = this.handleCancelDownload.bind(this);
     this.handlers['browser_open_download'] = this.handleOpenDownload.bind(this);
+    this.handlers['browser_fetch_to_server'] = this.handleFetchToServer.bind(this);
 
     // Clipboard handlers
     this.handlers['browser_get_clipboard'] = this.handleGetClipboard.bind(this);
@@ -8036,6 +8037,106 @@ class BackgroundController {
     const downloadId = await chrome.downloads.download(options);
 
     return { downloadId };
+  }
+
+  /**
+   * Handle browser_fetch_to_server — pull a URL with THIS browser's session and
+   * push the bytes straight to the unibrowse server.
+   *
+   * ⛔ THE FETCH MUST HAPPEN HERE, IN THE SERVICE WORKER. Two properties of this
+   * context are the entire reason the tool exists:
+   *   · it sends the browser's cookies, so an SSO-gated URL resolves — the
+   *     server itself cannot reach these at all;
+   *   · it is not bound by any page's Content-Security-Policy, so the upload
+   *     leg works on sites (SharePoint, Workday) whose connect-src would block
+   *     an in-page fetch to our host. ⚠️ That block surfaces as a network
+   *     error, not a policy one, so doing this from a tab looks like our
+   *     server being down.
+   *
+   * ⛔ The bytes never go back through the WebSocket. Returning them would put
+   * them in a tool response, where base64 costs ~1 token per source byte —
+   * measured 0.955, so the 25k cap carries ~26KB. This returns metadata only.
+   */
+  async handleFetchToServer(data) {
+    console.log('[Background] Fetching to server:', data?.url);
+
+    if (!data || typeof data.url !== 'string' || !data.url) {
+      throw new Error('browser_fetch_to_server requires a url');
+    }
+
+    // credentials:'include' is the load-bearing option — without it this is just
+    // an anonymous fetch that a login wall answers with an HTML sign-in page,
+    // which would then be stored as a "successful" 200. Check the type below.
+    const resp = await fetch(data.url, { credentials: 'include', redirect: 'follow' });
+    if (!resp.ok) {
+      throw new Error(`fetch failed: HTTP ${resp.status} ${resp.statusText} for ${data.url}`);
+    }
+
+    const buf = await resp.arrayBuffer();
+    if (!buf || buf.byteLength === 0) {
+      throw new Error(`fetch returned 0 bytes for ${data.url}`);
+    }
+
+    const contentType = resp.headers.get('content-type') || 'application/octet-stream';
+
+    // ⚠️ A login wall answers 200 with HTML. Storing that as a PDF is the
+    // failure this check exists for: it looks like success on every axis the
+    // caller can see — status ok, bytes > 0, a file on disk — and is discovered
+    // only when someone opens it. Say it plainly instead.
+    if (/^text\/html/i.test(contentType) && !/\.html?($|\?)/i.test(data.url)) {
+      throw new Error(
+        `fetch returned HTML (${contentType}) for ${data.url} — this is almost certainly a login or consent page, not the file. ` +
+        `The browser's session may not cover this origin. Open the URL in a tab and check before retrying.`
+      );
+    }
+
+    // Prefer the server's own filename over a caller's guess.
+    let filename = data.filename;
+    const disp = resp.headers.get('content-disposition') || '';
+    const m = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(disp);
+    if (!filename && m) { try { filename = decodeURIComponent(m[1]); } catch { filename = m[1]; } }
+    if (!filename) {
+      try { filename = new URL(data.url).pathname.split('/').filter(Boolean).pop() || 'download'; }
+      catch { filename = 'download'; }
+    }
+
+    // Stamp which browser this came from, so a file's provenance survives in
+    // the server's index. Best-effort: the transfer is still valid without it.
+    let extensionId = null;
+    try { extensionId = await ensureExtensionId(); } catch { /* provenance is a nicety */ }
+
+    // Same routing rule as _uploadRecordingSnapshot: a tab bound to a remote
+    // server uploads to THAT server, not the extension's default.
+    // ⛔ getServerForTab() takes a NUMERIC chrome tabId. tabTarget may instead
+    // be a LABEL string from browser_list_attached_tabs, and passing that gets
+    // no binding, silently falls through to the default server, and would ship
+    // the bytes to the wrong host for a remote-bound tab. Only consult the
+    // binding when we actually hold a tab id.
+    const cfg = typeof data.tabTarget === 'number'
+      ? await getServerForTab(data.tabTarget)
+      : (this.serverConfig || await resolveServerConfig());
+    const SERVER_BASE = (cfg.httpUrl || 'http://localhost:9010').replace(/\/$/, '');
+    const authHeaders = cfg.apiKey ? { 'Authorization': `Bearer ${cfg.apiKey}` } : {};
+
+    const upResp = await fetch(`${SERVER_BASE}/api/v1/fetched`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Unibrowse-Content-Type': contentType,
+        'X-Unibrowse-Filename': filename,
+        'X-Unibrowse-Source-Url': data.url,
+        ...(data.label ? { 'X-Unibrowse-Label': data.label } : {}),
+        ...(extensionId ? { 'X-Unibrowse-Extension-Id': extensionId } : {}),
+        ...authHeaders,
+      },
+      body: buf,
+    });
+    if (!upResp.ok) {
+      throw new Error(`upload to ${SERVER_BASE} failed: HTTP ${upResp.status} ${upResp.statusText}`);
+    }
+
+    const stored = await upResp.json();
+    return { ...stored, fetchedBytes: buf.byteLength, contentType };
   }
 
   /**

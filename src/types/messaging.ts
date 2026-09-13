@@ -107,6 +107,17 @@ export interface SocketMessageMap {
   getUrl: { tabTarget?: number | string } | undefined;
   getTitle: { tabTarget?: number | string } | undefined;
 
+  // Retrieval from a driven browser's authenticated session.
+  // ⚠️ Most download tools are absent from this file — a long-standing gap, not
+  // a signal that they do not exist. Added here because it is new; do not infer
+  // from a sibling's absence that this one is wrong.
+  browser_fetch_to_server: {
+    url: string;
+    filename?: string;
+    label?: string;
+    tabTarget?: number | string;
+  };
+
   // DOM exploration tools
   browser_query_dom: { selector: string; limit?: number; tabTarget?: number | string };
   browser_get_visible_text: {

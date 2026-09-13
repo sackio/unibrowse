@@ -112,6 +112,8 @@ const cookieTools: Tool[] = [
 const downloadTools: Tool[] = [
   downloads.downloadFile,
   downloads.getDownloads,
+  downloads.fetchToServer,
+  downloads.listFetched,
   downloads.cancelDownload,
   downloads.openDownload,
 ];

@@ -41,6 +41,16 @@ services:
       MONGODB_DB: unibrowse
       NODE_ENV: production
       RECORDINGS_DIR: /app/recordings
+      # Where browser_fetch_to_server stores bytes pulled out of a driven
+      # browser. Ben chose the destination 2026-09-12: "~/files is fine".
+      # ⚠️ That is /home/ben/files on OFFICE, and /home/ben is HOST-LOCAL — the
+      # same path holds different content on each host. This service runs only
+      # on office, so it resolves; do not copy this mount to another host's
+      # compose file and assume it means the same directory.
+      # ⭐ Deliberately NOT the repo's own ./fetched: that sits on the NAS,
+      # which is shared fleet-wide, so every agent seat would read whatever
+      # landed there. Host-local is the weaker exposure and costs nothing.
+      FETCHED_DIR: /app/fetched
       # ⛔ THE URL WE HAND TO OTHER PEOPLE — not this process's bind address.
       # Two features mail a link out of this container: a parked oversized
       # send body (/shared/:id) and a shared recording's replay page
@@ -94,6 +104,9 @@ services:
       - ./chrome-profiles:/app/.chrome-profiles
       # Persistent video recordings storage
       - ./recordings:/app/recordings
+      # Files retrieved from a driven browser's authenticated session.
+      # Host-local (see FETCHED_DIR above), not the NAS-backed repo dir.
+      - ${FETCHED_HOST_DIR:-/home/ben/files}:/app/fetched
 
   # Chromium-host sidecar — opt-in via `docker compose --profile chromium-host up`.
   # Hosts spawned chromiums in a SEPARATE container so mcp-server lifecycle
