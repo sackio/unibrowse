@@ -80,9 +80,41 @@ echo "⚠️ BOTH — the server half ships and the extension half does not. THE
 echo "   deploying makes these look complete. Say explicitly which half a caller gets."
 [ ${#both[@]} -eq 0 ] && echo "  (none)" || printf '  ⚠️ %s\n' "${both[@]}"
 echo
-if [ $(( ${#extension[@]} + ${#both[@]} )) -gt 0 ]; then
-  echo "⇒ $(( ${#extension[@]} + ${#both[@]} )) commit(s) carry code no restart can deliver."
+PENDING=$(( ${#extension[@]} + ${#both[@]} ))
+TOTAL=$(( ${#server[@]} + PENDING ))
+
+if [ "$PENDING" -gt 0 ]; then
+  echo "⇒ $PENDING of $TOTAL commit(s) here TOUCH extension code."
   echo "  Name them in the release note, or a seat will read a failure as a broken fix."
 else
   echo "⇒ Everything here ships on a restart. Safe to announce as live."
+fi
+
+# ⛔ THIS TOOL ANSWERS "TOUCHES extension/", NOT "NOT YET ON A BROWSER".
+# Those coincide only for a RELEASE SET — commits being deployed right now.
+# Run over a long backlog they diverge badly, because extension code from weeks
+# ago was delivered by whatever reloads happened since.
+#
+# MEASURED 2026-09-13, on this script's SECOND run: with no arguments it
+# defaulted to all 137 unpushed commits and reported "54 commits carry code no
+# restart can deliver". Most of those 54 were on browsers long ago. The script
+# I wrote THAT MORNING to stop me overstating what was pending had just
+# overstated it by an order of magnitude, in the same direction, in a sentence
+# I would have pasted into a broadcast.
+#
+# ⭐ The general trap: a derived number is only as honest as its RANGE. Deriving
+# instead of recalling removes one failure mode and adds another — the reader
+# assumes the denominator is the one they had in mind, and nothing says it is not.
+if [ "$PENDING" -gt 0 ]; then
+  echo
+  echo "⚠️  \"Touches extension/\" is NOT the same as \"not yet on any browser\"."
+  echo "   Those agree only for commits you are deploying NOW. Over a long range"
+  echo "   this OVERSTATES what is pending — older extension code already arrived"
+  echo "   via whatever ↻ happened since."
+  if [ "$TOTAL" -gt 12 ]; then
+    echo "   ⛔ $TOTAL commits is a BACKLOG, not a release. Do not quote this count as"
+    echo "      'undelivered'. Re-run against the set you are actually shipping:"
+    echo "        scripts/release-split.sh <last-deployed-sha>..HEAD"
+  fi
+  echo "   ⇒ To learn what a browser is ACTUALLY running, ask the browser."
 fi
