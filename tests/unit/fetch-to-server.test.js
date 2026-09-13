@@ -173,8 +173,14 @@ test("the tab binding is only consulted for a numeric tabTarget", () => {
 /* ── 5. The bytes must never come back through a tool response ───────────── */
 
 test("the handler returns metadata, never the payload", () => {
-  const ret = /return \{([^}]*)\};\s*$/.exec(handlerBody().trim());
-  assert.ok(ret, "no return statement found");
+  // ⚠️ Find the SUCCESS return wherever it sits, not at the end of the body.
+  // The first version anchored on `$` and broke the day a try/finally was added
+  // around the fetch — on correct code, for a reason unrelated to what it
+  // guards. An assertion that depends on a statement staying LAST is measuring
+  // layout, not behaviour; the property here is "the buffer never leaves", and
+  // that is true wherever the return happens to be.
+  const ret = /return \{([^}]*fetchedBytes[^}]*)\};/.exec(handlerBody());
+  assert.ok(ret, "no metadata return statement found");
   // base64 of binary costs ~0.955 tokens per source byte (measured
   // 2026-09-12), so returning the buffer would blow the response cap at ~26KB
   // and defeat the entire point of the out-of-band upload.
@@ -585,5 +591,40 @@ test("a caller's timeout_ms moves the extension handler guard, bounded", () => {
     code,
     /Math\.min\(requestedMs \+ \d+, MAX_HANDLER_TIMEOUT_MS\)/,
     "it must be BOUNDED (a caller cannot pin a worker open indefinitely) and given grace, so the caller's own deadline expires first and reports a specific error rather than a generic Handler timeout",
+  );
+});
+
+/**
+ * ── the timeout must actually CANCEL the transfer ────────────────────────────
+ *
+ * The dispatcher's guard is a bare `Promise.race`, and a JS promise cannot be
+ * cancelled. So a "Handler timeout" rejected to the caller while the download
+ * AND the out-of-band upload kept running — bytes and an index row could land
+ * minutes after the caller was told it failed.
+ *
+ * MEASURED 2026-09-13 by `thread-assistant-9`: ZERO occurrences of
+ * AbortController/AbortSignal anywhere in the extension, and no internal
+ * timeout in handleFetchToServer.
+ *
+ * ⛔ Two costs, the second worse: orphan files nobody is expecting, and a retry
+ * that runs a SECOND full download concurrently with the first — which is how
+ * two byte-identical 79 MB duplicates got created before anyone knew why.
+ */
+test("both legs of the fetch are abortable, and the abort is bounded", () => {
+  const body = handlerBody();
+  assert.match(
+    body,
+    /new AbortController\(\)/,
+    "without an AbortController the timeout cannot cancel anything — it only stops WAITING, while the transfer continues invisibly",
+  );
+  const signals = body.match(/signal:\s*controller\.signal/g) || [];
+  assert.ok(
+    signals.length >= 2,
+    `both the download AND the upload must carry the signal (found ${signals.length}). The upload is the leg that writes bytes and an index row, so leaving it unabortable is what produces orphan files.`,
+  );
+  assert.match(
+    body,
+    /clearTimeout\(deadline\)/,
+    "the deadline timer must be cleared on every exit path, or a successful fast transfer leaves a pending abort behind it",
   );
 });

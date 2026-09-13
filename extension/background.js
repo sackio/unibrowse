@@ -8123,10 +8123,36 @@ class BackgroundController {
       throw new Error('browser_fetch_to_server requires a url');
     }
 
+    // ⛔ THE HANDLER GUARD CANNOT CANCEL THIS — SO CANCEL IT HERE.
+    //
+    // The dispatcher's timeout is a bare `Promise.race`, and a JS promise cannot
+    // be cancelled. So when it rejected with "Handler timeout", THIS FETCH AND
+    // THE UPLOAD THAT FOLLOWS KEPT RUNNING: bytes and an index row could land
+    // minutes after the caller was told the transfer failed. Found by
+    // `thread-assistant-9` 2026-09-13 by grepping for AbortController and
+    // getting ZERO hits across the whole extension.
+    //
+    // ⚠️ Two costs, and the second is the expensive one:
+    //   · orphan bytes — a file appears with no caller expecting it, and an
+    //     agent that concluded "nothing landed" is simply wrong;
+    //   · a retry runs a SECOND full download concurrently with the first,
+    //     which is how two 79 MB byte-identical duplicates were created on
+    //     2026-09-13 before anyone understood why.
+    //
+    // ⛔ Deadline sits UNDER the dispatcher's guard on purpose, so this aborts
+    // first and the caller gets a specific, actionable error instead of a
+    // generic "Handler timeout" with an invisible transfer still running.
+    const budgetMs = Number(
+      (data && (data.timeout_ms ?? data.timeoutMs)) ?? 175000,
+    );
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), Math.max(5000, budgetMs));
+
+    try {
     // credentials:'include' is the load-bearing option — without it this is just
     // an anonymous fetch that a login wall answers with an HTML sign-in page,
     // which would then be stored as a "successful" 200. Check the type below.
-    const resp = await fetch(data.url, { credentials: 'include', redirect: 'follow' });
+    const resp = await fetch(data.url, { credentials: 'include', redirect: 'follow', signal: controller.signal });
     if (!resp.ok) {
       throw new Error(`fetch failed: HTTP ${resp.status} ${resp.statusText} for ${data.url}`);
     }
@@ -8193,6 +8219,10 @@ class BackgroundController {
 
     const upResp = await fetch(`${SERVER_BASE}/api/v1/fetched`, {
       method: 'POST',
+      // ⛔ The UPLOAD is the leg that actually writes bytes and an index row.
+      // Leaving it unabortable is what lets orphan files appear after a caller
+      // has been told the transfer failed.
+      signal: controller.signal,
       headers: {
         'Content-Type': 'application/octet-stream',
         'X-Unibrowse-Content-Type': contentType,
@@ -8226,6 +8256,22 @@ class BackgroundController {
 
     const stored = await upResp.json();
     return { ...stored, fetchedBytes: buf.byteLength, contentType };
+    } catch (err) {
+      // ⭐ Say WHICH thing ran out of time and what is true afterwards. The
+      // generic "Handler timeout" left callers guessing, and the guess most of
+      // them made — "nothing landed" — was not supported by the code.
+      if (err && err.name === 'AbortError') {
+        throw new Error(
+          `browser_fetch_to_server aborted after ${Math.round(Math.max(5000, budgetMs) / 1000)}s for ${data.url}. ` +
+          `The transfer was CANCELLED, so nothing further will land for this call — but verify with ` +
+          `browser_list_fetched before retrying, because a retry runs a second full download. ` +
+          `If the file is large, pass a bigger timeout_ms (max 180000) rather than retrying.`,
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(deadline);
+    }
   }
 
   /**
