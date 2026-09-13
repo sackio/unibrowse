@@ -186,10 +186,16 @@ export const requestCaptchaSolve: Tool = {
           ...view(session),
           url,
           // ⭐ The LAN URL, for a caller already inside the network. Same token,
-          // so it is no more of a secret than `url` — and it is the ONLY one
-          // that accepts taps today: nginx proxies /f/ for READING and returns
-          // 403 on POST, so the public link can show the page and the live
-          // screenshot but cannot relay a tap. Measured 2026-09-12.
+          // so it is no more of a secret than `url`.
+          // ⚠️ HISTORY, because it shaped the page's design: until 2026-09-12
+          // nginx returned 403 on every POST under /f/, so the public link
+          // could show the page and the live screenshot but could not relay a
+          // tap. The nginx seat then added a narrow $-anchored allowance
+          // (commit 2fb447c) for POST /f/up-<32hex>/{tap,text,done} only.
+          // ⛔ Those three paths are the entire write surface. GET on them is
+          // 403 — they are callbacks, not files — so polling must stay on
+          // /state and /shot, and a FOURTH verb needs another nginx change.
+          // Body is capped at 64k; the text relay is capped well under that.
           lanUrl: `${selfPublicBase()}/captcha/${session.token}/`,
           expiresAt: new Date(session.expiresAt).toISOString(),
           publishedAsArtifact: Boolean(published.url),

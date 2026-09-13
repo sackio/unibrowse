@@ -16,6 +16,12 @@
  * (CDP Input, real OS-level events — a synthetic click is exactly what a
  * captcha is looking for). The agent polls browser_check_captcha_solve.
  *
+ * ⛔ THE WRITE SURFACE IS EXACTLY THREE PATHS. nginx allows POST under /f/
+ * only to `tap`, `text` and `done` ($-anchored, commit 2fb447c 2026-09-12),
+ * and GET on those three is 403 because they are callbacks rather than files.
+ * ⇒ Polling MUST stay on /state and /shot. Adding a fourth verb is an nginx
+ * change and a DM to that seat, not a local edit.
+ *
  * ⛔ THE ARTIFACT PAGE COULD NOT POLL US DIRECTLY. An ATC artifact is locked to
  * its own origin by CSP (`connect-src 'self'`), so a page hosted AS an artifact
  * cannot fetch unibrowse. Proxying instead puts our page under the artifact's
