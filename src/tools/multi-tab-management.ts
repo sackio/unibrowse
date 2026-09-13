@@ -11,7 +11,7 @@ import {
 } from "@/types/tool-schemas";
 
 import type { Context } from "@/context";
-import { textResponse, errorResponse, jsonResponse } from "@/utils/response-helpers";
+import { textResponse, errorResponse, jsonResponse, estimateTokens, DEFAULT_MAX_TOKENS } from "@/utils/response-helpers";
 
 import type { Tool } from "./tool";
 
@@ -130,8 +130,15 @@ export const listAttachedTabs: Tool = {
       extensions: results.map(r => context.describeExtension(r.extensionId) ?? { extensionId: r.extensionId, label: "unidentified browser", kind: "unknown" }), errors, message }, true, max_tokens);
       }
 
-      const summary = `Attached tabs (${tabs.length} across ${results.length} extension${results.length === 1 ? "" : "s"}):\n` +
-        tabs.map((tab: any) => {
+      // ⛔ DO NOT HAND A LONG LIST STRAIGHT TO jsonResponse. It truncates the
+      // SERIALISED STRING, so an over-budget result is JSON cut off mid-object
+      // — unparseable, with rows silently missing and nothing saying so.
+      // MEASURED 2026-09-13: at max_tokens 1200 this call dropped the exact
+      // reserved tab I was using to decide whether to restart a shared server.
+      // Same defect, same day, as browser_list_fetched (see tools/downloads.ts);
+      // this is the second instance, so treat it as a pattern in every list
+      // tool rather than two coincidences.
+      const tabLine = (tab: any) => {
           const res = tab.reservation
             ? ` [reserved: ${tab.reservation.owner} since ${new Date(tab.reservation.claimedAt).toISOString()}]`
             : "";
@@ -160,11 +167,45 @@ export const listAttachedTabs: Tool = {
                 ? `\n  (live url/title confirmed unchanged since attach)`
                 : "";
           return `- Tab ${tab.tabId} (${tab.label}): ${tab.title}${ext}${res}\n  URL: ${tab.url}\n  Last used: ${new Date(tab.lastUsedAt).toLocaleString()}${liveNote}`;
-        }).join("\n");
-      return jsonResponse({ tabs, // Identity, not bare ids. A caller cannot tell which machine an opaque
+        };
+
+      // Identity, not bare ids. A caller cannot tell which machine an opaque
       // UUID refers to, and on 2026-08-11 that cost an hour of debugging a
       // container chromium in the belief it was ben's desktop Chrome.
-      extensions: results.map(r => context.describeExtension(r.extensionId) ?? { extensionId: r.extensionId, label: "unidentified browser", kind: "unknown" }), errors, message: summary }, true, max_tokens);
+      // ⛔ ALWAYS returned in full, never dropped for size: it is small, and it
+      // is the half that says WHICH browser a tab is on.
+      const extensionList = results.map(r => context.describeExtension(r.extensionId) ?? { extensionId: r.extensionId, label: "unidentified browser", kind: "unknown" });
+
+      const envelope = (shown: any[], cut: boolean) => ({
+        tabs: shown,
+        count: shown.length,
+        total: tabs.length,
+        ...(cut ? { truncatedForSize: true } : {}),
+        extensions: extensionList,
+        errors,
+        message:
+          `Attached tabs (${cut ? `${shown.length} of ${tabs.length} shown` : tabs.length} across ${results.length} extension${results.length === 1 ? "" : "s"}):\n` +
+          shown.map(tabLine).join("\n") +
+          (cut
+            ? `\n\n⚠️ ${tabs.length - shown.length} MORE TAB(S) NOT SHOWN — they did not fit the response token budget. ` +
+              `This is NOT the full list: ${tabs.length} tabs are attached. Raise max_tokens to see them. ` +
+              `⛔ Do not conclude a tab is unattached, or unreserved, from its absence here.`
+            : ""),
+      });
+
+      const budget = max_tokens ?? DEFAULT_MAX_TOKENS;
+      if (estimateTokens(JSON.stringify(envelope(tabs, false), null, 2)) <= budget) {
+        return jsonResponse(envelope(tabs, false), true, max_tokens);
+      }
+      // Binary search the largest row count that fits — per-tab size varies
+      // widely with URL length, reservation history and live-state notes.
+      let lo = 0, hi = tabs.length;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (estimateTokens(JSON.stringify(envelope(tabs.slice(0, mid), true), null, 2)) <= budget) lo = mid;
+        else hi = mid - 1;
+      }
+      return jsonResponse(envelope(tabs.slice(0, lo), true), true, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(

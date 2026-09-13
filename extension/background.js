@@ -4139,7 +4139,42 @@ class BackgroundController {
         // together or the shorter one silently becomes the real limit.
         browser_fetch_to_server: 180000,
       };
-      const handlerTimeout = HANDLER_TIMEOUTS_MS[type] ?? 30000;
+
+      // ⛔ A CALLER-SUPPLIED TIMEOUT MUST BE ABLE TO MOVE THIS ONE.
+      //
+      // `browser_execute_macro` DOCUMENTS `timeout_ms` (default 30000, max
+      // 120000) and its description says the old 30s ceiling "could not be
+      // overridden from the caller" — i.e. promises that it now can. The server
+      // honoured it at the WebSocket level; this blanket 30s did not, so the
+      // parameter was decorative and the documentation was a false promise.
+      // Reported by `thread-ha-2` 2026-09-13, verified here against the schema.
+      //
+      // ⚠️ MY "30s MEANS WEDGED" RATIONALE WAS WRONG FOR THIS HANDLER, and the
+      // distinction is the point: it holds for a DOM read, where a handler still
+      // running at 30s really is stuck. It fails for a macro, whose natural
+      // runtime is unbounded — an interactive login spends most of its time
+      // legitimately waiting on navigations and redirects. The one handler with
+      // an unbounded natural runtime was the one left on the default.
+      //
+      // ⛔ THE COST WAS NOT A SLOW CALL. `~/.claude/skills/ecobee-refresh`
+      // drives an Auth0 login with timeout_ms: 90000 and documents a recurring
+      // "Macro execution failed: undefined" whose written recovery is to RETRY —
+      // and each retry burns an Auth0 password attempt, which locks the account
+      // and takes out HVAC control for the house. ⚠️ That failure is CONSISTENT
+      // with a 30s abort, not established as one: this code raises "Handler
+      // timeout", not "undefined", and nobody has timings for those two events.
+      //
+      // Grace margin: the caller's own deadline (and the server's WS window)
+      // must expire FIRST so the caller gets a specific error instead of a
+      // generic "Handler timeout" from this outer guard.
+      const MAX_HANDLER_TIMEOUT_MS = 180000;
+      const requestedMs = Number(
+        (payload && (payload.timeout_ms ?? payload.timeoutMs)) ?? NaN,
+      );
+      const handlerTimeout =
+        Number.isFinite(requestedMs) && requestedMs > 0
+          ? Math.min(requestedMs + 5000, MAX_HANDLER_TIMEOUT_MS)
+          : HANDLER_TIMEOUTS_MS[type] ?? 30000;
       const handlerPromise = handler(payload !== undefined ? payload : {});
 
       const result = await Promise.race([

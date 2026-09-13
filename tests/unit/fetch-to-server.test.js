@@ -560,3 +560,30 @@ test("the 30s default still applies to every other handler", () => {
     "⛔ this must stay a per-handler exception, not a blanket raise — a wedged page handler that hangs 180s instead of 30s just delays the error by six times",
   );
 });
+
+/**
+ * A caller-supplied timeout must actually move the extension's handler guard.
+ *
+ * `browser_execute_macro` DOCUMENTS timeout_ms (default 30000, max 120000) and
+ * its description states the old 30s ceiling "could not be overridden from the
+ * caller" — promising it now can. The server honoured it at the WebSocket
+ * level; the extension's blanket 30s did not. The parameter was decorative.
+ *
+ * ⛔ The cost is not a slow call. ~/.claude/skills/ecobee-refresh drives an
+ * Auth0 login with timeout_ms: 90000 and its documented recovery for the
+ * resulting failure is to RETRY — and each retry burns a password attempt,
+ * locking the account and taking out HVAC control. Reported by `thread-ha-2`.
+ */
+test("a caller's timeout_ms moves the extension handler guard, bounded", () => {
+  const code = codeOnly(bgSrc);
+  assert.match(
+    code,
+    /payload\.timeout_ms\s*\?\?\s*payload\.timeoutMs/,
+    "the handler guard must read the caller's timeout — a documented parameter the enforcement ignores is worse than no parameter, because callers build retry logic on it",
+  );
+  assert.match(
+    code,
+    /Math\.min\(requestedMs \+ \d+, MAX_HANDLER_TIMEOUT_MS\)/,
+    "it must be BOUNDED (a caller cannot pin a worker open indefinitely) and given grace, so the caller's own deadline expires first and reports a specific error rather than a generic Handler timeout",
+  );
+});
