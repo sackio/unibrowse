@@ -1027,8 +1027,10 @@ export const FetchToServerTool = z.object({
     "Use this for any file behind a login — SSO-gated PDFs, exports, attachments — that a plain curl cannot reach. " +
     "The file never passes through the tool response, so size is limited by the server (100MB), not by the token cap. " +
     "Returns metadata only: id, path on the server, byte count, content type and sha256. " +
-    "⛔ Not for personal records — pay statements, benefits, anything identifying a person — without the operator saying so explicitly and saying where they go. " +
-    "Asked directly on 2026-09-12, Ben scoped this to policy and resource documents only."
+    "⭐ Files land under /mnt/nas/data/files, which is the fleet NAS — so ANY seat on ANY host can read the returned path directly, with no ssh and no copy step. " +
+    "⚠️ The same fact is the exposure: every agent seat in the fleet can read whatever you put there. " +
+    "⛔ Personal records — pay statements, benefits, anything identifying a person — need the operator to say so explicitly AND to say where they land. Do not infer it from the task. " +
+    "⚠️ Asked on 2026-09-12 Ben first said policy/resource documents only, then widened it to include pay statements 13 minutes later. Treat any scope written down here as possibly stale and confirm it, rather than citing this sentence as authority."
   ),
   arguments: z.object({
     url: z.string().describe("URL to fetch. Resolved and fetched BY THE BROWSER, so it may be a login-gated URL that is unreachable from the server."),

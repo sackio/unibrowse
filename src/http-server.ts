@@ -63,16 +63,32 @@ const PROFILES_DIR = process.env.PROFILES_DIR || path.join(__dirname, "..", ".ch
  * Same derivation as RECORDINGS_DIR — __dirname is /app/dist in the container,
  * so this resolves to the bind-mounted /app/fetched.
  *
- * ⚠️ THE BIND SOURCE IS HOST-LOCAL AND DELIBERATE. compose maps this to
- * /home/ben/files on office — Ben's choice, 2026-09-12 ("~/files is fine") —
- * NOT to the repo's own ./fetched. The repo lives on the NAS, which is the
- * same bytes on every host, so anything landing there is readable by every
- * agent seat in the fleet. Host-local is the weaker exposure and costs nothing.
+ * ⛔ THE BIND SOURCE IS ON THE NAS, AND IS THEREFORE READABLE FLEET-WIDE.
+ * compose maps this to /home/ben/files on office — Ben's choice, 2026-09-12
+ * ("~/files is fine").
  *
- * ⛔ Whatever it points at, this is not a place for personal records. Ben
- * scoped the first use of this tool to "just policy / resource documents"
- * after being asked directly about pay statements. A directory being less
- * exposed is not permission to widen what goes in it.
+ * ⚠️ /home/ben/files is a SYMLINK to /mnt/nas/data/files. MEASURED 2026-09-12
+ * (`readlink -f`, then `df` → 192.168.1.207:/volume1/nas). I chose that path
+ * over the repo's ./fetched specifically BECAUSE /home/ben is documented
+ * host-local and I wanted the weaker exposure — and got the same exposure I
+ * was avoiding, because a symlink out of a host-local tree is invisible from
+ * the path. `laura-work` caught it; I had asserted the opposite to the
+ * operator and to two seats before checking.
+ *
+ * ⇒ The upside is real and worth knowing: any seat on any host can read these
+ * files directly at /mnt/nas/data/files, with no ssh and no copy step.
+ * ⇒ The cost is equally real: every agent seat in the fleet can read them.
+ *
+ * ⛔ "It is under /home/<user>" IS NOT EVIDENCE OF HOST-LOCAL. Resolve it.
+ *
+ * ⛔ A directory being less exposed is not permission to widen what goes in
+ * it. Personal records need the operator to say so explicitly and to say
+ * where they land.
+ *
+ * ⚠️ Do NOT encode the current scope here. On 2026-09-12 Ben said "just
+ * policy / resource documents", and 13 minutes later said to get the pay
+ * stubs too. A scope committed to a comment is stale within the hour and then
+ * reads as authority to whoever finds it next. Ask; do not cite this file.
  */
 const FETCHED_DIR = process.env.FETCHED_DIR || path.join(__dirname, "..", "fetched");
 
