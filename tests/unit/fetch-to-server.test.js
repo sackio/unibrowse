@@ -182,3 +182,56 @@ test("the handler returns metadata, never the payload", () => {
     `the fetched buffer is being returned to the caller: ${ret[1]}`,
   );
 });
+
+/* ── 6. Header values must survive a non-ASCII document title ────────────────
+ *
+ * HTTP headers are ISO-8859-1. A header value holding an en-dash or an accent
+ * makes the BROWSER throw while building the RequestInit — before the fetch —
+ * so the transfer dies with a TypeError and nothing reaches the server.
+ * Measured 2026-09-13 on real HR documents.
+ *
+ * ⛔ The encode/decode split across the two files is load-bearing and easy to
+ * "tidy" into a bug: `label` is encoded SERVER-side so browsers already in the
+ * field are fixed without a redeploy, and therefore must NOT be encoded again
+ * in the extension. These tests pin both halves.
+ */
+
+const toolsSrc = fs.readFileSync(path.join(repoRoot, "src/tools/downloads.ts"), "utf8");
+
+test("the extension percent-encodes the header values it sources itself", () => {
+  const body = handlerBody();
+  assert.match(
+    body,
+    /'X-Unibrowse-Filename':\s*encodeURIComponent\(filename\)/,
+    "filename is usually taken from Content-Disposition, not the caller — an accented document name throws and kills the whole transfer",
+  );
+  assert.match(
+    body,
+    /'X-Unibrowse-Source-Url':\s*encodeURIComponent\(data\.url\)/,
+    "a URL with non-Latin-1 characters throws the same way",
+  );
+});
+
+test("the extension does NOT encode label — the server already did", () => {
+  const body = handlerBody();
+  assert.ok(
+    !/'X-Unibrowse-Label':\s*encodeURIComponent/.test(body),
+    "double-encoding: the server encodes label on the way out, so encoding it here too stores a literal %E2%80%93 as the label text",
+  );
+});
+
+test("the extension announces that it encoded, so old extensions still work", () => {
+  assert.match(
+    handlerBody(),
+    /'X-Unibrowse-Encoding':\s*'percent'/,
+    "without this marker the server cannot tell an encoded filename from one containing a literal % and would mangle the latter",
+  );
+});
+
+test("the server encodes label before it ever reaches the browser", () => {
+  assert.match(
+    codeOnly(toolsSrc),
+    /label:\s*encodeURIComponent\(validatedParams\.label\)/,
+    "this is the half that fixes browsers that cannot be redeployed — losing it silently re-breaks every non-ASCII label",
+  );
+});

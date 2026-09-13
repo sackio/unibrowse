@@ -537,6 +537,39 @@ async function main() {
     return `${id}-${name}`;
   }
 
+  /**
+   * ⛔ HTTP HEADERS ARE ISO-8859-1. Anything with a character outside it —
+   * an en-dash, an accent, a curly quote — makes the BROWSER throw
+   * `Failed to read the 'headers' property from 'RequestInit': String contains
+   * non ISO-8859-1 code point` when it builds the upload request. That throw
+   * happens BEFORE the fetch, so nothing reaches us and a retry is
+   * deterministic, not transient. Reported by `thread-laura-work-1` 2026-09-13
+   * pulling real HR documents, whose titles are full of en-dashes.
+   *
+   * ⚠️ It is NOT only the caller's `label`: when no filename is supplied the
+   * extension derives one from `Content-Disposition`, so an accented document
+   * name throws with nothing the caller passed being at fault.
+   *
+   * So these values travel percent-encoded. Two senders, two vintages:
+   *  · `label` — encoded by US in tools/downloads.ts before it is ever sent to
+   *    the extension, so it is safe even on an extension too old to know about
+   *    this. Always decode it.
+   *  · `filename` / `sourceUrl` — originate in the browser, so only a NEW
+   *    extension can encode them. It announces itself with
+   *    `X-Unibrowse-Encoding: percent`; without that marker the values are raw
+   *    and must NOT be decoded, or a filename containing a literal `%` gets
+   *    mangled by our own fix.
+   */
+  const safeDecode = (v: string | undefined | null): string | null => {
+    if (v === undefined || v === null) return null;
+    try {
+      return decodeURIComponent(v);
+    } catch {
+      // Malformed escape — keep the raw value rather than losing the field.
+      return v;
+    }
+  };
+
   // POST /api/v1/fetched — store bytes the extension pulled with the user's session
   app.post("/api/v1/fetched", requireApiKey, async (req: any, res: any) => {
     try {
@@ -547,7 +580,12 @@ async function main() {
       if (!fs.existsSync(FETCHED_DIR)) fs.mkdirSync(FETCHED_DIR, { recursive: true });
 
       const id = uuidv4();
-      const storedName = safeStoredName(req.get("X-Unibrowse-Filename"), id);
+      const encoded = req.get("X-Unibrowse-Encoding") === "percent";
+      const rawFilename = req.get("X-Unibrowse-Filename");
+      const storedName = safeStoredName(
+        encoded ? safeDecode(rawFilename) : rawFilename,
+        id,
+      );
       const absPath = path.join(FETCHED_DIR, storedName);
 
       // Belt and braces: even after sanitising, refuse to write outside the
@@ -567,8 +605,13 @@ async function main() {
         bytes: body.length,
         sha256,
         contentType: req.get("X-Unibrowse-Content-Type") || req.get("Content-Type") || null,
-        sourceUrl: req.get("X-Unibrowse-Source-Url") || null,
-        label: req.get("X-Unibrowse-Label") || null,
+        sourceUrl: (encoded
+          ? safeDecode(req.get("X-Unibrowse-Source-Url"))
+          : req.get("X-Unibrowse-Source-Url")) || null,
+        // ⛔ Always decoded, regardless of the marker: WE encoded it on the way
+        // out (tools/downloads.ts), so it arrives encoded from every extension
+        // vintage. This is the half that fixes an already-deployed browser.
+        label: safeDecode(req.get("X-Unibrowse-Label")) || null,
         extensionId: req.get("X-Unibrowse-Extension-Id") || null,
         createdAt: new Date(),
       };

@@ -167,7 +167,20 @@ export const fetchToServer: Tool = {
     const { max_tokens } = params || {};
     try {
       const validatedParams = FetchToServerTool.shape.arguments.parse(params);
-      const result = await context.sendSocketMessage("browser_fetch_to_server", validatedParams);
+      // ⛔ ENCODE THE LABEL HERE, NOT IN THE EXTENSION. The extension puts it
+      // straight into an HTTP request header, and headers are ISO-8859-1: an
+      // en-dash in a document title makes the BROWSER throw
+      // "String contains non ISO-8859-1 code point" before the fetch even
+      // starts. Measured 2026-09-13 — `thread-laura-work-1` lost attachments to
+      // a label reading "Prescription drug copays – Premium EPO".
+      // ⭐ Doing it server-side is deliberate: it fixes browsers already in the
+      // field, which cannot be updated without hands on the machine. The server
+      // decodes on receipt in http-server.ts. Encoding it in the extension too
+      // would double-encode, so the extension leaves `label` alone.
+      const outbound = validatedParams.label === undefined
+        ? validatedParams
+        : { ...validatedParams, label: encodeURIComponent(validatedParams.label) };
+      const result = await context.sendSocketMessage("browser_fetch_to_server", outbound);
       return jsonResponse(result, true, max_tokens);
     } catch (error: any) {
       // ⚠️ `: any` and the surrounding tools' bare `catch (error)` differ on

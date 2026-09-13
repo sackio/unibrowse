@@ -8123,8 +8123,24 @@ class BackgroundController {
       headers: {
         'Content-Type': 'application/octet-stream',
         'X-Unibrowse-Content-Type': contentType,
-        'X-Unibrowse-Filename': filename,
-        'X-Unibrowse-Source-Url': data.url,
+        // ⛔ PERCENT-ENCODE OR THIS WHOLE TRANSFER THROWS. Headers are
+        // ISO-8859-1, and `fetch` rejects the RequestInit — before sending
+        // anything — if a header value holds a character outside it:
+        //   "Failed to read the 'headers' property from 'RequestInit':
+        //    String contains non ISO-8859-1 code point"
+        // ⚠️ `filename` is the dangerous one because it is usually NOT the
+        // caller's: a few lines up we take it from Content-Disposition, so a
+        // document named "Régime – 2026.pdf" kills the transfer with nothing
+        // the caller passed being at fault. `data.url` can do it too.
+        // The marker tells the server these are encoded; without it the server
+        // leaves them raw, so an older extension keeps working.
+        'X-Unibrowse-Encoding': 'percent',
+        'X-Unibrowse-Filename': encodeURIComponent(filename),
+        'X-Unibrowse-Source-Url': encodeURIComponent(data.url),
+        // ⛔ `label` is NOT encoded here — the server already encoded it before
+        // sending it to us (src/tools/downloads.ts), precisely so that browsers
+        // too old to have this code are also fixed. Encoding it again would
+        // double-encode and the server would hand back "%E2%80%93" as text.
         ...(data.label ? { 'X-Unibrowse-Label': data.label } : {}),
         ...(extensionId ? { 'X-Unibrowse-Extension-Id': extensionId } : {}),
         ...authHeaders,

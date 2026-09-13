@@ -1037,11 +1037,11 @@ export const FetchToServerTool = z.object({
     filename: z
       .string()
       .optional()
-      .describe("Suggested filename. Sanitised server-side to a bare basename; the stored name is always prefixed with the generated id, so this cannot collide or escape the directory."),
+      .describe("Suggested filename. Sanitised server-side to a bare basename; the stored name is always prefixed with the generated id, so this cannot collide or escape the directory. ⚠️ PREFER OMITTING IT: your extension overrides what the server actually received, so guessing '.pdf' from a URL like sys_attachment.do stores a Word document under a .pdf name and nothing flags it. Left unset, the name comes from Content-Disposition or the URL path. Read the returned contentType for what the file actually is."),
     label: z
       .string()
       .optional()
-      .describe("Free-text note stored alongside the file — e.g. which agent asked for it and why. Shows up in browser_list_fetched."),
+      .describe("Free-text note stored alongside the file — e.g. which agent asked for it and why. Shows up in browser_list_fetched. Any characters are fine, including en-dashes and accents: the server percent-encodes this before it reaches the browser and decodes it on the way back."),
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
