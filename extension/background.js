@@ -364,6 +364,16 @@ class TabManager {
     //   releaseReason} entries so callers can see who had it before.
     // A missing entry means the tab is unreserved (legacy free-for-all).
     this.reservations = new Map();
+    // Called with (tabId) at the TOP of detachTab(), set by BackgroundController.
+    // ⛔ THIS EXISTS BECAUSE ATTACH AND DETACH WERE NOT SYMMETRIC. Attaching a
+    // tab auto-STARTS a session recording (_maybeAutoCapture); nothing ever
+    // auto-stopped one, so every attach/detach cycle left a recorder running
+    // on a tab no one was driving. MEASURED 2026-09-14, reported by ben:
+    // office's desktop Chrome held 13 live recordings against 0 attached tabs
+    // — 231 MB of buffered events, the largest single one 152 MB.
+    // ⚠️ TabManager cannot reach the recordings itself (they live on the
+    // controller), and that gap is exactly why the stop was never written.
+    this.onTabDetached = null;
   }
 
   // ─── Reservation registry ──────────────────────────────────────────────
@@ -709,6 +719,20 @@ class TabManager {
     if (!tabInfo) {
       console.warn('[TabManager] Tab not attached:', tabId);
       return;
+    }
+
+    // ⛔ FIRST, while the tab and its recording still exist: end whatever
+    // attaching this tab started. Runs BEFORE the CDP detach and before the
+    // attachedTabs delete, because the stop pipeline still wants to reach the
+    // tab (overlay teardown) and still wants its per-tab server binding.
+    // ⛔ NEVER LET IT THROW. Detaching is what the caller asked for; a failure
+    // to stop a recording must not fail the detach.
+    if (typeof this.onTabDetached === 'function') {
+      try {
+        await this.onTabDetached(tabId);
+      } catch (err) {
+        console.warn('[TabManager] detach hook failed (the detach continues):', err?.message || err);
+      }
     }
 
     // Release the reservation so other agents can claim the tab.
@@ -1195,6 +1219,10 @@ class BackgroundController {
     this.serverPool = new Map();
     this.serverPool.set('default', this.ws);
     this.tabManager = new TabManager(); // NEW: Multi-tab manager
+    // Close the attach/detach asymmetry — see TabManager.onTabDetached. The
+    // arrow is lazy, so referencing sessionRecordings (initialised below) here
+    // is safe.
+    this.tabManager.onTabDetached = (tabId) => this._maybeAutoStopCapture(tabId);
     this.cdp = new CDPHelper(); // DEPRECATED: Keep for backwards compatibility during migration
     this.handlers = {};
     this.consoleLogs = [];
@@ -4646,6 +4674,47 @@ class BackgroundController {
       console.log(`[Background] Auto-capture: started an independent recording for tab ${tabId}`);
     } catch (err) {
       console.warn('[Background] Auto-capture failed (the attach itself is unaffected):', err?.message || err);
+    }
+  }
+
+  /**
+   * The other half of _maybeAutoCapture: end the recording that attaching this
+   * tab started. Called from TabManager.detachTab via onTabDetached, so it
+   * covers EVERY path that detaches — the tool, the idle reaper, tabs.onRemoved
+   * (a closed tab detaches too), and detachAll.
+   *
+   * ⛔ ONLY `autoStarted` recordings. One that a human or an agent asked for
+   * explicitly outlives the debugger attachment on purpose: detaching is not a
+   * request to stop recording, and ending one here would destroy evidence
+   * somebody is still collecting, silently, in a function they did not call.
+   *
+   * ⛔ ONLY on the PRIMARY tab. A child tab (a popup, an oauth hop) joins its
+   * opener's session; that child leaving must not end the flow it belongs to.
+   *
+   * ⚠️ openReview:false — this fires on a real person's desktop browser, and a
+   * review tab opening by itself every time an agent finishes with a tab is a
+   * worse bug than the one being fixed.
+   *
+   * ⛔ NEVER THROWS, same contract as _maybeAutoCapture.
+   */
+  async _maybeAutoStopCapture(tabId) {
+    try {
+      const rec = this.recordingForTab(tabId);
+      if (!rec || !rec.autoStarted) return;
+      if (rec.tabId !== tabId) return;
+      const result = await new Promise((resolve) =>
+        this.handleStopSessionRecording(resolve, { sessionId: rec.sessionId, openReview: false })
+      );
+      // ⛔ Check the RESULT. handleStopSessionRecording reports failure by
+      // calling back with {success:false}, never by throwing, so a try/catch
+      // alone would log a silent failure as a success.
+      if (result && result.success === false) {
+        console.warn(`[Background] Auto-stop for tab ${tabId} did not save: ${result.error}`);
+        return;
+      }
+      console.log(`[Background] Auto-capture: stopped recording ${rec.sessionId} with tab ${tabId}`);
+    } catch (err) {
+      console.warn('[Background] Auto-stop failed (the detach itself is unaffected):', err?.message || err);
     }
   }
 
