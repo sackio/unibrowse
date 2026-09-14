@@ -169,3 +169,32 @@ test("the controller wires the detach hook to the auto-stop", () => {
   );
   assert.match(code, /_maybeAutoStopCapture\(tabId\)/);
 });
+
+/* ── Stopping a large recording must not report a false failure ──────────────
+ *
+ * ⛔ MEASURED 2026-09-14: stopping a 4.4-day recording (12,547 rrweb events,
+ * 4,364 network entries, 2,515 pages) raised "Handler timeout" at the dispatcher's
+ * default 30s — and saved successfully anyway, status `complete`, every event
+ * landed. The guard is a bare Promise.race, and a JS promise cannot be cancelled,
+ * so it stops WAITING without stopping the work.
+ *
+ * ⚠️ The damage is in the retry, not the wait. handleStopSessionRecording deletes
+ * the recording from sessionRecordings BEFORE uploading, so a caller acting on
+ * the false failure retries and gets "No live recording with sessionId …" —
+ * indistinguishable from data loss, for data that is already saved.
+ *
+ * ⚠️ This now matters MORE, not less: after the auto-stop above, detaching a tab
+ * is what triggers the stop, so the slowest stops happen on a path nobody is
+ * watching the return value of.
+ */
+
+test("browser_stop_session_recording gets a window matched to its buffer", () => {
+  const m = /const HANDLER_TIMEOUTS_MS = \{([\s\S]*?)\n      \};/.exec(bgSrc);
+  assert.ok(m, "HANDLER_TIMEOUTS_MS not found in extension/background.js");
+  const map = codeOnly(m[1]);
+  assert.match(
+    map,
+    /browser_stop_session_recording:\s*180000/,
+    "a recording's stop time scales with its buffer and has no 30s bound — on the default it reports a false failure for an upload that succeeded, and the retry that follows looks like data loss",
+  );
+});

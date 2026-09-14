@@ -4166,6 +4166,20 @@ class BackgroundController {
         // Matches the 180s WS window in src/tools/downloads.ts. Both must move
         // together or the shorter one silently becomes the real limit.
         browser_fetch_to_server: 180000,
+        // ⛔ MEASURED 2026-09-14: stopping a 4.4-day recording (12,547 rrweb
+        // events, 4,364 network entries, 2,515 pages) raised "Handler timeout"
+        // at 30s — and then SAVED SUCCESSFULLY anyway, status `complete`, all
+        // 12,547 events landed. The guard stopped waiting; it cannot stop the
+        // work (a JS promise is not cancellable), so the caller was told a
+        // false failure about an upload that worked.
+        // ⚠️ THE DANGER IS THE RETRY, not the wait. `handleStopSessionRecording`
+        // deletes the recording from `sessionRecordings` BEFORE it uploads, so
+        // a caller acting on that false failure retries and gets "No live
+        // recording with sessionId …" — which reads exactly like the data was
+        // lost, while it is in fact already saved.
+        // A recording's natural stop time scales with its buffer and has no
+        // 30s bound, the same reasoning as browser_execute_macro below.
+        browser_stop_session_recording: 180000,
       };
 
       // ⛔ A CALLER-SUPPLIED TIMEOUT MUST BE ABLE TO MOVE THIS ONE.
