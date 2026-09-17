@@ -881,7 +881,12 @@ export const SearchInteractionsTool = z.object({
 // Cookie Management Tools
 export const GetCookiesTool = z.object({
   name: z.literal("browser_get_cookies"),
-  description: z.literal("Get cookies for a specific URL or all cookies"),
+  description: z.literal(
+    "Get cookies for a specific URL or all cookies. ⛔ PASS tabTarget WHEN THE TAB IS INCOGNITO " +
+    "or in a launched profile: Chrome keeps a separate cookie store per incognito session, and " +
+    "without tabTarget this reads the DEFAULT profile's store — returning a different account's " +
+    "session than the tab you are looking at. Returns the storeId it actually read."
+  ),
   arguments: z.object({
     url: z
       .string()
@@ -900,7 +905,10 @@ export const GetCookiesTool = z.object({
 
 export const SetCookieTool = z.object({
   name: z.literal("browser_set_cookie"),
-  description: z.literal("Set a cookie for a specific URL"),
+  description: z.literal(
+    "Set a cookie for a specific URL. ⛔ PASS tabTarget for an incognito or launched-profile tab — " +
+    "without it the cookie is written to the DEFAULT profile's store, not the tab's."
+  ),
   arguments: z.object({
     url: z.string().describe("URL to set the cookie for"),
     name: z.string().describe("Cookie name"),
@@ -922,7 +930,10 @@ export const SetCookieTool = z.object({
 
 export const DeleteCookieTool = z.object({
   name: z.literal("browser_delete_cookie"),
-  description: z.literal("Delete a specific cookie"),
+  description: z.literal(
+    "Delete a specific cookie. ⛔ PASS tabTarget for an incognito or launched-profile tab — without " +
+    "it this deletes from the DEFAULT profile's store."
+  ),
   arguments: z.object({
     url: z.string().describe("URL of the cookie to delete"),
     name: z.string().describe("Name of the cookie to delete"),
@@ -931,7 +942,11 @@ export const DeleteCookieTool = z.object({
 
 export const ClearCookiesTool = z.object({
   name: z.literal("browser_clear_cookies"),
-  description: z.literal("Clear all cookies, optionally filtered by URL or domain"),
+  description: z.literal(
+    "Clear all cookies, optionally filtered by URL or domain. ⛔ DESTRUCTIVE AND PROFILE-SCOPED: pass " +
+    "tabTarget for an incognito or launched-profile tab, or this clears the DEFAULT profile's " +
+    "cookies — i.e. the real browsing session, not the tab you named."
+  ),
   arguments: z.object({
     url: z
       .string()

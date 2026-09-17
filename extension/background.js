@@ -8057,7 +8057,71 @@ class BackgroundController {
   }
 
   /**
+   * Which COOKIE STORE should a cookie call act on?
+   *
+   * ⛔ CHROME KEEPS MORE THAN ONE. The default profile has one store and every
+   * incognito session has its OWN, and `chrome.cookies.getAll()` with no
+   * `storeId` reads whichever store the CALLING CONTEXT sits in — for the
+   * service worker that is always the default profile, no matter which tab the
+   * caller named.
+   *
+   * ⛔ THE BUG THIS FIXES, reported by `agents` 2026-09-17 and measured 3x:
+   * `browser_get_cookies` with `tabTarget` set to an incognito tab signed in as
+   * agents2@sack.io returned BEN'S default-profile `sessionKey`. The tab had
+   * signed in correctly; only the read was wrong. All four cookie handlers
+   * accepted `tabTarget` (it is in their schemas) and NONE of them read it, so
+   * the parameter was decorative — the same defect class as the documented-but-
+   * unenforced `timeout_ms` fixed in 30e895f.
+   * ⚠️ `browser_set_cookie` and `browser_clear_cookies` had it too, and there it
+   * is worse than a wrong answer: "clear this tab's cookies" cleared the DEFAULT
+   * profile, i.e. Ben's real browsing session.
+   *
+   * ⛔ HOW IT PASSED REVIEW. A 2026-08-20 audit in src/tools/cookies.ts read
+   * every handler, correctly found they touch no tabId, and concluded cookies
+   * "are profile-wide stores, and the extension reads them without a tab". True
+   * of the code, false of Chrome. ⇒ Verifying what a handler DOES tells you
+   * nothing about what it SHOULD do; that audit proved the parameter was unused
+   * and then treated unused as correct.
+   *
+   * ⛔ THROWS rather than falling back to the default store. A silent fallback
+   * is precisely how this cost real damage: on 2026-08-11 this read wrote Ben's
+   * session under the `agents` account and the usage sweep reported his quota as
+   * theirs. Returning the wrong account's credential must be LOUD.
+   *
+   * @returns {Promise<string|null>} storeId, or null meaning "caller named no
+   *          tab — use the default store", which is the historical behaviour.
+   */
+  async resolveCookieStoreId(data) {
+    const target = data && data.tabTarget;
+    if (target === undefined || target === null || target === '') return null;
+
+    const resolved = this.tabManager.resolveTab(target);
+    if (!resolved) {
+      throw new Error(
+        `tabTarget "${target}" does not resolve to an attached tab, so its cookie store cannot be ` +
+        `identified. Refusing to fall back to the default profile — that would return or modify a ` +
+        `DIFFERENT browsing session's cookies than the one you asked for.`
+      );
+    }
+
+    const stores = await chrome.cookies.getAllCookieStores();
+    const store = stores.find((s) => (s.tabIds || []).includes(resolved.tabId));
+    if (!store) {
+      throw new Error(
+        `No cookie store contains tab ${resolved.tabId}. If it is an incognito tab, this extension ` +
+        `is not allowed in incognito — enable "Allow in incognito" on the unibrowse card at ` +
+        `chrome://extensions, which is what grants visibility of the incognito store. Refusing to ` +
+        `fall back to the default profile.`
+      );
+    }
+    return store.id;
+  }
+
+  /**
    * Handle browser_get_cookies - Get cookies with optional filtering
+   *
+   * ⚠️ Pass tabTarget whenever the tab is incognito or belongs to a different
+   * profile. Without it this reads the DEFAULT store — see resolveCookieStoreId.
    */
   async handleGetCookies(data) {
     console.log('[Background] Getting cookies:', data);
@@ -8073,11 +8137,13 @@ class BackgroundController {
     if (data.domain) {
       details.domain = data.domain;
     }
+    const storeId = await this.resolveCookieStoreId(data);
+    if (storeId) details.storeId = storeId;
 
     // Get cookies using Chrome API
     const cookies = await chrome.cookies.getAll(details);
 
-    return { cookies };
+    return { cookies, storeId: storeId || null };
   }
 
   /**
@@ -8100,11 +8166,13 @@ class BackgroundController {
     if (data.httpOnly !== undefined) details.httpOnly = data.httpOnly;
     if (data.sameSite !== undefined) details.sameSite = data.sameSite;
     if (data.expirationDate !== undefined) details.expirationDate = data.expirationDate;
+    const storeId = await this.resolveCookieStoreId(data);
+    if (storeId) details.storeId = storeId;
 
     // Set the cookie
     await chrome.cookies.set(details);
 
-    return { success: true };
+    return { success: true, storeId: storeId || null };
   }
 
   /**
@@ -8114,12 +8182,14 @@ class BackgroundController {
     console.log('[Background] Deleting cookie:', data);
 
     // Delete the cookie
+    const storeId = await this.resolveCookieStoreId(data);
     const result = await chrome.cookies.remove({
       url: data.url,
       name: data.name,
+      ...(storeId ? { storeId } : {}),
     });
 
-    return { success: result !== null };
+    return { success: result !== null, storeId: storeId || null };
   }
 
   /**
@@ -8136,6 +8206,11 @@ class BackgroundController {
     if (data.domain) {
       details.domain = data.domain;
     }
+    // ⛔ The destructive one. Without this, "clear the cookies for this tab"
+    // cleared the DEFAULT profile — Ben's real browsing session — while the
+    // caller believed it was scoped to the tab they named.
+    const storeId = await this.resolveCookieStoreId(data);
+    if (storeId) details.storeId = storeId;
 
     // Get all cookies matching the filter
     const cookies = await chrome.cookies.getAll(details);
@@ -8147,13 +8222,14 @@ class BackgroundController {
       const result = await chrome.cookies.remove({
         url: url,
         name: cookie.name,
+        ...(storeId ? { storeId } : {}),
       });
       if (result !== null) {
         count++;
       }
     }
 
-    return { count };
+    return { count, storeId: storeId || null };
   }
 
   /**

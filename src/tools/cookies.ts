@@ -31,6 +31,26 @@ import type { Tool } from "./tool";
 // stores, and the extension reads them without a tab. ⇒ Judge scope by what the
 // HANDLER touches, never by what the tool name suggests.
 //
+// ⛔⛔ CORRECTION 2026-09-17 -- THE PARAGRAPH ABOVE IS TRUE OF THE CODE AND FALSE
+// OF CHROME, AND THAT GAP COST A MONTH. "Profile-wide stores" is wrong: Chrome
+// keeps a SEPARATE cookie store per incognito session, and `chrome.cookies`
+// exposes them via `storeId` / `getAllCookieStores()`. The handlers took
+// `tabTarget` (it is in all four schemas below) and none of them read it, so
+// every call silently acted on the DEFAULT store.
+//   · Reported by `agents`, measured 3x: browser_get_cookies with tabTarget set
+//     to an incognito tab signed in as agents2@sack.io returned BEN'S
+//     default-profile sessionKey. The sign-in was fine; only the read was wrong.
+//   · browser_clear_cookies had it too, where it is destructive: "clear this
+//     tab's cookies" cleared Ben's real session.
+// ⇒ THE METHOD ERROR, worth more than the fix: that audit read every handler,
+// correctly established the parameter was UNUSED, and then treated unused as
+// CORRECT. Proving what the code does says nothing about what it should do.
+//
+// ⭐ The fix is entirely extension-side (`resolveCookieStoreId`) and does NOT
+// reintroduce an attach pre-flight: it calls tabManager.resolveTab(), which
+// READS the already-attached tab map and attaches nothing. The prohibition
+// above stands -- do not "fix" this by adding ensureAttachedFromParams back.
+//
 // Routing is unaffected: sendSocketMessage() reads extensionId straight off the
 // payload, so multi-extension disambiguation still works and still raises the
 // normal "Multiple extensions are connected" error when the caller omits it.
