@@ -1536,7 +1536,7 @@ export const ListAttachedTabsTool = z.object({
       .boolean()
       .optional()
       .describe(
-        "Add liveUrl/liveTitle read from Chrome's CURRENT tab state, plus urlChanged/titleChanged flags. ⛔ The plain `url` and `title` fields are captured when a tab is ATTACHED and are NEVER updated on navigation — a tab that has since navigated still reports the page it left. Pass live:true whenever you need to know where a tab actually is now: picking a tab by title or URL, or verifying one has not moved. Costs one chrome.tabs.get per attached tab."
+        "DEFAULTS TRUE since 2026-09-26 — liveUrl/liveTitle are read from Chrome's CURRENT tab state and returned with urlChanged/titleChanged flags unless you pass live:false. ⛔ The plain `url` and `title` fields are captured when a tab is ATTACHED and are NEVER updated on navigation — a tab that has since navigated still reports the page it left, and that stale value fails TOWARD 'nothing to fix'. Two seats were bitten with this caveat already written here, so the default now carries it instead of the documentation. Pass live:false only when you want the bare roster and will not match on url or title. Costs one chrome.tabs.get per attached tab (no CDP, no page evaluation). ⚠️ An extension on a build predating this option returns no live fields at all; the response says LIVE STATE UNAVAILABLE rather than implying agreement."
       ),
     // ⛔ Opt-IN, never opt-out. A tab attached and left broadcasts its query
     // string to every agent that lists tabs, and on 2026-08-17 that was a

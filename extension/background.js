@@ -3306,9 +3306,15 @@ class BackgroundController {
    * Chrome's own current tab state, plus `urlChanged` / `titleChanged` so a
    * caller does not have to compare strings to notice divergence.
    *
-   * Opt-in because it costs one chrome.tabs.get per attached tab. That is
-   * cheap (no CDP, no page evaluation) but not free, and the common caller
-   * only wants the roster.
+   * It costs one chrome.tabs.get per attached tab. That is cheap (no CDP, no
+   * page evaluation) but not free.
+   *
+   * ⚠️ THE WIRE FIELD IS STILL EXPLICIT AND STILL DEFAULTS OFF HERE — do not
+   * "simplify" this to enrich unconditionally. The MCP tool boundary defaults
+   * live to TRUE as of 2026-09-26 and sends it on every call, so a caller who
+   * says nothing gets live state; the server, not the extension, owns that
+   * default. An old extension that ignores `live` is what the server's
+   * LIVE STATE UNAVAILABLE note exists for.
    *
    * ⚠️ Measured 2026-08-27: a tab whose record said
    * "/your-orders/order-details… · Order Details" was actually on

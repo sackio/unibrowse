@@ -88,7 +88,18 @@ export const listAttachedTabs: Tool = {
     inputSchema: zodToJsonSchema(ListAttachedTabsTool.shape.arguments),
   },
   handle: async (context: Context, params) => {
-    const { max_tokens, fullUrls, live } = (params || {}) as any;
+    const { max_tokens, fullUrls } = (params || {}) as any;
+    // ⛔ LIVE STATE IS THE DEFAULT, AND THAT IS THE WHOLE POINT. `url`/`title`
+    // are the ATTACH-TIME record; when they go stale they fail TOWARD "nothing
+    // to fix", and a field that fails toward healthy costs more than one that
+    // fails toward broken, because only the second one gets checked. `ha`'s
+    // argument, 2026-09-19, after losing an hour to a tab that reported
+    // consumerportal/#/devices while it was actually on
+    // auth.ecobee.com/u/login/identifier. The caveat was ALREADY in this tool's
+    // description and two seats were bitten anyway ⇒ the doc is not the lever,
+    // the default is. Cost: one chrome.tabs.get per attached tab, no CDP.
+    // Opt OUT with live:false when you only want the roster.
+    const live = (params as any)?.live !== false;
     try {
       // Aggregate across every registered extension. With multiple extensions
       // (ben's main Chrome + container chromiums launched via
@@ -97,7 +108,7 @@ export const listAttachedTabs: Tool = {
       // rather than dropped so a broken connection is visible.
       const results = await context.broadcastSocketMessage(
         "browser_list_attached_tabs",
-        { live: live === true } as any,
+        { live } as any,
       );
 
       const tabs: any[] = [];
@@ -152,7 +163,7 @@ export const listAttachedTabs: Tool = {
           // read as "nothing changed" — the same false all-clear this option
           // exists to remove. Say the data is UNAVAILABLE, not that it agrees.
           const liveUnavailable =
-            live === true && tab.liveUrl === undefined && tab.liveError === undefined;
+            live && tab.liveUrl === undefined && tab.liveError === undefined;
           const moved = tab.urlChanged === true || tab.titleChanged === true;
           const liveNote = liveUnavailable
             ? `\n  ⚠️ LIVE STATE UNAVAILABLE: this extension is running a build that predates the ` +
