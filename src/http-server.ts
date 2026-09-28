@@ -137,13 +137,43 @@ const ensurePrivateDir = (dir: string, inheritFrom?: string): void => {
       gid = owner.gid;
     } catch { /* fall back to the configured owner below */ }
   }
-  try {
-    if (uid !== null && gid !== null && Number.isFinite(uid) && Number.isFinite(gid)) {
-      fs.chownSync(dir, uid, gid);
+
+  // ⛔ EVERY SEGMENT, NOT JUST THE LEAF. `recursive: true` creates the whole
+  // chain, and this used to chown only `dir` — so a nested destination like
+  // "laura-work/mgb-oe-2027" left the INTERMEDIATE "laura-work" root-owned and
+  // mode 0700, which uid 1000 cannot traverse. The leaf underneath was chowned
+  // correctly and was still unreachable, because traversal needs execute on
+  // every parent.
+  //
+  // ⚠️ Reported by `thread-laura-work-2` 2026-09-28 and reproduced here the same
+  // day: a single-level destination works, a two-level one strands the file.
+  // The fetch still returned indexed:true — success reported for bytes that no
+  // seat, including the one that asked for them, could read. A one-level test
+  // cannot catch this, which is why the defect survived.
+  const targets: string[] = [];
+  if (inheritFrom) {
+    const root = path.resolve(inheritFrom);
+    let cur = path.resolve(dir);
+    // Walk up to, but never including, the store root — its ownership is
+    // host-side state we inherit FROM and must not rewrite.
+    while (cur.startsWith(root + path.sep)) {
+      targets.push(cur);
+      cur = path.dirname(cur);
     }
-    fs.chmodSync(dir, 0o700);
-  } catch (err: any) {
-    console.warn("[fetched] could not set owner/mode on", dir, err?.message || err);
+    targets.reverse();
+  } else {
+    targets.push(dir);
+  }
+
+  for (const target of targets) {
+    try {
+      if (uid !== null && gid !== null && Number.isFinite(uid) && Number.isFinite(gid)) {
+        fs.chownSync(target, uid, gid);
+      }
+      fs.chmodSync(target, 0o700);
+    } catch (err: any) {
+      console.warn("[fetched] could not set owner/mode on", target, err?.message || err);
+    }
   }
 };
 

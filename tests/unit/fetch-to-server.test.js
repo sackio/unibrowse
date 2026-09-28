@@ -394,9 +394,16 @@ test("recreating the fetched store cannot silently drop it to world-readable", (
     /mkdirSync\(dir,\s*\{\s*recursive:\s*true,\s*mode:\s*0o700\s*\}\)/,
     "the helper must create private, not chmod afterwards — a window in which the directory is world-readable is the thing being removed",
   );
+  // ⚠️ Matches the CALL, not the variable name. This asserted
+  // `chownSync(dir, …)` until 2026-09-28, when the fix for stranded
+  // intermediates moved the chown into a loop over every created segment and
+  // renamed the argument — a correct change that failed this test purely on
+  // spelling. Assert the guarantee (a chown happens with the resolved
+  // uid/gid), and leave the per-segment coverage to
+  // tests/unit/fetched-dir-ownership.test.js, which owns that property.
   assert.match(
     code,
-    /fs\.chownSync\(dir,\s*uid,\s*gid\)/,
+    /fs\.chownSync\(\w+,\s*uid,\s*gid\)/,
     "⛔ 0700 without a chown is worse than 0755: root-owned and private locks out every seat that needs to read these files",
   );
   assert.match(
