@@ -9,6 +9,7 @@ import {
 import { jsonResponse, textResponse, errorResponse } from "@/utils/response-helpers";
 
 import type { Tool } from "./tool";
+import { guardCookieClear } from "../utils/cookie-guard.ts";
 
 // ⛔ NO TOOL IN THIS FILE MAY CALL ensureAttachedFromParams().
 //
@@ -145,6 +146,12 @@ export const clearCookies: Tool = {
     const { max_tokens } = params || {};
     try {
       const validatedParams = ClearCookiesTool.shape.arguments.parse(params);
+      // ⛔ Refuse an unscoped clear before it reaches the browser. See
+      // utils/cookie-guard.ts for why this lives here and not in the extension.
+      const verdict = guardCookieClear(validatedParams as any);
+      if (!verdict.allowed) {
+        return errorResponse(verdict.reason, false, undefined, max_tokens);
+      }
       const result = await context.sendSocketMessage("browser_clear_cookies", validatedParams);
       return textResponse(`Cleared ${result.count} cookie(s)`, max_tokens);
     } catch (error) {

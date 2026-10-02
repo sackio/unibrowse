@@ -943,9 +943,11 @@ export const DeleteCookieTool = z.object({
 export const ClearCookiesTool = z.object({
   name: z.literal("browser_clear_cookies"),
   description: z.literal(
-    "Clear all cookies, optionally filtered by URL or domain. ⛔ DESTRUCTIVE AND PROFILE-SCOPED: pass " +
-    "tabTarget for an incognito or launched-profile tab, or this clears the DEFAULT profile's " +
-    "cookies — i.e. the real browsing session, not the tab you named."
+    "Clear cookies, optionally filtered by URL or domain. ⛔ DESTRUCTIVE AND PROFILE-SCOPED: pass " +
+    "tabTarget for an incognito or launched-profile tab. ⛔ SINCE 2026-10-02 a call with NO tabTarget " +
+    "is REFUSED unless you also pass includeDefaultProfile:true — without a tab this clears the " +
+    "operator's REAL browsing session (his eBay/Amazon/banking logins), and it used to do that while " +
+    "returning a cheerful \"Cleared N cookie(s)\"."
   ),
   arguments: z.object({
     url: z
@@ -956,6 +958,16 @@ export const ClearCookiesTool = z.object({
       .string()
       .optional()
       .describe("Only clear cookies for this domain"),
+    includeDefaultProfile: z
+      .boolean()
+      .optional()
+      .describe(
+        "Required to clear cookies from the DEFAULT profile, i.e. when no tabTarget is given. " +
+        "⛔ This is the operator's own browsing session — setting it true logs him out of whatever " +
+        "you match. There is no narrower filter that makes it safe: 'clear ebay.com from the default " +
+        "profile' IS the damaging call. Omitting a tabTarget by accident now errors instead of " +
+        "deleting; this flag exists so the destructive case has to be stated out loud."
+      ),
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
