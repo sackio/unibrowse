@@ -157,6 +157,19 @@ services:
       # active, the launcher delegates writes here).
       - ./chrome-profiles:/app/.chrome-profiles
       - ./extension:/app/extension:ro
+      # ⭐ server.js mounted like extension/ above, so a sidecar code change
+      # needs only a container recreate — NOT an image rebuild.
+      # ⛔ THE REBUILD IS NOT AVAILABLE TO US RIGHT NOW. The Dockerfile pins
+      # chromium=150.0.7871.181-r0 and alpine 3.24 no longer offers it, so
+      # `compose build chromium-host` FAILS. That failure is deliberate (read
+      # the Dockerfile header: an unpinned rebuild once moved chromium 148→149
+      # silently and cost three weeks of undiagnosable macro failure), so the
+      # fix is NOT to bump the pin casually — chromium's version is part of the
+      # automation contract and changing it alters the fingerprint that
+      # anti-bot gates read. This mount decouples OUR code from that decision.
+      # ⚠️ Still true and still needs deciding: the image cannot be rebuilt from
+      # scratch until someone picks a chromium version deliberately.
+      - ./chromium-host/server.js:/app/server.js:ro
 
 networks:
   unibrowse-network:
