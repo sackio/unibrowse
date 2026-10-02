@@ -489,6 +489,61 @@ const detectRelaunchLoop = (profileName) => {
   };
 };
 
+/* ---------- Proxy spec (MIRROR of src/utils/proxy-spec.ts) ------------- */
+// ⚠️ DUPLICATED DELIBERATELY. This container has no build step and no access to
+// the mcp-server tree's path aliases, so it cannot import that module. If the
+// accepted grammar changes on one side, change it on the other: a spec accepted
+// here but rejected there (or the reverse) means the proxy applies on one launch
+// path and not the other, which presents as an intermittent exit IP.
+const PROXY_SCHEMES = ["http", "https", "socks4", "socks5"];
+const DEFAULT_PROXY_BYPASS = [
+  "localhost", "127.0.0.1", "[::1]",
+  "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+];
+
+function parseProxySpec(raw) {
+  if (typeof raw !== "string" || raw.trim() === "") throw new Error("proxy must be a non-empty string");
+  const spec = raw.trim();
+  if (spec.startsWith("-")) throw new Error(`proxy may not start with '-': ${JSON.stringify(spec)}`);
+  if (/[\s;'"|&$`\\<>(){}]/.test(spec)) throw new Error(`proxy contains forbidden characters: ${JSON.stringify(spec)}`);
+  if (spec.includes("@")) throw new Error("proxy may not carry credentials — a command line is world-readable via ps");
+  let scheme = "", hostPort = spec;
+  const i = spec.indexOf("://");
+  if (i !== -1) {
+    scheme = spec.slice(0, i).toLowerCase();
+    hostPort = spec.slice(i + 3);
+    if (!PROXY_SCHEMES.includes(scheme)) throw new Error(`proxy scheme must be one of ${PROXY_SCHEMES.join(", ")}`);
+  }
+  if (hostPort.includes("/")) throw new Error("proxy must be host:port with no path");
+  let host, portStr;
+  const v6 = hostPort.match(/^\[([0-9A-Fa-f:]+)\]:(\d+)$/);
+  if (v6) { host = `[${v6[1]}]`; portStr = v6[2]; }
+  else {
+    const idx = hostPort.lastIndexOf(":");
+    if (idx === -1) throw new Error("proxy must include a port");
+    host = hostPort.slice(0, idx); portStr = hostPort.slice(idx + 1);
+    if (!/^[A-Za-z0-9.\-_]+$/.test(host)) throw new Error(`proxy host is not a hostname or IPv4 literal: ${JSON.stringify(host)}`);
+  }
+  if (!host) throw new Error("proxy is missing a host");
+  if (!/^\d+$/.test(portStr)) throw new Error("proxy port must be numeric");
+  const port = Number(portStr);
+  if (port < 1 || port > 65535) throw new Error(`proxy port out of range 1-65535 (got ${port})`);
+  return scheme ? `${scheme}://${host}:${port}` : `${host}:${port}`;
+}
+
+// The mcp-server host is appended whether or not the caller kept the defaults:
+// a killswitch VPN blocks LAN egress, so proxying the extension's own WebSocket
+// FAILS it, and the launch then reads as "the proxy is broken".
+function buildProxyBypassList(override, serverHint) {
+  const base = override && String(override).trim() !== ""
+    ? String(override).split(";").map((x) => x.trim()).filter(Boolean)
+    : [...DEFAULT_PROXY_BYPASS];
+  let serverHost = "";
+  try { if (serverHint) serverHost = new URL(String(serverHint).replace(/^ws/, "http")).hostname; } catch {}
+  if (serverHost && !base.some((e) => e.toLowerCase() === serverHost.toLowerCase())) base.push(serverHost);
+  return base.join(";");
+}
+
 /* ---------- Launch a chromium ------------------------------------------ */
 const launchChromium = async ({
   profileName,
@@ -498,6 +553,8 @@ const launchChromium = async ({
   width,
   height,
   serverHint,            // e.g. "ws://mcp-server:9010/ws"
+  proxy,                 // scoped VPN/proxy egress for THIS profile only
+  proxyBypassList,       // caller override; REPLACES the defaults, never merges
   forceProfileName,      // must equal profileName verbatim to wipe a persistent profile
   caller,                // optional session id, for the override audit line
 }) => {
@@ -578,6 +635,15 @@ const launchChromium = async ({
   ];
   if (width && height) args.push(`--window-size=${width},${height}`);
   if (headless) args.push("--headless=new", "--disable-gpu");
+  // Scoped proxy egress. Validated here too: this endpoint is reachable
+  // independently of mcp-server, so it cannot assume a caller validated.
+  let appliedProxy = null, appliedBypass = null;
+  if (proxy) {
+    appliedProxy = parseProxySpec(proxy);
+    appliedBypass = buildProxyBypassList(proxyBypassList, serverHint);
+    args.push(`--proxy-server=${appliedProxy}`);
+    args.push(`--proxy-bypass-list=${appliedBypass}`);
+  }
   args.push(...urls);
 
   const env = { ...process.env };
@@ -641,7 +707,11 @@ const launchChromium = async ({
     launchedXvfbs.set(xvfb.pid, { proc: xvfb, display, spawnedAt: Date.now() });
     xvfb.once("exit", () => launchedXvfbs.delete(xvfb.pid));
   }
-  return { pid: proc.pid, display, profileDir };
+  // ⛔ ECHO THE PROXY. mcp-server refuses the launch if it asked for one and
+  // this field does not come back matching — that is the only way a caller can
+  // tell "proxied" from "this sidecar predates proxy support and ignored it",
+  // which otherwise returns 200 and an unproxied browser on the host's own IP.
+  return { pid: proc.pid, display, profileDir, proxy: appliedProxy, proxyBypassList: appliedBypass };
 };
 
 /* ---------- Signal handler --------------------------------------------- */

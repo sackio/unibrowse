@@ -6,6 +6,7 @@ import { randomUUID } from "crypto";
 // ⚠️ Its own module so the unit tests can import it: this file imports the
 // "@/types" path alias, which the bare `node --test` runner cannot resolve.
 import { sweepDeadProfiles } from "../utils/dead-profiles.ts";
+import { parseProxySpec, buildProxyBypassList } from "../utils/proxy-spec.ts";
 import { fileURLToPath } from "url";
 import { LaunchIsolatedChromeTool, CloseIsolatedChromeTool } from "@/types/tool-schemas";
 import { textResponse, errorResponse, jsonResponse } from "@/utils/response-helpers";
@@ -269,6 +270,9 @@ async function launchViaChromiumHost(
   // cmd line, no auto-attach) is preserved when autoAttach:false is passed.
   const autoAttach = (validatedParams as any).autoAttach !== false;
   const cmdLineUrls = autoAttach ? [seedUrl] : [seedUrl, ...userUrls];
+  const proxySpec = (validatedParams as any).proxy
+    ? parseProxySpec((validatedParams as any).proxy)
+    : undefined;
   const reqBody = {
     profileName: validatedParams.profileName,
     urls: cmdLineUrls,
@@ -283,6 +287,11 @@ async function launchViaChromiumHost(
     // later call, silently dissolving the friction it exists to create.
     forceProfileName: (validatedParams as any).forceProfileName,
     caller: (validatedParams as any).caller,
+    // Scoped VPN/proxy egress for this profile only. Validated HERE as well as
+    // in the sidecar: a bad spec should be refused by the process the caller is
+    // talking to, not surface as a sidecar 500 two hops away.
+    proxy: proxySpec,
+    proxyBypassList: proxySpec ? buildProxyBypassList((validatedParams as any).proxyBypassList, wsHint) : undefined,
   };
   const launchResp = await fetch(`${hostUrl.replace(/\/$/, "")}/launch`, {
     method: "POST",
@@ -306,7 +315,26 @@ async function launchViaChromiumHost(
       false, undefined, max_tokens,
     );
   }
-  const { pid, display, profileDir } = await launchResp.json() as any;
+  const launchJson = await launchResp.json() as any;
+  const { pid, display, profileDir } = launchJson;
+
+  // ⛔ POSITIVE ECHO CHECK — the sidecar is a separate container with its own
+  // deploy, so mcp-server can be running proxy-aware code against a sidecar
+  // that is not. It destructures named fields, which means an older one accepts
+  // `proxy`, ignores it, and returns 200. The browser then comes up, every page
+  // loads, and only the exit IP is wrong — the single outcome the caller cannot
+  // observe, on the one feature whose entire purpose is the exit IP.
+  // ⇒ Refuse rather than report success. Rebuild the sidecar; do not "fix" this
+  // by trusting the request.
+  if (proxySpec && launchJson?.proxy !== proxySpec) {
+    return errorResponse(
+      `chromium-host accepted the launch but did not apply proxy ${proxySpec} ` +
+      `(echoed ${JSON.stringify(launchJson?.proxy ?? null)}). The sidecar predates proxy support, so ` +
+      `this chromium is running UNPROXIED on the host's own IP — it has not been closed, close it with ` +
+      `browser_close_isolated_chrome. Rebuild the chromium-host container to proceed.`,
+      false, undefined, max_tokens,
+    );
+  }
 
   // Poll for the newcomer extension. Side-container path is slower than the
   // in-process path because the new chromium has to fully boot AND its
@@ -628,6 +656,22 @@ export const launchIsolatedChrome: Tool = {
       if (validatedParams.headless) {
         chromeArgs.push("--headless=new");
         chromeArgs.push("--disable-gpu");
+      }
+
+      // Scoped proxy egress. Profile-local by construction: these are argv on
+      // THIS chromium, so the host's main Chrome and every other extension are
+      // untouched. ⚠️ The bypass list is not a nicety — a killswitch VPN blocks
+      // LAN egress, so without it the extension's own WebSocket to mcp-server
+      // is blocked and the launch presents as the proxy being broken.
+      if ((validatedParams as any).proxy) {
+        const spec = parseProxySpec((validatedParams as any).proxy);
+        chromeArgs.push(`--proxy-server=${spec}`);
+        chromeArgs.push(
+          `--proxy-bypass-list=${buildProxyBypassList(
+            (validatedParams as any).proxyBypassList,
+            process.env.UNIBROWSE_CHROMIUM_SERVER_HINT,
+          )}`,
+        );
       }
 
       // Add URLs to open

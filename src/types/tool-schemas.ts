@@ -1940,6 +1940,31 @@ export const LaunchIsolatedChromeTool = z.object({
                "Default: TRUE — note the destructive value is the default. Set to false to persist " +
                "profile data between sessions. Profiles on the sidecar's persistent allowlist refuse " +
                "to be wiped by this flag alone; see forceProfileName."),
+    proxy: z
+      .string()
+      .optional()
+      .describe(
+        "Route THIS isolated browser's traffic through a proxy, e.g. 'http://172.17.0.1:18889' or " +
+        "'socks5://10.0.0.5:1080'. Scoped to the launched profile only — it never touches the host's " +
+        "main Chrome or any other extension. Accepts host:port or scheme://host:port (http, https, " +
+        "socks4, socks5); credentials in the URL are REFUSED. " +
+        "⛔ PASS THE PORT YOU WERE GIVEN, never a remembered one: the VPN side allocates it per " +
+        "exit and a reroll is not port-stable, so a hardcoded port breaks silently as an unproxied " +
+        "launch. ⚠️ A proxy whose killswitch blocks LAN egress would also block this extension's own " +
+        "WebSocket to the mcp-server, so the server's host is added to the bypass list automatically " +
+        "— see proxyBypassList before overriding it."
+      ),
+    proxyBypassList: z
+      .string()
+      .optional()
+      .describe(
+        "Semicolon-separated hosts/CIDRs that must NOT go through `proxy`. Defaults to loopback, " +
+        "the mcp-server host and the RFC1918/link-local ranges, which is what keeps the extension " +
+        "able to reach the server and LAN fetches working under a killswitch VPN. " +
+        "⛔ OVERRIDING THIS REPLACES THE DEFAULT, it does not add to it — the mcp-server host is " +
+        "re-appended regardless, because losing it presents as the proxy being broken rather than as " +
+        "a bypass mistake. Ignored unless `proxy` is set."
+      ),
     forceProfileName: z
       .string()
       .optional()
