@@ -432,6 +432,48 @@ class CDPHelper {
   /**
    * Evaluate JavaScript in page context
    */
+  /**
+   * Decide how to wrap a caller's expression so its VALUE comes back.
+   *
+   * ⛔ SHARED BY `evaluate` AND `evaluateInFrame` ON PURPOSE. This logic lived
+   * only in `evaluate` and the frame path wrapped the raw expression in an
+   * async function body with no `return` — so EVERY frame-targeted evaluate
+   * returned undefined, which reaches the caller as `null`. MEASURED
+   * 2026-10-03 on two independent browsers (Ben's MacBook and office, both on
+   * current code): frameTarget + `1+1` → null, while the same call on the main
+   * frame returned 2.
+   *
+   * ⚠️ It was worse than one tool returning null. `querySelectorInFrame` passes
+   * an IIFE through `evaluateInFrame` and treats a falsy result as "element not
+   * found", so frame-scoped click / type / fill_form / query_dom could never
+   * find anything either — they failed as "no such element", which looks like
+   * a selector mistake rather than a transport bug.
+   *
+   * ⇒ Keep ONE implementation. The duplication is what let the frame path drift.
+   *
+   * Cases, unchanged from the original:
+   *   A) caller wrote `return ...`                  → use as-is
+   *   B) single statement (no `;`, no newline)      → `return (expr);`
+   *   C) multi-statement that visually IS an
+   *      expression, e.g. an IIFE in outer parens   → `return (\n expr \n);`
+   *      (the ha-reported null-on-IIFE bug)
+   *   D) anything else (declarations, bare
+   *      statements)                                → as-is; caller supplies
+   *                                                   its own `return`
+   */
+  _bodyForValue(expression) {
+    const hasExplicitReturn = /^\s*return\b/.test(expression);
+    const isSingleStatement = !expression.includes('\n') && !expression.includes(';');
+    const trimmed = expression.trim();
+    const looksLikeWrappedExpression =
+      trimmed.startsWith('(') && trimmed.endsWith(')') && !hasExplicitReturn;
+
+    if (hasExplicitReturn) return expression;
+    if (isSingleStatement) return `return (${expression});`;
+    if (looksLikeWrappedExpression) return `return (\n${expression}\n);`;
+    return expression;
+  }
+
   async evaluate(expression, returnByValue = true) {
     // Wrap in an async IIFE so const/let declarations are scoped (avoiding "already declared"
     // on re-runs in the shared MAIN world scope).
@@ -452,23 +494,7 @@ class CDPHelper {
     //   D) Anything else (raw multi-statement script with `let`, declarations,
     //      bare statements)                               → use as-is; caller
     //      must include their own `return` if they want a value.
-    const hasExplicitReturn = /^\s*return\b/.test(expression);
-    const isSingleStatement = !expression.includes('\n') && !expression.includes(';');
-    const trimmed = expression.trim();
-    const looksLikeWrappedExpression =
-      trimmed.startsWith('(') && trimmed.endsWith(')') && !hasExplicitReturn;
-
-    let body;
-    if (hasExplicitReturn) {
-      body = expression;
-    } else if (isSingleStatement) {
-      body = `return (${expression});`;
-    } else if (looksLikeWrappedExpression) {
-      body = `return (\n${expression}\n);`;
-    } else {
-      body = expression;
-    }
-    const wrapped = `(async function() {\n${body}\n})()`;
+    const wrapped = `(async function() {\n${this._bodyForValue(expression)}\n})()`;
     try {
       const result = await this.sendCommand('Runtime.evaluate', {
         expression: wrapped,
@@ -557,7 +583,9 @@ class CDPHelper {
       throw new Error(`Cannot get execution context for frame ${frameId}: ${err.message}`);
     }
 
-    const wrapped = `(async function() {\n${expression}\n})()`;
+    // ⛔ Same wrapping as the main frame. Passing the raw expression here is the
+    // bug this fixes: no `return`, so the value was discarded and callers saw null.
+    const wrapped = `(async function() {\n${this._bodyForValue(expression)}\n})()`;
     const result = await this.sendCommand('Runtime.evaluate', {
       expression: wrapped,
       contextId,
