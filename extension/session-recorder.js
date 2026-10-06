@@ -268,13 +268,74 @@ if (window.__unibrowse_recording__) {
 
   // ─── rrweb DOM Recording ──────────────────────────────────────────────────
 
+  // ─── Pause/resume, so an unwatched tab costs nothing ──────────────────────
+  //
+  // Ben, Slack #unibrowse 2026-10-06: "the recording should be sending hardly
+  // any data when the UI is not changing or when the tab is idle ... not just be
+  // growing in size all the time".
+  //
+  // ⛔ IT HAS TO BE PAUSE/RESUME, NOT FILTERING. The obvious reading — drop the
+  // events emitted while nothing is happening — CORRUPTS THE RECORDING.
+  // Incremental events are diffs against a FullSnapshot, so a buffer missing
+  // some of them still uploads, still opens in review, and replays BLANK.
+  // Stopping and restarting is safe because each restart emits a fresh
+  // FullSnapshot, which is a new base for the diff chain.
+  //
+  // ⚠️ WHAT THIS DOES AND DOES NOT BUY, measured 2026-10-06 — do not oversell it:
+  //   · a BACKGROUND tab now records nothing. That is where the size came from:
+  //     a 3.69-day eBay capture, mostly unwatched, was 616 MB.
+  //   · a VISIBLE page that churns is NOT helped. alpaca.markets emitted ~780
+  //     DOM events/min while looking completely static to a human — live
+  //     tickers. Those are real changes and still cost.
+  const IDLE_MS = 10 * 60 * 1000;
+  let rrwebActive = false;
+  let idleTimer = null;
+  // ⚠️ Declared OUT HERE deliberately. It was `const rrwebOptions` inside the
+  // try block while startRrweb() lives in this scope — which parses fine and
+  // throws ReferenceError on the first resume, because a function resolves
+  // names from where it is DEFINED, not where it is called. `node --check`
+  // passes it happily: a syntax check is not a scope check.
+  let rrwebOptions = null;
+
+  function startRrweb() {
+    if (rrwebActive || typeof rrwebRecord !== 'function') return;
+    try {
+      rrwebStop = rrwebRecord(rrwebOptions);
+      rrwebActive = true;
+    } catch (err) {
+      console.error('[SessionRecorder] rrweb failed to start:', err);
+    }
+  }
+
+  function pauseRrweb(why) {
+    if (!rrwebActive) return;
+    try { if (typeof rrwebStop === 'function') rrwebStop(); } catch (e) { /* already gone */ }
+    rrwebActive = false;
+    console.log(`[SessionRecorder] paused (${why})`);
+  }
+
+  function markActivity() {
+    if (!rrwebActive && !document.hidden) startRrweb();
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => pauseRrweb('idle'), IDLE_MS);
+  }
+
   if (typeof rrwebRecord === 'function') {
     try {
-      rrwebStop = rrwebRecord({
+      rrwebOptions = {
         emit(event) {
           safeSend({ type: 'SR_RRWEB', event });
         },
-        maskAllInputs: false,
+        // ⛔ TRUE since 2026-10-06. It was explicitly false, with nothing saying
+        // why. Measured that day: rrweb Input events carried `data.text` for
+        // every keystroke, which in one capture meant a portal password and a
+        // full card entry — number, expiry, CVC. The server now strips these at
+        // ingest as well, so capturing them in the page buys nothing and only
+        // creates exposure in page memory and in transit.
+        // ⚠️ Replay shows masked fields by design. That is the cost, and it is
+        // the right trade: Ben's 08-02 reason for recording was to see what an
+        // agent DID, which the interaction stream still shows.
+        maskAllInputs: true,
         blockClass: '__unibrowse_blocked__',
         sampling: {
           scroll: 150,
@@ -298,8 +359,26 @@ if (window.__unibrowse_recording__) {
         // back to. 2 min is the granularity of what we can discard, so it also
         // sets how far past the cap the buffer can transiently run.
         checkoutEveryNms: 120000,
-      });
+      };
+
+      startRrweb();
       console.log('[SessionRecorder] rrweb recording started');
+
+      // A hidden tab is the dominant case and the cheapest signal there is.
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) pauseRrweb('tab hidden');
+        else markActivity();
+      });
+
+      // ⚠️ Interaction, not "visual change". A page can rewrite its DOM
+      // continuously while looking static, so visual quiet is not a usable
+      // idle signal — but nobody touching the tab for ten minutes is.
+      // Passive + capture so a page cannot swallow the signal by stopping
+      // propagation on its own handlers.
+      for (const evt of ['pointerdown', 'keydown', 'scroll', 'wheel', 'touchstart']) {
+        window.addEventListener(evt, markActivity, { passive: true, capture: true });
+      }
+      markActivity();
     } catch (err) {
       console.error('[SessionRecorder] rrweb failed to start:', err);
     }
