@@ -826,6 +826,47 @@ async function main() {
       const { id } = req.params;
       const { rrwebEvents = [], networkEntries = [], interactions = [], chunkIndex = 0 } = req.body as any;
       const recordingEvents = mongodb.getRecordingEventsCollection();
+
+      // ⛔ RESPONSE AND REQUEST BODIES ARE STRIPPED AT INGEST. Ben, Slack
+      // #unibrowse 2026-10-06. Two reasons, and the second is the important one:
+      //
+      // 1. SIZE. Each body is capped at 50 KB in the interceptor and a recording
+      //    caps at 5,000 network entries, so bodies alone can be ~250 MB of a
+      //    single capture.
+      // 2. ⛔ CONTENT. These are the operator's own logged-in sessions. A saved
+      //    store of 693 unrequested recordings was found 2026-10-06 holding
+      //    secure.bankofamerica.com, fidelity.com and five captures of a family
+      //    member's MGB benefits portal — as rendered, with bodies. Account
+      //    pages, in a store every seat on every host can read.
+      //
+      // ⚠️ SERVER-SIDE ON PURPOSE. The interceptor that captures them is
+      // extension code, and extension code reaches no running browser without
+      // the ↻ the operator has declined. Stripping here protects every connected
+      // browser on the next :9010 restart instead of only the ones that reload.
+      // ⇒ When the extension-side change ships, this stays: defence in depth
+      // costs one map() and the failure mode it prevents is unrecoverable.
+      //
+      // URL, method, status, headers and timing are KEPT — that is what makes a
+      // network log useful for debugging. Only the payloads go.
+      const strippedEntries = (Array.isArray(networkEntries) ? networkEntries : []).map(
+        (e: any) => {
+          if (!e || typeof e !== "object") return e;
+          const hadReq = typeof e.requestBody === "string" && e.requestBody.length > 0;
+          const hadRes = typeof e.responseBody === "string" && e.responseBody.length > 0;
+          if (!hadReq && !hadRes) return e;
+          return {
+            ...e,
+            requestBody: null,
+            responseBody: null,
+            // Say the body existed and was dropped. ⚠️ A silently absent body is
+            // indistinguishable from a request that had none, and a reader
+            // debugging an empty response would chase the wrong thing.
+            bodiesStrippedAtIngest: true,
+            ...(hadReq ? { requestBodyBytes: e.requestBody.length } : {}),
+            ...(hadRes ? { responseBodyBytes: e.responseBody.length } : {}),
+          };
+        },
+      );
       if (req.query.reset === "1" || chunkIndex === 0) {
         await recordingEvents.deleteMany({ recordingId: id });
       }
@@ -833,7 +874,7 @@ async function main() {
         recordingId: id,
         chunkIndex,
         rrwebEvents,
-        networkEntries,
+        networkEntries: strippedEntries,
         interactions,
         updatedAt: new Date(),
       });
