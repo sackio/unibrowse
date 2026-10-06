@@ -48,6 +48,7 @@ import type { Tool } from "@/tools/tool";
 import packageJSON from "../package.json";
 import { mongodb } from "@/utils/mongodb";
 import { v4 as uuidv4 } from "uuid";
+import { redactUrl } from "@/utils/redact-url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RECORDINGS_DIR = process.env.RECORDINGS_DIR || path.join(__dirname, "..", "recordings");
@@ -774,11 +775,22 @@ async function main() {
         description: body.description || "",
         tags: body.tags || [],
         status: body.status || "complete",
-        startUrl: body.startUrl || "",
+        // ⛔ Query values and fragments redacted. A URL's query string routinely
+        // IS the credential -- measured in this very store 2026-10-06: a full
+        // JWT in `…ivastudio.ai/store?token=eyJ…`, an Amazon
+        // `passkeyClaimVerificationToken`, a Stripe `apiKey=pk_live_…`.
+        // `finance` names two more where the URL alone grants access with no
+        // login behind it. Origin, path and param NAMES survive, so
+        // browser_list_recordings({startUrl}) still filters by host.
+        startUrl: redactUrl(body.startUrl || ""),
         startTime: body.startTime || Date.now(),
         endTime: body.endTime || Date.now(),
         duration: body.duration || 0,
-        pages: body.pages || [],
+        pages: (Array.isArray(body.pages) ? body.pages : []).map((pg: any) =>
+          pg && typeof pg === "object"
+            ? { ...pg, url: redactUrl(pg.url), referrer: redactUrl(pg.referrer) }
+            : pg,
+        ),
         rrwebEventCount: body.rrwebEventCount || 0,
         networkEntryCount: body.networkEntryCount || 0,
         annotations: [],
@@ -853,9 +865,14 @@ async function main() {
           if (!e || typeof e !== "object") return e;
           const hadReq = typeof e.requestBody === "string" && e.requestBody.length > 0;
           const hadRes = typeof e.responseBody === "string" && e.responseBody.length > 0;
-          if (!hadReq && !hadRes) return e;
+          // ⛔ A body-less entry still needs its URL redacted. The first version
+          // of this returned `e` untouched here, which would have left the token
+          // on every GET -- i.e. on exactly the requests that carry one in the
+          // query string. The early return is for bodies, not for URLs.
+          if (!hadReq && !hadRes) return { ...e, url: redactUrl(e.url) };
           return {
             ...e,
+            url: redactUrl(e.url),
             requestBody: null,
             responseBody: null,
             // Say the body existed and was dropped. ⚠️ A silently absent body is
@@ -870,12 +887,38 @@ async function main() {
       if (req.query.reset === "1" || chunkIndex === 0) {
         await recordingEvents.deleteMany({ recordingId: id });
       }
+      // ⛔ TYPED INPUT VALUES NEVER REACH THE STORE. Found 2026-10-06 by
+      // `brooke`: every input_change event carried its `value`, and rrweb's
+      // Input events carried `data.text`, because maskAllInputs was never
+      // configured. Measured across the store: 57 keystroke values and 56 rrweb
+      // payloads — including a family member's portal password and a full card
+      // entry (number, expiry, CVC). Redacted from the live store the same day;
+      // this stops it recurring.
+      // ⚠️ The rrweb payload is EMPTIED, never dropped: incremental events are
+      // diffs against a FullSnapshot, so removing one yields a buffer that still
+      // uploads, still opens in review and REPLAYS BLANK (memo 65ae10d8).
+      // Emptying is what maskAllInputs would have done at capture time.
+      // Lengths are kept so a reader can tell "field was filled" from "field was
+      // empty" without learning what was typed.
+      const safeInteractions = (Array.isArray(interactions) ? interactions : []).map(
+        (i: any) =>
+          i && i.kind === "input_change" && typeof i.value === "string" && i.value.length > 0
+            ? { ...i, value: null, valueLength: i.value.length, valueRedacted: true }
+            : i,
+      );
+      const safeRrweb = (Array.isArray(rrwebEvents) ? rrwebEvents : []).map((e: any) =>
+        e && e.type === 3 && e.data && e.data.source === 5 &&
+        typeof e.data.text === "string" && e.data.text.length > 0
+          ? { ...e, data: { ...e.data, text: "", textLength: e.data.text.length, textRedacted: true } }
+          : e,
+      );
+
       await recordingEvents.insertOne({
         recordingId: id,
         chunkIndex,
-        rrwebEvents,
+        rrwebEvents: safeRrweb,
         networkEntries: strippedEntries,
-        interactions,
+        interactions: safeInteractions,
         updatedAt: new Date(),
       });
       res.json({ success: true, chunkIndex, rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, interactionCount: interactions.length });

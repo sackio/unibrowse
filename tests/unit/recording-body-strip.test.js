@@ -35,7 +35,16 @@ const src = fs.readFileSync(
 const handler = (() => {
   const start = src.indexOf('app.post("/api/v1/recordings/:id/events"');
   assert.notEqual(start, -1, "events ingest handler not found — did the route move?");
-  return src.slice(start, start + 4000);
+  // ⚠️ Bound by the NEXT route, not a character count. The first version sliced
+  // a fixed 4,000 chars and broke the moment the handler grew — the assertion
+  // was still correct and the code was still right, but the window no longer
+  // reached the line under test. A fixed-size window is a test that silently
+  // stops testing what it names.
+  const next = src.indexOf("app.post(", start + 10);
+  const end = next === -1 ? src.length : next;
+  const body = src.slice(start, end);
+  assert.ok(body.length > 500, "handler slice looks truncated");
+  return body;
 })();
 
 test("both bodies are nulled at ingest", () => {
