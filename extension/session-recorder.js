@@ -326,16 +326,18 @@ if (window.__unibrowse_recording__) {
         emit(event) {
           safeSend({ type: 'SR_RRWEB', event });
         },
-        // ⛔ TRUE since 2026-10-06. It was explicitly false, with nothing saying
-        // why. Measured that day: rrweb Input events carried `data.text` for
-        // every keystroke, which in one capture meant a portal password and a
-        // full card entry — number, expiry, CVC. The server now strips these at
-        // ingest as well, so capturing them in the page buys nothing and only
-        // creates exposure in page memory and in transit.
-        // ⚠️ Replay shows masked fields by design. That is the cost, and it is
-        // the right trade: Ben's 08-02 reason for recording was to see what an
-        // agent DID, which the interaction stream still shows.
-        maskAllInputs: true,
+        // ⛔ FALSE BY OPERATOR DECISION, TWICE. Ben asked for password fields to
+        // be recorded on 2026-05-27 (four suppression gates removed in
+        // `ec9bf42`), and reaffirmed it on 2026-10-06 after being shown that it
+        // had captured a portal password and a full card entry — number, expiry,
+        // CVC — into a store backed up to 62 archives: "no do not mask passwords
+        // often times I want you to browse to capture that".
+        // ⇒ He wants credentials captured and usable. That is a deliberate,
+        // informed choice about his own network, not an oversight.
+        // ⛔ DO NOT flip this to true. It was set true on 2026-10-06 and reverted
+        // the same hour; a future seat finding a card number here is looking at
+        // intended behaviour.
+        maskAllInputs: false,
         blockClass: '__unibrowse_blocked__',
         sampling: {
           scroll: 150,

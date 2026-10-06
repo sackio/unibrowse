@@ -887,38 +887,22 @@ async function main() {
       if (req.query.reset === "1" || chunkIndex === 0) {
         await recordingEvents.deleteMany({ recordingId: id });
       }
-      // ⛔ TYPED INPUT VALUES NEVER REACH THE STORE. Found 2026-10-06 by
-      // `brooke`: every input_change event carried its `value`, and rrweb's
-      // Input events carried `data.text`, because maskAllInputs was never
-      // configured. Measured across the store: 57 keystroke values and 56 rrweb
-      // payloads — including a family member's portal password and a full card
-      // entry (number, expiry, CVC). Redacted from the live store the same day;
-      // this stops it recurring.
-      // ⚠️ The rrweb payload is EMPTIED, never dropped: incremental events are
-      // diffs against a FullSnapshot, so removing one yields a buffer that still
-      // uploads, still opens in review and REPLAYS BLANK (memo 65ae10d8).
-      // Emptying is what maskAllInputs would have done at capture time.
-      // Lengths are kept so a reader can tell "field was filled" from "field was
-      // empty" without learning what was typed.
-      const safeInteractions = (Array.isArray(interactions) ? interactions : []).map(
-        (i: any) =>
-          i && i.kind === "input_change" && typeof i.value === "string" && i.value.length > 0
-            ? { ...i, value: null, valueLength: i.value.length, valueRedacted: true }
-            : i,
-      );
-      const safeRrweb = (Array.isArray(rrwebEvents) ? rrwebEvents : []).map((e: any) =>
-        e && e.type === 3 && e.data && e.data.source === 5 &&
-        typeof e.data.text === "string" && e.data.text.length > 0
-          ? { ...e, data: { ...e.data, text: "", textLength: e.data.text.length, textRedacted: true } }
-          : e,
-      );
-
+      // ⛔ TYPED INPUT VALUES ARE RETAINED, BY OPERATOR DECISION. They were
+      // stripped here on 2026-10-06 and that was reverted the same hour: Ben
+      // asked for password capture on 2026-05-27 and reaffirmed it after seeing
+      // what it had stored — "no do not mask passwords often times I want you to
+      // browse to capture that". He wants them usable, on his own network, with
+      // the holders trusted and rotation declined.
+      // ⚠️ RESPONSE BODIES AND CREDENTIAL-BEARING URLS ARE STILL STRIPPED above.
+      // He ruled on typed values; he did not ask for those back, and they are a
+      // different exposure — a body or a URL token is captured from traffic the
+      // operator never chose to type.
       await recordingEvents.insertOne({
         recordingId: id,
         chunkIndex,
-        rrwebEvents: safeRrweb,
+        rrwebEvents,
         networkEntries: strippedEntries,
-        interactions: safeInteractions,
+        interactions,
         updatedAt: new Date(),
       });
       res.json({ success: true, chunkIndex, rrwebEventCount: rrwebEvents.length, networkEntryCount: networkEntries.length, interactionCount: interactions.length });

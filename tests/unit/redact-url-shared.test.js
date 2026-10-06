@@ -71,10 +71,20 @@ test("the recording store redacts URLs on the body-less branch too", () => {
   );
 });
 
-test("typed input values are stripped at ingest, payload emptied not dropped", () => {
-  assert.match(http, /valueRedacted: true/);
-  assert.match(http, /textRedacted: true/);
-  // Emptied, never removed: rrweb incremental events are diffs and a dropped
-  // one replays blank.
-  assert.match(http, /text: ""/, "rrweb input text must be emptied, not deleted");
+test("typed input values are RETAINED at ingest — operator decision", () => {
+  // ⛔ Stripped here on 2026-10-06, reverted the same hour on Ben's explicit
+  // instruction. He wants typed credentials captured and usable on his own
+  // network; he declined both rotation and purging the archives that hold them.
+  const start = http.indexOf('app.post("/api/v1/recordings/:id/events"');
+  const next = http.indexOf("app.post(", start + 10);
+  const handler = http.slice(start, next === -1 ? http.length : next);
+  assert.equal(
+    /valueRedacted: true/.test(handler), false,
+    "nulling typed values reverses a twice-stated operator request",
+  );
+  // ⚠️ But bodies and URLs are a DIFFERENT exposure and stay stripped: those are
+  // captured from traffic the operator never chose to type. He ruled on typed
+  // values only.
+  assert.match(handler, /bodiesStrippedAtIngest/);
+  assert.match(handler, /url: redactUrl\(e\.url\)/);
 });

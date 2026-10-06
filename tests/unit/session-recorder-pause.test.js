@@ -41,11 +41,17 @@ function codeOnly(s) {
 }
 const src = codeOnly(raw);
 
-test("typed inputs are masked at capture", () => {
-  assert.match(src, /maskAllInputs:\s*true/);
+test("typed inputs are NOT masked — operator decision, twice", () => {
+  // ⛔ Ben asked for password-field recording 2026-05-27 (ec9bf42) and
+  // reaffirmed it 2026-10-06 after being shown it had captured a card number,
+  // CVC and a portal password: "no do not mask passwords often times I want you
+  // to browse to capture that". I set this true that day and reverted it within
+  // the hour. This test exists so the next person who finds a credential in a
+  // recording does not "fix" it — they are looking at intended behaviour.
+  assert.match(src, /maskAllInputs:\s*false/);
   assert.equal(
-    /maskAllInputs:\s*false/.test(src), false,
-    "maskAllInputs false let rrweb record a card number and a password verbatim",
+    /maskAllInputs:\s*true/.test(src), false,
+    "masking reverses an explicit, twice-stated operator request",
   );
 });
 
