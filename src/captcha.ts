@@ -64,6 +64,16 @@ export interface CaptchaSession {
   note: string | null;
   /** Optional viewport-CSS-pixel box outside which taps are refused. */
   rect: { x: number; y: number; width: number; height: number } | null;
+  /**
+   * Where the last relayed tap left the pointer, so the NEXT one can be moved
+   * from there. ⛔ Without this the replay passes no currentX/currentY and the
+   * extension's bezier starts at (0,0) on every tap — the viewport corner, on
+   * every single relayed click. A path that begins at the same pixel every time
+   * is a signature, which is the exact defect fixed server-side in 6057caf for
+   * the realistic_* TOOLS; this path bypasses those tools and talks to the
+   * socket directly, so it never got the fix.
+   */
+  cursor: { x: number; y: number } | null;
 }
 
 const sessions = new Map<string, CaptchaSession>();
@@ -99,6 +109,7 @@ export function createCaptchaSession(opts: {
     solvedAt: null,
     note: null,
     rect: opts.rect ?? null,
+    cursor: null,
   };
   sessions.set(s.token, s);
   return s;
@@ -231,28 +242,72 @@ function poll() {
   }).catch(function () {});
 }
 
-document.addEventListener('click', function (e) {
+// PRESS-AND-HOLD: the duration is MEASURED from the operator's own gesture
+// rather than offered as a preset, because the challenge scores how long the
+// button was held and a menu of durations would just be guessing on their
+// behalf. pointerdown/pointerup covers mouse, touch and pen in one listener.
+//
+// ⛔ The press POSITION is taken from pointerDOWN, not pointerup. On a touch
+// screen a finger drifts during a multi-second hold, and releasing somewhere
+// else must not relocate the click.
+var holdStart = null, holdFx = 0, holdFy = 0, holdTimer = null;
+
+function holdLabel() {
+  if (holdStart === null) return;
+  var secs = ((Date.now() - holdStart) / 1000).toFixed(1);
+  document.getElementById('status').textContent = 'Holding ' + secs + 's — release to send.';
+}
+
+document.addEventListener('pointerdown', function (e) {
   if (e.target.id !== 'shot' || busy || stopped) return;
   var img = e.target, r = img.getBoundingClientRect();
-  var nw = +img.dataset.nw || r.width, nh = +img.dataset.nh || r.height;
   // Normalised 0..1 so the server does the scaling — it is the only side that
   // knows the tab's CSS viewport, and the image may be at any device ratio.
-  var fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+  holdFx = (e.clientX - r.left) / r.width;
+  holdFy = (e.clientY - r.top) / r.height;
+  holdStart = Date.now();
   var dot = document.getElementById('dot');
   dot.style.left = (e.clientX - r.left + 10) + 'px';
   dot.style.top = (e.clientY - r.top + 10) + 'px';
-  dot.style.opacity = 1; setTimeout(function () { dot.style.opacity = 0; }, 450);
+  dot.style.opacity = 1;
+  holdTimer = setInterval(holdLabel, 100);
+  // Stop the browser turning a long press into a text selection or a drag,
+  // which on mobile cancels the pointer sequence and loses the release.
+  e.preventDefault();
+});
+
+function endHold(e) {
+  if (holdStart === null) return;
+  var held = Date.now() - holdStart;
+  holdStart = null;
+  if (holdTimer) { clearInterval(holdTimer); holdTimer = null; }
+  document.getElementById('dot').style.opacity = 0;
+  if (busy || stopped) return;
   busy = true;
+  // Anything under ~250ms is an ordinary tap; send it without a hold so the
+  // extension keeps its own randomised 50-100ms down-delay, which is more
+  // human than a measured 180ms replayed exactly.
+  var body = { fx: holdFx, fy: holdFy };
+  if (held >= 250) body.holdMs = Math.min(held, 20000);
   fetch('tap', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                 body: JSON.stringify({ fx: fx, fy: fy }) })
+                 body: JSON.stringify(body) })
     .then(function (r) { return r.json(); })
     .then(function (j) {
-      document.getElementById('status').textContent =
-        j.ok ? 'Tap sent.' : ('Refused: ' + (j.error || 'unknown'));
+      document.getElementById('status').textContent = j.ok
+        ? (j.holdMs ? ('Held ' + (j.holdMs / 1000).toFixed(1) + 's — sent.') : 'Tap sent.')
+        : ('Refused: ' + (j.error || 'unknown'));
     })
     .catch(function () { document.getElementById('status').textContent = 'Tap failed to send.'; })
     .then(function () { busy = false; setTimeout(shot, 600); });
-});
+}
+
+document.addEventListener('pointerup', endHold);
+// ⛔ A hold that ends by the pointer being cancelled or leaving the window must
+// still SEND. Otherwise the operator holds for five seconds, lifts off the edge
+// of the image, and nothing happens with no error — the failure this relay
+// exists to avoid.
+document.addEventListener('pointercancel', endHold);
+window.addEventListener('blur', endHold);
 
 document.getElementById('send').onclick = function () {
   var v = document.getElementById('txt').value;
@@ -287,7 +342,7 @@ export function registerCaptchaRoutes(
   deps: {
     screenshot: (s: CaptchaSession) => Promise<string>;
     viewport: (s: CaptchaSession) => Promise<{ width: number; height: number }>;
-    click: (s: CaptchaSession, x: number, y: number) => Promise<void>;
+    click: (s: CaptchaSession, x: number, y: number, holdMs?: number) => Promise<void>;
     type: (s: CaptchaSession, text: string) => Promise<void>;
   },
 ) {
@@ -359,9 +414,31 @@ export function registerCaptchaRoutes(
           return res.status(403).json({ ok: false, error: "tap outside the captcha area" });
         }
       }
-      await deps.click(s, x, y);
+      // PRESS-AND-HOLD. Ben, Slack #unibrowse 2026-10-08, approving it for the
+      // PerimeterX "press & hold" challenge that a discrete click cannot pass.
+      //
+      // ⭐ CARRIED ON THE EXISTING `tap` BODY, NOT A NEW `hold` PATH, and that
+      // is deliberate: the public write surface is exactly three $-anchored
+      // paths (POST /f/up-<32hex>/{tap,text,done}) granted by the `nginx` seat.
+      // A fourth verb is their change and another round trip; a field is ours.
+      //
+      // ⛔ REFUSE an out-of-range hold rather than clamping it, for the same
+      // reason the rect refuses rather than clamping: a silently shortened hold
+      // looks like a hold that did not work, and the operator retries a thing
+      // that was never sent as asked.
+      const rawHold = req.body?.holdMs;
+      let holdMs: number | undefined;
+      if (rawHold !== undefined && rawHold !== null) {
+        const h = Number(rawHold);
+        if (!Number.isFinite(h) || h < 0 || h > 20000) {
+          return res.status(400).json({ ok: false, error: "holdMs must be 0..20000" });
+        }
+        holdMs = Math.round(h);
+      }
+      await deps.click(s, x, y, holdMs);
+      s.cursor = { x, y };
       s.taps++;
-      res.json({ ok: true, x, y, taps: s.taps });
+      res.json({ ok: true, x, y, holdMs: holdMs ?? null, taps: s.taps });
     } catch (err: any) {
       res.status(502).json({ ok: false, error: err.message });
     }

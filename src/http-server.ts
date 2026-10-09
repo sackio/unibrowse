@@ -567,9 +567,29 @@ async function main() {
       return { width, height };
     },
 
-    click: async (s, x, y) => {
+    click: async (s, x, y, holdMs) => {
+      // ⭐ `downDelay` IS THE HOLD, and it already exists in the extension:
+      // cdp.js clickRealistic() sleeps downDelay between mousePressed and
+      // mouseReleased (defaulting to a random 50-100ms). So a press-and-hold
+      // needs no extension change and no ↻ — it ships on a :9010 restart.
+      // ⚠️ It is NOT reachable through the browser_realistic_click TOOL, whose
+      // schema does not declare downDelay; this path talks to the socket
+      // directly, which is the only reason it can be passed at all.
+      //
+      // ⛔ currentX/currentY ARE NOT OPTIONAL HERE. Omitted, the extension's
+      // bezier starts at (0,0) — the viewport corner — on every relayed tap.
+      // 6057caf fixed that for the realistic_* tools by tracking the cursor
+      // server-side; this path bypasses those tools, so it carries its own
+      // origin on the session. First tap of a session has no prior position,
+      // so it starts from a random plausible point rather than a constant.
+      const from = s.cursor ?? {
+        x: 40 + Math.round(Math.random() * 180),
+        y: 60 + Math.round(Math.random() * 200),
+      };
       await globalContext.sendSocketMessage("browser_realistic_click", {
         x, y, moveFirst: true, tabTarget: s.tabTarget,
+        currentX: from.x, currentY: from.y,
+        ...(holdMs !== undefined ? { downDelay: holdMs } : {}),
         ...(s.extensionId ? { extensionId: s.extensionId } : {}),
       } as any);
     },
