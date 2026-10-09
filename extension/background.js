@@ -1058,7 +1058,24 @@ class TabManager {
    */
   listTabs() {
     return Array.from(this.attachedTabs.values()).map(t => {
-      const r = this.reservations.get(t.tabId);
+      // ⛔ getReservation(), NOT reservations.get(). The raw map is not reaped:
+      // expiry is LAZY — _reapIfStale runs only from claimTab, checkAccess and
+      // getReservation — so reading the map directly reports claims that expired
+      // days ago as if they were live. getReservation exists precisely to reap
+      // on read, and its own comment says it is here so this listing never shows
+      // a phantom owner. The listing then did not call it.
+      //
+      // MEASURED 2026-10-09 (found by `cluster`, confirmed here): five tabs read
+      // as reserved by "login-watch", claimed 10-06/10-07 and untouched since —
+      // two to three days against a 30-minute idle TTL.
+      //
+      // ⚠️ THE TABS WERE NEVER LOCKED. claimTab reaps before it reads, so anyone
+      // claiming one would have got it. The damage is informational: the listing
+      // is where a human goes to ask who holds a tab, and it was answering with
+      // the name of an owner that had already expired — so seats avoided tabs
+      // that were free. ⇒ A read-only view that bypasses its own repair path
+      // reports a state the system does not actually enforce.
+      const r = this.getReservation(t.tabId);
       return {
         tabId: t.tabId,
         label: t.label,
