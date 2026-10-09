@@ -676,9 +676,32 @@ export class Context {
       tabTarget: options.tabTarget ?? (payload as any)?.tabTarget,
     });
     const { sendSocketMessage } = createSocketMessageSender<SocketMessageMap>(ws);
+    // ⭐ LOG WHAT THE CALL CARRIED AND WHAT IT RESOLVED TO.
+    //
+    // Asked for by `agents` 2026-10-08 and the reason is worth keeping: when
+    // `claude-login-auto` reserved another seat's tab mid-run, the only
+    // server-side record of the whole episode was `[HTTP] New MCP request from
+    // <ip>` — no tool name, no tabTarget, no resolved tabId. The question
+    // "which tab did that call actually hit?" was unanswerable, so the cause
+    // had to be reconstructed by reading code, and I got it wrong three times
+    // before getting it right. One line per call is cheap next to that.
+    //
+    // ⛔ ROUTING FIELDS ONLY, NEVER THE PAYLOAD. Payloads carry typed values,
+    // cookie values and page content; this log is world-readable to every seat
+    // via `docker compose logs`. tabTarget and extensionId are identifiers.
+    const reqTarget = options.tabTarget ?? (payload as any)?.tabTarget ?? null;
+    const reqExt = options.extensionId ?? (payload as any)?.extensionId ?? null;
+    const agentTag = (payload as any)?.agent ?? null;
+    const describe = `${type} tabTarget=${reqTarget ?? "-"} ext=${reqExt ?? "-"}${agentTag ? ` agent=${agentTag}` : ""}`;
     try {
-      return await sendSocketMessage(type, payload, { timeoutMs: options.timeoutMs ?? 30000 });
+      const result: any = await sendSocketMessage(type, payload, { timeoutMs: options.timeoutMs ?? 30000 });
+      // Resolved tabId where the response states one — that is the half that
+      // distinguishes "hit the tab I named" from "hit some other live tab".
+      const gotTab = result && typeof result === "object" && result.tabId != null ? result.tabId : null;
+      console.log(`[Call] ${describe}${gotTab != null ? ` -> tabId=${gotTab}` : ""}`);
+      return result;
     } catch (e) {
+      console.log(`[Call] ${describe} -> ERROR ${e instanceof Error ? e.message : String(e)}`);
       if (e instanceof Error && e.message === mcpConfig.errors.noConnectedTab) {
         throw new Error(noConnectionMessage);
       }

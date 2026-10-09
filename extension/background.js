@@ -595,7 +595,41 @@ class TabManager {
       // anything else. Throws `tab-reserved` if another agent already owns
       // it and takeover isn't set, leaving the tab state untouched.
       const { agent, takeover, label: requestedLabel } = options;
-      this.claimTab(tabId, agent, { takeover: takeover === true });
+      // ⛔ AN ATTACH ONTO AN ALREADY-ATTACHED TAB IS A HEAL, NOT AN ACQUISITION
+      // — DO NOT CLAIM IT.
+      //
+      // Claiming on attach is right when THIS call created the attachment: you
+      // opened or adopted a tab, so it is yours. It is wrong when the tab was
+      // already attached, because then the commonest reason to call attach is
+      // to repair a dangling last-used pointer (attach calls markUsed()), and
+      // the tab being repaired belongs to whoever is driving it.
+      //
+      // ⚠️ SCOPE, MEASURED 2026-10-08 — READ BEFORE CITING THIS AS A FIX FOR
+      // ANYTHING. An already-attached tab with a HEALTHY CDP session is NOT
+      // claimed on the current code: handleEnsureAttached returns before it
+      // reaches attachTab, verified by attaching tab 41942031 on office with
+      // an `agent` and finding it still unreserved. So this gate bites only on
+      // the paths that DO reach here — a first attach, and the "tab in map but
+      // CDP disconnected, re-attaching" branch.
+      //
+      // ⛔ IT IS NOT THE PROVEN CAUSE OF ANY INCIDENT. `claude-login-auto`
+      // acquired a reservation on `alpaca`'s signup tab on 2026-10-08 and the
+      // cause is UNKNOWN; I published four mechanisms for it and three were
+      // falsified, this one by my own probe. Keep the gate — not claiming a tab
+      // you are only repairing is right on its own terms — but do not write
+      // that it fixed the alpaca incident, because that is not established.
+      //
+      // An EXPLICIT takeover:true still transfers, because that is a caller
+      // deliberately seizing a tab and it is logged in the tab's history.
+      const wasAlreadyAttached = this.attachedTabs.has(tabId);
+      if (!wasAlreadyAttached || takeover === true) {
+        this.claimTab(tabId, agent, { takeover: takeover === true });
+      } else if (agent && !this.reservations.get(tabId)?.owner) {
+        console.log(
+          `[TabManager] attach to already-attached tab ${tabId} by "${agent}" — ` +
+          `NOT claiming it (heal, not acquisition). Use browser_reserve_tab to own it.`
+        );
+      }
 
       // A caller-supplied label must not collide with another tab's, or
       // resolveTab() silently returns whichever it finds first.

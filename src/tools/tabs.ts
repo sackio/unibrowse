@@ -124,14 +124,39 @@ export const createTab: Tool = {
         "browser_create_tab",
         validatedParams
       );
-      // Return clean JSON. Keep a human-readable `message` field so logs/UIs
-      // can still surface a one-liner without re-formatting the payload.
+      // ⛔ SAY WHETHER THE TAB IS RESERVED, BECAUSE SILENCE READS AS "MINE".
+      //
+      // A tab is reserved on creation ONLY if the caller passed `agent` —
+      // TabManager.claimTab() returns null immediately on an empty agent
+      // (extension/background.js:449). Without it the tab is born UNRESERVED
+      // and is indistinguishable from an orphan to anything that scans for
+      // login pages, so another agent can legitimately claim it mid-flow. This
+      // response said "Created and attached" either way, and a caller who
+      // created a tab reasonably believes it is theirs.
+      //
+      // COST, measured 2026-10-08: `claude-login-auto` claimed `alpaca`'s
+      // signup tab on app.alpaca.markets at the login step and locked their
+      // script out mid-run. Two seats and three DMs went into finding out that
+      // the tab had simply never been reserved. Nothing in any response had
+      // said so.
+      //
+      // ⚠️ ADDITIVE ONLY — a new field plus an APPENDED warning. The existing
+      // sentence is unchanged because callers parse this text, and the default
+      // behaviour (no `agent` → no reservation) is deliberately NOT changed
+      // here: defaulting the agent would alter who owns every tab every
+      // existing caller creates, which is `agents`' predicate to rule on, not
+      // a thing to infer at 21:40.
+      const reservedBy = validatedParams.agent ?? null;
       return jsonResponse({
         tabId: result.tabId,
         label: result.label,
         url: result.url ?? validatedParams.url ?? null,
         incognito: result.incognito ?? validatedParams.incognito ?? false,
-        message: `Created and attached tab ${result.tabId} (label: "${result.label}")${validatedParams.url ? ` at ${validatedParams.url}` : ""}. Use tabTarget: "${result.label}" or tabTarget: ${result.tabId} to target it.`,
+        reservedBy,
+        message: `Created and attached tab ${result.tabId} (label: "${result.label}")${validatedParams.url ? ` at ${validatedParams.url}` : ""}. Use tabTarget: "${result.label}" or tabTarget: ${result.tabId} to target it.` +
+          (reservedBy
+            ? ` Reserved for "${reservedBy}" — keep it by making calls that carry the same agent; the claim expires after 30min of inactivity.`
+            : ` ⚠️ CREATED UNRESERVED: you passed no \`agent\`, so this tab is not yours and another agent may claim it mid-flow. Pass agent:"<your-seat>" on browser_create_tab to reserve it.`),
       }, true, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
