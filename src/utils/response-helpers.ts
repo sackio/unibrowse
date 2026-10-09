@@ -195,13 +195,70 @@ export function imageResponse(
  * @example
  * return errorResponse("Failed to click element", true, err);
  */
+/**
+ * ── EXPLAIN THE ONE ERROR THAT NAMES A SYMPTOM AND HIDES ITS CAUSE ──────────
+ *
+ * Chrome raises "Cannot access a chrome-extension:// URL of different
+ * extension" from chrome.debugger.attach(), and it does NOT say which
+ * extension, so the message is unactionable on its own. What a caller actually
+ * experiences is a sequence: a call succeeds, the next one reports the debugger
+ * detached, every call after that carries this string, and finally the tab
+ * disappears from the registry ("No tab found") because the reattach retries
+ * gave up — so by the time anyone investigates, the evidence is gone.
+ *
+ * MEASURED 2026-10-09: `freelance` hit this four times on office's desktop
+ * Chrome (realistic_click into a form field OK → realistic_type → "debugger
+ * detached" → this string on every later call → tab gone), on the normal
+ * profile AND in incognito, while the identical flow worked on a container
+ * sidecar with no other extensions installed. It cost four round trips and two
+ * wrong hypotheses, mine included, because nothing in any response said what to
+ * look at.
+ *
+ * ⛔ DELIBERATELY NAMES NO CULPRIT. `extension/popup.js` rewrites this same
+ * string as "likely a New Tab override or PDF viewer" — and the comment at
+ * extension/background.js's attach race records that this error was ALREADY
+ * once mistaken for a permanent New Tab override. A confident wrong cause is
+ * worse than none: it is what stops the next person looking. This says what
+ * class of thing does it and which call identifies the actual one.
+ *
+ * ⚠️ The extension knows the detach REASON (chrome.debugger.onDetach gives it)
+ * and only console.logs it, so it reaches neither the server nor the caller.
+ * Surfacing it needs an extension change, which reaches no browser without a
+ * reload. This enrichment is server-side on purpose: it ships to every browser
+ * on the next restart.
+ */
+const DIFFERENT_EXTENSION_URL =
+  /Cannot access a chrome-extension:\/\/ URL of different extension/i;
+
+function explainIfKnown(message: string): string {
+  if (!DIFFERENT_EXTENSION_URL.test(message)) return message;
+  return (
+    message +
+    "\n\n⚠️ WHAT THIS MEANS: the debugger tried to attach to a page or frame owned by a DIFFERENT " +
+    "extension, and Chrome refuses that. Chrome does not say which extension, so this message alone " +
+    "cannot name the cause." +
+    "\n\nCOMMON CAUSE: an installed extension that injects a chrome-extension:// iframe into the page " +
+    "— a password manager's inline autofill menu, a form filler, a New Tab or PDF override. These " +
+    "appear on focus or on typing, which is why a click can succeed and the next call fail." +
+    "\n\n⛔ THE EVIDENCE DISAPPEARS: once reattach retries give up, the tab leaves the attached-tab " +
+    "registry and later calls say \"No tab found\" instead. Investigate BEFORE that." +
+    "\n\nWHAT TO DO:" +
+    "\n  1. browser_list_frames({tabTarget, extensionId}) on the NEXT call after the one that " +
+    "succeeded — it names every frame's origin, including the chrome-extension:// one." +
+    "\n  2. browser_list_extensions({extensionId}) names what is installed and could be injecting." +
+    "\n  3. browser_detach_tab then browser_attach_tab is the cheap unwedge if the tab still exists." +
+    "\n  4. A browser profile with no other extensions (a container sidecar) does not have this " +
+    "problem. ⛔ Do NOT disable someone's extension to test this without asking them first."
+  );
+}
+
 export function errorResponse(
   message: string,
   includeStack = false,
   error?: Error,
   maxTokens: number = DEFAULT_MAX_TOKENS
 ): CallToolResult {
-  let text = message;
+  let text = explainIfKnown(message);
 
   if (includeStack && error?.stack) {
     text += `\n\nStack trace:\n${error.stack}`;
