@@ -692,7 +692,26 @@ export class Context {
     const reqTarget = options.tabTarget ?? (payload as any)?.tabTarget ?? null;
     const reqExt = options.extensionId ?? (payload as any)?.extensionId ?? null;
     const agentTag = (payload as any)?.agent ?? null;
-    const describe = `${type} tabTarget=${reqTarget ?? "-"} ext=${reqExt ?? "-"}${agentTag ? ` agent=${agentTag}` : ""}`;
+    // ⛔ LOG `tabId` TOO, NOT JUST `tabTarget`. Several tools — browser_close_tab
+    // and browser_switch_tab among them — accept EITHER, and their schemas
+    // require exactly one. Printing only tabTarget renders a perfectly
+    // well-addressed call as `tabTarget=-`, which reads as "no target given"
+    // and invites the reader to assume a fallback kicked in.
+    //
+    // MEASURED 2026-10-09, and it cost a wrong finding: claude-login-auto's
+    // closes logged as `close_tab tabTarget=- -> tabId=41942398`. I read that
+    // as a bare close being retargeted via lastUsedTabId and told `agents` so.
+    // It was not: they had passed `tabId: 41942398` explicitly and the handler
+    // honoured it exactly. The bug was in their decision to call it at all.
+    // ⚠️ A log that hides one of two equivalent address fields does not merely
+    // omit detail — it actively asserts the wrong thing about the call.
+    const reqTabId = (payload as any)?.tabId ?? null;
+    const addr = reqTarget != null
+      ? `tabTarget=${reqTarget}`
+      : reqTabId != null
+        ? `tabId=${reqTabId}`
+        : "target=-";
+    const describe = `${type} ${addr} ext=${reqExt ?? "-"}${agentTag ? ` agent=${agentTag}` : ""}`;
     try {
       const result: any = await sendSocketMessage(type, payload, { timeoutMs: options.timeoutMs ?? 30000 });
       // Resolved tabId where the response states one — that is the half that
