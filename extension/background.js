@@ -6195,7 +6195,16 @@ class BackgroundController {
     };
   }
 
-  async handleRealisticClick({ x, y, button, clickCount, moveFirst, moveDuration, currentX, currentY, tabTarget }) {
+  // ⛔ `downDelay` MUST BE FORWARDED, and it was not until 2026-10-09. It is the
+  // press-and-hold duration: clickRealistic() has honoured it since it was
+  // written, but this handler destructured a fixed list that omitted it, so the
+  // value died here — silently, with a success response and a correct-looking
+  // `message`. MEASURED: Fiverr's PerimeterX challenge is press-and-hold, the
+  // captcha relay sent downDelay: 5000, the button never registered a press,
+  // and nothing anywhere reported a dropped field.
+  // ⚠️ The general shape: a handler that destructures its message is a SILENT
+  // ALLOW-LIST. Adding a parameter server-side looks complete and ships nothing.
+  async handleRealisticClick({ x, y, button, clickCount, moveFirst, moveDuration, currentX, currentY, downDelay, tabTarget }) {
     const cdp = this.tabManager.requireCDP(tabTarget);
     await cdp.clickRealistic(x, y, {
       button,
@@ -6203,7 +6212,11 @@ class BackgroundController {
       moveFirst,
       moveDuration,
       currentX,
-      currentY
+      currentY,
+      // Omit rather than pass undefined: clickRealistic's default is a random
+      // 50–100ms, and an explicit undefined would still take that default, but
+      // being explicit here keeps the "caller said nothing" case unambiguous.
+      ...(typeof downDelay === 'number' ? { downDelay } : {})
     });
     return {
       success: true,

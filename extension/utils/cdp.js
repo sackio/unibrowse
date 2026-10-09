@@ -1197,17 +1197,46 @@ class CDPHelper {
         x,
         y,
         button,
+        // ⛔ `buttons` IS NOT OPTIONAL AND IT IS NOT THE SAME FIELD AS `button`.
+        // `button` names which button this event is about; `buttons` is the
+        // BITMASK of what is currently held (1 = left). Omit it and CDP sends
+        // the bitmask as 0, so the page sees a pointerdown reporting that no
+        // button is down. Real hardware cannot produce that, and a press-and-
+        // hold widget reading `e.buttons` during the hold sees the press end
+        // immediately. Nothing errors: the click still "works" for ordinary
+        // targets, which is why this survived.
+        buttons: 1,
         clickCount: i + 1
       });
 
-      // Variable delay between press and release
-      await new Promise(resolve => setTimeout(resolve, downDelay));
+      // Hold. For anything beyond a click's worth of press, jitter the pointer
+      // the way a hand does — a hold that is perfectly still for six seconds is
+      // its own signature, and a widget tracking movement during the hold gets
+      // no events at all from a motionless one.
+      if (downDelay > 400) {
+        const until = Date.now() + downDelay;
+        while (Date.now() < until) {
+          await new Promise(resolve => setTimeout(resolve, Math.min(90 + Math.random() * 110, Math.max(0, until - Date.now()))));
+          if (Date.now() >= until) break;
+          await this.sendCommand('Input.dispatchMouseEvent', {
+            type: 'mouseMoved',
+            x: x + Math.round((Math.random() * 2 - 1) * 2),
+            y: y + Math.round((Math.random() * 2 - 1) * 2),
+            button,
+            buttons: 1
+          });
+        }
+      } else {
+        await new Promise(resolve => setTimeout(resolve, downDelay));
+      }
 
       await this.sendCommand('Input.dispatchMouseEvent', {
         type: 'mouseReleased',
         x,
         y,
         button,
+        // Nothing is held any more once this event lands.
+        buttons: 0,
         clickCount: i + 1
       });
 
