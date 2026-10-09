@@ -1206,6 +1206,22 @@ class CDPHelper {
         // immediately. Nothing errors: the click still "works" for ordinary
         // targets, which is why this survived.
         buttons: 1,
+        // ⛔ `force` IS THE POINTER EVENT'S `pressure`, AND WITHOUT IT WE SEND A
+        // PHYSICALLY IMPOSSIBLE EVENT. The Pointer Events spec requires a mouse
+        // to report pressure 0.5 while a button is down, 0 when it is not. CDP
+        // defaults force to 0, so every press we have ever sent arrived as a
+        // pointerdown claiming ZERO pressure — which no hardware can produce,
+        // and which any page can read with one event listener.
+        //
+        // MEASURED 2026-10-09, same page, same coordinates, a minute apart:
+        // XTEST (a real X pointer) gave pressure 0.5, CDP gave 0. Every other
+        // field matched exactly — clientX/Y, screenX/Y, buttons, isTrusted,
+        // pointerType, pointerId, width, height, isPrimary, tilt, twist.
+        //
+        // ⚠️ Same family as the `buttons` bug above, and found the same way:
+        // by comparing our event against a real one field by field, rather than
+        // by checking whether the click worked. It always worked.
+        force: 0.5,
         clickCount: i + 1
       });
 
@@ -1223,7 +1239,11 @@ class CDPHelper {
             x: x + Math.round((Math.random() * 2 - 1) * 2),
             y: y + Math.round((Math.random() * 2 - 1) * 2),
             button,
-            buttons: 1
+            buttons: 1,
+            // The button is still down for the whole hold, so pressure must
+            // stay 0.5 across the movement too — dropping to 0 mid-hold would
+            // read as the button having been released and pressed again.
+            force: 0.5
           });
         }
       } else {
@@ -1235,8 +1255,10 @@ class CDPHelper {
         x,
         y,
         button,
-        // Nothing is held any more once this event lands.
+        // Nothing is held any more once this event lands, so both the bitmask
+        // and the pressure go to zero — which is what a real release reports.
         buttons: 0,
+        force: 0,
         clickCount: i + 1
       });
 

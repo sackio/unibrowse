@@ -85,11 +85,16 @@ test("a press reports the button as held, and the release reports it let go", ()
   // ⚠️ Comments are stripped first: the explanation above each field is longer
   // than the field, and a fixed-width window measured on the raw text matched
   // prose instead of code the first time this was written.
+  // ⚠️ Collapse whitespace after stripping comments. Removing a comment leaves
+  // its indentation behind as a blank line, so a fixed-width window measured on
+  // the stripped text spans mostly spaces and misses the field it is looking
+  // for — which reads as "the fix is missing" when the fix is right there.
   const code = cdp
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .split("\n")
     .map((l) => l.replace(/(^|[^:"'`\\])\/\/.*$/, "$1"))
-    .join("\n");
+    .join("\n")
+    .replace(/\s+/g, " ");
   const fn = code.slice(code.indexOf("async clickRealistic("));
   const press = fn.indexOf("'mousePressed'");
   const release = fn.indexOf("'mouseReleased'");
@@ -116,5 +121,71 @@ test("the server sends the relay's holdMs as downDelay", () => {
     http,
     /downDelay:\s*holdMs/,
     "the captcha relay's holdMs must leave the server as downDelay, the name the extension reads",
+  );
+});
+
+/**
+ * ⛔ A MOUSE THAT REPORTS ZERO PRESSURE WHILE ITS BUTTON IS DOWN CANNOT EXIST.
+ *
+ * The Pointer Events spec: for a mouse, `pressure` is 0.5 while a button is
+ * held and 0 otherwise. CDP's `Input.dispatchMouseEvent` defaults `force` to 0
+ * and `force` is what becomes `pressure`, so every press this codebase sent
+ * arrived as a pointerdown claiming no pressure — readable by any page with a
+ * single event listener, and impossible for real hardware to produce.
+ *
+ * MEASURED 2026-10-09 on one page, same coordinates, a minute apart: an XTEST
+ * click (a real X pointer, via xdotool on the sidecar's Xvfb display) reported
+ * pressure 0.5; the CDP click reported 0. EVERY other field was identical —
+ * clientX/Y, screenX/Y, buttons, isTrusted, pointerType, pointerId, width,
+ * height, isPrimary, tiltX/Y, twist, movementX/Y.
+ *
+ * ⚠️ That last sentence is the useful half. The obvious theory — that injected
+ * input is distinguishable because it bypasses the OS — was wrong: CDP and a
+ * real pointer agree on everything the page can see except this one field.
+ */
+test("a press reports the pressure a real mouse reports", () => {
+  // ⚠️ Collapse whitespace after stripping comments. Removing a comment leaves
+  // its indentation behind as a blank line, so a fixed-width window measured on
+  // the stripped text spans mostly spaces and misses the field it is looking
+  // for — which reads as "the fix is missing" when the fix is right there.
+  const code = cdp
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .split("\n")
+    .map((l) => l.replace(/(^|[^:"'`\\])\/\/.*$/, "$1"))
+    .join("\n")
+    .replace(/\s+/g, " ");
+  const fn = code.slice(code.indexOf("async clickRealistic("));
+  const press = fn.indexOf("'mousePressed'");
+  const release = fn.indexOf("'mouseReleased'");
+  assert.match(
+    fn.slice(press, press + 200),
+    /force:\s*0\.5/,
+    "mousePressed must set force: 0.5 — pressure 0 with a button down is impossible",
+  );
+  assert.match(
+    fn.slice(release, release + 200),
+    /force:\s*0\b/,
+    "mouseReleased must set force: 0",
+  );
+});
+
+test("pressure stays up for the whole hold, including the jitter", () => {
+  // ⚠️ Collapse whitespace after stripping comments. Removing a comment leaves
+  // its indentation behind as a blank line, so a fixed-width window measured on
+  // the stripped text spans mostly spaces and misses the field it is looking
+  // for — which reads as "the fix is missing" when the fix is right there.
+  const code = cdp
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .split("\n")
+    .map((l) => l.replace(/(^|[^:"'`\\])\/\/.*$/, "$1"))
+    .join("\n")
+    .replace(/\s+/g, " ");
+  const fn = code.slice(code.indexOf("async clickRealistic("));
+  const between = fn.slice(fn.indexOf("'mousePressed'"), fn.indexOf("'mouseReleased'"));
+  const moved = between.slice(between.indexOf("'mouseMoved'"));
+  assert.match(
+    moved,
+    /force:\s*0\.5/,
+    "a move during a hold must keep pressure at 0.5, or it reads as a release and re-press",
   );
 });
