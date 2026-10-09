@@ -42,7 +42,24 @@ export const listAttachedTabs: Tool = {
     // the default is. Cost: one chrome.tabs.get per attached tab, no CDP.
     // Opt OUT with live:false when you only want the roster.
     const live = (params as any)?.live !== false;
+    const onlyExtension = (params as any)?.extensionId as string | undefined;
     try {
+      // ⛔ FAIL LOUDLY ON AN UNKNOWN ID. Filtering to a browser that is not
+      // connected would return `tabs: []` — byte-identical to "that browser
+      // has nothing attached", which is the one reading that stops a caller
+      // from investigating. Name the ids that do exist instead.
+      if (onlyExtension && !context.getExtension(onlyExtension)) {
+        const known = context.listExtensions().map((c) => c.extensionId);
+        return errorResponse(
+          `No connected extension with id ${onlyExtension}. ` +
+            (known.length
+              ? `Connected: ${known.join(", ")}. ⛔ This is NOT "no tabs attached there" — that browser is not connected at all.`
+              : `No extensions are connected at all.`),
+          false,
+          undefined,
+          max_tokens,
+        );
+      }
       // Aggregate across every registered extension. With multiple extensions
       // (ben's main Chrome + container chromiums launched via
       // browser_launch_isolated_chrome) callers see the union of attached tabs,
@@ -51,6 +68,7 @@ export const listAttachedTabs: Tool = {
       const results = await context.broadcastSocketMessage(
         "browser_list_attached_tabs",
         { live } as any,
+        onlyExtension ? { only: [onlyExtension] } : {},
       );
 
       const tabs: any[] = [];

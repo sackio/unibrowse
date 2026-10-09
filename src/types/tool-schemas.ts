@@ -1564,6 +1564,21 @@ export const ListAttachedTabsTool = z.object({
       .describe(
         "DEFAULTS TRUE since 2026-09-26 — liveUrl/liveTitle are read from Chrome's CURRENT tab state and returned with urlChanged/titleChanged flags unless you pass live:false. ⛔ The plain `url` and `title` fields are captured when a tab is ATTACHED and are NEVER updated on navigation — a tab that has since navigated still reports the page it left, and that stale value fails TOWARD 'nothing to fix'. Two seats were bitten with this caveat already written here, so the default now carries it instead of the documentation. Pass live:false only when you want the bare roster and will not match on url or title. Costs one chrome.tabs.get per attached tab (no CDP, no page evaluation). ⚠️ An extension on a build predating this option returns no live fields at all; the response says LIVE STATE UNAVAILABLE rather than implying agreement."
       ),
+    // ⛔ ADDED 2026-10-08 BECAUSE ITS ABSENCE WAS INVISIBLE. This tool
+    // aggregates across every connected extension, and callers reasonably
+    // assumed the `extensionId` they pass to every OTHER tab tool narrowed
+    // this one too. It did not exist here, so zod STRIPPED it and the call
+    // returned all 16 tabs across 6 browsers with no error and no hint —
+    // a plausible wrong answer, which is the expensive kind. `alpaca` hit it
+    // 2026-10-08 while diagnosing a tab on office's desktop Chrome.
+    // ⚠️ An UNKNOWN id is now an ERROR that lists the registered ids, never an
+    // empty list: "no tabs on that browser" and "that browser is not connected"
+    // are different facts and only one of them is actionable.
+    extensionId: z.string().optional().describe(
+      "Return only tabs attached on this extension (browser). Omit for the union across every connected extension, which is the default. " +
+      "Get the id from the `extensions` array of this tool's own response or from browser_launch_isolated_chrome. " +
+      "An id that matches no connected extension is an error listing the ids that do exist — it never returns an empty list."
+    ),
     // ⛔ Opt-IN, never opt-out. A tab attached and left broadcasts its query
     // string to every agent that lists tabs, and on 2026-08-17 that was a
     // stranger's full billing identity landing in

@@ -694,14 +694,21 @@ export class Context {
   async broadcastSocketMessage<T extends MessageType<SocketMessageMap>>(
     type: T,
     payload: MessagePayload<SocketMessageMap, T>,
-    options: { timeoutMs?: number } = {},
+    options: { timeoutMs?: number; only?: string[] } = {},
   ): Promise<Array<{ extensionId: string; result?: any; error?: string }>> {
     const out: Array<{ extensionId: string; result?: any; error?: string }> = [];
-    const extensions = this.listExtensions();
+    // `only` narrows the fan-out to named extensions. It is a REAL filter, not
+    // a post-hoc discard: querying an extension we are going to throw away
+    // costs it a round trip (and, for list_attached_tabs with live:true, one
+    // chrome.tabs.get per attached tab) and surfaces errors from browsers the
+    // caller never asked about.
+    const extensions = options.only
+      ? this.listExtensions().filter((c) => options.only!.includes(c.extensionId))
+      : this.listExtensions();
     // Fall back to legacy single-ws when no explicit registrations exist yet —
     // covers the case where the extension is connected but EXTENSION_REGISTER
     // didn't include an id (very old builds).
-    if (extensions.length === 0 && this._ws) {
+    if (extensions.length === 0 && this._ws && !options.only) {
       try {
         const { sendSocketMessage } = createSocketMessageSender<SocketMessageMap>(this._ws);
         const result = await sendSocketMessage(type, payload, { timeoutMs: options.timeoutMs ?? 30000 });
