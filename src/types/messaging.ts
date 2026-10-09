@@ -96,6 +96,13 @@ export interface SocketMessageMap {
   // Information tools
   browser_get_console_logs: Record<string, never>;
   browser_screenshot: { tabTarget?: number | string };
+
+  // ⛔ Declared because the captcha relay must foreground its own tab before a
+  // retried screenshot: Chrome does not composite a hidden tab, so
+  // Page.captureScreenshot waits for a frame that never comes. The extension
+  // has always handled this type; it was simply undeclared, which is the same
+  // gap browser_evaluate above records.
+  browser_switch_tab: { tabId?: number; tabTarget?: number | string; extensionId?: string };
   browser_segmented_screenshot: {
     selectors: string[];
     outputDir?: string;

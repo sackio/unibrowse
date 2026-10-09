@@ -542,11 +542,36 @@ async function main() {
   // requireApiKey: a phone opening the link has no LAN access and no login, and
   // that is the entire point of the feature.
   registerCaptchaRoutes(app, {
-    screenshot: (s) =>
-      globalContext.sendSocketMessage("browser_screenshot", {
-        tabTarget: s.tabTarget,
-        ...(s.extensionId ? { extensionId: s.extensionId } : {}),
-      } as any) as Promise<any>,
+    // ⛔ A BACKGROUNDED TAB NEVER PRODUCES A FRAME. Page.captureScreenshot waits
+    // on the compositor, and Chrome does not composite a hidden tab, so the
+    // capture times out — the relay then serves a JSON error where the operator
+    // expects a picture, and the session looks broken rather than backgrounded.
+    // MEASURED 2026-10-09: three sessions were opened in one browser window, so
+    // only one tab could be foreground; the other two could not be screenshotted
+    // at all.
+    //
+    // ⚠️ FOREGROUND ON FAILURE, NOT ON EVERY SHOT. Shots poll every ~2.2s, and
+    // activating the tab each time would yank focus continuously — which breaks
+    // the focus-sensitive widgets this relay exists to drive (reCAPTCHA closes
+    // its image grid when the page loses focus). One retry costs a round trip
+    // only in the case that was failing anyway.
+    screenshot: async (s) => {
+      const capture = () =>
+        globalContext.sendSocketMessage("browser_screenshot", {
+          tabTarget: s.tabTarget,
+          ...(s.extensionId ? { extensionId: s.extensionId } : {}),
+        } as any) as Promise<any>;
+      try {
+        return await capture();
+      } catch (err: any) {
+        if (!/hidden|timed out/i.test(String(err?.message ?? err))) throw err;
+        await globalContext.sendSocketMessage("browser_switch_tab", {
+          tabTarget: s.tabTarget,
+          ...(s.extensionId ? { extensionId: s.extensionId } : {}),
+        } as any);
+        return await capture();
+      }
+    },
 
     // ⛔ Ask the PAGE for its viewport rather than trusting the screenshot's
     // pixel dimensions. captureScreenshot returns device pixels, so on any

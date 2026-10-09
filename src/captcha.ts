@@ -180,7 +180,24 @@ const PAGE = String.raw`<!doctype html>
   h1 { margin:0 0 3px; font-size:15px; font-weight:600; }
   .sub { font-size:12.5px; color:#9aa0aa; }
   #wrap { position:relative; padding:10px; }
-  #shot { width:100%; display:block; border-radius:8px; border:1px solid #2b2f37; }
+  /* ⛔ ALL FOUR OF THESE ARE LOAD-BEARING ON MOBILE, and the one they fix is
+     press-and-hold. MEASURED 2026-10-09, Ben on Android Chrome: holding the
+     button opened the BROWSER's long-press context menu ("open image in new
+     tab / save image"), which both hid the page and cancelled the gesture.
+     ⛔ DO NOT PUT BACKTICKS IN THIS BLOCK — PAGE is a String.raw template and a
+     backtick ends it, which breaks the build rather than the page.
+     Calling preventDefault() on pointerdown does NOT stop the menu: it is
+     raised off the touch sequence, not off the pointer event.
+       touch-action:none        — stop the press being claimed as a scroll/pan,
+                                  which fires pointercancel and ends the hold
+       -webkit-touch-callout    — the iOS/Android image callout menu
+       user-select              — the text/image selection that a long press
+                                  starts, which also steals the sequence
+     ⚠️ Removing any one of them reintroduces a failure that only appears on a
+     real phone — a desktop browser holds the button quite happily. */
+  #shot { width:100%; display:block; border-radius:8px; border:1px solid #2b2f37;
+          touch-action:none; -webkit-touch-callout:none;
+          -webkit-user-select:none; user-select:none; }
   #dot { position:absolute; width:26px; height:26px; margin:-13px 0 0 -13px;
          border:2px solid #4ade80; border-radius:50%; pointer-events:none;
          opacity:0; transition:opacity .45s; }
@@ -217,13 +234,38 @@ const PAGE = String.raw`<!doctype html>
 // ⛔ RELATIVE URLS ONLY. This page is served through an ATC artifact proxy that
 // mounts it at /f/<id>/, so an absolute path would resolve at the artifact
 // domain root and 404. A <base> tag is injected by the proxy for exactly this.
-var busy = false, stopped = false;
+var busy = false, stopped = false, shotFailed = false;
 
+// ⛔ A FAILED SHOT MUST SAY SO. It used to fail silently: /shot answers with a
+// JSON error body on failure, an <img> cannot render JSON, and the old code had
+// only an onload handler — so the operator got a blank frame, no text, and no
+// way to tell "broken" from "still loading". MEASURED 2026-10-09: Ben, sent
+// three captchas at once, reported the third as "doesn't even explain anything,
+// it's broken". It was: its tab was backgrounded, Page.captureScreenshot never
+// produced a frame, and the relay had no way to tell him that.
 function shot() {
   if (stopped) return;
   var img = document.getElementById('shot');
   var probe = new Image();
-  probe.onload = function () { img.src = probe.src; img.dataset.nw = probe.naturalWidth; img.dataset.nh = probe.naturalHeight; };
+  probe.onload = function () {
+    img.src = probe.src; img.dataset.nw = probe.naturalWidth; img.dataset.nh = probe.naturalHeight;
+    if (shotFailed) { shotFailed = false; document.getElementById('status').textContent = ''; }
+  };
+  probe.onerror = function () {
+    shotFailed = true;
+    // Re-request as a fetch to read WHY. The image load threw away the body.
+    fetch('shot?t=' + Date.now())
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        document.getElementById('status').textContent =
+          'Picture unavailable: ' + ((j && j.error) || 'unknown') +
+          ' — the page is still there, this is the screenshot failing.';
+      })
+      .catch(function () {
+        document.getElementById('status').textContent =
+          'Picture unavailable and the error could not be read. The page may still be fine.';
+      });
+  };
   probe.src = 'shot?t=' + Date.now();
 }
 
@@ -300,6 +342,18 @@ function endHold(e) {
     .catch(function () { document.getElementById('status').textContent = 'Tap failed to send.'; })
     .then(function () { busy = false; setTimeout(shot, 600); });
 }
+
+// ⛔ The CSS above stops the long-press menu on every mobile browser that
+// honours -webkit-touch-callout. This catches the rest, and costs nothing: the
+// operator has no use for a context menu on a screenshot they are tapping
+// through. Same for the drag, which on desktop would otherwise start an image
+// drag halfway through a hold and lose the release.
+document.addEventListener('contextmenu', function (e) {
+  if (e.target.id === 'shot') e.preventDefault();
+});
+document.addEventListener('dragstart', function (e) {
+  if (e.target.id === 'shot') e.preventDefault();
+});
 
 document.addEventListener('pointerup', endHold);
 // ⛔ A hold that ends by the pointer being cancelled or leaving the window must
