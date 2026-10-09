@@ -6609,8 +6609,23 @@ class BackgroundController {
       BrowserEnv.isInternalUrl(tab.url) || tab.url.startsWith('chrome-extension://') ||
       tab.url.startsWith('about:');
     if (isRestricted) {
+      // ⛔ SAY THAT NOTHING ATTACHED. This branch deliberately skips
+      // chrome.debugger AND tabManager.attachTab(), so the tab never enters the
+      // attached-tab registry that tabTarget -> extension routing is built
+      // from. Returning a bare `success: true` left the server printing
+      // "Created and attached", and the caller's next call failed with
+      // "Multiple extensions are connected (N)" — which reads as their own
+      // targeting mistake, not as a tab that was never attached.
+      // The TOCTOU branch below already returns `attached: false` + `note`;
+      // this one omitted both, so the server had no signal to tell them apart.
+      // MEASURED 2026-10-09 (reported by `freelance`, reproduced on office).
       console.log('[handleCreateTab] Restricted URL, skipping debugger attachment:', tab.url);
-      return { success: true, tabId: tab.id, label: `tab-${tab.id}`, url: tab.url || 'about:blank' };
+      return {
+        success: true, tabId: tab.id, label: `tab-${tab.id}`,
+        url: tab.url || 'about:blank',
+        attached: false,
+        note: 'Tab created but not attached: the debugger cannot attach to a restricted URL. Create the tab at the real URL instead of navigating afterwards.',
+      };
     }
 
     // Pass the caller's agent/takeover so the tab is reserved on creation.

@@ -147,12 +147,75 @@ export const createTab: Tool = {
       // existing caller creates, which is `agents`' predicate to rule on, not
       // a thing to infer at 21:40.
       const reservedBy = validatedParams.agent ?? null;
+
+      // ⛔ "CREATED AND ATTACHED" WAS PRINTED EVEN WHEN NOTHING ATTACHED.
+      //
+      // The extension skips chrome.debugger entirely for a restricted URL —
+      // about:blank, about:*, chrome://, chrome-extension:// — and returns
+      // `{success:true}` WITHOUT calling tabManager.attachTab()
+      // (extension/background.js, the `if (isRestricted)` early return). So the
+      // tab is created, and reserved if an agent was passed, but never enters
+      // the attached-tab registry. tabTarget -> owning-extension routing is
+      // built from that registry, so EVERY later call fails: with no
+      // extensionId it cannot resolve the browser at all and raises "Multiple
+      // extensions are connected (N)", which reads like a targeting mistake by
+      // the caller rather than a tab that was never attached.
+      //
+      // MEASURED 2026-10-09, reported by `freelance` and reproduced here:
+      // create at about:blank -> "Created and attached tab 41942459",
+      // reservedBy unibrowse; then browser_navigate({tabTarget}) ->
+      // "Multiple extensions are connected (6)", and the same call WITH
+      // extensionId -> "Cannot attach debugger to restricted URL: about:blank".
+      // The second error is the real one and only the explicit extensionId
+      // surfaced it.
+      //
+      // ⚠️ DETECTED FROM THE RETURNED URL, NOT FROM A NEW EXTENSION FIELD, ON
+      // PURPOSE. The sibling TOCTOU branch in the extension already returns
+      // `attached:false`, but the restricted branch does not, and an extension
+      // fix reaches NO browser without the ↻ the operator declined — all six
+      // connected extensions are on older code. URL-sniffing works on every
+      // build, old and new. `attached === false` is honoured too, so a newer
+      // extension that reports it is believed in preference.
+      //
+      // ⚠️ ADDITIVE for the working path: a tab that DID attach still reads
+      // "Created and attached …" byte-for-byte, because callers parse this
+      // text. Only the path that never attached says so, and on that path no
+      // caller can have been working.
+      const createdUrl: string = String(result.url ?? validatedParams.url ?? "");
+      const urlIsUnattachable =
+        createdUrl === "" ||
+        createdUrl === "about:blank" ||
+        /^(about|chrome|chrome-extension|edge|devtools|view-source):/i.test(createdUrl);
+      const attached: boolean =
+        result.attached === false ? false : !urlIsUnattachable;
+
+      if (!attached) {
+        return jsonResponse({
+          tabId: result.tabId,
+          label: result.label,
+          url: result.url ?? validatedParams.url ?? null,
+          incognito: result.incognito ?? validatedParams.incognito ?? false,
+          reservedBy,
+          attached: false,
+          message: `⚠️ Created tab ${result.tabId} (label: "${result.label}") at ${createdUrl || "about:blank"} but did NOT attach it: ` +
+            `the debugger cannot attach to a restricted URL, so this tab is absent from the attached-tab registry and ` +
+            `tabTarget routing cannot find its browser. A later call without extensionId will fail with ` +
+            `"Multiple extensions are connected"; with extensionId it will fail with "Cannot attach debugger to restricted URL". ` +
+            `⇒ Create the tab at the real URL you want instead of navigating to it afterwards` +
+            (reservedBy
+              ? `. It is reserved for "${reservedBy}", but a reservation is not an attachment.`
+              : `, and pass agent:"<your-seat>" to reserve it.`) +
+            (result.note ? ` (extension: ${result.note})` : ""),
+        }, true, max_tokens);
+      }
+
       return jsonResponse({
         tabId: result.tabId,
         label: result.label,
         url: result.url ?? validatedParams.url ?? null,
         incognito: result.incognito ?? validatedParams.incognito ?? false,
         reservedBy,
+        attached: true,
         message: `Created and attached tab ${result.tabId} (label: "${result.label}")${validatedParams.url ? ` at ${validatedParams.url}` : ""}. Use tabTarget: "${result.label}" or tabTarget: ${result.tabId} to target it.` +
           (reservedBy
             ? ` Reserved for "${reservedBy}" — keep it by making calls that carry the same agent; the claim expires after 30min of inactivity.`
