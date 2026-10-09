@@ -189,3 +189,75 @@ test("pressure stays up for the whole hold, including the jitter", () => {
     "a move during a hold must keep pressure at 0.5, or it reads as a release and re-press",
   );
 });
+
+/**
+ * ⛔ THE MANNER OF THE HOLD IS WHAT IS SCORED, NOT ITS LENGTH.
+ *
+ * A press-and-hold widget samples the pointer in a requestAnimationFrame loop
+ * while the button is down. Two properties of the first implementation gave it
+ * away independently of the coordinates:
+ *
+ *   · sampling on a 90-200ms timer — 5-11Hz, where a real pointer reports at
+ *     60Hz+, so the GAPS are a signature on their own;
+ *   · ±2px drawn independently each tick — white noise, where a hand drifts.
+ *     Consecutive samples from a real pointer are strongly correlated; these
+ *     were independent, so the pointer teleported about a fixed centre.
+ *
+ * ⚠️ Neither is known to be what PerimeterX decides on — measured 2026-10-09,
+ * Fiverr still refused a hold after this. These remove two signatures that
+ * published analyses say such widgets look at. That is the honest claim.
+ */
+test("the hold samples near display rate, not on a lazy timer", () => {
+  const code = cdp
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .split("\n")
+    .map((l) => l.replace(/(^|[^:"'`\\])\/\/.*$/, "$1"))
+    .join("\n")
+    .replace(/\s+/g, " ");
+  const fn = code.slice(code.indexOf("async clickRealistic("));
+  const between = fn.slice(fn.indexOf("'mousePressed'"), fn.indexOf("'mouseReleased'"));
+  const m = between.match(/SAMPLE_MS\s*=\s*(\d+)/);
+  assert.ok(m, "the hold must declare an explicit sample interval");
+  assert.ok(
+    Number(m[1]) <= 20,
+    `sampling every ${m[1]}ms is far below display rate — the gaps are the tell`,
+  );
+});
+
+test("drift carries velocity between samples instead of redrawing noise", () => {
+  const code = cdp
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .split("\n")
+    .map((l) => l.replace(/(^|[^:"'`\\])\/\/.*$/, "$1"))
+    .join("\n")
+    .replace(/\s+/g, " ");
+  const fn = code.slice(code.indexOf("async clickRealistic("));
+  const between = fn.slice(fn.indexOf("'mousePressed'"), fn.indexOf("'mouseReleased'"));
+  // Velocity must persist across iterations — vx on both sides of its update.
+  assert.match(
+    between,
+    /vx\s*=\s*vx\s*\*/,
+    "velocity must carry over and be damped, or the samples are independent again",
+  );
+  assert.match(
+    between,
+    /dx\s*\+=\s*vx/,
+    "position must integrate velocity rather than being re-randomised each tick",
+  );
+});
+
+test("the hold is bounded by wall clock, so a slow link shortens it, never overruns", () => {
+  const code = cdp
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .split("\n")
+    .map((l) => l.replace(/(^|[^:"'`\\])\/\/.*$/, "$1"))
+    .join("\n")
+    .replace(/\s+/g, " ");
+  const fn = code.slice(code.indexOf("async clickRealistic("));
+  const between = fn.slice(fn.indexOf("'mousePressed'"), fn.indexOf("'mouseReleased'"));
+  assert.match(
+    between,
+    /while\s*\(\s*Date\.now\(\)\s*<\s*until\s*\)/,
+    "a fixed sample COUNT would stretch the hold on a slow link; the clock must bound it",
+  );
+});

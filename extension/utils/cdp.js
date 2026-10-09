@@ -1225,24 +1225,65 @@ class CDPHelper {
         clickCount: i + 1
       });
 
-      // Hold. For anything beyond a click's worth of press, jitter the pointer
-      // the way a hand does — a hold that is perfectly still for six seconds is
-      // its own signature, and a widget tracking movement during the hold gets
-      // no events at all from a motionless one.
+      // ── THE HOLD IS SCORED ON WHAT THE POINTER DOES DURING IT ──────────
+      //
+      // A press-and-hold widget samples the pointer while the button is down —
+      // in a requestAnimationFrame loop, so at display rate — and judges the
+      // MANNER of the hold, not its duration. Two things give a script away
+      // there, and the first version of this code had both:
+      //
+      //   ⛔ REGULAR SAMPLING. Emitting on a 90-200ms timer produces events at
+      //      5-11Hz when a real pointer reports at 60Hz+. The gaps alone are a
+      //      signature, whatever the coordinates say.
+      //   ⛔ UNIFORM INDEPENDENT NOISE. ±2px drawn afresh each tick is white
+      //      noise: every sample is independent of the last, so the pointer
+      //      teleports about a fixed centre. A real hand DRIFTS — consecutive
+      //      positions are strongly correlated, velocity changes smoothly, and
+      //      the centre itself wanders. White noise and drift are trivially
+      //      separable by anything looking at the autocorrelation.
+      //
+      // So: sample near display rate, and move by an Ornstein-Uhlenbeck drift —
+      // velocity carries over, is damped toward zero, and gets a small random
+      // impulse each step, with a weak pull back toward the press point. That
+      // produces correlated, smoothly-varying motion of a few pixels rather
+      // than independent jumps.
+      //
+      // ⚠️ MEASURED COST: ~16ms sampling over a 6s hold is ~375 serialized CDP
+      // commands. In-container that is well inside the 30s WebSocket timeout,
+      // but it is the same budget that forced moveFirst:false (a 20-step bezier
+      // in one call once blew it on an Xvfb sidecar). The loop is bounded by
+      // WALL CLOCK, not by a sample count, so a slow link emits fewer samples
+      // rather than overrunning the hold.
+      //
+      // ⛔ THIS IS NOT KNOWN TO DEFEAT ANYTHING. Measured 2026-10-09: Fiverr's
+      // PerimeterX challenge still refused a hold with correct pressure. This
+      // removes two signatures that research says such widgets look at; whether
+      // they are the ones deciding is unproven.
       if (downDelay > 400) {
         const until = Date.now() + downDelay;
+        const SAMPLE_MS = 16;
+        let vx = 0, vy = 0, dx = 0, dy = 0;
         while (Date.now() < until) {
-          await new Promise(resolve => setTimeout(resolve, Math.min(90 + Math.random() * 110, Math.max(0, until - Date.now()))));
+          const remaining = until - Date.now();
+          if (remaining <= 0) break;
+          await new Promise(resolve => setTimeout(resolve, Math.min(SAMPLE_MS, remaining)));
           if (Date.now() >= until) break;
+          // Damped velocity + random impulse + weak restoring pull. The
+          // constants are small on purpose: a hand holding a button wanders a
+          // couple of pixels, it does not wander off the control.
+          vx = vx * 0.86 + (Math.random() * 2 - 1) * 0.22 - dx * 0.04;
+          vy = vy * 0.86 + (Math.random() * 2 - 1) * 0.22 - dy * 0.04;
+          dx += vx;
+          dy += vy;
           await this.sendCommand('Input.dispatchMouseEvent', {
             type: 'mouseMoved',
-            x: x + Math.round((Math.random() * 2 - 1) * 2),
-            y: y + Math.round((Math.random() * 2 - 1) * 2),
+            x: x + Math.round(dx),
+            y: y + Math.round(dy),
             button,
             buttons: 1,
-            // The button is still down for the whole hold, so pressure must
-            // stay 0.5 across the movement too — dropping to 0 mid-hold would
-            // read as the button having been released and pressed again.
+            // The button is down for the whole hold, so pressure stays 0.5
+            // across the movement — dropping to 0 mid-hold would read as a
+            // release followed by a fresh press.
             force: 0.5
           });
         }
