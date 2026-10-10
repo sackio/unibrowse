@@ -185,6 +185,29 @@ test("the response reports the extension's answer, not our request", () => {
   );
 });
 
+/**
+ * ⭐ THE FLAVOUR THAT ACTUALLY FIRED. MEASURED 2026-10-10 09:55:07Z on a
+ * container sidecar: a create carrying agent:"unibrowse-probe-A" returned
+ * `reservedTo: null` because an interleaving call with NO agent had set the
+ * shared field to null, and claimTab(tabId, null) claims nothing. The response
+ * still said "Reserved for …" — strictly worse than the wrong owner, because
+ * the creator believes the tab is held and the next agent claims it
+ * legitimately. "nobody" must therefore be a correctable state, not a skip.
+ */
+test("reserved-to-nobody is corrected, and named as nobody", () => {
+  assert.match(
+    tabsCode,
+    /\(claimedTo \? `"\$\{claimedTo\}"` : "nobody"\)/,
+    "the message must distinguish the wrong owner from no owner at all — they fail differently",
+  );
+  const i = tabsCode.indexOf("if (reservedBy && claimedTo !== reservedBy)");
+  assert.notEqual(i, -1, "the correction branch must exist");
+  assert.ok(
+    !/claimedTo &&/.test(tabsCode.slice(i, i + 60)),
+    "the branch must not require a non-null claimedTo — that would skip the measured case",
+  );
+});
+
 test("a failed correction is reported, not swallowed", () => {
   assert.match(
     tabsCode,

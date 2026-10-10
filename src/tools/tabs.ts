@@ -140,6 +140,19 @@ export const createTab: Tool = {
       // the tab had simply never been reserved. Nothing in any response had
       // said so.
       //
+      // ⛔ AND PASSING `agent` IS NOT SUFFICIENT EITHER — MEASURED 2026-10-10
+      // 09:55:07Z. A create carrying agent:"unibrowse-probe-A" came back with
+      // `reservedTo: null`: an interleaving call that carried NO agent had set
+      // the extension's shared `_currentAgent` to null, and claimTab(tabId,
+      // null) returns immediately without claiming. The response still said
+      // "Reserved for …". That is strictly worse than the wrong owner: the
+      // creator believes the tab is held, nothing holds it, and the next agent
+      // along claims it legitimately — which is the exact shape of the 10-08
+      // incident above, whose cause was recorded as UNKNOWN.
+      // ⚠️ NOT asserted as that cause: the discriminator is whether alpaca's
+      // signup passed `agent` on create, and the server logs from 10-08 are
+      // gone. Raised with `agents`, who hold that half.
+      //
       // ⚠️ ADDITIVE ONLY — a new field plus an APPENDED warning. The existing
       // sentence is unchanged because callers parse this text, and the default
       // behaviour (no `agent` → no reservation) is deliberately NOT changed

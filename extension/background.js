@@ -619,6 +619,17 @@ class TabManager {
       // you are only repairing is right on its own terms — but do not write
       // that it fixed the alpaca incident, because that is not established.
       //
+      // ⭐ 2026-10-10: a FIFTH mechanism is now measured, and unlike the others
+      // it produces exactly that outcome. `_currentAgent` is one mutable field
+      // shared by every request; handleCreateTab read it after its load-wait,
+      // so an interleaving call carrying no agent left it null and the new tab
+      // was claimed for NOBODY while the response said "Reserved for …".
+      // An unreserved tab is then claimable by anyone, legitimately.
+      // ⚠️ STILL NOT ASSERTED as the 10-08 cause — the discriminator is whether
+      // alpaca's signup passes `agent` on create, which is `agents`' half, and
+      // the server logs from that day are gone. Fixed by snapshotting the
+      // caller at handler entry; do not re-derive it from this gate.
+      //
       // An EXPLICIT takeover:true still transfers, because that is a caller
       // deliberately seizing a tab and it is logged in the tab's history.
       const wasAlreadyAttached = this.attachedTabs.has(tabId);
