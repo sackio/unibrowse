@@ -209,17 +209,75 @@ export const createTab: Tool = {
         }, true, max_tokens);
       }
 
+      // ⛔ THE EXTENSION CAN RESERVE THE NEW TAB TO SOMEBODY ELSE — CHECK, AND
+      // CORRECT IT, BECAUSE THE EXTENSION-SIDE FIX REACHES NO BROWSER WITHOUT A ↻.
+      //
+      // handleMCPMessage stashes each request's `agent` on one shared mutable
+      // field, handleCreateTab read that field AFTER its load-wait (up to 15s),
+      // and nothing ever cleared it. So an unrelated call landing inside that
+      // window became the owner of a tab it had never asked for, and the real
+      // creator was locked out of its own tab with `tab-reserved`.
+      //
+      // MEASURED by `agents` 2026-10-10: create by `claude-login-auto`,
+      // TAB_ATTACHED tab=41943061 09:39:53.355Z, reserved to `freelance`
+      // (claimed 09:39:53.090Z) whose only call was a browser_evaluate 2.7s
+      // earlier. Reproduced on server3 at 09:35:38Z. Fixed in
+      // extension/background.js by snapshotting the caller at handler entry —
+      // ⚠️ which takes effect on a browser only after the ↻ control on
+      // chrome://extensions, so EVERY browser connected today still has the bug
+      // and this server-side correction is what actually reaches them.
+      //
+      // ⛔ `reservedBy` NO LONGER ASSERTS THE CLAIM WE ASKED FOR. It reports
+      // what the extension said it did. Reporting our own request back as fact
+      // is how this stayed invisible: the response said "Reserved for X" while
+      // the tab belonged to Y, so the first evidence anyone got was an
+      // unrelated tool failing later.
+      const claimedTo: string | null =
+        typeof result.reservedTo === "string" && result.reservedTo ? result.reservedTo : null;
+      let reservationNote = "";
+      if (reservedBy && claimedTo !== reservedBy) {
+        // One corrective call, and only on a genuine mismatch — a fixed
+        // extension returns our own agent here, so this costs nothing there.
+        // takeover is legitimate by construction: this call created the tab a
+        // moment ago, so no other seat can have a real interest in it.
+        try {
+          await context.sendSocketMessage("browser_reserve_tab" as any, {
+            tabTarget: result.tabId,
+            agent: reservedBy,
+            takeover: true,
+            extensionId: validatedParams.extensionId,
+          } as any);
+          reservationNote =
+            ` ⚠️ The extension had reserved this new tab to ` +
+            (claimedTo ? `"${claimedTo}"` : "nobody") +
+            ` instead of you; corrected to "${reservedBy}" (known extension bug, fixed only on builds reloaded after 2026-10-10).`;
+        } catch (e) {
+          // ⛔ Say it failed. A silent failure here hands the caller a tab that
+          // belongs to another seat while telling them it is theirs.
+          reservationNote =
+            ` ⛔ THIS TAB IS RESERVED TO ` +
+            (claimedTo ? `"${claimedTo}"` : "nobody") +
+            `, NOT to you, and the correction failed (${e instanceof Error ? e.message : String(e)}).` +
+            ` Call browser_reserve_tab({tabTarget: ${result.tabId}, agent: "${reservedBy}", takeover: true}) before driving it.`;
+        }
+      } else if (!reservedBy && claimedTo) {
+        reservationNote =
+          ` ⚠️ You passed no \`agent\`, but the extension reserved this new tab to "${claimedTo}" — a stale caller from a known extension bug, not a seat that wants it. Your next call may fail \`tab-reserved\`; pass agent:"<your-seat>" on browser_create_tab.`;
+      }
+
       return jsonResponse({
         tabId: result.tabId,
         label: result.label,
         url: result.url ?? validatedParams.url ?? null,
         incognito: result.incognito ?? validatedParams.incognito ?? false,
-        reservedBy,
+        reservedBy: reservedBy ?? claimedTo,
+        reservedByExtension: claimedTo,
         attached: true,
         message: `Created and attached tab ${result.tabId} (label: "${result.label}")${validatedParams.url ? ` at ${validatedParams.url}` : ""}. Use tabTarget: "${result.label}" or tabTarget: ${result.tabId} to target it.` +
           (reservedBy
             ? ` Reserved for "${reservedBy}" — keep it by making calls that carry the same agent; the claim expires after 30min of inactivity.`
-            : ` ⚠️ CREATED UNRESERVED: you passed no \`agent\`, so this tab is not yours and another agent may claim it mid-flow. Pass agent:"<your-seat>" on browser_create_tab to reserve it.`),
+            : ` ⚠️ CREATED UNRESERVED: you passed no \`agent\`, so this tab is not yours and another agent may claim it mid-flow. Pass agent:"<your-seat>" on browser_create_tab to reserve it.`) +
+          reservationNote,
       }, true, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};

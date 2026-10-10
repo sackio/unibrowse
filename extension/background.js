@@ -3058,7 +3058,16 @@ class BackgroundController {
    *   assigned until AFTER that internal attach returns, so the usual
    *   "already recording" guard is still null and cannot break the cycle.
    */
-  async handleEnsureAttached({ tabId, label, autoOpenUrl, autoCapture = true, _reResolved = false }) {
+  async handleEnsureAttached({ tabId, label, autoOpenUrl, autoCapture = true, _reResolved = false, agent, takeover }) {
+    // ⛔ SNAPSHOT THE CALLER AT ENTRY, for the reason spelled out in
+    // handleCreateTab: `_currentAgent` is a single mutable field on the shared
+    // TabManager that the next inbound message overwrites, and this handler
+    // awaits several times (chrome.tabs.get, findFirstValidTab, an autoOpenUrl
+    // create) before it reaches the attach that decides ownership.
+    const callerAgent = agent !== undefined ? agent : this.tabManager._currentAgent;
+    const callerTakeover = takeover !== undefined
+      ? takeover === true
+      : this.tabManager._currentTakeover === true;
     try {
       let targetTabId = tabId;
 
@@ -3311,8 +3320,8 @@ class BackgroundController {
       // Attach using TabManager (creates new CDP instance). Pass caller's
       // agent/takeover so the tab is reserved to them on first attach.
       const tabInfo = await this.tabManager.attachTab(targetTabId, tab.url, tab.title, {
-        agent: this.tabManager._currentAgent,
-        takeover: this.tabManager._currentTakeover,
+        agent: callerAgent,
+        takeover: callerTakeover,
         // `label` was accepted here and silently dropped — see attachTab().
         label,
       });
@@ -4171,7 +4180,20 @@ class BackgroundController {
     // Same trick for the reservation system: stash the caller's agent name +
     // takeover flag on the TabManager so requireCDP() can enforce ownership
     // without every handler having to plumb `agent` / `takeover` through its
-    // call chain. Cleared in finally below.
+    // call chain.
+    //
+    // ⛔ THIS IS A LAST-WRITER-WINS GLOBAL. It said "Cleared in finally below"
+    // and there is no finally in this function — the value is never cleared, and
+    // handlers are async and interleave, so it holds whoever sent the most
+    // recent message rather than the caller of the handler reading it. Safe
+    // only for a handler that reads it BEFORE its first await.
+    //
+    // ⚠️ ANY HANDLER THAT DECIDES OWNERSHIP AFTER AN AWAIT MUST SNAPSHOT THE
+    // PAYLOAD'S OWN `agent` AT ENTRY — handleCreateTab and handleEnsureAttached
+    // now do, after a create by one seat reserved its tab to another
+    // (`agents`, 2026-10-10). Not cleared on purpose: clearing would hand a
+    // mid-flight handler `null` instead of a wrong name, which silently stops
+    // refreshing its own claim. The fix is the snapshot, not the clear.
     const callerAgent = (payload && typeof payload === 'object') ? payload.agent : undefined;
     const callerTakeover = (payload && typeof payload === 'object') ? payload.takeover === true : false;
     if (this.tabManager) {
@@ -6532,7 +6554,33 @@ class BackgroundController {
     return { success: true, tabId: targetTabId, url: tab.url };
   }
 
-  async handleCreateTab({ url, incognito, label, focus }) {
+  async handleCreateTab({ url, incognito, label, focus, agent, takeover }) {
+    // ⛔ SNAPSHOT THE CALLER AT ENTRY — `_currentAgent` IS NOT STABLE ACROSS AN
+    // AWAIT, AND THIS HANDLER AWAITS FOR UP TO 15 SECONDS.
+    //
+    // handleMCPMessage stashes each request's agent on the shared TabManager
+    // before dispatch, and handlers are async and interleave freely — so that
+    // field holds whoever sent the MOST RECENT message, not the caller of this
+    // one. Between chrome.tabs.create and the attach below sits the load-wait,
+    // which resolves on 'complete' OR a 15s timeout; that is ample room for
+    // another seat's call to land and overwrite it. The attach then claimed the
+    // brand-new tab for a seat that had never heard of it, and every later call
+    // from the actual creator failed `tab-reserved`.
+    //
+    // MEASURED 2026-10-10, reported by `agents`: TAB_ATTACHED tab=41943061 at
+    // 09:39:53.355Z on a create by `claude-login-auto`, reserved to
+    // `freelance` (claimed 09:39:53.090Z) whose only call was a
+    // browser_evaluate at 09:39:50.6Z. Same signature on server3 at 09:35:38Z.
+    //
+    // ⚠️ THE FIELD IS ALSO NEVER CLEARED (see handleMCPMessage, whose comment
+    // claims a `finally` that does not exist), so with no concurrency at all it
+    // still carries the PREVIOUS caller's name. Reading the payload's own
+    // `agent` first fixes both halves, and is what every other handler that
+    // decides ownership should do.
+    const callerAgent = agent !== undefined ? agent : this.tabManager._currentAgent;
+    const callerTakeover = takeover !== undefined
+      ? takeover === true
+      : this.tabManager._currentTakeover === true;
     // Default behavior: new tabs open in the background so agent work doesn't
     // steal focus from whatever the user is doing. Callers pass focus=true to
     // explicitly bring the new tab to front.
@@ -6656,8 +6704,8 @@ class BackgroundController {
     let tabInfo;
     try {
       tabInfo = await this.tabManager.attachTab(targetTabId, tab.url, tab.title, {
-        agent: this.tabManager._currentAgent,
-        takeover: this.tabManager._currentTakeover,
+        agent: callerAgent,
+        takeover: callerTakeover,
       });
     } catch (err) {
       const raced = /Cannot access a chrome-extension:\/\/ URL of different extension/i.test(err?.message || '');
@@ -6669,8 +6717,8 @@ class BackgroundController {
         return { success: true, tabId: targetTabId, label: `tab-${targetTabId}`, url: settledUrl || 'about:blank', attached: false, note: 'Tab created but not attached: it settled on a page extensions cannot debug.' };
       }
       tabInfo = await this.tabManager.attachTab(targetTabId, settledUrl, settled?.title, {
-        agent: this.tabManager._currentAgent,
-        takeover: this.tabManager._currentTakeover,
+        agent: callerAgent,
+        takeover: callerTakeover,
       });
     }
     // Apply caller-requested label so the tab is resolvable by it (e.g. the
@@ -6694,7 +6742,7 @@ class BackgroundController {
     await this._maybeAutoCapture(targetTabId, true);
 
     const result = { success: true, tabId: tab.id, label: tabInfo.label, url: tab.url };
-    if (this.tabManager._currentAgent) result.reservedTo = this.tabManager._currentAgent;
+    if (callerAgent) result.reservedTo = callerAgent;
     return result;
   }
 
