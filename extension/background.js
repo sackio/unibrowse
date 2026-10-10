@@ -845,21 +845,40 @@ class TabManager {
       console.error('[TabManager] Error detaching CDP:', error);
     }
 
-    // Remove from map
-    this.attachedTabs.delete(tabId);
-    // ⚠️ And drop the reservation with it. Nothing anywhere called
-    // reservations.delete() — releaseTab() only nulls the owner and keeps the
-    // entry — so the Map accumulated one entry per tab ever attached, forever,
-    // each still naming whoever last held it. A detached tab's reservation
-    // cannot be meaningful: the tab it refers to is gone.
-    this.reservations.delete(tabId);
-
-    // Update lastUsedTabId if needed. This was the ONLY path that got it
-    // right; repointLastUsed() is this logic extracted so the five paths that
-    // nulled the pointer instead can share it.
-    if (this.lastUsedTabId === tabId) this.repointLastUsed();
-
+    this.forgetTab(tabId);
     console.log('[TabManager] Tab detached. Remaining tabs:', this.attachedTabs.size);
+  }
+
+  /**
+   * Drop every record of a tab, with no renderer involvement whatsoever.
+   *
+   * ⛔ EXTRACTED SO A BLOCKED TAB CAN STILL BE FORGOTTEN. detachTab() does
+   * renderer-dependent work first (the recording-stop hook, a CDP
+   * Runtime.evaluate to strip the title prefix, then a chrome.scripting
+   * fallback), and all of it blocks while the tab is wedged — so the
+   * bookkeeping at the end never ran and the registry kept claiming a tab
+   * nobody could drive. This half needs no renderer and must never be gated by
+   * one.
+   *
+   * ⚠️ Dropping the reservation is deliberate: releaseTab() only nulls the
+   * owner and keeps the entry, so the Map accumulated one entry per tab ever
+   * attached, each still naming whoever last held it. A forgotten tab's
+   * reservation cannot be meaningful.
+   */
+  forgetTab(tabId) {
+    this.attachedTabs.delete(tabId);
+    this.reservations.delete(tabId);
+    // repointLastUsed() is this logic extracted so the five paths that nulled
+    // the pointer instead can share it.
+    if (this.lastUsedTabId === tabId) this.repointLastUsed();
+    try {
+      if (typeof self.__unibrowseSendBareToServer === 'function') {
+        self.__unibrowseSendBareToServer({
+          type: 'TAB_DETACHED',
+          payload: { extensionId: self.__unibrowseExtensionId, tabId },
+        });
+      }
+    } catch { /* best-effort */ }
   }
 
   /**
@@ -2562,6 +2581,7 @@ class BackgroundController {
     this.handlers['browser_switch_tab'] = this.handleSwitchTab.bind(this);
     this.handlers['browser_create_tab'] = this.handleCreateTab.bind(this);
     this.handlers['browser_close_tab'] = this.handleCloseTab.bind(this);
+    this.handlers['browser_handle_dialog'] = this.handleHandleDialog.bind(this);
     this.handlers['browser_create_window'] = this.handleCreateWindow.bind(this);
 
     // Multi-tab management handlers (NEW)
@@ -6757,6 +6777,62 @@ class BackgroundController {
     return result;
   }
 
+  /**
+   * Accept or dismiss a modal JavaScript dialog — alert, confirm, prompt, or a
+   * beforeunload "Leave site?" prompt — that is holding a tab's renderer.
+   *
+   * ⛔ WHY THIS EXISTS AT ALL. A tab-modal dialog blocks the renderer, so
+   * every tool that touches the page stops answering: evaluate, click, type,
+   * screenshot, and — until the fix above — close_tab as well. There was no
+   * way out from here, and the gap was reported from the wrong side: `freelance`
+   * hit it on 2026-10-10 and wrote "No dialog-handling tool exists in
+   * unibrowse", which was correct.
+   *
+   * ⭐ WHY IT CAN WORK WHEN NOTHING ELSE DOES, which is the part worth
+   * recording: Page.handleJavaScriptDialog is served by the BROWSER process,
+   * not the blocked renderer, and this extension's CDP wrapper keeps no command
+   * queue (extension/utils/cdp.js sendCommand — one chrome.debugger.sendCommand
+   * per call, each with its own timeout), so a wedged command does not sit in
+   * front of this one. Both of those had to be true; neither is obvious.
+   *
+   * ⚠️ NOT YET EXERCISED AGAINST A REAL DIALOG. Reasoned from the CDP
+   * protocol and from this file's own code, not measured — the tabs that
+   * prompted it are on a browser running older extension code, so this cannot
+   * be tried there without a reload. Treat a failure as informative, not as
+   * proof the tab is beyond help.
+   *
+   * No dialog showing is a legitimate answer, not an error: a caller asking
+   * "clear whatever is blocking this" deserves to be told nothing was, rather
+   * than an exception they will read as the tool being broken.
+   */
+  async handleHandleDialog({ tabTarget, accept, promptText }) {
+    const cdp = this.tabManager.requireCDP(tabTarget);
+    const shouldAccept = accept !== false;
+    const params = { accept: shouldAccept };
+    if (typeof promptText === 'string') params.promptText = promptText;
+    try {
+      // 5s, explicitly: the default for an unrecognised method would be 10s,
+      // and a browser-process command either answers at once or is not coming.
+      await cdp.sendCommand('Page.handleJavaScriptDialog', params, 0, 0, 5000);
+      return {
+        success: true,
+        dialogPresent: true,
+        accepted: shouldAccept,
+        message: `${shouldAccept ? 'Accepted' : 'Dismissed'} the modal dialog. The renderer should answer again — retry whatever timed out.`,
+      };
+    } catch (err) {
+      const msg = err?.message || String(err);
+      if (/No dialog is showing/i.test(msg)) {
+        return {
+          success: true,
+          dialogPresent: false,
+          message: 'No modal dialog is showing on this tab, so nothing was dismissed. If calls to it are still timing out, the renderer is wedged for another reason — a dialog is not the cause.',
+        };
+      }
+      throw err;
+    }
+  }
+
   async handleCloseTab({ tabId, tabTarget }) {
     let resolvedTabId = tabId;
 
@@ -6785,15 +6861,79 @@ class BackgroundController {
       return { success: true, tabId: null, alreadyClosed: true };
     }
 
-    // Also remove from TabManager if it's an attached tab
-    if (this.tabManager.attachedTabs.has(resolvedTabId)) {
-      await this.tabManager.detachTab(resolvedTabId).catch(() => {});
+    // ⛔ TEARDOWN MUST NOT GATE THE CLOSE — IT DID, AND IT MADE A WEDGED TAB
+    // UNCLOSABLE BY ANY TOOL.
+    //
+    // detachTab() runs renderer-dependent work before the bookkeeping: the
+    // recording-stop hook, a CDP Runtime.evaluate to strip the "🟢 [MCP] "
+    // title prefix (sendCommand gives Runtime.evaluate a 120s budget), then a
+    // chrome.scripting fallback with NO timeout at all. Every one of those
+    // blocks while the tab's renderer is blocked, and all of them run BEFORE
+    // chrome.tabs.remove — so a tab nobody could drive was also a tab nobody
+    // could close, and the caller saw only "WebSocket response timeout" at 30s
+    // while the handler ground on behind it.
+    //
+    // REPORTED 2026-10-10 14:04 by `freelance`: desktop tabs 41942990 and
+    // 41943114 (app.sortlist.com, same URL as a sibling tab that stayed fine)
+    // hung on every call INCLUDING close_tab after a location.reload. Their
+    // reading was a beforeunload "Leave site?" dialog holding the renderer.
+    // ⚠️ THE DIALOG IS THEIR INFERENCE AND MINE, NOT MEASURED — nothing that
+    // could see it is available on that browser (no CDP port on office's
+    // desktop Chrome, and a screenshot needs the renderer we cannot reach).
+    // What IS established from the code is this ordering, and it makes the
+    // close unreachable for ANY renderer wedge, dialog or not.
+    //
+    // ⭐ The cosmetics are worth 3 seconds and not one more. After that, forget
+    // the tab without the renderer's cooperation and close it anyway.
+    //
+    // ⛔ AND THE REGISTRY ENTRY IS KEPT UNTIL THE TAB IS ACTUALLY GONE. An
+    // earlier draft of this forgot the tab as soon as the detach timed out,
+    // which looked tidier and was wrong twice over: it told the server a tab
+    // had detached while its debugger was still attached, and it put the tab
+    // out of reach of browser_handle_dialog — the one call that can unblock
+    // it — because that needs the tab in the registry to resolve. Forget it
+    // only once it has closed.
+    let detachFinished = false;
+    const wasAttached = this.tabManager.attachedTabs.has(resolvedTabId);
+    if (wasAttached) {
+      const DETACH_BUDGET_MS = 3000;
+      await Promise.race([
+        this.tabManager.detachTab(resolvedTabId).then(() => { detachFinished = true; }).catch(() => { detachFinished = true; }),
+        new Promise((resolve) => setTimeout(resolve, DETACH_BUDGET_MS)),
+      ]);
+      if (!detachFinished) {
+        console.warn(`[Background] handleCloseTab: detach of ${resolvedTabId} did not finish in ${DETACH_BUDGET_MS}ms (blocked renderer) — closing anyway`);
+      }
     }
 
     // chrome.tabs.remove rejects if the tab is already gone — the goal (tab closed) is
     // already met, so swallow that case rather than surfacing it as a handler error.
+    //
+    // ⚠️ BOUNDED, AND THE BOUND IS NOT DECORATION. An extension-initiated
+    // remove is not supposed to run beforeunload — but that is an INFERENCE I
+    // have not measured on this Chrome, so this path does not depend on it
+    // being true. If the remove itself blocks, say precisely that instead of
+    // handing the caller another anonymous 30s timeout.
     try {
-      await chrome.tabs.remove(resolvedTabId);
+      const REMOVE_BUDGET_MS = 5000;
+      const outcome = await Promise.race([
+        chrome.tabs.remove(resolvedTabId).then(() => 'removed'),
+        new Promise((resolve) => setTimeout(() => resolve('blocked'), REMOVE_BUDGET_MS)),
+      ]);
+      if (outcome === 'blocked') {
+        const err = new Error(
+          `Tab ${resolvedTabId} did not close within ${REMOVE_BUDGET_MS}ms: chrome.tabs.remove itself is blocked, ` +
+          `so the browser is holding the close — a modal dialog (a beforeunload "Leave site?" prompt) is the ` +
+          `likeliest reason. The tab is still attached and still reserved, deliberately: that is what keeps it ` +
+          `addressable. ⇒ browser_handle_dialog({tabTarget: ${resolvedTabId}, accept: true}) and close it again. ` +
+          `If that reports no dialog, the renderer is wedged for another reason and the tab needs a human on that browser.`
+        );
+        err.code = 'TAB_CLOSE_BLOCKED';
+        throw err;
+      }
+      // Gone for real — now the bookkeeping can go, whether or not the detach
+      // got there first.
+      if (wasAttached && !detachFinished) this.tabManager.forgetTab(resolvedTabId);
     } catch (err) {
       if (/No tab with id|Invalid tab ID|cannot be edited/i.test(err.message || '')) {
         console.log('[Background] handleCloseTab: tab already closed:', resolvedTabId);

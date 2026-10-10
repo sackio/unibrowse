@@ -1671,6 +1671,29 @@ export const ReserveTabTool = z.object({
   }).merge(ExtensionIdSchema).merge(MaxTokensSchema),
 });
 
+// ⛔ A MODAL DIALOG BLOCKS THE RENDERER, SO EVERY OTHER TOOL STOPS ANSWERING.
+// This one is served by the browser process, which is why it still works when
+// evaluate, click, screenshot and close_tab are all timing out. Reported as a
+// missing capability by `freelance` 2026-10-10 after two desktop tabs became
+// undrivable and unclosable behind what was almost certainly a beforeunload
+// prompt.
+export const HandleDialogTool = z.object({
+  name: z.literal("browser_handle_dialog"),
+  description: z.literal(
+    "Accept or dismiss a modal JavaScript dialog (alert, confirm, prompt, or a beforeunload 'Leave site?' prompt) " +
+    "that is blocking a tab. ⭐ USE THIS WHEN EVERY CALL TO ONE TAB TIMES OUT AND NOTHING ELSE WORKS, INCLUDING " +
+    "browser_close_tab: a tab-modal dialog blocks that tab's renderer, so every page tool stops responding while " +
+    "the rest of the browser stays healthy. This command is handled by the browser process rather than the blocked " +
+    "renderer, so it gets through. ⚠️ 'No dialog is showing' is returned as a successful answer with " +
+    "dialogPresent:false, not as an error — which also makes it the cheapest way to RULE OUT a dialog as the cause."
+  ),
+  arguments: z.object({
+    tabTarget: z.union([z.number(), z.string()]).describe("Tab ID or label whose dialog to handle"),
+    accept: z.boolean().optional().describe("true (default) accepts the dialog — OK on an alert, Leave on a beforeunload prompt. false dismisses it: Cancel, or Stay on the page."),
+    promptText: z.string().optional().describe("Text to enter, for a window.prompt() dialog only. Ignored by alert/confirm/beforeunload."),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+});
+
 export const ReleaseTabTool = z.object({
   name: z.literal("browser_release_tab"),
   description: z.literal(

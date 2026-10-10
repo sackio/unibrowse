@@ -214,6 +214,7 @@ const tabTools: Tool[] = [
   tabs.switchTab,
   tabs.createTab,
   tabs.closeTab,
+  tabs.handleDialog,
   tabs.createWindow,
 ];
 

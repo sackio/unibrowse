@@ -4,6 +4,7 @@ import {
   CloseTabTool,
   CreateTabTool,
   CreateWindowTool,
+  HandleDialogTool,
   ListTabsTool,
   SwitchTabTool,
 } from "@/types/tool-schemas";
@@ -423,6 +424,50 @@ export const closeTab: Tool = {
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to close tab: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+/**
+ * Accept or dismiss a modal JavaScript dialog blocking a tab.
+ *
+ * ⛔ THIS IS THE ONLY TOOL THAT REACHES A TAB WHOSE RENDERER IS BLOCKED, so
+ * it deliberately does NOT pre-flight anything that would itself need the
+ * renderer. Page.handleJavaScriptDialog is served by the browser process.
+ *
+ * ⚠️ The extension half needs a ↻ on each browser before this works there;
+ * on an older build the call comes back as an unknown message type.
+ */
+export const handleDialog: Tool = {
+  schema: {
+    name: HandleDialogTool.shape.name.value,
+    description: HandleDialogTool.shape.description.value,
+    inputSchema: zodToJsonSchema(HandleDialogTool.shape.arguments),
+  },
+  handle: async (context: Context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      const validatedParams = HandleDialogTool.shape.arguments.parse(params);
+      const result: any = await context.sendSocketMessage(
+        "browser_handle_dialog" as any,
+        validatedParams,
+      );
+      return jsonResponse(result, true, max_tokens);
+    } catch (error) {
+      const msg = (error as any)?.message ?? String(error);
+      // ⛔ NAME THE UNDEPLOYED CASE. "Unknown message type" from an extension
+      // running older code reads exactly like a broken tool, and the remedy is
+      // completely different — it is the ↻, not a retry.
+      const undeployed = /Unknown message type/i.test(msg);
+      return errorResponse(
+        `Failed to handle dialog: ${msg}` +
+          (undeployed
+            ? ` ⚠️ That extension is running code from before browser_handle_dialog existed (2026-10-10), so this tool cannot reach it until that browser's unibrowse card is reloaded with the ↻ on chrome://extensions. Nothing is wrong with the call.`
+            : ""),
+        false,
+        error as any,
+        max_tokens,
+      );
     }
   },
 };
