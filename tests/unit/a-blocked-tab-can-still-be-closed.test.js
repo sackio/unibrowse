@@ -20,11 +20,15 @@ import path from "node:path";
  * location.reload, while a sibling tab on the SAME URL stayed healthy. Their
  * reading was a beforeunload "Leave site?" dialog.
  *
- * ⚠️ THE DIALOG IS AN INFERENCE, NOT A MEASUREMENT — nothing that could see it
- * was available on that browser (office's desktop Chrome has no CDP port, and
- * a screenshot needs the renderer we cannot reach). What is established is the
- * ordering, which blocks the close for ANY renderer wedge, dialog or not. These
- * tests are about the ordering, not about the dialog.
+ * ✅ The dialog was CONFIRMED later the same day by an X screenshot of office's
+ * display, and cleared with ui-eye's AXPress — four prompts stacked, after
+ * which both tabs closed themselves, because the close_tab calls that had
+ * "timed out" 20 minutes earlier were still queued behind it.
+ *
+ * ⚠️ I had first called it unobservable, on the strength of ui-eye's macOS-
+ * centric schema text rather than a try; ui-eye reaches office fine. These
+ * tests are still about the ORDERING, which blocks the close for any renderer
+ * wedge, dialog or not — the dialog is what exposed it, not what it is about.
  *
  * ⛔ Asserts on SOURCE: the regression needs a wedged renderer to show itself,
  * which cannot be staged in this suite.

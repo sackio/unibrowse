@@ -6801,6 +6801,14 @@ class BackgroundController {
    * be tried there without a reload. Treat a failure as informative, not as
    * proof the tab is beyond help.
    *
+   * ⭐ THE FALLBACK THAT NEEDS NO DEPLOY, and it is proven: drive the dialog's
+   * own button through the accessibility API — `ui_eye_windows(host)` →
+   * `ui_eye_ax_tree(host, owner_pid)` → `ui_eye_press` with expect_role /
+   * expect_title (⛔ never ui_eye_click). It worked on office 2026-10-10 while
+   * the screen was LOCKED, which also explains why xdotool/XTEST keys do
+   * nothing there: the lock screen holds the keyboard grab, and AXPress is not
+   * input at all.
+   *
    * No dialog showing is a legitimate answer, not an error: a caller asking
    * "clear whatever is blocking this" deserves to be told nothing was, rather
    * than an exception they will read as the tool being broken.
@@ -6877,11 +6885,17 @@ class BackgroundController {
     // 41943114 (app.sortlist.com, same URL as a sibling tab that stayed fine)
     // hung on every call INCLUDING close_tab after a location.reload. Their
     // reading was a beforeunload "Leave site?" dialog holding the renderer.
-    // ⚠️ THE DIALOG IS THEIR INFERENCE AND MINE, NOT MEASURED — nothing that
-    // could see it is available on that browser (no CDP port on office's
-    // desktop Chrome, and a screenshot needs the renderer we cannot reach).
-    // What IS established from the code is this ordering, and it makes the
-    // close unreachable for ANY renderer wedge, dialog or not.
+    // ✅ CONFIRMED THE SAME DAY, AND BY A ROUTE I HAD WRONGLY RULED OUT: an X
+    // screenshot of office's display showed Chrome's "Leave site? Changes you
+    // made may not be saved." prompt on that tab, and `ui-eye`'s AXPress
+    // cleared it — FOUR stacked prompts, after which both tabs closed
+    // themselves, because the close_tab calls that had "timed out" 20 minutes
+    // earlier were still queued behind the dialog.
+    // ⚠️ I had told two seats this was unobservable because ui-eye's schema
+    // text reads macOS-only. It is not; it reaches office fine. A tool's own
+    // documentation is not a measurement.
+    // ⇒ The ordering below is still the defect: it makes the close unreachable
+    // for ANY renderer wedge, dialog or not.
     //
     // ⭐ The cosmetics are worth 3 seconds and not one more. After that, forget
     // the tab without the renderer's cooperation and close it anyway.
