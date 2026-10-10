@@ -425,12 +425,44 @@ export const deleteRecording: Tool = {
         return errorResponse(`Recording with ID "${validatedParams.id}" not found`, true, undefined, max_tokens);
       }
 
+      // ⛔ DELETE THE CHILDREN TOO. This used to remove only the `recordings`
+      // row, so every delete stranded that recording's `recording_events`
+      // documents — unreachable, because the only way to find them is by the
+      // recordingId that no longer resolves — and `recording_annotations` with
+      // them.
+      //
+      // ⚠️ THE REAPER IS WHAT MAKES THIS COMPOUND, AND IT IS WHY THE TOURNIQUET
+      // LEAKED. `unibrowse-recording-reaper.py` exists to bound DB growth and
+      // deletes every unrequested auto-capture after 48h, through THIS handler.
+      // So the mechanism meant to keep the collection small was the mechanism
+      // filling it with orphans.
+      //
+      // MEASURED 2026-10-10: 69 orphaned event documents from 57 deleted
+      // recordings, 294.5 MB — 12.9% of a 2,284 MB collection — accumulated
+      // without one line of evidence anywhere, because nothing reads a document
+      // whose parent is gone and nothing counted them.
+      //
+      // ⚠️ Events are chunked (one doc per chunkIndex, to stay under Mongo's
+      // 16 MB limit), so deleteMANY, not deleteOne — a recording routinely has
+      // several. Memo `9740ad2a`.
+      const events = mongodb.getRecordingEventsCollection();
+      const annotations = mongodb.getRecordingAnnotationsCollection();
+
       await recordings.deleteOne({ id: validatedParams.id });
+      // ⚠️ Children AFTER the parent on purpose: if a child delete throws, the
+      // parent is already gone and a retry re-runs the child deletes, which are
+      // idempotent. The other order can leave a recording whose events are gone
+      // — a row that looks playable and is not.
+      const evRes = await events.deleteMany({ recordingId: validatedParams.id });
+      const anRes = await annotations.deleteMany({ recordingId: validatedParams.id });
 
       return jsonResponse({
         success: true,
-        message: `Recording "${existing.title}" deleted successfully`,
+        message: `Recording "${existing.title}" deleted successfully`
+          + ` (${evRes.deletedCount} event chunk(s), ${anRes.deletedCount} annotation(s))`,
         id: existing.id,
+        eventChunksDeleted: evRes.deletedCount,
+        annotationsDeleted: anRes.deletedCount,
       }, max_tokens);
     } catch (error) {
       return errorResponse(`Failed to delete recording: ${error.message}`, false, error, max_tokens);
