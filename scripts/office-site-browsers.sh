@@ -85,6 +85,23 @@ SITES=(
   # it. It holds no sessions BY DESIGN, so a session check against it reports
   # "out" and pages a human about a profile that is supposed to be empty.
   "claudelogin|DP-0|corner|about:blank"
+  # ⛔ ALSO NOT A SITE. One Chrome whose only job is `alpaca`'s daily paper-account
+  # signup. They asked for it 2026-10-11 07:05 EDT, because the 16 site browsers
+  # plus claudelogin broke the predicate alpaca-signup used to find a browser at
+  # all: it matched on there being EXACTLY ONE `docker-host-desktop` extension,
+  # and office went from one to seventeen overnight. It is pinned by extensionId
+  # on their side now, so this row must keep its own profile and therefore its own
+  # stable uuid — ⛔ do not rename the slot or delete the profile directory.
+  # ⚠️ IT MUST ALLOW INCOGNITO. Their only method that passes Cloudflare Turnstile
+  # is a fresh incognito tab in a REAL desktop Chrome; they expect a container
+  # sidecar to fail it. Incognito comes from the seeding template at
+  # scripts/utils/unibrowse-unpacked-entry.json, which carries "incognito": true —
+  # the same property the claudelogin flow depends on. ⛔ Do not "tidy" that key.
+  # ⛔ Never sign anything in here and never point a session check at it: like
+  # claudelogin it holds no persistent session by design.
+  # ⭐ Keep this one up even if the SITE browsers are taken down for load. Measured
+  # 2026-10-11: an idle profile costs 0.0-0.4% of a core, and this is not a site.
+  "alpacasignup|HDMI-0|corner|about:blank"
 )
 
 site_field() { # site_field <name> <monitor|slot|url>
