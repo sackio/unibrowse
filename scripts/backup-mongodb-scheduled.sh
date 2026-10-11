@@ -55,7 +55,22 @@ docker exec "${CONTAINER_NAME}" rm -rf "/tmp/backup_${DATE}"
 # ionice schedules is not the contended resource — CPU is. ⚠️ And `nice` cannot
 # reach `mongodump` above: that runs inside the container, where the host-side
 # docker client's priority does not apply.
-nice -n 19 tar -czf "${BACKUP_PATH}.tar.gz" -C "${BACKUP_DIR}" "$(basename ${BACKUP_PATH})" 2>&1 | tee -a "${LOG_FILE}"
+# ⭐ AND cut the work, do not merely yield it. MEASURED 2026-10-11 on 200 MB of
+# real dump bytes from this job's own archive: gzip -1 costs 3.04s user CPU for
+# 38.6 MB where the default -6 costs 8.03s for 31.5 MB — 2.6x less CPU for 22%
+# larger output. At the live dump size (~3.0 GB, matching mongo dataSize of
+# 3,196 MB) that is ~120s -> ~46s of core time per run. The archive grows ~472
+# -> ~577 MB, so ~6 GB more across the 30-day retention on a volume with 10 TB
+# free. ⇒ On a 6-core box at 0% idle that trade is lopsided in favour of -1.
+# ⚠️ Safe to slow this step down at all ONLY because there is no deadline to
+# bust: `systemctl show unibrowse-backup.service` reports Type=oneshot with
+# TimeoutStartUSec=infinity and RuntimeMaxUSec=infinity, and the timer fires
+# twice a day, so a niced run cannot overlap itself. ⛔ Re-check that before
+# lowering the priority further — `mind` deliberately avoided ionice IDLE class
+# on server4 for exactly this reason (memo c9b09d3c): a backup starved past its
+# own timeout is NO backup, which is worse than a slow one. Nice inherits, so
+# the gzip child runs at 19 too.
+nice -n 19 tar -I 'gzip -1' -cf "${BACKUP_PATH}.tar.gz" -C "${BACKUP_DIR}" "$(basename ${BACKUP_PATH})" 2>&1 | tee -a "${LOG_FILE}"
 rm -rf "${BACKUP_PATH}"
 
 # Get backup size
