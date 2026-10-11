@@ -259,9 +259,21 @@ cmd_map() { # site -> the extensionId the server knows it by
   for row in "${SITES[@]}"; do
     name="${row%%|*}"
     store="$(profile_dir "$name")/Default/Local Extension Settings"
-    uuid="$(strings "$store"/*/*.log 2>/dev/null \
+    # ⛔ TWO BUGS LIVED HERE, both silent, found 2026-10-11 when `alpaca`'s
+    # daily signup stopped because it could not tell 17 docker-host-desktop
+    # extensions apart and this map returned ONLY ITS HEADER.
+    #  1. The uuid is in the leveldb TABLE (`000007.ldb`), not in a `*.log` —
+    #     the store holds `LOG`/`LOG.old` (plain text, no uuid) and `*.ldb`, so
+    #     the old `*/*.log` glob matched nothing on every profile.
+    #  2. `set -euo pipefail` is on (line 43), so `grep` finding nothing exits 1
+    #     and KILLED THE WHOLE SCRIPT at the first profile — after the header had
+    #     already printed. ⇒ Header-plus-nothing read as "no browsers are
+    #     registered" when it actually meant "this function aborted". Hence the
+    #     `|| true`: a profile with no uuid must print "(never connected)" and
+    #     let the loop continue.
+    uuid="$( { strings "$store"/*/* 2>/dev/null \
             | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
-            | sort -u | head -2 | tr '\n' ' ')"
+            || true; } | sort -u | head -2 | tr '\n' ' ')"
     case "$(echo $uuid | wc -w)" in
       0) printf '%-15s %s\n' "$name" "(never connected)" ;;
       1) printf '%-15s ext_%s\n' "$name" "$(echo $uuid)" ;;
