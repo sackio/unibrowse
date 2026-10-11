@@ -128,4 +128,29 @@ PY
 )"
 rc=$?
 [ $rc -eq 0 ] && log "[guard] clear."
+
+# ⛔ ADDED 2026-10-11 AFTER A MEASURED HALF-DEPLOYMENT.
+# A restart is only half of shipping, and the other half fails SILENTLY, because
+# code and config travel by two different mechanisms:
+#   · CODE   — dist/ is bind-mounted, so `restart` picks up whatever `npm run build`
+#              last wrote. No build ⇒ no new code.
+#   · CONFIG — `restart` reuses the EXISTING container's environment and never
+#              re-reads docker-compose.yml. Only `up -d` recreates it.
+# Measured 16:21 EDT shipping 1fc5291: build + restart put the new code in the
+# running container while UNIBROWSE_SCREENSHOT_DIR stayed EMPTY, so the code took
+# its `|| "/tmp"` fallback — the exact bug the change existed to fix. The code grep
+# said SUCCESS. Nothing errored, nothing was broken, and nothing shipped.
+# ⭐ The general error: verifying one of two independent mechanisms and inferring
+# the other. Same shape as the header's 08-17 correction, one level in.
+if [ $rc -eq 0 ] || [ $rc -eq 1 ]; then
+  log ""
+  log "⛔ VERIFY A DEPLOY TWICE — CODE *AND* CONFIG. They ship by different mechanisms."
+  log "   Changed src/?     npm run build          (dist/ is bind-mounted; no build ⇒ no new code)"
+  log "   Changed compose?  docker compose up -d --no-deps mcp-server"
+  log "                     ⛔ \`restart\` does NOT re-read docker-compose.yml — env stays STALE."
+  log "   Then prove BOTH in the RUNNING container, never by \"Started\":"
+  log "     docker exec unibrowse-mcp-server sh -c 'grep -l <new-symbol> /app/dist/*.js'"
+  log "     docker exec unibrowse-mcp-server sh -c 'echo \$NEW_ENV_VAR'   # empty ⇒ NOT applied"
+  log "   Measured 2026-10-11: code live + env empty read as a clean deploy and shipped nothing."
+fi
 exit $rc
