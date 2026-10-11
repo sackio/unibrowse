@@ -1,0 +1,32 @@
+{
+  "entry": {
+    "account_extension_type": 0,
+    "creation_flags": 38,
+    "disable_reasons": [],
+    "from_webstore": false,
+    "has_started_service_worker": true,
+    "incognito": true,
+    "location": 4,
+    "newAllowFileAccess": true,
+    "path": "/mnt/nas/data/code/unibrowse/extension",
+    "service_worker_registration_info": {
+      "version": "1.0.1"
+    },
+    "serviceworkerevents": [
+      "action.onClicked",
+      "alarms.onAlarm",
+      "debugger.onDetach",
+      "debugger.onEvent",
+      "runtime.onInstalled",
+      "runtime.onStartup",
+      "tabs.onActivated",
+      "tabs.onCreated",
+      "tabs.onRemoved",
+      "tabs.onUpdated"
+    ],
+    "was_installed_by_default": false,
+    "was_installed_by_oem": false,
+    "withholding_permissions": false
+  },
+  "id": "pikjoohganfooeancifkoccakcocchmk"
+}
