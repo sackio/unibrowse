@@ -45,7 +45,17 @@ docker cp "${CONTAINER_NAME}:/tmp/backup_${DATE}" "${BACKUP_PATH}" 2>&1 | tee -a
 docker exec "${CONTAINER_NAME}" rm -rf "/tmp/backup_${DATE}"
 
 # Compress backup
-tar -czf "${BACKUP_PATH}.tar.gz" -C "${BACKUP_DIR}" "$(basename ${BACKUP_PATH})" 2>&1 | tee -a "${LOG_FILE}"
+# ⛔ `nice` is not cosmetic here. MEASURED 2026-10-11: this step is a
+# single-threaded gzip running several minutes, and on a 6-core office already at
+# 0% idle it starved mongod itself — its WiredTiger checkpoint cadence slipped
+# 60s -> 96s, and the recording reaper's prune query (1.5s when timed by hand)
+# timed out at 60s inside this window and alerted. The archive has no deadline;
+# mongod and everything talking to it do. ⚠️ No `ionice`: BACKUP_DIR and the
+# source are BOTH on the NAS over NFS, so the local block-device queue that
+# ionice schedules is not the contended resource — CPU is. ⚠️ And `nice` cannot
+# reach `mongodump` above: that runs inside the container, where the host-side
+# docker client's priority does not apply.
+nice -n 19 tar -czf "${BACKUP_PATH}.tar.gz" -C "${BACKUP_DIR}" "$(basename ${BACKUP_PATH})" 2>&1 | tee -a "${LOG_FILE}"
 rm -rf "${BACKUP_PATH}"
 
 # Get backup size
