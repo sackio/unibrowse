@@ -87,7 +87,16 @@ Tab reservations (multi-agent etiquette):
 - Pass takeover:true when you genuinely need to claim a tab from a dead agent.
 - Use browser_list_attached_tabs to see who owns what (response.tabs[].reservation).
 
-If a tool errors with "Multiple extensions are connected" it includes a prescriptive recovery path: pass extensionId, or attach a tab and use tabTarget. If your MCP client's tool schema doesn't show extensionId, your client cached tools/list before the schema bump — refresh with /mcp or session respawn.`;
+If a tool errors with "Multiple extensions are connected" it includes a prescriptive recovery path: pass extensionId, or attach a tab and use tabTarget. If your MCP client's tool schema doesn't show extensionId, your client cached tools/list before the schema bump — refresh with /mcp or session respawn.
+
+Screenshots and visual UI review:
+- NEVER pull an image through a tool response. browser_screenshot returns base64 at a measured 0.955 tokens per source byte — a 52KB PNG is ~49,600 tokens. Use browser_segmented_screenshot, which writes one PNG per CSS selector to disk and returns paths, then Read the file (Read renders images at no such cost).
+- ALWAYS pass outputDir, under /app/fetched/<yours>. That is bind-mounted to /mnt/nas/data/files/unibrowse-fetched and readable from every host. The old bare /tmp default wrote inside the container where nobody could open it and nothing errored.
+- The container writes as root, so you cannot rm your own screenshots as your user: docker exec unibrowse-mcp-server rm -rf /app/fetched/<yours>.
+- Pin the viewport with browser_set_device_metrics before capturing anything you intend to compare.
+- To point at one element for critique, macro visual_outline (aa5c1662-6da0-45f1-8550-9262dd508392) outlines and numbers elements; ALWAYS clear with visual_outline_clear (cf26e53f-b19a-4f87-bfe3-74cf2eca7b6a) and assert clean:true — you are annotating someone else's live browser.
+- Pixel regression: scripts/visual/visual-assess.py baseline|compare in the unibrowse repo. Judgment itself belongs to the frontend-design plugin, not to these tools.
+- Container sidecars lack CJK and Arabic fonts; non-Latin text renders as tofu there, so judge non-Latin UI on a real desktop browser.`;
 
 // Create server with WebSocket for browser extension
 export async function createServerWithTools(options: Options): Promise<Server> {

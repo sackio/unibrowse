@@ -41,6 +41,19 @@ services:
       MONGODB_DB: unibrowse
       NODE_ENV: production
       RECORDINGS_DIR: /app/recordings
+      # ⛔ Where browser_segmented_screenshot writes when the caller gives no
+      # outputDir. It used to fall back to a bare /tmp, and THERE IS NO /tmp
+      # MOUNT — so the default produced a PNG inside the container that the
+      # caller could not open and that vanished on restart, with no error.
+      # MEASURED 2026-10-11 both ways: a file written to the container's /tmp is
+      # absent on the host; /app/fetched resolves to the NAS and is readable
+      # fleet-wide. The code still falls back to /tmp when this is unset, so a
+      # plain non-container `stdio` deployment keeps the correct local default.
+      UNIBROWSE_SCREENSHOT_DIR: /app/fetched
+      # The same mount, named on both sides, so the server can tell a caller the
+      # HOST path for a file instead of warning them off a path that works.
+      UNIBROWSE_FETCHED_CONTAINER: /app/fetched
+      UNIBROWSE_FETCHED_HOST: /mnt/nas/data/files/unibrowse-fetched
       # Where browser_fetch_to_server stores bytes pulled out of a driven
       # browser. Ben chose the destination 2026-09-12: "~/files is fine".
       # ⚠️ That is /home/ben/files on OFFICE, and /home/ben is HOST-LOCAL — the

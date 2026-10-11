@@ -437,7 +437,15 @@ export const SegmentedScreenshotTool = z.object({
     "Capture multiple screenshots of specific page elements based on CSS selectors. " +
     "Each selector will produce a separate PNG image file saved to disk. " +
     "Elements are automatically scrolled into view before capture. " +
-    "Returns array of file paths (not base64) to minimize context usage."
+    "Returns array of file paths (not base64) to minimize context usage. " +
+    "⭐ PREFER THIS OVER browser_screenshot for anything you intend to look at: that one " +
+    "returns base64 through the response at a measured 0.955 tokens per source byte, so a " +
+    "52KB PNG costs ~49,600 tokens. Capture here, then Read the file — Read renders a PNG " +
+    "visually at no such cost. " +
+    "⛔ PASS outputDir EXPLICITLY, under /app/fetched/<yours>, which is bind-mounted to " +
+    "/mnt/nas/data/files/unibrowse-fetched and readable from every host. " +
+    "⚠️ The container writes as root, so clean up with " +
+    "`docker exec unibrowse-mcp-server rm -rf /app/fetched/<yours>`, not rm."
   ),
   arguments: z.object({
     selectors: z
@@ -451,7 +459,14 @@ export const SegmentedScreenshotTool = z.object({
     outputDir: z
       .string()
       .optional()
-      .describe("Output directory for screenshots (default: /tmp)"),
+      .describe(
+        "Output directory. ⛔ EFFECTIVELY REQUIRED — give it /app/fetched/<yours>. " +
+        "The server defaults to UNIBROWSE_SCREENSHOT_DIR (set to /app/fetched in " +
+        "docker-compose) and falls back to /tmp only for a non-container deployment. " +
+        "A bare /tmp inside the container has NO bind mount, so the PNG lands where " +
+        "the caller cannot open it and nothing errors. The response tells you which " +
+        "case you got: pathsAre 'host-visible' (with hostPaths) or 'container-local'."
+      ),
     prefix: z
       .string()
       .optional()
