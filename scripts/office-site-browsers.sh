@@ -74,6 +74,17 @@ SITES=(
   "designrush|HDMI-1-0|right|https://www.designrush.com/"
   "techbehemoths|DP-1-0|right|https://techbehemoths.com/"
   "zapier|DVI-I-1-1|right|https://partnerportal.zapier.com/"
+  # ⛔ NOT A SITE, and in this table on purpose. One Chrome whose only job is to
+  # host the Claude Code account-swap login. `agents` asked for it 2026-10-10
+  # 21:22 EDT, after Ben had office's main Chrome closed: claude-login-auto's
+  # resolver ends in `sort -u`, so without this it lands on whichever SITE
+  # browser happens to hold the lowest extension id and then fights `freelance`
+  # for that browser's single MV3 worker — contention that reaches them as a
+  # login failure rather than as contention.
+  # ⛔ Never sign a site in here, and never point unibrowse-login-watch.py at
+  # it. It holds no sessions BY DESIGN, so a session check against it reports
+  # "out" and pages a human about a profile that is supposed to be empty.
+  "claudelogin|DP-0|corner|about:blank"
 )
 
 site_field() { # site_field <name> <monitor|slot|url>
@@ -96,13 +107,22 @@ site_field() { # site_field <name> <monitor|slot|url>
 # (Ben, #unibrowse 2026-10-10 20:33). Left slot keeps the monitor's x; right
 # slot starts half a width in. Odd widths floor, so the right half gets the
 # spare pixel rather than overlapping.
-slot_geometry() { # slot_geometry <monitor> <left|right> -> "W H X Y"
-  local geo w h x y hw
+slot_geometry() { # slot_geometry <monitor> <left|right|corner> -> "W H X Y"
+  local geo w h x y hw cw ch
   geo="$(monitor_geometry "$1")" || return 1
   [ -n "$geo" ] || return 1
   read -r w h x y <<<"$geo"
   hw=$(( w / 2 ))
-  if [ "$2" = "right" ]; then echo "$(( w - hw )) $h $(( x + hw )) $y"
+  # ⭐ `corner` is for a browser that is NOT a site and owns no slot: a small
+  # window over the monitor's bottom-right. All 16 half-slots are spoken for,
+  # and the login browser only ever shows transient incognito windows, so
+  # overlapping a site costs less than evicting one.
+  if [ "$2" = "corner" ]; then
+    cw=960; ch=620
+    [ "$cw" -gt "$w" ] && cw="$w"
+    [ "$ch" -gt "$h" ] && ch="$h"
+    echo "$cw $ch $(( x + w - cw )) $(( y + h - ch ))"
+  elif [ "$2" = "right" ]; then echo "$(( w - hw )) $h $(( x + hw )) $y"
   else echo "$hw $h $x $y"; fi
 }
 
@@ -121,8 +141,25 @@ monitor_geometry() { # monitor_geometry <output> -> "W H X Y"
 profile_dir() { echo "$PROFILES_ROOT/$1"; }
 
 running_pid() { # the browser process owning this exact profile, or empty
-  local dir="$1"
-  pgrep -f -- "--user-data-dir=$dir " 2>/dev/null | head -1
+  # ⛔ `pgrep -f` ALSO MATCHES ANY SHELL whose command line mentions the profile
+  # — a diagnostic one-liner, another seat's grep, a cron wrapper. MEASURED
+  # 2026-10-10 21:28: right after this browser was killed, the same pattern
+  # still reported two "processes", both of them my own `bash -c` wrapper. A
+  # watchdog built on that reads "already up" for a browser that is GONE and
+  # never relaunches it. (Second instance of this class — the first counted
+  # launcher shells as Chrome processes on 2026-10-10 afternoon.)
+  # ⛔ AND SKIP `--type=` CHILDREN: a renderer's exe is the browser binary too,
+  # but `down` kills what this returns, and killing a renderer leaves the
+  # browser running while reporting success.
+  local dir="$1" p
+  for p in $(pgrep -f -- "--user-data-dir=$dir " 2>/dev/null); do
+    case "$(readlink -f "/proc/$p/exe" 2>/dev/null)" in
+      */chrome|*/chromium) ;;
+      *) continue ;;
+    esac
+    tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -q -- '--type=' && continue
+    echo "$p"; return 0
+  done
 }
 
 cmd_monitors() {
