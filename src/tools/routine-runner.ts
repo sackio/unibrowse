@@ -300,6 +300,71 @@ export function buildCtx(context: Context, defaults: CtxBaseOpts) {
     },
 
     /**
+     * Put local file paths into a file input, without a native file dialog.
+     *
+     * ⛔ THE PATHS MUST EXIST ON THE BROWSER'S OWN HOST, not on this server's.
+     * For a container sidecar that means /app/.chrome-profiles/... (bind-mounted
+     * from <repo>/chrome-profiles); the sidecar cannot see /mnt/nas at all. A
+     * host-side path produces a file input that looks accepted and uploads
+     * nothing, which is the failure this comment exists to prevent.
+     * ⭐ For an upload, the NETWORK LOG is the instrument — not the page's own
+     * uploads panel, which lags and lies. Measured on Zazzle 2026-10-12: three
+     * uploads returned HTTP 200 while the panel showed nothing.
+     */
+    async setFileInput(selector: string, paths: string[], opts: CtxBaseOpts = {}) {
+      return await callTool("setFileInput", "browser_set_file_input",
+        { selector, paths, ...mergeTarget(opts) }, mergeTarget(opts));
+    },
+
+    /**
+     * Run `action`, then wait for a NEW tab to appear in the same browser,
+     * attach it, and return its tab id.
+     *
+     * ⭐ WHY A ROUTINE NEEDS THIS AT ALL: some flows only continue in a tab the
+     * site opens itself. Zazzle's "Personalize this design" is one — the
+     * customizer is a new tab, and without capturing it a routine is stranded
+     * on a page that will never change again.
+     *
+     * ⛔ `browser_list_tabs` RETURNS A BARE ARRAY, not { tabs }. Reading
+     * `.tabs` off it yields undefined, which an "any new tabs?" diff reads as
+     * "no new tabs" — indistinguishable from the site not having opened one.
+     * Cost the all-tabs picker a wasted deploy on 2026-10-12.
+     *
+     * ⚠️ It diffs tab IDS, not counts: a flow that closes one tab while opening
+     * another leaves the count unchanged, and a count check would miss it.
+     */
+    async captureNewTab(
+      action: () => Promise<any>,
+      opts: CtxBaseOpts & { timeoutMs?: number; pollMs?: number } = {},
+    ) {
+      const target = mergeTarget(opts);
+      const ids = async (): Promise<number[]> => {
+        const raw: any = await callTool("captureNewTab", "browser_list_tabs",
+          { ...(target.extensionId ? { extensionId: target.extensionId } : {}) }, target);
+        const rows: any[] = Array.isArray(raw) ? raw : (raw?.tabs ?? []);
+        return rows.map((t) => Number(t?.tabId)).filter((n) => Number.isFinite(n));
+      };
+      const before = new Set(await ids());
+      const actionResult = await action();
+      const deadline = Date.now() + (opts.timeoutMs ?? 30000);
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, opts.pollMs ?? 750));
+        const fresh = (await ids()).filter((id) => !before.has(id));
+        if (fresh.length) {
+          // Newest id last: Chrome hands out ascending ids within a session.
+          const tabId = fresh.sort((a, b) => a - b)[fresh.length - 1];
+          await callTool("captureNewTab", "browser_ensure_attached",
+            { tabId, label: null, autoOpenUrl: null, ...target }, target);
+          return { tabId, actionResult };
+        }
+      }
+      throw new RoutineError(
+        "tab-gone",
+        `ctx.captureNewTab: no new tab appeared within ${opts.timeoutMs ?? 30000}ms`,
+      );
+    },
+
+    /**
      * Execute a stored macro by id from within this routine and return its
      * result — lets a routine COMPOSE existing extraction/util macros instead
      * of inlining their code. `page`-kind macros are wrapped + evaluated in the

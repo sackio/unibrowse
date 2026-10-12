@@ -279,6 +279,15 @@ export const createTab: Tool = {
           ` ⚠️ You passed no \`agent\`, but the extension reserved this new tab to "${claimedTo}" — a stale caller from a known extension bug, not a seat that wants it. Your next call may fail \`tab-reserved\`; pass agent:"<your-seat>" on browser_create_tab.`;
       }
 
+      // Auto-record host exemption — see Context.stopAutoRecordingIfExempt.
+      // A new tab is where auto-capture starts a recording, so this is the
+      // earliest point the server can act on it.
+      await context.stopAutoRecordingIfExempt(
+        result.url ?? validatedParams.url ?? null,
+        result.tabId,
+        (validatedParams as any).extensionId,
+      );
+
       return jsonResponse({
         tabId: result.tabId,
         label: result.label,

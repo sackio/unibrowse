@@ -34,6 +34,15 @@ export const navigate: ToolFactory = (snapshot) => ({
       await context.ensureAttachedFromParams(params);
       const validatedParams = NavigateTool.shape.arguments.parse(params);
       const result: any = await context.sendSocketMessage("browser_navigate", validatedParams);
+      // Auto-record host exemption — see Context.stopAutoRecordingIfExempt.
+      // Here rather than in ensureAttached because this is a point where the
+      // URL is already known: ensureAttached would need an extra round trip on
+      // every single attached call to learn it.
+      await context.stopAutoRecordingIfExempt(
+        validatedParams.url,
+        result?.tabId ?? validatedParams.tabTarget ?? null,
+        (validatedParams as any).extensionId,
+      );
       if (snapshot) {
         const tabT = validatedParams.tabTarget ?? result?.label ?? result?.tabId;
         return captureAriaSnapshot(context, "", tabT, max_tokens);

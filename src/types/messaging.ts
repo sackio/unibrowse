@@ -58,6 +58,15 @@ export interface SocketMessageMap {
     extensionId?: string;
     [key: string]: unknown;
   };
+  // Added 2026-10-12 for the auto-record host exemption: the server has to be
+  // able to ASK which recordings are live before it can stop an auto-started
+  // one. recordings.ts already sent this message; it was simply absent from the
+  // map, so every caller took a TS2345 instead of type checking.
+  browser_get_session_recording_state: {
+    tabTarget?: number | string;
+    extensionId?: string;
+    [key: string]: unknown;
+  };
   browser_stop_session_recording: {
     tabTarget?: number | string;
     extensionId?: string;

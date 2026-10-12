@@ -105,6 +105,30 @@ export interface ExtensionIdentity {
   tabCount: number;
 }
 
+/**
+ * Hosts whose pages must not be auto-recorded, lowercase, matched on the host
+ * itself and on any subdomain. Default fiverr.com; override with
+ * UNIBROWSE_NO_AUTORECORD_HOSTS as a comma-separated list.
+ * ⚠️ An env override REPLACES the default rather than adding to it.
+ */
+const AUTO_RECORD_EXEMPT_HOSTS: string[] = (
+  process.env.UNIBROWSE_NO_AUTORECORD_HOSTS ?? "fiverr.com"
+)
+  .split(",")
+  .map((h) => h.trim().toLowerCase())
+  .filter(Boolean);
+
+export function isAutoRecordExempt(url?: string | null): boolean {
+  if (!url) return false;
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false; // not a URL we can judge — leave the recording alone
+  }
+  return AUTO_RECORD_EXEMPT_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+}
+
 export class Context {
   private _ws: WebSocket | undefined;
   private _activeTabId: number | null = null;
@@ -624,6 +648,67 @@ export class Context {
    * @param autoOpenUrl - Optional URL to open if no tabs are attached
    * @returns Object with tabId and label of the attached tab
    */
+  /**
+   * Stop an AUTO-STARTED session recording when the tab is on a host the
+   * operator has exempted.
+   *
+   * ⭐ WHY THIS LIVES SERVER-SIDE AT ALL. The auto-capture decision is a
+   * hardcoded constant in extension/background.js (SESSION_AUTO_CAPTURE_ON_ATTACH,
+   * line 23), so a host list added there reaches no browser without the ↻
+   * control on chrome://extensions — and Ben's MacBook loads its own local copy
+   * of the extension with its sync cron PAUSED, so there it would need a file
+   * sync first as well. This path needs neither: it ships with a :9010 restart
+   * and works on every connected browser, including that MacBook.
+   *
+   * ⚠️ IT IS REACTIVE, AND THAT HAS A COST WORTH STATING. The recording has
+   * already started by the time we see it, so lib/network-interceptor.js is
+   * already in the page for THAT load — window.XMLHttpRequest stays patched
+   * until the next navigation. Clean from the next page load on, not this one.
+   * ⚠️ Stopping also SAVES what was captured. A few seconds of the exempt site
+   * is written to the server rather than discarded; removing that needs the
+   * extension-side change, not this one.
+   *
+   * Authorised by Ben, Slack #freelance 2026-10-12 18:01 ("yes go ahead"),
+   * answering an explicit ask to exempt fiverr.com. ⛔ This is a per-host
+   * exemption he asked for by name — it is NOT a weakening of auto-capture on
+   * attach, which is his standing instruction and stays exactly as it was.
+   */
+  async stopAutoRecordingIfExempt(
+    url?: string | null,
+    tabTarget?: number | string | null,
+    extensionId?: string,
+  ): Promise<void> {
+    if (!isAutoRecordExempt(url)) return;
+    try {
+      const target: any = { extensionId, tabTarget: tabTarget ?? undefined };
+      const st: any = await this.sendSocketMessage(
+        "browser_get_session_recording_state",
+        { tabTarget: tabTarget ?? undefined, extensionId } as any,
+        target,
+      );
+      // ⛔ `recordings` is ALWAYS an array and several can be live; read it
+      // rather than isRecording, which cannot tell you WHICH to stop.
+      const rows: any[] = Array.isArray(st?.recordings) ? st.recordings : [];
+      for (const r of rows) {
+        // ⛔ ONLY autoStarted ones. A recording a human or an agent deliberately
+        // asked for on an exempt host is their decision, not ours to cancel.
+        if (!r?.autoStarted || !r?.sessionId) continue;
+        await this.sendSocketMessage(
+          "browser_stop_session_recording",
+          { sessionId: r.sessionId, openReview: false, extensionId } as any,
+          target,
+        );
+        console.log(
+          `[autorecord] stopped auto-started recording ${r.sessionId} — ${url} is an exempt host`,
+        );
+      }
+    } catch (err: any) {
+      // ⛔ NEVER FATAL. This is a side effect of navigating; a navigation that
+      // worked must not report failure because a recording could not be read.
+      console.warn(`[autorecord] exemption check failed for ${url}: ${err?.message ?? err}`);
+    }
+  }
+
   async ensureAttached(options?: {
     tabId?: number;
     label?: string;
