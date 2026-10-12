@@ -28,6 +28,7 @@ Prints the LAN URL and the token on startup.
 """
 import argparse, json, os, re, secrets, subprocess, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--display", default=os.environ.get("OSDRIVE_DISPLAY", ":97"))
@@ -37,9 +38,16 @@ ap.add_argument("--ttl", type=int, default=1800)
 ap.add_argument("--prompt", default="Drive the browser on office display :97")
 A = ap.parse_args()
 
-TOKEN = secrets.token_hex(16)
+# ⭐ REUSING A TOKEN IS WHAT KEEPS A PUBLISHED LINK ALIVE ACROSS A RESTART.
+# The ATC artifact proxies to /r/<token>/, so a fresh token silently 404s the
+# page the operator is already holding — and from his side that is
+# indistinguishable from the relay being down. Passed in the ENVIRONMENT, not
+# in argv, so it does not sit in `ps` output for every local account to read.
+TOKEN = os.environ.get("OSRELAY_TOKEN") or secrets.token_hex(16)
+if not re.fullmatch(r"[0-9a-f]{32}", TOKEN):
+    raise SystemExit("OSRELAY_TOKEN must be 32 lowercase hex characters")
 STATE = {"state": "pending", "expires": time.time() + A.ttl, "taps": 0, "typed": 0,
-         "points": 0, "note": None}
+         "points": 0, "note": None, "replaying": False}
 LOCK = threading.Lock()          # one gesture at a time; XTEST has one pointer
 
 
@@ -65,7 +73,55 @@ def shot_png():
     return p.stdout
 
 
+def pointer_xy():
+    out = xrun(["getmouselocation", "--shell"]).stdout.decode()
+    mx, my = re.search(r"X=(\d+)", out), re.search(r"Y=(\d+)", out)
+    return (int(mx.group(1)) if mx else 0, int(my.group(1)) if my else 0)
+
+
+def shot_jpeg(width=760, zoom=False, quality=50):
+    """A SMALL JPEG for the live view, because the PNG cannot carry one.
+
+    Ben asked to watch the press land in real time (#freelance 2026-10-12
+    23:23: "I really should be able to see in real time the press animation
+    that is coming back"), and he watches it on a phone over cellular. Measured
+    on :97 the same evening: the root PNG is 106KB and 0.30s, a full screen
+    640px wide at q55 is 18KB and 0.25s, and a 560x420 crop centred on the
+    pointer is 29KB and 0.10s. ⇒ ZOOM IS THE CHEAPEST AND THE MOST USEFUL
+    FRAME, because during a replay the pointer is exactly on the button he is
+    pressing. /shot keeps serving the real pixels for anyone who wants them.
+    """
+    args = ["-window", "root"]
+    if zoom:
+        w, h = screen_size()
+        px, py = pointer_xy()
+        cw, ch = min(560, w), min(420, h)
+        cx = max(0, min(w - cw, px - cw // 2))
+        cy = max(0, min(h - ch, py - ch // 2))
+        args += ["-crop", f"{cw}x{ch}+{cx}+{cy}", "+repage"]
+    else:
+        args += ["-resize", f"{max(240, min(1600, width))}x>"]
+    args += ["-quality", str(max(20, min(90, quality))), "jpg:-"]
+    p = subprocess.run(["import", *args],
+                       env={**os.environ, "DISPLAY": A.display},
+                       capture_output=True, timeout=30)
+    if p.returncode != 0:
+        raise RuntimeError(p.stderr.decode()[:200] or "import failed")
+    return p.stdout
+
+
 def replay(path, fx, fy, hold_ms):
+    # ⭐ The flag is what lets the PAGE know a press is live without guessing
+    # from its own in-flight fetch: a reload mid-replay would otherwise show a
+    # slow static view during the one moment that matters.
+    STATE["replaying"] = True
+    try:
+        return _replay(path, fx, fy, hold_ms)
+    finally:
+        STATE["replaying"] = False
+
+
+def _replay(path, fx, fy, hold_ms):
     """Replay the operator's gesture. `path` wins when present; fx/fy+hold is
     the fallback for a plain tap, so an older page still works."""
     w, h = screen_size()
@@ -134,6 +190,9 @@ PAGE = r"""<!doctype html>
      and the release is lost. */
   #shot { width:100%; display:block; border-radius:8px; border:1px solid #2b2f37;
           touch-action:none; -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }
+  #badge { position:absolute; top:14px; right:16px; padding:3px 8px; border-radius:6px;
+           background:rgba(10,12,15,.72); color:#4ade80; font-size:11px; font-weight:600;
+           pointer-events:none; opacity:0; transition:opacity .3s; }
   #dot { position:absolute; width:26px; height:26px; margin:-13px 0 0 -13px; border:2px solid #4ade80;
          border-radius:50%; pointer-events:none; opacity:0; transition:opacity .4s; }
   .bar { display:flex; gap:8px; padding:0 10px 12px; }
@@ -147,22 +206,38 @@ PAGE = r"""<!doctype html>
 </style></head><body>
 <div id="app">
 <header><h1 id="prompt">Loading…</h1><div class="sub"><span id="left"></span></div></header>
-<div id="wrap"><img id="shot" alt="screen"><div id="dot"></div></div>
+<div id="wrap"><img id="shot" alt="screen"><div id="dot"></div><div id="badge"></div></div>
 <div class="row"><input id="txt" placeholder="Type here to send keys" autocomplete="off"></div>
-<div class="bar"><button id="send">Send text</button><button id="done" class="go">Done</button></div>
+<div class="bar"><button id="pause" style="flex:0 0 auto">Pause</button><button id="send">Send text</button><button id="done" class="go">Done</button></div>
 <div id="status">Touch the picture and it moves the real mouse on office.</div>
-<div class="hint">Your whole gesture is replayed — the path you take, how long you hold, and drags.
+<div class="hint">The picture is live. While your press is being replayed it zooms in on the
+pointer, so you watch the button fill as it happens. Your whole gesture is replayed — the path you
+take, how long you hold, and drags.
 Pressure is not sent: a mouse always reports the same pressure, so there is nothing to vary.</div>
 </div>
 <script>
-var busy=false, stopped=false;
+var busy=false, stopped=false, live=true, fails=0;
 function s(t){document.getElementById('status').textContent=t;}
-function shot(){ if(stopped) return; var img=document.getElementById('shot'), p=new Image();
-  p.onload=function(){img.src=p.src;};
-  p.onerror=function(){ fetch('shot?t='+Date.now()).then(function(r){return r.json();})
-    .then(function(j){s('Picture unavailable: '+((j&&j.error)||'unknown')+' — the browser may still be fine.');})
-    .catch(function(){s('Picture unavailable and the reason could not be read.');}); };
-  p.src='shot?t='+Date.now(); }
+function badge(t){ var b=document.getElementById('badge'); b.textContent=t||''; b.style.opacity=t?1:0; }
+// ⭐ CHAINED, NOT setInterval. Each frame is requested only once the previous
+// one has arrived, so a slow link slows the frame rate instead of queueing
+// requests the phone will never render — and during a replay the gap is zero,
+// which on the measured numbers (29KB, 0.10s a frame) is ~6fps of the press.
+var gen=0, hot=0;
+function frame(){ if(stopped) return; var my=++gen;
+  if(!live && !busy && Date.now()>hot){ badge(''); return setTimeout(function(){ if(my===gen) frame(); },600); }
+  var img=document.getElementById('shot'), p=new Image(), t=Date.now(), z=busy;
+  p.onload=function(){ if(my!==gen) return; img.src=p.src; fails=0;
+    badge(z?'\u25cf live \u00b7 zoomed on the press':'\u25cf live');
+    var gap = busy?0:(Date.now()<hot?250:700);
+    setTimeout(function(){ if(my===gen) frame(); }, Math.max(0,gap-(Date.now()-t))); };
+  p.onerror=function(){ if(my!==gen) return; fails++; badge('');
+    if(fails===1){ fetch('live?t='+Date.now()).then(function(r){return r.json();})
+      .then(function(j){s('Live view unavailable: '+((j&&j.error)||'unknown')+' — the browser may still be fine.');})
+      .catch(function(){s('Live view unavailable and the reason could not be read.');}); }
+    setTimeout(function(){ if(my===gen) frame(); },1500); };
+  p.src='live?z='+(z?1:0)+'&t='+Date.now(); }
+function shot(){ frame(); }
 function poll(){ fetch('state').then(function(r){return r.json();}).then(function(j){
   document.getElementById('prompt').textContent=j.prompt;
   document.getElementById('left').textContent = j.state==='pending'
@@ -189,7 +264,7 @@ document.addEventListener('pointermove', function(e){
   s('Holding '+((Date.now()-t0)/1000).toFixed(1)+'s'); e.preventDefault(); }, {passive:false});
 function end(e){ if(!track||busy||stopped) return; var pts=track; track=null;
   var p=pts[pts.length-1]; pts.push({fx:p.fx,fy:p.fy,ms:Date.now()-t0,down:false});
-  busy=true; document.getElementById('done').disabled=true;
+  busy=true; document.getElementById('done').disabled=true; frame();
   var held=Date.now()-t0;
   // The replay takes as long as the gesture did, so say so rather than freezing.
   var ends=Date.now()+held, tick=setInterval(function(){
@@ -201,18 +276,24 @@ function end(e){ if(!track||busy||stopped) return; var pts=track; track=null;
                            :('Refused: '+(j.error||'unknown'))); })
    .catch(function(){ s('Failed to send.'); })
    .then(function(){ clearInterval(tick); document.getElementById('dot').style.opacity=0;
-     document.getElementById('done').disabled=false; busy=false; setTimeout(shot,500); }); }
+     document.getElementById('done').disabled=false; busy=false;
+     // Stay fast for a few seconds: the thing he is waiting to see is what the
+     // page does AFTER the button is released.
+     hot=Date.now()+5000; }); }
 document.addEventListener('pointerup', end);
 document.addEventListener('pointercancel', end);
 window.addEventListener('blur', end);
 document.addEventListener('contextmenu', function(e){ if(e.target.id==='shot') e.preventDefault(); });
+document.getElementById('pause').onclick=function(){ live=!live;
+  this.textContent = live?'Pause':'Live'; s(live?'Live view on.':'Live view paused — it still goes live while a press replays.');
+  if(live) frame(); };
 document.getElementById('send').onclick=function(){ var v=document.getElementById('txt').value; if(!v) return;
   fetch('text',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:v})})
     .then(function(){document.getElementById('txt').value=''; s('Keys sent.'); setTimeout(shot,500);}); };
 document.getElementById('done').onclick=function(){
   if(busy){ s('Your gesture is still being replayed — wait for it to finish.'); return; }
   fetch('done',{method:'POST'}).then(poll); };
-shot(); poll(); setInterval(function(){ if(!busy) shot(); },2500); setInterval(poll,3000);
+frame(); poll(); setInterval(poll,3000);
 </script></body></html>"""
 
 
@@ -255,7 +336,33 @@ class H(BaseHTTPRequestHandler):
             return self._json(200, {"prompt": A.prompt, "state": STATE["state"],
                                     "taps": STATE["taps"], "typed": STATE["typed"],
                                     "points": STATE["points"],
+                                    "replaying": STATE["replaying"],
                                     "secondsRemaining": max(0, int(STATE["expires"] - time.time()))})
+        if leaf == "/live":
+            if not self._live():
+                return self._json(410, {"error": f"session is {STATE['state']}"})
+            q = parse_qs(urlparse(self.path).query)
+            zoom = q.get("z", ["0"])[0] not in ("0", "", "false")
+            try:
+                w = int(q.get("w", ["760"])[0])
+            except Exception:
+                w = 760
+            try:
+                jpg = shot_jpeg(width=w, zoom=zoom)
+            except Exception as e:
+                return self._json(502, {"error": f"screenshot failed: {e}"})
+            px, py = pointer_xy()
+            sw, sh = screen_size()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Pointer", f"{px},{py}")
+            self.send_header("X-Screen", f"{sw}x{sh}")
+            self.send_header("X-Zoom", "1" if zoom else "0")
+            self.send_header("X-Replaying", "1" if STATE["replaying"] else "0")
+            self.send_header("Content-Length", str(len(jpg)))
+            self.end_headers()
+            return self.wfile.write(jpg)
         if leaf == "/shot":
             if not self._live():
                 return self._json(410, {"error": f"session is {STATE['state']}"})
