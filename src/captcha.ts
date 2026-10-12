@@ -480,6 +480,36 @@ export function registerCaptchaRoutes(
     screenshot: (s: CaptchaSession) => Promise<string>;
     viewport: (s: CaptchaSession) => Promise<{ width: number; height: number }>;
     click: (s: CaptchaSession, x: number, y: number, holdMs?: number) => Promise<void>;
+    /**
+     * Make the tab's WINDOW the focused one before a press is replayed, and
+     * report whether it already was.
+     *
+     * ⭐ WINDOW FOCUS IS THE ONE THING THAT SEPARATED A HOLD THAT CLEARED
+     * PERIMETERX FROM THREE THAT DID NOT. 2026-10-12 on tab 41944444: a ~16s
+     * hold cleared the challenge at 21:18, and three holds of 12.98s, 1.23s and
+     * 11.23s delivered to the right coordinates at 21:35 did not. Reading
+     * hasFocus() minutes after each gave true and false respectively.
+     * ⛔ THAT PAIR OF READS IS NOT EVIDENCE ABOUT EITHER PRESS — neither was
+     * taken at the moment of a press, and this comment claimed otherwise until
+     * it was re-checked. What IS evidence: at 21:44 this code logged
+     * windowWasFocused=false, raised the window, and the challenge cleared on
+     * that single tap.
+     * ⚠️ The tab was `active` in its own window throughout — chrome.tabs said
+     * active:true — because `active` is per-window and says nothing about
+     * whether that window is the focused one. Nothing upstream of hasFocus()
+     * can see this, which is why it went unnoticed for an hour.
+     * ⚠️ An unfocused, occluded window also throttles requestAnimationFrame,
+     * and a press-and-hold widget's progress runs on rAF. Both the scoring and
+     * the animation are therefore suspect, and this costs one call to rule out.
+     * ⛔ THIS IS NOT A CORRELATION I HAVE PROVEN CAUSAL — n=1 either way, and
+     * PerimeterX's reasons are not observable. It makes the browser's state
+     * match the state it was in when a hold DID pass, which is the most we can
+     * say.
+     * ⚠️ It raises a window on the operator's own desktop, which is visible to
+     * whoever is sitting there. That is the cost, and it is why it happens on a
+     * press rather than on every screenshot poll.
+     */
+    focusTab?: (s: CaptchaSession) => Promise<{ wasFocused: boolean } | void>;
     type: (s: CaptchaSession, text: string) => Promise<void>;
     /**
      * Called once when the human presses Done, so the blocked requester is
@@ -590,6 +620,18 @@ export function registerCaptchaRoutes(
       // recover the duration was to difference the gaps between the page's
       // own screenshot polls in the [Call] log. A relay that replays an
       // operator's gesture must record the gesture it replayed.
+      // ⛔ BEST EFFORT, AND NEVER FATAL. A tap that refuses because the window
+      // could not be raised is strictly worse than a tap delivered to an
+      // unfocused window: the second might work, the first cannot.
+      let wasFocused: boolean | null = null;
+      if (deps.focusTab) {
+        try {
+          const r = await deps.focusTab(s);
+          wasFocused = r && typeof r.wasFocused === "boolean" ? r.wasFocused : null;
+        } catch (err: any) {
+          console.error(`[captcha] focusTab failed for ${s.id}: ${err?.message ?? err}`);
+        }
+      }
       const started = Date.now();
       const pending = deps.click(s, x, y, holdMs);
       s.inFlight = pending.then(
@@ -598,7 +640,8 @@ export function registerCaptchaRoutes(
       );
       await pending;
       console.log(
-        `[captcha] tap ${s.id} (${x},${y}) holdMs=${holdMs ?? "-"} took=${Date.now() - started}ms`,
+        `[captcha] tap ${s.id} (${x},${y}) holdMs=${holdMs ?? "-"} took=${Date.now() - started}ms ` +
+          `windowWasFocused=${wasFocused === null ? "?" : wasFocused}`,
       );
       s.cursor = { x, y };
       s.taps++;

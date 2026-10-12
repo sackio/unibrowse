@@ -602,6 +602,34 @@ async function main() {
       return { width, height };
     },
 
+    // ⭐ ONE ROUND TRIP TO ASK, THEN ONE TO RAISE — do not just raise. A seat
+    // that unconditionally brought a window forward would steal focus on the
+    // operator's desktop on every single tap, and the log line
+    // `windowWasFocused=` is the only record of which state the press was
+    // actually delivered in. That field is the whole point: it is what lets the
+    // next person test the focus hypothesis instead of re-arguing it.
+    focusTab: async (s) => {
+      const r: any = await globalContext.sendSocketMessage("browser_evaluate", {
+        expression: "document.hasFocus()",
+        tabTarget: s.tabTarget,
+        ...(s.extensionId ? { extensionId: s.extensionId } : {}),
+      } as any);
+      const v = r?.result ?? r?.value ?? r;
+      const wasFocused = v === true || v?.value === true;
+      if (!wasFocused) {
+        // browser_switch_tab does BOTH halves — chrome.tabs.update active:true
+        // and chrome.windows.update focused:true (extension/background.js
+        // handleSwitchTab). The window half is the one that matters here: the
+        // Fiverr tab was already active:true in a window sitting behind the
+        // operator's others.
+        await globalContext.sendSocketMessage("browser_switch_tab", {
+          tabTarget: s.tabTarget,
+          ...(s.extensionId ? { extensionId: s.extensionId } : {}),
+        } as any);
+      }
+      return { wasFocused };
+    },
+
     click: async (s, x, y, holdMs) => {
       // ⭐ `downDelay` IS THE HOLD, and it already exists in the extension:
       // cdp.js clickRealistic() sleeps downDelay between mousePressed and
