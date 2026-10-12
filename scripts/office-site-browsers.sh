@@ -338,7 +338,14 @@ cmd_map() { # site -> the extensionId the server knows it by
   # map is derivable from disk and needs no guessing from tab URLs. Asked for
   # by `freelance` 2026-10-10 20:36, who could see 8 identical-looking
   # docker-host-desktop connections and no way to tell which site each was.
-  local row name store uuid
+  local row name store uuids live u n LIVE_IDS
+  # The server is the only authority on what is connected RIGHT NOW. Empty on a
+  # failed curl, which makes every id read STALE — loud, and the right way round.
+  LIVE_IDS="$(curl -s -m 5 "${UNIBROWSE_SERVER:-http://127.0.0.1:9010}/extensions" 2>/dev/null \
+    | /usr/bin/python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+for e in d.get("connected",[]): print(e.get("extensionId",""))' 2>/dev/null || true)"
   printf '%-15s %s\n' SITE EXTENSION_ID
   for row in "${SITES[@]}"; do
     name="${row%%|*}"
@@ -355,14 +362,47 @@ cmd_map() { # site -> the extensionId the server knows it by
     #     registered" when it actually meant "this function aborted". Hence the
     #     `|| true`: a profile with no uuid must print "(never connected)" and
     #     let the loop continue.
-    uuid="$( { strings "$store"/*/* 2>/dev/null \
+    # ⛔ A uuid ON DISK IS NOT A LIVE POINTER, and this function used to present
+    #    one as if it were. The store ACCUMULATES uuids across launches: the
+    #    extension mints a new one each time Chrome starts, and the previous
+    #    ones stay behind in compacted .ldb files. MEASURED 2026-10-12 09:18 —
+    #    claudelogin's store held exactly one findable uuid, bb94966c, which had
+    #    DISCONNECTED at 03:17:52, while the live connection was 018237f9. With
+    #    one candidate the old code took the `1)` branch and printed the dead id
+    #    with no qualifier. `agents` was about to pin a login call to it.
+    # ⇒ Two changes: prefer the uuid from the NEWEST store file, and cross-check
+    #    every answer against the server's live registry. A stale id is now
+    #    labelled, never returned bare. Disk alone cannot say which live
+    #    connection belongs to which site, so when it disagrees we say that
+    #    rather than guessing.
+    # ⛔ A uuid ON DISK IS NOT A LIVE POINTER, and this function used to present
+    #    one as if it were. The store ACCUMULATES uuids across launches: the
+    #    extension mints a new one each time Chrome starts and the previous ones
+    #    stay behind in compacted .ldb files. MEASURED 2026-10-12 09:18 —
+    #    claudelogin's store held exactly one findable uuid, bb94966c, which had
+    #    DISCONNECTED at 03:17:52, while the live connection was 018237f9. With
+    #    one candidate the old code printed the dead id with no qualifier, and
+    #    `agents` was about to pin a login call to it.
+    # ⇒ Collect EVERY candidate, then let the server pick: the one that is
+    #    actually connected wins. Disk alone cannot rank them — an mtime sort
+    #    was tried and is also wrong, because `ls -t` word-splits on the space
+    #    in "Local Extension Settings" and silently yields nothing, which read
+    #    as "(never connected)" for a browser that was up.
+    uuids="$( { strings "$store"/*/* 2>/dev/null \
             | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
-            || true; } | sort -u | head -2 | tr '\n' ' ')"
-    case "$(echo $uuid | wc -w)" in
-      0) printf '%-15s %s\n' "$name" "(never connected)" ;;
-      1) printf '%-15s ext_%s\n' "$name" "$(echo $uuid)" ;;
-      *) printf '%-15s %s\n' "$name" "AMBIGUOUS: $uuid" ;;
-    esac
+            || true; } | awk '!seen[$0]++')"
+    live=""
+    for u in $uuids; do
+      if printf '%s' "$LIVE_IDS" | grep -qxF "ext_$u"; then live="ext_$u"; break; fi
+    done
+    n="$(printf '%s' "$uuids" | grep -c . || true)"
+    if [ -n "$live" ]; then
+      printf '%-15s %s\n' "$name" "$live"
+    elif [ "$n" = "0" ]; then
+      printf '%-15s %s\n' "$name" "(never connected)"
+    else
+      printf '%-15s %s\n' "$name" "⛔ STALE, none of $n stored id(s) is connected — use the live registry"
+    fi
   done
 }
 
