@@ -1255,10 +1255,14 @@ class CDPHelper {
       // WALL CLOCK, not by a sample count, so a slow link emits fewer samples
       // rather than overrunning the hold.
       //
-      // ⛔ THIS IS NOT KNOWN TO DEFEAT ANYTHING. Measured 2026-10-09: Fiverr's
-      // PerimeterX challenge still refused a hold with correct pressure. This
-      // removes two signatures that research says such widgets look at; whether
-      // they are the ones deciding is unproven.
+      // ⚠️ DO NOT READ THE 10-09 NEGATIVE AS A GENERAL ONE. Measured 2026-10-09:
+      // Fiverr's PerimeterX challenge refused a hold with correct pressure. ⭐ But
+      // on 2026-10-12 a ~16s hold through the captcha relay CLEARED that same
+      // challenge on the office desktop Chrome (session dc65861e, tab 41944444 —
+      // memos 1a93f00c and e192dc4f). So a correct replayed hold CAN pass, and
+      // what decides it is still unknown. This drift removes two signatures that
+      // research says such widgets look at; whether they are the ones being
+      // scored is unproven in both directions.
       if (downDelay > 400) {
         const until = Date.now() + downDelay;
         const SAMPLE_MS = 16;
