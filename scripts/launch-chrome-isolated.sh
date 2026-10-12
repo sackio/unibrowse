@@ -104,11 +104,27 @@ echo -e "${BLUE}→ Launching Chrome...${NC}"
 # ⚠️ This block used to read `if [ -z "$DISPLAY" ]; then export DISPLAY=:1; fi`,
 # with the comment "the typical display for the office server". Typical is not
 # current, and the failure is silent.
+# ⛔ AND DO NOT RESOLVE IT FROM logind ALONE. `show-session -p Display` is EMPTY
+# on a gdm-autologin session: MEASURED on office 2026-10-12 09:13, session
+# 1648966 read Type=x11 Active=yes Display=[] while X0 was owned by ben. Every
+# ben session read empty, so a logind-only resolver NEVER succeeds here — it
+# refuses a live desktop, which is how `!login admin` came to fail on all 4
+# hosts at 09:01. The SOCKET'S OWNER is the evidence that actually exists.
 if [ -z "${DISPLAY:-}" ]; then
-    echo "⛔ DISPLAY is unset and this script will NOT guess :1." >&2
-    echo "   X sockets present: $(ls /tmp/.X11-unix/ 2>/dev/null | tr '\n' ' ')" >&2
-    echo "   (an X0 owned by gdm is the GREETER — nobody is logged in)" >&2
-    echo "   Resolve it: loginctl show-session <your-session> -p Display --value" >&2
+    _me="$(id -un)"
+    for _sock in /tmp/.X11-unix/X*; do
+        [ -S "$_sock" ] || continue
+        _own="$(stat -c '%U' "$_sock" 2>/dev/null)"
+        [ "$_own" = "$_me" ] || [ "$_own" = "$(id -u)" ] || continue
+        export DISPLAY=":${_sock##*/X}"
+        break
+    done
+fi
+if [ -z "${DISPLAY:-}" ]; then
+    echo "⛔ DISPLAY is unset, no X socket is owned by $(id -un), and this script will NOT guess :1." >&2
+    echo "   X sockets present: $(ls -l /tmp/.X11-unix/ 2>/dev/null | awk 'NR>1{print $9"("$3")"}' | tr '\n' ' ')" >&2
+    echo "   (an X0 owned by gdm is the GREETER — nobody is logged in, and there is no UI remedy)" >&2
+    echo "   ⛔ \`loginctl show-session <id> -p Display\` is EMPTY under gdm-autologin — do not rely on it." >&2
     echo "   or pass it explicitly: DISPLAY=:N $0 ..." >&2
     exit 3
 fi

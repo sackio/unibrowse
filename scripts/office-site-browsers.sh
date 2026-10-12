@@ -74,6 +74,23 @@ resolve_display() {
     d="$(loginctl show-session "$sid" -p Display --value 2>/dev/null)"
     if [ -n "$d" ] && [ -S "/tmp/.X11-unix/X${d#:}" ]; then echo "$d"; return 0; fi
   done < <(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$me" '$3==u {print $1}')
+  # ⛔ logind's Display property is EMPTY on a gdm-autologin session, so the loop
+  #    above NEVER resolved on office and this function refused a LIVE desktop.
+  #    MEASURED 2026-10-12 09:13: session 1648966 read Type=x11 Active=yes
+  #    Display=[] (every ben session read empty) while /tmp/.X11-unix/X0 was
+  #    owned by ben. That false negative broke `!login admin` on all 4 hosts at
+  #    09:01 — claude-login-auto found no host browser because the */5 cron that
+  #    launches claudelogin had been exiting 3 here since Ben logged back in.
+  # ⇒ The SOCKET'S OWNER is the evidence that actually exists: `ben` is his
+  #    session, `gdm` is the greeter. Still fails closed — a gdm-owned socket is
+  #    skipped and we return 1, which is the whole point of not guessing :1.
+  local sock own
+  for sock in /tmp/.X11-unix/X*; do
+    [ -S "$sock" ] || continue
+    own="$(stat -c '%U' "$sock" 2>/dev/null)"
+    [ "$own" = "$me" ] || [ "$own" = "$(id -u)" ] || continue
+    echo ":${sock##*/X}"; return 0
+  done
   return 1
 }
 
