@@ -19,9 +19,6 @@ import type { Tool } from "./tool";
  * open a tab to satisfy a request that named none.
  */
 
-/** See the note on NOTIFY_FROM in tools/captcha.ts — an unbound name gives a real DM. */
-const NOTIFY_FROM = "unibrowse-slipway";
-
 function view(s: SlipwaySession) {
   return {
     sessionId: s.id,
@@ -89,16 +86,22 @@ export const openSlipway: Tool = {
       const notified = published.url
         ? await sendBrokerMessage({
             to: holder,
-            // ⛔ ALWAYS THE UNBOUND NAME, AND THIS IS WHERE SLIPWAY DIVERGES
-            // FROM THE CAPTCHA RELAY ON PURPOSE. Sending as the requester would
-            // make the bridge post this into that agent's Slack CHANNEL, which
-            // is right for a captcha notice — Ben asked for exactly that — and
-            // wrong here: a Slipway URL is a long-lived credential to a browser
-            // that is logged into everything, and a channel has more readers
-            // than a DM. An unbound sender falls through to a real DM.
-            // ⇒ `agent` still decides who is recorded as the requester; it does
-            //   not decide where a credential is posted.
-            from: NOTIFY_FROM,
+            // ⛔ THE SEAT'S OWN NAME, SO THE BRIDGE POSTS THIS IN #unibrowse
+            // RATHER THAN DMing THE OPERATOR. This file briefly did the
+            // opposite, on my reasoning that a long-lived browser-driving URL
+            // deserves the smaller audience of a DM. Ben overruled it within
+            // minutes, twice: #unibrowse 15:32 "don't worry about credentials
+            // and stuff that's fine you can put it right here it's fine", and
+            // #atc 15:32 (relayed by `atc`, ts 1791833522.490209) "I don't know
+            // why these are going to [the ATC bridge] I don't like it it should
+            // be going to the unibrow's channel or whatever".
+            // ⭐ DO NOT "FIX" THIS BACK. And do not generalise it either:
+            // `unibrowse-captcha` deliberately stays on an unbound name and
+            // keeps DMing him, because he approved that one at source
+            // (#agents 2026-10-09) on the reasoning that a captcha is the one
+            // alert no agent can action, so routing it to a seat's channel
+            // guarantees nobody solves it.
+            from: requester ?? "unibrowse",
             subject: "Slipway is open",
             content:
               `Drive ${session.label} from your phone:\n\n${url}\n\n` +

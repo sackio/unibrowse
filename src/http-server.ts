@@ -751,6 +751,15 @@ async function main() {
       } as any);
     },
 
+    // ⛔ ensureAttached WITH NO tabId attaches the browser's own current tab.
+    // Reached only from the page's explicit button — see attachCurrent's
+    // contract in slipway.ts for why that is not the auto-attach the module
+    // header forbids.
+    attachCurrent: async (s) => {
+      const r = await globalContext.ensureAttached({ extensionId: s.extensionId });
+      return r.tabId;
+    },
+
     record: async (s, on) => {
       await globalContext.sendSocketMessage(
         on ? "browser_start_session_recording" : "browser_stop_session_recording",

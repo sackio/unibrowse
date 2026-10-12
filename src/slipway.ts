@@ -234,6 +234,9 @@ const PAGE = String.raw`<!doctype html>
       <button id="down">Scroll down</button>
     </div>
     <div class="bar">
+      <button id="attach">Attach current tab</button>
+    </div>
+    <div class="bar">
       <button id="rec">Record</button>
       <button id="end" class="go">Finish</button>
     </div>
@@ -244,6 +247,12 @@ const PAGE = String.raw`<!doctype html>
 // ⛔ RELATIVE URLS ONLY — this page is mounted at /f/<id>/ by the artifact
 // proxy, so an absolute path resolves at the artifact domain root and 404s.
 var busy = false, stopped = false, shotFailed = false, haveTab = false;
+// ⛔ A 1x1 TRANSPARENT PNG, SET BEFORE ANYTHING ELSE. An <img> with no src
+// renders the browser's broken-image icon, which says "this page is broken"
+// when the truth is "no tab is selected yet". Measured: that is exactly how
+// Ben read it. The placeholder makes the empty state silent so the status line
+// can do the talking.
+var BLANK = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 
 function setStatus(t) { document.getElementById('status').textContent = t; }
 
@@ -278,7 +287,12 @@ function post(body) {
     .then(function (r) { return r.json(); });
 }
 
-var lastTabsKey = '';
+// ⛔ null, NOT ''. An EMPTY roster also stringifies to '', so initialising
+// this to '' meant the first poll of a browser with no attached tabs compared
+// equal, skipped the rebuild, and left the menu saying "Loading tabs…" for
+// ever — a state that reads as a hung page and is actually an accurate but
+// unrendered "none". The empty case must render like any other.
+var lastTabsKey = null;
 function poll() {
   fetch('state').then(function (r) { return r.json(); }).then(function (s) {
     document.getElementById('ttl').textContent = s.label || 'Slipway';
@@ -305,6 +319,9 @@ function poll() {
       sel.innerHTML = '';
       if (!(s.tabs || []).length) {
         sel.innerHTML = '<option value="">No attached tabs</option>';
+        haveTab = false;
+        document.getElementById('shot').src = BLANK;
+        setStatus('This browser has nothing attached yet — press "Attach current tab".');
       } else {
         (s.tabs || []).forEach(function (t) {
           var o = document.createElement('option');
@@ -409,6 +426,15 @@ document.getElementById('up').onclick = function () {
 document.getElementById('down').onclick = function () {
   post({ cmd: 'scroll', y: 400 }).then(function () { setTimeout(shot, 350); });
 };
+document.getElementById('attach').onclick = function () {
+  setStatus('Attaching whatever tab that browser is showing…');
+  post({ cmd: 'attach' }).then(function (j) {
+    if (j.ok) {
+      haveTab = true; lastTabsKey = null; setStatus('Attached.');
+      poll(); setTimeout(shot, 600);
+    } else setStatus('Could not attach: ' + (j.error || 'unknown'));
+  });
+};
 document.getElementById('rec').onclick = function () {
   var on = document.getElementById('rec').className !== 'rec';
   setStatus(on ? 'Starting recording…' : 'Stopping recording…');
@@ -422,6 +448,7 @@ document.getElementById('end').onclick = function () {
   fetch('done', { method: 'POST' }).then(poll);
 };
 
+document.getElementById('shot').src = BLANK;
 poll();
 setInterval(function () { if (!busy) shot(); }, 2200);
 setInterval(poll, 3000);
@@ -448,6 +475,18 @@ export function registerSlipwayRoutes(
     scroll: (s: SlipwaySession, y: number) => Promise<void>;
     pressKey: (s: SlipwaySession, key: string) => Promise<void>;
     record: (s: SlipwaySession, on: boolean) => Promise<void>;
+    /**
+     * Attach this browser's current tab and return its id.
+     *
+     * ⚠️ THIS IS THE ONE PLACE SLIPWAY ATTACHES ANYTHING, and it contradicts
+     * nothing in the header: the rule there is that MINTING must not open or
+     * attach a tab to satisfy a request that named none. This runs only when
+     * the person holding the page presses a button, which is a choice, not an
+     * inference. Without it a browser with nothing attached is a dead page —
+     * measured on Ben's own Chrome within minutes of shipping, where it
+     * presented as "the tab menu just says loading and the image is broken".
+     */
+    attachCurrent: (s: SlipwaySession) => Promise<number | string>;
   },
 ) {
   /** A live session, or the response already sent. */
@@ -585,6 +624,12 @@ export function registerSlipwayRoutes(
           }
           s.tabTarget = hit.tabTarget;
           return res.json({ ok: true, tabTarget: s.tabTarget });
+        }
+
+        if (cmd === "attach") {
+          const tabTarget = await deps.attachCurrent(s);
+          s.tabTarget = tabTarget;
+          return res.json({ ok: true, tabTarget });
         }
 
         if (cmd === "scroll") {
