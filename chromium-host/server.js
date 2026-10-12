@@ -202,8 +202,9 @@ const selfHealProfile = (profileDir) => {
 //   Default/Service Worker               — chromium's SW database (extension
 //                                          SW + PAGE SWs). ⛔ This line used to
 //                                          claim page SWs "reinstall themselves
-//                                          cheaply on next visit". FALSIFIED
-//                                          2026-10-12 — see the warning below.
+//                                          cheaply on next visit". That is
+//                                          UNTESTED, not falsified — see the
+//                                          warning below.
 //   Default/Extension State              — chromium's per-extension state
 //   Default/Local Extension Settings     — extension's chrome.storage.local
 //                                          (incl. stable __unibrowseExtensionId,
@@ -221,29 +222,41 @@ const selfHealProfile = (profileDir) => {
 //   Default/Web Data                     — autofill / forms
 //
 // ⛔ "COOKIES PRESERVED" IS NOT "THE SITE STILL WORKS", AND THE LIST ABOVE
-// IMPLIED OTHERWISE UNTIL 2026-10-12.
-// MEASURED by `ha`, reported 01:11 EDT, after this tier ran on ecobee-broker:
-// the ecobee consumerportal renders BLANK — bodyLen 0 after 35s, holding
-// consumerportal/index.html#/devices and NOT bouncing to /en-us/, which is what
-// a logged-out session does. The `auth0` cookie survived (httpOnly, exp 10-15).
-// ⇒ Credentials intact, app shell not loading: that SPA appears to serve its
-// shell from the SW cache, so clearing the SW database takes the site down
-// while every preserved item above is exactly as advertised.
+// IMPLIED OTHERWISE UNTIL 2026-10-12. ⭐ That lesson stands on its own — a
+// preservation list answers "what survives", not "does the site work", so state
+// what BREAKS too. The incident that prompted it does NOT support a cause:
+// WHAT HAPPENED: after this tier ran on ecobee-broker, the ecobee consumerportal
+// rendered BLANK — bodyLen 0 after 35s, holding consumerportal/index.html#/devices
+// and NOT bouncing to /en-us/, which is what a logged-out session does. The
+// `auth0` cookie survived (httpOnly, exp 10-15).
+// ⛔ THIS TIER IS UNPROVEN AS THE CAUSE, AND THE CAUSE IS UNKNOWN. An earlier
+// version of this comment blamed the SW clear; that is RETRACTED. `ha` proposed
+// the SW-shell theory at 01:11 EDT and WEAKENED IT THEMSELVES at 01:14 by
+// measuring the tab: readyState complete, 23 scripts, body holding 15 top-level
+// children including DIV.ng-scope ⇒ the AngularJS app BOOTSTRAPPED and then
+// rendered nothing. A missing SW cache does not fit that. They also ruled out
+// the integration re-navigating the shared tab (href byte-identical 42s apart).
+// Their leading idea, ALSO NOT ESTABLISHED, is a dead portal SESSION: an
+// unexpired httpOnly auth0 cookie coexisting with a server-side-dead session —
+// the shape they measured 2026-10-11, where the portal showed a Logout link and
+// "Hi !" / "My Devices (0)" at 111 chars, i.e. the cookie passes the page gate
+// while the API returns nothing. Today is the same failure further along, at 0.
 // ⭐ CONTROL, same tier, same night, measured by the unibrowse seat: profile
 // alpaca-signup took the identical clear at ~00:45 and app.alpaca.markets/signup
-// rendered FULLY afterwards (6 inputs, 1 form, #root height 2181). ⇒ NOT a
-// general SPA hazard — it bites exactly those sites whose shell is SW-served,
-// and nothing here can tell you which in advance.
-// ⚠️ UNRESOLVED: whether the blank portal breaks ha's JWT macro or is merely
+// rendered FULLY afterwards (6 inputs, 1 form, #root height 2181). A real
+// datapoint about this tier's blast radius — and no longer needed to exonerate a
+// tier nobody is accusing.
+// ⚠️ UNRESOLVED: whether the blank portal breaks ha's JWT macro at all, or is
 // cosmetic. `ha` deliberately did NOT re-seed Auth0 at 01:20 — a botched login
 // locks an account with a lock history for days — and armed a 07:30 check.
-// ⛔ A HEALTHY POLL IS NOT EVIDENCE EITHER WAY: ha measured reads surviving
-// ~11.5h on a cached token after an earlier sidecar death, so "it is polling"
-// cannot distinguish a working macro from a dead one.
-// ⇒ BEFORE APPLYING THIS TIER TO ANOTHER SPA-BACKED BROKER, ask whether the
-// site's shell comes from a service worker. Cheap reversible probe:
-// navigator.serviceWorker.getRegistrations() + unregister() + reload — which
-// costs nothing next to an Auth0 re-seed.
+// ⛔ A HEALTHY POLL IS NOT EVIDENCE EITHER WAY: ha measured ecobee reads
+// surviving ~11.5h on a cached token after an earlier sidecar death, so
+// "it is polling" cannot distinguish a working JWT macro from a dead one.
+// ⭐ METHOD, worth more than the incident: what killed the SW theory inside three
+// minutes was a CAVEAT attached to the suggestion that carried it — "the initial
+// HTML cannot itself come from the SW, so a fully blank page is not completely
+// explained by the SW clear alone." State the limit of your own hypothesis and
+// someone else can falsify it cheaply. Memo `c0f8d91f`.
 const STALE_EXTENSION_DIRS = [
   "Default/Service Worker",
   "Default/Extension State",
