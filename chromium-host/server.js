@@ -200,8 +200,10 @@ const selfHealProfile = (profileDir) => {
 // Wiped:
 //   Singleton{Lock,Socket,Cookie}        — point at the dead chromium's PID
 //   Default/Service Worker               — chromium's SW database (extension
-//                                          SW + page SWs; page SWs reinstall
-//                                          themselves cheaply on next visit)
+//                                          SW + PAGE SWs). ⛔ This line used to
+//                                          claim page SWs "reinstall themselves
+//                                          cheaply on next visit". FALSIFIED
+//                                          2026-10-12 — see the warning below.
 //   Default/Extension State              — chromium's per-extension state
 //   Default/Local Extension Settings     — extension's chrome.storage.local
 //                                          (incl. stable __unibrowseExtensionId,
@@ -217,6 +219,31 @@ const selfHealProfile = (profileDir) => {
 //   Default/Session Storage              — page-side sessionStorage
 //   Default/IndexedDB                    — page-side IndexedDB
 //   Default/Web Data                     — autofill / forms
+//
+// ⛔ "COOKIES PRESERVED" IS NOT "THE SITE STILL WORKS", AND THE LIST ABOVE
+// IMPLIED OTHERWISE UNTIL 2026-10-12.
+// MEASURED by `ha`, reported 01:11 EDT, after this tier ran on ecobee-broker:
+// the ecobee consumerportal renders BLANK — bodyLen 0 after 35s, holding
+// consumerportal/index.html#/devices and NOT bouncing to /en-us/, which is what
+// a logged-out session does. The `auth0` cookie survived (httpOnly, exp 10-15).
+// ⇒ Credentials intact, app shell not loading: that SPA appears to serve its
+// shell from the SW cache, so clearing the SW database takes the site down
+// while every preserved item above is exactly as advertised.
+// ⭐ CONTROL, same tier, same night, measured by the unibrowse seat: profile
+// alpaca-signup took the identical clear at ~00:45 and app.alpaca.markets/signup
+// rendered FULLY afterwards (6 inputs, 1 form, #root height 2181). ⇒ NOT a
+// general SPA hazard — it bites exactly those sites whose shell is SW-served,
+// and nothing here can tell you which in advance.
+// ⚠️ UNRESOLVED: whether the blank portal breaks ha's JWT macro or is merely
+// cosmetic. `ha` deliberately did NOT re-seed Auth0 at 01:20 — a botched login
+// locks an account with a lock history for days — and armed a 07:30 check.
+// ⛔ A HEALTHY POLL IS NOT EVIDENCE EITHER WAY: ha measured reads surviving
+// ~11.5h on a cached token after an earlier sidecar death, so "it is polling"
+// cannot distinguish a working macro from a dead one.
+// ⇒ BEFORE APPLYING THIS TIER TO ANOTHER SPA-BACKED BROKER, ask whether the
+// site's shell comes from a service worker. Cheap reversible probe:
+// navigator.serviceWorker.getRegistrations() + unregister() + reload — which
+// costs nothing next to an Auth0 re-seed.
 const STALE_EXTENSION_DIRS = [
   "Default/Service Worker",
   "Default/Extension State",
