@@ -84,6 +84,25 @@ export interface CaptchaSession {
    * socket directly, so it never got the fix.
    */
   cursor: { x: number; y: number } | null;
+  /**
+   * Resolves when a relayed press that is STILL BEING REPLAYED in the browser
+   * finishes. ⛔ `done` MUST WAIT FOR IT. A press-and-hold is replayed only
+   * after the phone releases, so for up to 20s the browser is mid-press while
+   * the page is idle and the Done button is sitting there — and the human
+   * presses it, because from their side the gesture is over.
+   *
+   * MEASURED 2026-10-12, session 0737b650: release at 21:28:55.8Z started a
+   * ~6.8s hold; Ben pressed Done 2.1s later; the solve notice reached
+   * `freelance` at 21:28:57.9Z and the press did not land until 21:29:02.7Z.
+   * The requester resumed, read the page five seconds BEFORE the press
+   * arrived, and correctly reported the challenge unsolved. Marking the
+   * session solved early also replaced the page with "Thanks — sent back" and
+   * stopped the screenshot poll, so Ben never saw the result of his own press
+   * either: "I held it down but it still wasn't reflecting my press."
+   * ⚠️ Not persisted and not in publicView — it is in-flight state, not a fact
+   * about the session.
+   */
+  inFlight?: Promise<void> | null;
 }
 
 const sessions = new Map<string, CaptchaSession>();
@@ -217,6 +236,7 @@ const PAGE = String.raw`<!doctype html>
   button { flex:1; padding:13px; font-size:15px; font-weight:600; border:0;
            border-radius:8px; background:#2b2f37; color:#e8eaed; }
   button.go { background:#2563eb; color:#fff; }
+  button:disabled { opacity:.45; }
   input { width:100%; padding:12px; font-size:16px; border-radius:8px;
           border:1px solid #2b2f37; background:#1d2026; color:#e8eaed; }
   .row { padding:0 10px 10px; }
@@ -337,6 +357,9 @@ function endHold(e) {
   if (holdTimer) { clearInterval(holdTimer); holdTimer = null; }
   if (busy || stopped) { document.getElementById('dot').style.opacity = 0; return; }
   busy = true;
+  // Greyed as well as refused: the button that must not be pressed should not
+  // look pressable for the seconds the browser is mid-press.
+  document.getElementById('done').disabled = true;
   // Anything under ~250ms is an ordinary tap; send it without a hold so the
   // extension keeps its own randomised 50-100ms down-delay, which is more
   // human than a measured 180ms replayed exactly.
@@ -387,6 +410,7 @@ function endHold(e) {
     .then(function () {
       if (replayTimer) { clearInterval(replayTimer); replayTimer = null; }
       document.getElementById('dot').style.opacity = 0;
+      document.getElementById('done').disabled = false;
       busy = false; setTimeout(shot, 600);
     });
 }
@@ -421,6 +445,17 @@ document.getElementById('send').onclick = function () {
 };
 
 document.getElementById('done').onclick = function () {
+  // ⛔ DO NOT LET THE HUMAN END THE SESSION MID-PRESS. From their side the
+  // gesture finished when they lifted their finger; in the browser it is only
+  // starting, and Done would tell the waiting agent the captcha is dealt with
+  // before the press lands. Measured on session 0737b650 — see the inFlight
+  // field in src/captcha.ts. The server also waits: a stale page is still out
+  // there in somebody's phone and the two defences fail differently.
+  if (busy) {
+    document.getElementById('status').textContent =
+      'Your press is still being replayed in the browser — wait for it to finish, then press Done.';
+    return;
+  }
   fetch('done', { method: 'POST' }).then(poll);
 };
 
@@ -550,7 +585,21 @@ export function registerCaptchaRoutes(
         }
         holdMs = Math.round(h);
       }
-      await deps.click(s, x, y, holdMs);
+      // ⛔ LOG WHAT WAS ACTUALLY SENT. Nothing did until 2026-10-12, and when
+      // Ben reported a hold that "wasn't reflecting my press" the only way to
+      // recover the duration was to difference the gaps between the page's
+      // own screenshot polls in the [Call] log. A relay that replays an
+      // operator's gesture must record the gesture it replayed.
+      const started = Date.now();
+      const pending = deps.click(s, x, y, holdMs);
+      s.inFlight = pending.then(
+        () => { s.inFlight = null; },
+        () => { s.inFlight = null; },
+      );
+      await pending;
+      console.log(
+        `[captcha] tap ${s.id} (${x},${y}) holdMs=${holdMs ?? "-"} took=${Date.now() - started}ms`,
+      );
       s.cursor = { x, y };
       s.taps++;
       res.json({ ok: true, x, y, holdMs: holdMs ?? null, taps: s.taps });
@@ -574,9 +623,21 @@ export function registerCaptchaRoutes(
     }
   });
 
-  app.post("/captcha/:token/done", (req: any, res: any) => {
+  app.post("/captcha/:token/done", async (req: any, res: any) => {
     const s = live(req, res);
     if (!s) return;
+    // ⛔ A PRESS STILL IN FLIGHT OUTRANKS THE DONE BUTTON — see `inFlight`.
+    // The bound is holdMs's own ceiling plus the move and the round trip; past
+    // that something is wrong with the socket, and reporting solved late is
+    // worse than reporting it on a press that will never arrive.
+    if (s.inFlight) {
+      let timer: any;
+      await Promise.race([
+        s.inFlight,
+        new Promise<void>((r) => { timer = setTimeout(r, 25000); timer?.unref?.(); }),
+      ]);
+      clearTimeout(timer);
+    }
     s.state = "solved";
     s.solvedAt = Date.now();
     s.note = typeof req.body?.note === "string" ? req.body.note.slice(0, 500) : null;
