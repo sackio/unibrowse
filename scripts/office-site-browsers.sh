@@ -289,6 +289,9 @@ cmd_up() {
     return 0
   fi
 
+  local ids_before
+  ids_before="$(live_ext_ids)"
+
   geo="$(slot_geometry "$mon" "$slot")"
   [ -n "$geo" ] || { echo "$name: monitor $mon not found — run '$0 monitors'" >&2; return 1; }
   read -r w h x y <<<"$geo"
@@ -331,6 +334,69 @@ SEED
     --disable-features=TranslateUI,DisableLoadExtensionCommandLineSwitch \
     "$url" \
     >>"$LOG_DIR/$name.log" 2>&1 </dev/null
+
+  # ⭐ Record the id this launch produced, while the mapping is unambiguous.
+  # ⚠️ The MV3 service worker does not connect instantly — claudelogin took ~90s
+  #    on 2026-10-12 — so this waits up to 150s. A browser that never registers
+  #    is reported, not silently skipped: alpacasignup launched at 09:15 and had
+  #    still not registered 11 minutes later, and nothing said so.
+  local newid
+  if newid="$(await_new_ext_id "$ids_before" "$name")"; then
+    printf '%s\n' "$newid" > "$(extid_file "$name")"
+    echo "$name: registered as $newid (recorded in $(extid_file "$name"))"
+  else
+    rm -f "$(extid_file "$name")"
+    echo "⚠️ $name: launched (pid $(running_pid "$dir" || echo '?')) but NO new extension registered within 150s." >&2
+    echo "   Chrome is running; its service worker is not talking to ${UNIBROWSE_SERVER:-http://127.0.0.1:9010}." >&2
+    echo "   ⛔ Any stale $(extid_file "$name") has been REMOVED — a pointer nobody can reach is worse than none." >&2
+    return 4
+  fi
+}
+
+# ⭐ RECORD WHICH extensionId A LAUNCH PRODUCED, AT LAUNCH TIME.
+# The uuid is minted fresh by the extension on every Chrome start, so it cannot
+# be predicted and cannot be read back reliably afterwards: the profile's
+# leveldb store ACCUMULATES old uuids and may not have flushed the new one at
+# all (measured 2026-10-12 — `map` confidently returned an id that had died
+# hours earlier). The one moment the mapping is unambiguous is the launch: we
+# know which ids existed before, and exactly one browser is starting.
+# ⇒ Snapshot, launch, wait for the new id, write it down. `agents` reads this
+#   file to pin claude-login-auto instead of a literal uuid (asked 2026-10-12).
+# ⚠️ Deliberately NOT the server's `profileName` field, which they first asked
+#   for: that field has three readers and NO writer anywhere in the tree —
+#   nothing has ever set `__unibrowseProfileHint` — so it is null for every
+#   browser including the sidecars. Giving it a writer means changing the
+#   extension, and extension code does not reach a running browser without the
+#   ↻ control on chrome://extensions, which Ben has declined. A file the
+#   launcher writes needs no deploy and no reload.
+live_ext_ids() {
+  curl -s -m 5 "${UNIBROWSE_SERVER:-http://127.0.0.1:9010}/extensions" 2>/dev/null \
+    | /usr/bin/python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+for e in d.get("connected",[]): print(e.get("extensionId",""))' 2>/dev/null || true
+}
+
+extid_file() { printf '%s/%s.extid\n' "$PROFILES_ROOT" "$1"; }
+
+# Wait for an id that was NOT present before the launch. Prints it, or nothing.
+await_new_ext_id() {
+  local before="$1" waited=0 now fresh
+  while [ "$waited" -lt 150 ]; do
+    sleep 5; waited=$((waited + 5))
+    now="$(live_ext_ids)"
+    fresh="$(printf '%s\n' "$now" | grep -vxF -f <(printf '%s\n' "$before") 2>/dev/null | grep . || true)"
+    case "$(printf '%s\n' "$fresh" | grep -c . || true)" in
+      0) ;;
+      1) printf '%s\n' "$fresh"; return 0 ;;
+      # ⛔ Two new ids means something else connected during our window. Writing
+      #    either one down would be a guess; an unrecorded site is recoverable,
+      #    a wrong pointer is what we are here to stop.
+      *) echo "⚠️ $2: $(printf '%s\n' "$fresh" | grep -c .) new extensions appeared during the launch window — refusing to guess which is ours; not recorded" >&2
+         return 1 ;;
+    esac
+  done
+  return 1
 }
 
 cmd_map() { # site -> the extensionId the server knows it by
@@ -338,7 +404,7 @@ cmd_map() { # site -> the extensionId the server knows it by
   # map is derivable from disk and needs no guessing from tab URLs. Asked for
   # by `freelance` 2026-10-10 20:36, who could see 8 identical-looking
   # docker-host-desktop connections and no way to tell which site each was.
-  local row name store uuids live u n LIVE_IDS
+  local row name store uuids live u n rec LIVE_IDS
   # The server is the only authority on what is connected RIGHT NOW. Empty on a
   # failed curl, which makes every id read STALE — loud, and the right way round.
   LIVE_IDS="$(curl -s -m 5 "${UNIBROWSE_SERVER:-http://127.0.0.1:9010}/extensions" 2>/dev/null \
@@ -392,7 +458,16 @@ for e in d.get("connected",[]): print(e.get("extensionId",""))' 2>/dev/null || t
             | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
             || true; } | awk '!seen[$0]++')"
     live=""
+    # ⭐ The file written at launch is better evidence than anything on disk in
+    #    the profile: it was recorded when the mapping was unambiguous. Still
+    #    cross-checked against the server — a recorded id from a browser that
+    #    has since died must not be handed out either.
+    rec="$(cat "$(extid_file "$name")" 2>/dev/null || true)"
+    if [ -n "$rec" ] && printf '%s' "$LIVE_IDS" | grep -qxF "$rec"; then
+      live="$rec"
+    fi
     for u in $uuids; do
+      [ -n "$live" ] && break
       if printf '%s' "$LIVE_IDS" | grep -qxF "ext_$u"; then live="ext_$u"; break; fi
     done
     n="$(printf '%s' "$uuids" | grep -c . || true)"
