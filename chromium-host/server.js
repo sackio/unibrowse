@@ -17,6 +17,7 @@ import { spawn, execSync } from "node:child_process";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 
 const PORT = parseInt(process.env.PORT || "9020", 10);
 const PROFILES_DIR = process.env.PROFILES_DIR || "/app/.chrome-profiles";
@@ -255,6 +256,68 @@ const wipeStaleExtensionData = (profileDir) => {
 // Write a tiny JSON file into each profile telling the extension which MCP
 // server URL to connect to. The extension's server-resolver checks here
 // before falling back to localhost autodetect.
+/* ---------- Incognito grant for the loaded extension -------------------- */
+// ⛔ WITHOUT THIS AN ISOLATED PROFILE CANNOT OPEN AN INCOGNITO TAB, and the
+// failure surfaces two hops away as "Extension not allowed in incognito mode"
+// from browser_create_tab({incognito:true}) — which reads as a tool bug rather
+// than a missing per-profile grant.
+//
+// MEASURED 2026-10-12: alpaca's VPN signup lane could not run the only signup
+// method that passes (a FRESH INCOGNITO tab straight on /signup, memo
+// 5eaf3446) because this grant has never existed on the ISOLATED path, while
+// the site-browser path has seeded it since 2026-10-11 via
+// scripts/utils/unibrowse-unpacked-entry.json. The lane was therefore running
+// the procedure the corpus records as FAILING, so comparing it against the
+// home slot was never like-for-like. The manifest already declares
+// "incognito": "spanning", so the extension permits it; what was missing is
+// the USER grant — the same field chrome://extensions' "Allow in incognito"
+// toggle writes.
+//
+// ⭐ THE ID IS DERIVED, NOT HARDCODED. Chromium computes an unpacked
+// extension's id from SHA-256 of its absolute directory path, first 128 bits,
+// each hex nibble mapped to a-p. VERIFIED 2026-10-12 against two independent
+// known ids: /app/extension => edoicfpldmlabgdalemfgflpldiijdmm (read out of a
+// live container profile) and /mnt/nas/data/code/unibrowse/extension =>
+// pikjoohganfooeancifkoccakcocchmk (the host template's id). ⇒ A hardcoded id
+// would silently grant incognito to a NONEXISTENT extension if EXTENSION_DIR
+// moved, and nothing would report it. (That fragility still exists in
+// unibrowse-unpacked-entry.json, which hardcodes its id while the launcher
+// overrides only the path.)
+const unpackedExtensionId = (dir) =>
+  crypto.createHash("sha256").update(dir, "utf8").digest("hex").slice(0, 32)
+    .split("").map((c) => String.fromCharCode(97 + parseInt(c, 16))).join("");
+
+const ensureIncognitoGrant = (profileDir, extDir) => {
+  const prefsPath = path.join(profileDir, "Default", "Preferences");
+  const id = unpackedExtensionId(extDir);
+  try {
+    let prefs = {};
+    const existed = fs.existsSync(prefsPath);
+    if (existed) prefs = JSON.parse(fs.readFileSync(prefsPath, "utf8"));
+    const settings = ((prefs.extensions = prefs.extensions || {}).settings =
+      prefs.extensions.settings || {});
+    if (settings[id] && settings[id].incognito === true) return;
+    // ⚠️ VERIFIED only for an entry chromium had ALREADY written: flipping it
+    // on profile alpaca-signup worked (incognito tab created + attached +
+    // rendered, 2026-10-12 00:52). Pre-seeding a MINIMAL entry into a virgin
+    // profile is NOT verified — chromium may rewrite the entry when
+    // --load-extension loads it. The log line says which case ran, so the
+    // first virgin launch answers it rather than leaving it to be assumed.
+    const seeded = !settings[id];
+    settings[id] = Object.assign({}, settings[id], { incognito: true });
+    fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs));
+    console.log(
+      `[chromium-host] incognito granted to ${id} (${seeded ? "SEEDED NEW ENTRY — unverified path" : "flipped existing entry"}` +
+      `${existed ? "" : ", Preferences created"}) in ${prefsPath}`,
+    );
+  } catch (e) {
+    // ⛔ Never fail a launch over this: a profile that cannot open an incognito
+    // tab is still a working browser for every other caller.
+    console.warn(`[chromium-host] incognito grant failed (${prefsPath}): ${e.message}`);
+  }
+};
+
 const writeServerSeed = (profileDir, serverHint) => {
   if (!serverHint) return;
   const seed = { url: serverHint, writtenBy: "chromium-host", at: new Date().toISOString() };
@@ -622,6 +685,7 @@ const launchChromium = async ({
     selfHealProfile(profileDir);
   }
   writeServerSeed(profileDir, serverHint);
+  ensureIncognitoGrant(profileDir, EXTENSION_DIR);
 
   const args = [
     `--user-data-dir=${profileDir}`,
