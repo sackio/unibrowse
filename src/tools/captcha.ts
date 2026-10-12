@@ -6,6 +6,7 @@ import {
   CancelCaptchaSolveTool,
 } from "@/types/tool-schemas";
 import { jsonResponse, errorResponse } from "@/utils/response-helpers";
+import { publishProxyArtifact, sendBrokerMessage, selfPublicBase } from "@/utils/atc-publish";
 import {
   createCaptchaSession,
   getSessionById,
@@ -23,23 +24,13 @@ import type { Tool } from "./tool";
  * a captcha request that names a different one.
  */
 
-const ARTIFACT_BASE = process.env.ATC_FILES_URL || "http://192.168.1.168:3031";
-const BROKER_BASE = process.env.ATC_BROKER_URL || "http://192.168.1.168:3030";
-
 /**
- * The URL the ARTIFACT PROXY will fetch. It must be an address the atc-files
- * host can reach, not one that only resolves inside our container.
- *
- * ⛔ Not `localhost`, and not the compose service name `mcp-server` — both
- * resolve here and NOWHERE else, so the proxy would 502 while everything on our
- * side looked correct. Same trap UNIBROWSE_PUBLIC_URL exists to avoid; reuse it.
- * ⚠️ The artifact proxy also refuses loopback outright, so a localhost value
- * fails at publish time rather than silently — but only for loopback, and the
- * service-name case would sail through.
+ * ⭐ THE ARTIFACT AND BROKER CALLS LIVE IN @/utils/atc-publish, WITH THEIR
+ * TRAPS. Both have a failure mode that returns success — an artifact proxy
+ * pointed at an address only this container can resolve, and a broker 200 that
+ * delivered to nobody — and both were learned here. They moved when Slipway
+ * needed the same two calls, so the lessons have one home rather than two.
  */
-function selfPublicBase(): string {
-  return (process.env.UNIBROWSE_PUBLIC_URL || "http://192.168.1.199:9010").replace(/\/$/, "");
-}
 
 /**
  * Publish the solver page as an ATC artifact that PROXIES us.
@@ -53,25 +44,11 @@ async function publishArtifact(
   session: CaptchaSession,
   owner: string,
 ): Promise<{ url: string | null; error: string | null }> {
-  const target = `${selfPublicBase()}/captcha/${session.token}/`;
-  try {
-    const resp = await fetch(`${ARTIFACT_BASE}/artifact`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        proxy: target,
-        owner,
-        title: "Solve a captcha",
-      }),
-    });
-    if (!resp.ok) {
-      return { url: null, error: `artifact publish returned HTTP ${resp.status}` };
-    }
-    const data: any = await resp.json();
-    return { url: data.url_public || data.url || null, error: null };
-  } catch (err: any) {
-    return { url: null, error: err.message };
-  }
+  return publishProxyArtifact({
+    target: `${selfPublicBase()}/captcha/${session.token}/`,
+    owner,
+    title: "Solve a captcha",
+  });
 }
 
 /**
@@ -112,11 +89,10 @@ async function notify(
   session: CaptchaSession,
   from: string,
 ): Promise<{ ok: boolean; error: string | null }> {
-  const body = {
+  return sendBrokerMessage({
     to,
     from,
     subject: "Captcha needs you",
-    priority: "info",
     content:
       `A browser automation hit a captcha and is waiting.\n\n` +
       `${session.prompt}\n\n` +
@@ -124,29 +100,7 @@ async function notify(
       `Tap the picture where you would tap the page. Link expires ` +
       `${new Date(session.expiresAt).toLocaleTimeString()} ` +
       `(${Math.round((session.expiresAt - Date.now()) / 60000)} min).`,
-  };
-  try {
-    // ⛔ /inbox/send, NOT /messages. sse-mcp also registers POST /messages as
-    // the legacy MCP transport and falls through, so /messages is ambiguous.
-    const resp = await fetch(`${BROKER_BASE}/inbox/send`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) {
-      return { ok: false, error: `broker /inbox/send returned HTTP ${resp.status}` };
-    }
-    // ⛔ READ `sent`, NOT THE STATUS CODE. A 200 with sent:0 means the address
-    // matched no subscriber and the message was accepted and dropped — the
-    // failure shape this whole feature cannot afford to report as success.
-    const data: any = await resp.json();
-    if (!data || Number(data.sent) < 1) {
-      return { ok: false, error: `broker accepted but delivered to nobody (sent=${data?.sent ?? "?"}) — is "${to}" a real subscriber?` };
-    }
-    return { ok: true, error: null };
-  } catch (err: any) {
-    return { ok: false, error: err.message };
-  }
+  });
 }
 
 /**
@@ -168,11 +122,10 @@ async function notify(
  */
 export async function notifySolvedToRequester(session: CaptchaSession): Promise<void> {
   if (!session.requester) return;
-  const body = {
+  const r = await sendBrokerMessage({
     to: session.requester,
     from: NOTIFY_FROM,
     subject: "Captcha solved",
-    priority: "info",
     content:
       `Captcha solved by the human.\n\n` +
       `sessionId: ${session.id}\n` +
@@ -181,31 +134,13 @@ export async function notifySolvedToRequester(session: CaptchaSession): Promise<
       (session.note ? `\nnote: ${session.note}` : "") +
       `\n\nThe tab is yours again — continue. ` +
       `browser_check_captcha_solve remains the authority on the state.`,
-  };
-  try {
-    const resp = await fetch(`${BROKER_BASE}/inbox/send`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    // ⛔ `sent` AGAIN, NOT THE STATUS CODE — same failure shape as notify():
-    // a 200 with sent:0 means the requester id matched no subscriber and the
-    // message was accepted and dropped. Logged rather than thrown, because by
-    // the time this runs the operator has already been answered.
-    const data: any = resp.ok ? await resp.json().catch(() => null) : null;
-    if (!resp.ok) {
-      console.error(`[captcha] solve notice to ${session.requester} failed: HTTP ${resp.status}`);
-    } else if (!data || Number(data.sent) < 1) {
-      console.error(
-        `[captcha] solve notice accepted but delivered to nobody (sent=${data?.sent ?? "?"}) — ` +
-          `is "${session.requester}" a real subscriber?`,
-      );
-    } else {
-      console.log(`[captcha] solve notice → ${session.requester} (session ${session.id})`);
-    }
-  } catch (err: any) {
-    console.error(`[captcha] solve notice to ${session.requester} threw: ${err?.message ?? err}`);
-  }
+  });
+  // ⛔ LOGGED, NEVER THROWN. By the time this runs the operator has already
+  // been answered by the `done` route, so a failure here must not surface as
+  // an error on a captcha that was in fact solved. The agent's own poll still
+  // sees `solved`.
+  if (r.ok) console.log(`[captcha] solve notice → ${session.requester} (session ${session.id})`);
+  else console.error(`[captcha] solve notice to ${session.requester} failed: ${r.error}`);
 }
 
 function view(s: CaptchaSession) {

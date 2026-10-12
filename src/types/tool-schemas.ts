@@ -1174,6 +1174,58 @@ export const CancelCaptchaSolveTool = z.object({
   }).merge(MaxTokensSchema),
 });
 
+// ── Slipway: drive one browser from a phone ────────────────────────────────
+//
+// ⚠️ A Slipway link grants MORE than a captcha link and the description says so
+// out loud, because the two look alike and only one of them is safe to hand
+// around. A captcha session is one tab, ten minutes, single use. A Slipway
+// session is every tab attached to ONE browser, for hours, reusable.
+export const OpenSlipwayTool = z.object({
+  name: z.literal("browser_open_slipway"),
+  description: z.literal(
+    "Open a Slipway session: a phone-sized page that drives ONE attached browser — pick any of its attached tabs, see a live screenshot, send real taps (with press-and-hold), typing, scrolling and Enter, and start or stop a session recording. " +
+    "Published as an ATC artifact so it works off-LAN with no VPN, and the link is sent to whoever will use it. " +
+    "⚠️ THE LINK IS THE CREDENTIAL AND IT IS BROADER THAN A CAPTCHA LINK: its holder can read and drive EVERY tab attached to the named browser until it expires (default 8h) or you close it. It is bounded to that one browser and to that TTL, and to nothing else — no single-use, no rect clamp. Treat it accordingly and prefer a short ttlSeconds when the job is short. " +
+    "⭐ PASS `agent`: the link notice is then sent AS you, so it appears in YOUR channel or thread rather than a bare DM. " +
+    "Close it with browser_close_slipway the moment the job is done."
+  ),
+  arguments: z.object({
+    extensionId: z
+      .string()
+      .describe("REQUIRED — the one browser this session may reach, from browser_list_attached_tabs's `extensions` array. There is no all-browsers mode: minting a second session is the only way to reach a second browser, deliberately."),
+    label: z
+      .string()
+      .optional()
+      .describe("Short name shown as the page heading, e.g. 'office Chrome'. Say which machine, or the holder is driving an anonymous browser."),
+    tabTarget: z
+      .union([z.number(), z.string()])
+      .optional()
+      .describe("Optional tab to start on. Omit and the holder picks from the live roster on the page."),
+    ttlSeconds: z
+      .number()
+      .optional()
+      .describe("How long the link stays live (default 28800 = 8h, min 60, max 86400). After this the session refuses everything."),
+    notify: z
+      .string()
+      .optional()
+      .describe("ATC subscriber to send the link to (default: the operator)."),
+    agent: z
+      .string()
+      .optional()
+      .describe("Your agent identifier. Decides which channel the link notice lands in, and is recorded as the session's requester."),
+  }).merge(MaxTokensSchema),
+});
+
+export const CloseSlipwayTool = z.object({
+  name: z.literal("browser_close_slipway"),
+  description: z.literal(
+    "End a Slipway session and kill its link immediately. Also stops a recording the session started. A live link that can drive a logged-in browser should not outlive the reason it existed."
+  ),
+  arguments: z.object({
+    sessionId: z.string().describe("The sessionId returned by browser_open_slipway"),
+  }).merge(MaxTokensSchema),
+});
+
 export const ListFetchedTool = z.object({
   name: z.literal("browser_list_fetched"),
   description: z.literal(

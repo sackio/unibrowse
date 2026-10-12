@@ -39,6 +39,30 @@ export interface SocketMessageMap {
   browser_go_forward: { tabTarget?: number | string };
   browser_wait: { time: number };
   browser_press_key: { key: string; tabTarget?: number | string };
+  // ⚠️ THESE THREE WERE MISSING FROM THIS MAP WHILE THEIR TOOLS SHIPPED AND
+  // WORKED. tools/common.ts and tools/recordings.ts have been sending them for
+  // a long time; the only effect of the omission was a `tsc` error at every
+  // call site, which is part of why this file's error baseline is what it is.
+  // Added when Slipway needed them. Shapes are deliberately permissive —
+  // every caller forwards a validated params object straight through, so a
+  // narrow shape here would turn a working call into a type error rather than
+  // catching anything.
+  browser_scroll: {
+    x?: number;
+    y?: number;
+    tabTarget?: number | string;
+    extensionId?: string;
+  };
+  browser_start_session_recording: {
+    tabTarget?: number | string;
+    extensionId?: string;
+    [key: string]: unknown;
+  };
+  browser_stop_session_recording: {
+    tabTarget?: number | string;
+    extensionId?: string;
+    [key: string]: unknown;
+  };
   browser_set_device_metrics: {
     width?: number;
     height?: number;

@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 
 import { appConfig } from "@/config/app.config";
 import { registerCaptchaRoutes, sweepCaptchaSessions } from "@/captcha";
+import { registerSlipwayRoutes, sweepSlipwaySessions, type SlipwayTab } from "@/slipway";
 import { takeFetchDestination } from "@/utils/fetch-destinations";
 
 import type { Resource } from "@/resources/resource";
@@ -19,6 +20,7 @@ import * as common from "@/tools/common";
 import * as cookies from "@/tools/cookies";
 import * as custom from "@/tools/custom";
 import * as captchaTools from "@/tools/captcha";
+import * as slipwayTools from "@/tools/slipway";
 import * as downloads from "@/tools/downloads";
 import * as extensions from "@/tools/extensions";
 import * as exploration from "@/tools/exploration";
@@ -265,6 +267,8 @@ const downloadTools: Tool[] = [
   captchaTools.requestCaptchaSolve,
   captchaTools.checkCaptchaSolve,
   captchaTools.cancelCaptchaSolve,
+  slipwayTools.openSlipway,
+  slipwayTools.closeSlipway,
   downloads.cancelDownload,
   downloads.openDownload,
 ];
@@ -643,6 +647,121 @@ async function main() {
   setInterval(() => {
     const n = sweepCaptchaSessions();
     if (n) console.log(`[captcha] swept ${n} finished session(s)`);
+  }, 3600_000).unref();
+
+  // ── Slipway: drive one browser from a phone ──────────────────────────────
+  //
+  // ⭐ THE SCREENSHOT AND CLICK DEPS ARE THE CAPTCHA RELAY'S, LESSON FOR
+  // LESSON. A backgrounded tab never produces a frame, so a failed capture
+  // retries ONCE after activating the tab rather than activating on every
+  // poll; the viewport is read from the PAGE because captureScreenshot returns
+  // device pixels; and a relayed click carries currentX/currentY or the
+  // extension's bezier starts at (0,0) on every tap. All three were measured
+  // on the captcha path — see registerCaptchaRoutes above for the detail, and
+  // ⛔ do not "simplify" either copy without reading those comments.
+  const slipwayShot = async (s: { tabTarget: number | string | null; extensionId: string }) => {
+    const ext = { extensionId: s.extensionId };
+    const capture = () =>
+      globalContext.sendSocketMessage("browser_screenshot", {
+        tabTarget: s.tabTarget, ...ext,
+      } as any) as Promise<any>;
+    try {
+      return await capture();
+    } catch (err: any) {
+      if (!/hidden|timed out/i.test(String(err?.message ?? err))) throw err;
+      await globalContext.sendSocketMessage("browser_switch_tab", {
+        tabTarget: s.tabTarget, ...ext,
+      } as any);
+      return await capture();
+    }
+  };
+
+  registerSlipwayRoutes(app, {
+    // ⚠️ Scoped to the session's ONE extension with `only`, not aggregated
+    // across the fleet. That scoping IS the security bound promised in
+    // slipway.ts's header, so it belongs here where the call is made.
+    listTabs: async (s) => {
+      const results = await globalContext.broadcastSocketMessage(
+        "browser_list_attached_tabs",
+        { live: true } as any,
+        { only: [s.extensionId] },
+      );
+      const out: SlipwayTab[] = [];
+      for (const r of results) {
+        if (r.error) continue;
+        for (const t of (r.result?.tabs ?? []) as any[]) {
+          out.push({
+            tabTarget: t.tabId ?? t.label,
+            label: t.label ?? null,
+            // Prefer LIVE title/url: the attach-time record never updates on
+            // navigation and fails toward "nothing changed", which on a tab
+            // picker means offering the holder a page the tab has left.
+            title: t.liveTitle ?? t.title ?? null,
+            url: redactUrl(t.liveUrl ?? t.url),
+            reservedTo: t.reservation?.owner ?? null,
+          });
+        }
+      }
+      return out;
+    },
+
+    screenshot: (s) => slipwayShot(s),
+
+    viewport: async (s) => {
+      const r: any = await globalContext.sendSocketMessage("browser_evaluate", {
+        expression: "({ width: window.innerWidth, height: window.innerHeight })",
+        tabTarget: s.tabTarget, extensionId: s.extensionId,
+      } as any);
+      const v = r?.result ?? r?.value ?? r;
+      const width = Number(v?.width), height = Number(v?.height);
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        throw new Error(`could not read viewport from tab ${s.tabTarget} (got ${JSON.stringify(v)})`);
+      }
+      return { width, height };
+    },
+
+    click: async (s, x, y, holdMs) => {
+      const from = s.cursor ?? {
+        x: 40 + Math.round(Math.random() * 180),
+        y: 60 + Math.round(Math.random() * 200),
+      };
+      await globalContext.sendSocketMessage("browser_realistic_click", {
+        x, y, moveFirst: true, tabTarget: s.tabTarget,
+        currentX: from.x, currentY: from.y,
+        ...(holdMs !== undefined ? { downDelay: holdMs } : {}),
+        extensionId: s.extensionId,
+      } as any);
+    },
+
+    type: async (s, text) => {
+      await globalContext.sendSocketMessage("browser_realistic_type", {
+        text, tabTarget: s.tabTarget, extensionId: s.extensionId,
+      } as any);
+    },
+
+    scroll: async (s, y) => {
+      await globalContext.sendSocketMessage("browser_scroll", {
+        x: 0, y, tabTarget: s.tabTarget, extensionId: s.extensionId,
+      } as any);
+    },
+
+    pressKey: async (s, key) => {
+      await globalContext.sendSocketMessage("browser_press_key", {
+        key, tabTarget: s.tabTarget, extensionId: s.extensionId,
+      } as any);
+    },
+
+    record: async (s, on) => {
+      await globalContext.sendSocketMessage(
+        on ? "browser_start_session_recording" : "browser_stop_session_recording",
+        { tabTarget: s.tabTarget, extensionId: s.extensionId } as any,
+      );
+    },
+  });
+
+  setInterval(() => {
+    const n = sweepSlipwaySessions();
+    if (n) console.log(`[slipway] swept ${n} finished session(s)`);
   }, 3600_000).unref();
 
   // ── browser_fetch_to_server receiving end ────────────────────────────────
