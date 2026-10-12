@@ -41,6 +41,8 @@
  */
 
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 import type { Express } from "express";
 
 export type SlipwayState = "live" | "ended" | "expired";
@@ -93,6 +95,109 @@ export interface SlipwaySession {
 
 const sessions = new Map<string, SlipwaySession>();
 
+/**
+ * ⭐ SESSIONS SURVIVE A RESTART. THAT IS THE WHOLE POINT OF THIS BLOCK.
+ *
+ * In memory alone they did not, and the entire cost landed on the person
+ * holding the link. Measured 2026-10-12: four deploys of mine inside ten
+ * minutes each silently killed Ben's page, so every time he opened it he got a
+ * dead link, and he reported — correctly — that it still did not work. ⛔ A
+ * dead session is INDISTINGUISHABLE from the feature being broken, which is
+ * why "sessions live in memory, a link never outlives a deploy" was never an
+ * acceptable thing to tell him; it describes the bug as a design.
+ *
+ * ⚠️ THE FILE HOLDS LIVE TOKENS, which are credentials. It lives in a NAMED
+ * DOCKER VOLUME and deliberately NOT under the repo directory: that is
+ * /mnt/nas, readable by every seat on all four hosts, so a bind mount there
+ * would publish every live link to the fleet. Anyone with docker on office can
+ * still read the volume — the same audience that can mint a session anyway.
+ *
+ * ⛔ IF THE PATH IS NOT WRITABLE THIS DEGRADES TO IN-MEMORY AND SAYS SO LOUDLY,
+ * once per distinct error. A silent fallback here would restore exactly the
+ * failure it exists to remove, and the server would look healthy doing it.
+ */
+const STATE_FILE =
+  process.env.SLIPWAY_STATE_FILE || "/app/state/slipway-sessions.json";
+let persistError: string | null = null;
+let persistQueued = false;
+
+function writeSlipwayState(): void {
+  try {
+    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+    // Only sessions still worth restoring. An ended or expired one on disk is
+    // noise that gets loaded and immediately swept on every boot.
+    const keep = [...sessions.values()].filter(
+      (s) => s.state === "live" && Date.now() < s.expiresAt,
+    );
+    const tmp = `${STATE_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(
+      tmp,
+      JSON.stringify({ version: 1, savedAt: Date.now(), sessions: keep }),
+      { mode: 0o600 },
+    );
+    // ⛔ Write-then-rename, never in place: a crash mid-write leaves truncated
+    // JSON, and the load path cannot tell that from "no sessions" — it would
+    // drop every live link while reporting a clean start.
+    fs.renameSync(tmp, STATE_FILE);
+    persistError = null;
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (persistError !== msg) {
+      persistError = msg;
+      console.error(
+        `[slipway] ⚠️ cannot persist sessions to ${STATE_FILE}: ${msg} — ` +
+          `links will NOT survive a restart`,
+      );
+    }
+  }
+}
+
+/** Coalesce a burst of mutations into one write a tick later. */
+export function persistSlipway(): void {
+  if (persistQueued) return;
+  persistQueued = true;
+  setTimeout(() => {
+    persistQueued = false;
+    writeSlipwayState();
+  }, 250).unref();
+}
+
+/**
+ * Restore whatever is still live. Call once at startup, before the routes
+ * start answering, so a page polling across a deploy never sees a 404.
+ */
+export function loadSlipwaySessions(): {
+  loaded: number;
+  dropped: number;
+  error: string | null;
+} {
+  let loaded = 0;
+  let dropped = 0;
+  try {
+    const data = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    for (const s of (data?.sessions ?? []) as SlipwaySession[]) {
+      // ⛔ Validate rather than trust: this file is state we wrote, but a
+      // half-upgraded shape would otherwise enter the map and fail later, at a
+      // route, where the cause is invisible.
+      if (!s || typeof s.token !== "string" || typeof s.extensionId !== "string") {
+        dropped++;
+        continue;
+      }
+      if (s.state !== "live" || Date.now() >= s.expiresAt) {
+        dropped++;
+        continue;
+      }
+      sessions.set(s.token, s);
+      loaded++;
+    }
+    return { loaded, dropped, error: null };
+  } catch (err: any) {
+    // A missing file is the normal first boot, not a fault.
+    if (err?.code === "ENOENT") return { loaded, dropped, error: null };
+    return { loaded, dropped, error: err?.message ?? String(err) };
+  }
+}
+
 function newToken(): string {
   return crypto.randomBytes(16).toString("hex");
 }
@@ -127,6 +232,7 @@ export function createSlipwaySession(opts: {
     cursor: null,
   };
   sessions.set(s.token, s);
+  persistSlipway();
   return s;
 }
 
@@ -144,7 +250,10 @@ export function getSlipwayById(id: string): SlipwaySession | undefined {
 export function resolveSlipway(token: string): SlipwaySession | undefined {
   const s = sessions.get(token);
   if (!s) return undefined;
-  if (s.state === "live" && Date.now() > s.expiresAt) s.state = "expired";
+  if (s.state === "live" && Date.now() > s.expiresAt) {
+    s.state = "expired";
+    persistSlipway();
+  }
   return s;
 }
 
@@ -160,6 +269,7 @@ export function sweepSlipwaySessions(graceMs = 3_600_000): number {
     const dead = s.state !== "live" || now > s.expiresAt;
     if (dead && now - Math.max(s.endedAt ?? 0, s.expiresAt) > graceMs) {
       sessions.delete(token);
+      persistSlipway();
       n++;
     }
   }
@@ -662,15 +772,18 @@ export function registerSlipwayRoutes(
           if (!hit.attached) {
             const tabId = await deps.attachTab(s, hit.tabTarget);
             s.tabTarget = tabId;
+            persistSlipway();
             return res.json({ ok: true, tabTarget: s.tabTarget, justAttached: true });
           }
           s.tabTarget = hit.tabTarget;
+          persistSlipway();
           return res.json({ ok: true, tabTarget: s.tabTarget, justAttached: false });
         }
 
         if (cmd === "attach") {
           const tabTarget = await deps.attachCurrent(s);
           s.tabTarget = tabTarget;
+          persistSlipway();
           return res.json({ ok: true, tabTarget });
         }
 
@@ -737,6 +850,7 @@ export function registerSlipwayRoutes(
     if (!s) return;
     s.state = "ended";
     s.endedAt = Date.now();
+    persistSlipway();
     // ⚠️ A recording left running outlives the session that started it and
     // nothing else will stop it, so end it here. Best effort: failing to stop
     // a recording must not stop the session ending, or the holder is left with

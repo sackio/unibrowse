@@ -127,6 +127,11 @@ services:
       - ./chrome-profiles:/app/.chrome-profiles
       # Persistent video recordings storage
       - ./recordings:/app/recordings
+      # Slipway sessions, so a phone's link survives a deploy.
+      # ⛔ A NAMED VOLUME, NOT a bind mount under this directory. The repo is on
+      # /mnt/nas, which every seat on all four hosts can read, and this file
+      # holds live session tokens — i.e. working links into Ben's browser.
+      - slipway_state:/app/state
       # Files retrieved from a driven browser's authenticated session.
       # ⛔ NOT host-local, despite living under /home/ben. This comment used to
       # claim it was. `/home/ben/files` is a SYMLINK to /mnt/nas/data/files —
@@ -189,6 +194,8 @@ networks:
     driver: bridge
 
 volumes:
+  slipway_state:
+    driver: local
   mongodb_data:
     driver: local
   mongodb_config:

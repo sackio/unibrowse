@@ -9,7 +9,12 @@ import { fileURLToPath } from "url";
 
 import { appConfig } from "@/config/app.config";
 import { registerCaptchaRoutes, sweepCaptchaSessions } from "@/captcha";
-import { registerSlipwayRoutes, sweepSlipwaySessions, type SlipwayTab } from "@/slipway";
+import {
+  registerSlipwayRoutes,
+  sweepSlipwaySessions,
+  loadSlipwaySessions,
+  type SlipwayTab,
+} from "@/slipway";
 import { takeFetchDestination } from "@/utils/fetch-destinations";
 
 import type { Resource } from "@/resources/resource";
@@ -675,6 +680,17 @@ async function main() {
       return await capture();
     }
   };
+
+  // ⛔ BEFORE THE ROUTES ANSWER, so a phone polling across a deploy never sees
+  // the 404 that reads as "this app does not work".
+  const restored = loadSlipwaySessions();
+  if (restored.error) {
+    console.error(`[slipway] could not restore sessions: ${restored.error}`);
+  } else if (restored.loaded || restored.dropped) {
+    console.log(
+      `[slipway] restored ${restored.loaded} live session(s), dropped ${restored.dropped}`,
+    );
+  }
 
   registerSlipwayRoutes(app, {
     // ⚠️ Scoped to the session's ONE extension with `only`, not aggregated
