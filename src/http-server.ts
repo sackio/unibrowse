@@ -1274,21 +1274,43 @@ async function main() {
     }
   });
 
-  // Create HTTP MCP server with Streamable HTTP transport
-  const httpMcpServer = await createServerWithoutWebSocket({
-    name: appConfig.name,
-    version: packageJSON.version,
-    tools: snapshotTools,
-    resources,
-  });
-
-  // Create transport instance - stateless mode (no session ID)
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined, // Stateless mode
-  });
-
-  // Connect MCP server to transport
-  await httpMcpServer.connect(transport);
+  // ⛔⛔ PER-REQUEST TRANSPORT AND SERVER. DO NOT HOIST THESE OUT OF THE HANDLER.
+  // A SINGLE SHARED StreamableHTTPServerTransport IN STATELESS MODE CROSSES
+  // RESPONSES BETWEEN CLIENTS. The SDK routes a reply by looking up
+  // `_requestToStreamMapping.get(message.id)` — a Map held on the TRANSPORT
+  // INSTANCE, keyed on the JSON-RPC request id — and writing to the `res` that
+  // `_streamMapping` holds for that streamId. Share one instance and two
+  // concurrent clients that both use id=2 overwrite each other's entry, so one
+  // client's reply is written to the OTHER client's socket.
+  // ⚠️ `initialize` is id=1 and a first tools/call is id=2, so this is close to
+  // GUARANTEED between two concurrent raw-HTTP clients — not a rare race.
+  //
+  // MEASURED 2026-10-12 02:07:35 EDT, reported by `ha`: their POST id=2 (an
+  // ecobee Auth0 macro) returned HTTP 200 carrying id=2 and a browser_create_tab
+  // body belonging to `alpaca-signup` (tabId 23284595, app.alpaca.markets/signup,
+  // reservedBy alpaca-signup). The server log shows that create in the same
+  // window. Their macro HAD executed correctly — dispatch happens before this
+  // routing, so only the receipt crossed.
+  //
+  // ⛔ THE DANGEROUS PART IS NOT THE MIX-UP. It is that a caller cannot tell
+  // "my call failed" from "my call succeeded and I got someone else's receipt",
+  // and the natural reaction to an unrecognisable response is to RETRY. ha's
+  // macro drives a credentialed Auth0 login on an account with a lock history,
+  // where a blind retry burns a password attempt and risks the lockout the whole
+  // procedure exists to avoid. It cost nothing only because they verified
+  // browser state instead of retrying.
+  // ⇒ ANY tool result can cross, cookies and page content included.
+  // ⚠️ Nothing a client can do helps: stateless mode sends NO session id header
+  // and performs NO session validation (the SDK's own docs), so a client that
+  // reads `mcp-session-id` is reading a header that does not exist.
+  const closeQuietly = (x: { close?: () => unknown } | undefined) => {
+    try {
+      const r = x?.close?.();
+      if (r && typeof (r as Promise<unknown>).catch === "function") {
+        void (r as Promise<unknown>).catch(() => {});
+      }
+    } catch { /* teardown must never throw into the request path */ }
+  };
 
   // MCP endpoint — LAN-ONLY, no remote access even with a valid API key.
   // The MCP control plane can drive browsers (code execution), so it must
@@ -1297,9 +1319,42 @@ async function main() {
   // EXTENSION plane only (/ws + /install + recordings), which stay on
   // requireApiKey. requireLan reads the effective client IP (XFF-aware behind
   // the loopback/docker-bridge proxy) and 403s anything non-LAN.
-  app.post("/mcp", requireLan, (req, res) => {
-    console.log(`[HTTP] New MCP request from ${req.ip}`);
-    transport.handleRequest(req, res, req.body);
+  app.post("/mcp", requireLan, async (req, res) => {
+    const t0 = Date.now();
+    try {
+      const perRequestServer = await createServerWithoutWebSocket({
+        name: appConfig.name,
+        version: packageJSON.version,
+        tools: snapshotTools,
+        resources,
+      });
+      const perRequestTransport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, // Stateless mode
+      });
+      // ⚠️ Register teardown BEFORE handling. On an SSE stream handleRequest
+      // resolves while the socket is still open, so tearing down in a `finally`
+      // would cut the stream; and attaching the listener afterwards can miss a
+      // socket that already closed, which leaks the instance instead.
+      res.on("close", () => {
+        closeQuietly(perRequestTransport as unknown as { close?: () => unknown });
+        closeQuietly(perRequestServer as unknown as { close?: () => unknown });
+      });
+      await perRequestServer.connect(perRequestTransport);
+      // The setup cost is logged rather than assumed: this moved off the
+      // process-lifetime path onto the per-request path, so it is a real
+      // regression risk and the number should be visible, not guessed.
+      console.log(`[HTTP] New MCP request from ${req.ip} (setup ${Date.now() - t0}ms)`);
+      await perRequestTransport.handleRequest(req, res, req.body);
+    } catch (err) {
+      console.error(`[HTTP] /mcp failed for ${req.ip}: ${(err as Error)?.message}`);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: (req.body as { id?: unknown } | undefined)?.id ?? null,
+        });
+      }
+    }
   });
 
   // Start HTTP server
