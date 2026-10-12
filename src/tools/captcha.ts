@@ -75,17 +75,30 @@ async function publishArtifact(
 }
 
 /**
- * DM the link to whoever is solving.
+ * Tell the human there is a captcha waiting.
  *
- * ⛔ `from` IS NOT COSMETIC — IT DECIDES WHETHER THIS IS A DM AT ALL.
- * A message addressed to `slack:U0NGEHS2J` is REDIRECTED into the SENDER's own
- * Slack channel when `from` names a seat with a bound channel. So
- * `from: "unibrowse"` would post the captcha link to #unibrowse instead of
- * DMing Ben — it would look delivered, and the phone would never buzz, which is
- * the entire feature. An UNBOUND sender falls through to `route.kind === "dm"`
- * and produces a real DM. Hence the deliberately channel-less name below.
- * (Measured and explained by the `atc` seat, 2026-09-12; broker log line says
- * which path was taken.)
+ * ⛔ `from` IS NOT COSMETIC — IT DECIDES WHICH ROOM THIS LANDS IN.
+ * A message addressed to `slack:U0NGEHS2J` is REDIRECTED by the Slack bridge
+ * into the SENDER's own channel when `from` names a correspondent that has one;
+ * an UNBOUND sender falls through to `route.kind === "dm"` and produces a real
+ * DM. (Mechanism measured and explained by the `atc` seat 2026-09-12; the
+ * resolution itself is `routeFor` in atc slack/src/bridge.mjs, read 2026-10-12.)
+ *
+ * ⭐ THAT REDIRECT IS NOW THE FEATURE, NOT THE TRAP. Ben, Slack #unibrowse
+ * 2026-10-12, verbatim: "get notified about captchas on the channel of the
+ * agent or thread requesting it". So we send AS the requesting agent, and the
+ * notice appears in that correspondent's channel — or, for a thread carrying
+ * its own `slack_channel_id`, in the thread's own channel, which is the branch
+ * that makes "or thread" work without us knowing anything about threads.
+ * ⚠️ This file used to say the opposite, in a comment that was correct when the
+ * only goal was to make the phone buzz. Both behaviours are still here; which
+ * one you get is decided by whether the caller identified itself.
+ *
+ * ⚠️ A REQUESTER WITH NO CHANNEL DEGRADES TO THE OLD BEHAVIOUR, SILENTLY AND
+ * CORRECTLY. The bridge's lookup does not CREATE a channel, so a seat that has
+ * never had one (a sidecar, `claude-login-auto`) resolves to the human's DM
+ * exactly as before. Nothing is lost; the notice simply arrives where it used
+ * to. ⇒ Do not read "it went to a DM" as this code having been bypassed.
  *
  * ⚠️ BEST EFFORT, AND THE CALLER IS TOLD WHEN IT FAILS. A captcha nobody is told
  * about blocks an agent until timeout, so a failure here must never be
@@ -97,10 +110,11 @@ async function notify(
   to: string,
   url: string,
   session: CaptchaSession,
+  from: string,
 ): Promise<{ ok: boolean; error: string | null }> {
   const body = {
     to,
-    from: NOTIFY_FROM,
+    from,
     subject: "Captcha needs you",
     priority: "info",
     content:
@@ -132,6 +146,65 @@ async function notify(
     return { ok: true, error: null };
   } catch (err: any) {
     return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * Tell the requesting agent its captcha was solved, so it does not have to keep
+ * polling to find out. Ben, Slack #unibrowse 2026-10-12: "make sure that the
+ * agent or thread requesting is notified once I solve the caption".
+ *
+ * ⛔ ADDRESSED TO THE REQUESTER, SENT FROM AN UNBOUND NAME. The recipient here
+ * is an agent, not a human, so the bridge's sender-channel redirect never
+ * applies and `from` is pure provenance — but it must NOT be the requester's
+ * own id, or the message is from a seat to itself.
+ *
+ * ⚠️ This is an ADDITION to polling, not a replacement for it. It fires only on
+ * the human pressing Done: an expiry is evaluated lazily when the session is
+ * read, so there is no moment at which anything could send that one. An agent
+ * that stops polling and waits for mail would hang on a captcha nobody solved.
+ * ⇒ browser_check_captcha_solve remains the authority; this is what makes the
+ * common case prompt instead of up-to-one-poll-interval late.
+ */
+export async function notifySolvedToRequester(session: CaptchaSession): Promise<void> {
+  if (!session.requester) return;
+  const body = {
+    to: session.requester,
+    from: NOTIFY_FROM,
+    subject: "Captcha solved",
+    priority: "info",
+    content:
+      `Captcha solved by the human.\n\n` +
+      `sessionId: ${session.id}\n` +
+      `tabTarget: ${session.tabTarget}\n` +
+      `taps: ${session.taps}, text sent: ${session.typed}` +
+      (session.note ? `\nnote: ${session.note}` : "") +
+      `\n\nThe tab is yours again — continue. ` +
+      `browser_check_captcha_solve remains the authority on the state.`,
+  };
+  try {
+    const resp = await fetch(`${BROKER_BASE}/inbox/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    // ⛔ `sent` AGAIN, NOT THE STATUS CODE — same failure shape as notify():
+    // a 200 with sent:0 means the requester id matched no subscriber and the
+    // message was accepted and dropped. Logged rather than thrown, because by
+    // the time this runs the operator has already been answered.
+    const data: any = resp.ok ? await resp.json().catch(() => null) : null;
+    if (!resp.ok) {
+      console.error(`[captcha] solve notice to ${session.requester} failed: HTTP ${resp.status}`);
+    } else if (!data || Number(data.sent) < 1) {
+      console.error(
+        `[captcha] solve notice accepted but delivered to nobody (sent=${data?.sent ?? "?"}) — ` +
+          `is "${session.requester}" a real subscriber?`,
+      );
+    } else {
+      console.log(`[captcha] solve notice → ${session.requester} (session ${session.id})`);
+    }
+  } catch (err: any) {
+    console.error(`[captcha] solve notice to ${session.requester} threw: ${err?.message ?? err}`);
   }
 }
 
@@ -168,18 +241,26 @@ export const requestCaptchaSolve: Tool = {
           max_tokens,
         );
       }
+      // ⭐ `agent` IS THE REQUESTER, AND IT IS THE SAME FIELD THE TAB
+      // RESERVATION USES — one identity, not a second one to keep in step. It
+      // decides two things now: which channel the human is told in, and who is
+      // told when the captcha is solved.
+      const requester = (p as any).agent ? String((p as any).agent) : null;
       const session = createCaptchaSession({
         tabTarget: p.tabTarget,
         extensionId: (p as any).extensionId,
         prompt: p.prompt,
         ttlSeconds: p.ttlSeconds,
         rect: p.rect ?? null,
+        requester,
       });
 
       const solver = p.notify || "slack:U0NGEHS2J";
       const published = await publishArtifact(session, solver);
       const url = published.url || `${selfPublicBase()}/captcha/${session.token}/`;
-      const notified = published.url ? await notify(solver, url, session) : { ok: false, error: "not published" };
+      const notified = published.url
+        ? await notify(solver, url, session, requester ?? NOTIFY_FROM)
+        : { ok: false, error: "not published" };
 
       return jsonResponse(
         {
@@ -202,6 +283,15 @@ export const requestCaptchaSolve: Tool = {
           publishError: published.error,
           notifiedTo: notified.ok ? solver : null,
           notifyError: notified.error,
+          // ⚠️ `requester` NULL IS A REAL ANSWER, NOT A MISSING FIELD: it means
+          // the call carried no `agent`, so the notice went to the solver's DM
+          // and NOBODY will be told when it is solved. Pass `agent` to get
+          // both. Said here rather than left to be inferred from two nulls.
+          requester,
+          notifiedVia: requester
+            ? `sent as "${requester}", so it lands in that correspondent's own channel if it has one, else the solver's DM`
+            : "the solver's DM (no `agent` was passed)",
+          solveNoticeTo: requester ?? null,
           // ⚠️ Say it plainly rather than leaving the caller to infer it from
           // two nulls: if nobody was told, the link is inert until someone is.
           nextStep: notified.ok

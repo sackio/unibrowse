@@ -626,6 +626,16 @@ async function main() {
         ...(s.extensionId ? { extensionId: s.extensionId } : {}),
       } as any);
     },
+
+    // ⛔ NOT AWAITED, AND THE .catch IS LOAD-BEARING. notifySolvedToRequester
+    // never throws by design, but an unhandled rejection here would land on a
+    // request that has already been answered — so the guard stays whatever that
+    // function promises, because this side cannot see a change to it.
+    onSolved: (s) => {
+      void captchaTools.notifySolvedToRequester(s).catch((err: any) => {
+        console.error(`[captcha] solve notice failed for ${s.id}: ${err?.message ?? err}`);
+      });
+    },
   });
 
   // Sessions are in-memory and terminal states are reached by reading the clock,

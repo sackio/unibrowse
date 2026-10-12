@@ -54,6 +54,16 @@ export interface CaptchaSession {
   extensionId?: string;
   tabTarget: number | string;
   prompt: string;
+  /**
+   * The ATC id of the agent or thread that asked for this captcha — the seat
+   * that is blocked on it. Two things key off it, and both are Ben's ask
+   * (Slack #unibrowse 2026-10-12): the human's notice is SENT AS this id so
+   * the bridge posts it in that correspondent's own channel, and the same id
+   * is DMed when the captcha is solved so the requester need not poll.
+   * ⚠️ Null when the caller passed no `agent` — then the human is DMed as
+   * before and nobody is told about the solve, because there is no address.
+   */
+  requester: string | null;
   state: CaptchaState;
   createdAt: number;
   expiresAt: number;
@@ -89,6 +99,7 @@ export function createCaptchaSession(opts: {
   prompt?: string;
   ttlSeconds?: number;
   rect?: { x: number; y: number; width: number; height: number } | null;
+  requester?: string | null;
 }): CaptchaSession {
   const now = Date.now();
   // 10 minutes: long enough for a phone to buzz, be noticed and answered;
@@ -110,6 +121,7 @@ export function createCaptchaSession(opts: {
     note: null,
     rect: opts.rect ?? null,
     cursor: null,
+    requester: opts.requester ?? null,
   };
   sessions.set(s.token, s);
   return s;
@@ -398,6 +410,19 @@ export function registerCaptchaRoutes(
     viewport: (s: CaptchaSession) => Promise<{ width: number; height: number }>;
     click: (s: CaptchaSession, x: number, y: number, holdMs?: number) => Promise<void>;
     type: (s: CaptchaSession, text: string) => Promise<void>;
+    /**
+     * Called once when the human presses Done, so the blocked requester is
+     * TOLD rather than having to poll for it (Ben, Slack #unibrowse
+     * 2026-10-12).
+     *
+     * ⛔ FIRE AND FORGET, AND IT MUST NOT BE AWAITED BY THE ROUTE. The phone is
+     * waiting on this response to show "Thanks — sent back"; a slow or hanging
+     * broker would leave the operator looking at a button that did nothing,
+     * having already solved the captcha. The DM failing is recoverable — the
+     * agent's own poll still sees `solved` — so it is never worth blocking the
+     * one actor who cannot retry.
+     */
+    onSolved?: (s: CaptchaSession) => void;
   },
 ) {
   function live(req: any, res: any): CaptchaSession | null {
@@ -520,5 +545,17 @@ export function registerCaptchaRoutes(
     s.solvedAt = Date.now();
     s.note = typeof req.body?.note === "string" ? req.body.note.slice(0, 500) : null;
     res.json(publicView(s));
+    // ⛔ AFTER res.json, AND NOT AWAITED — see onSolved's contract above.
+    // ⛔ try/catch is not optional: a synchronous throw in the callback would
+    // escape into Express's error handler on a request that has ALREADY been
+    // answered, which logs an unhandled failure for a captcha that was in fact
+    // solved.
+    if (deps.onSolved) {
+      try {
+        deps.onSolved(s);
+      } catch (err: any) {
+        console.error(`[captcha] onSolved threw for ${s.id}: ${err?.message ?? err}`);
+      }
+    }
   });
 }

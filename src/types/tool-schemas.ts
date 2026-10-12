@@ -1125,7 +1125,8 @@ export const RequestCaptchaSolveTool = z.object({
   description: z.literal(
     "Hand a captcha to a human's phone and get a session id back immediately. " +
     "Serves a phone-sized page showing a live screenshot of the tab; the human taps it, and taps replay as REAL clicks (CDP Input) in that tab. " +
-    "Publishes the page as an ATC artifact so it is reachable off-LAN with no VPN, and DMs the link to the solver. " +
+    "Publishes the page as an ATC artifact so it is reachable off-LAN with no VPN, and sends the link to the solver. " +
+    "⭐ PASS `agent`: the notice is then sent AS you, so it appears in YOUR channel or thread rather than in a bare DM, and you are DMed the moment the human solves it — without `agent` nobody is told about the solve. " +
     "Poll browser_check_captcha_solve for the outcome; do not busy-wait on this call. " +
     "⚠️ The returned URL lets its holder click inside a live logged-in browser — it is bound to ONE tab, expires (default 10 min), and is single-use, but treat it like any other credential. " +
     "⚠️ This does not defeat captchas that score the SESSION rather than the answer (mouse paths, timing, IP reputation). It solves 'a human needs to look at this'."
@@ -1142,7 +1143,7 @@ export const RequestCaptchaSolveTool = z.object({
     notify: z
       .string()
       .optional()
-      .describe("ATC subscriber to DM the link to (default: the operator). Set this when someone other than the operator should solve it."),
+      .describe("ATC subscriber to send the link to (default: the operator). Set this when someone other than the operator should solve it."),
     rect: z
       .object({
         x: z.number(), y: z.number(), width: z.number(), height: z.number(),
