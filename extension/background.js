@@ -23,6 +23,35 @@ importScripts('config.js', 'utils/browser-env.js', 'utils/server-resolver.js', '
 const SESSION_AUTO_CAPTURE_ON_ATTACH = true;
 const SESSION_AUTO_CAPTURE_VIDEO = false;
 
+// Hosts that are NEVER auto-captured, matched on the host and any subdomain.
+// Ben, Slack #freelance 2026-10-12 18:01, asked by name for fiverr.com to be
+// exempt. ⛔ This is a per-host exemption, NOT a weakening of auto-capture on
+// attach, which is his standing instruction and stays on everywhere else.
+//
+// ⭐ WHY IT HAS TO BE HERE AND NOT ON THE SERVER. I built the server-side
+// version first (ca5ae92) because it needs no ↻. It cannot work, and the logs
+// say why: auto-capture is keyed on ATTACH, and every tool call attaches via
+// ensureAttachedFromParams — so the server stops a recording and the very next
+// call starts a fresh one. Two navigations to the same exempt URL produced
+// sr-1791842461881 and sr-1791842868228, each stopped ~2s after it began,
+// while lib/network-interceptor.js had already been injected into the page at
+// load. A reactive stop can end a recording; it can never keep the hook out of
+// the page. Only declining to START can.
+const SESSION_AUTO_CAPTURE_EXEMPT_HOSTS = ['fiverr.com'];
+
+function isAutoCaptureExemptUrl(url) {
+  if (!url) return false;
+  let host;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch (e) {
+    return false; // not judgeable — record it, which is the standing default
+  }
+  return SESSION_AUTO_CAPTURE_EXEMPT_HOSTS.some(
+    (h) => host === h || host.endsWith('.' + h)
+  );
+}
+
 // Rolling-window caps. An auto-started recording has no natural end — it lives
 // as long as the tab stays attached, which for this fleet is measured in days —
 // so these bound service-worker memory, not just upload size.
@@ -4783,6 +4812,21 @@ class BackgroundController {
   async _maybeAutoCapture(tabId, enabled) {
     if (!enabled || !SESSION_AUTO_CAPTURE_ON_ATTACH) return;
     try {
+      // ⛔ EXEMPT HOSTS: decline to start, which is the only point at which the
+      // page can be left unmodified. See SESSION_AUTO_CAPTURE_EXEMPT_HOSTS.
+      // ⚠️ chrome.tabs.get can reject for a tab that closed mid-flight; the
+      // catch below already treats any failure here as "carry on attaching",
+      // and an unreadable URL must not silently disable capture, so a throw
+      // falls through to the normal path rather than returning.
+      try {
+        const t = await chrome.tabs.get(tabId);
+        if (isAutoCaptureExemptUrl(t && t.url)) {
+          console.log(`[Background] Auto-capture: skipping tab ${tabId} — ${new URL(t.url).hostname} is exempt`);
+          return;
+        }
+      } catch (e) {
+        console.warn('[Background] Auto-capture: could not read tab url for the exempt check:', e?.message || e);
+      }
       // ⛔ Each attached tab gets its OWN recording (ben, 2026-08-31). It used
       // to fold every tab into one shared timeline, which is exactly what made
       // a single tab's recording impossible to stop or ship on its own.
