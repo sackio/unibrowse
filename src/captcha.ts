@@ -335,24 +335,60 @@ function endHold(e) {
   var held = Date.now() - holdStart;
   holdStart = null;
   if (holdTimer) { clearInterval(holdTimer); holdTimer = null; }
-  document.getElementById('dot').style.opacity = 0;
-  if (busy || stopped) return;
+  if (busy || stopped) { document.getElementById('dot').style.opacity = 0; return; }
   busy = true;
   // Anything under ~250ms is an ordinary tap; send it without a hold so the
   // extension keeps its own randomised 50-100ms down-delay, which is more
   // human than a measured 180ms replayed exactly.
   var body = { fx: holdFx, fy: holdFy };
   if (held >= 250) body.holdMs = Math.min(held, 20000);
+
+  // ⛔ THE HOLD IS REPLAYED AFTER THE RELEASE, SO THE PAGE MUST SAY SO WHILE IT
+  // RUNS. The browser presses for the full duration only once the phone lets
+  // go, and for those seconds the busy flag suppresses the screenshot poll — so
+  // the picture froze, the status still read "release to send", and a hold that was
+  // working looked like a press that never landed. MEASURED 2026-10-12 on
+  // session dc65861e: Ben pressed, got no feedback, and reported through
+  // the freelance seat (#freelance 17:18) that "his press never registers" — while
+  // the 16s hold he had just sent was in flight and went on to CLEAR the challenge.
+  // ⭐ The ring stays lit for the same reason: it is the only thing on screen
+  // that marks where the browser's finger currently is.
+  var holdEnds = body.holdMs ? Date.now() + body.holdMs : 0;
+  var replayTimer = null;
+  function replayLabel() {
+    var left = Math.max(0, holdEnds - Date.now()) / 1000;
+    document.getElementById('status').textContent = left > 0.05
+      ? ('Holding in the browser — ' + left.toFixed(1) + 's to go. The picture updates when it finishes.')
+      : 'Hold finished — fetching the page.';
+  }
+  if (holdEnds) { replayLabel(); replayTimer = setInterval(replayLabel, 100); }
+
   fetch('tap', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                  body: JSON.stringify(body) })
     .then(function (r) { return r.json(); })
     .then(function (j) {
+      // ⛔ A SHORT TAP ON A PRESS-AND-HOLD CHALLENGE IS A FAILURE THAT REPORTS
+      // SUCCESS. "Tap sent." is true and useless: the widget scores duration,
+      // so a 180ms tap does nothing at all and the operator has no reason to
+      // suspect the gesture rather than the relay. Ben's first press on
+      // dc65861e was exactly this (measured <250ms, 2026-10-12), and his
+      // conclusion was that the page was broken. The prompt is the only thing
+      // that knows which kind of challenge this is, so read it.
+      var wantsHold = /\bhold\b/i.test(document.getElementById('prompt').textContent || '');
       document.getElementById('status').textContent = j.ok
-        ? (j.holdMs ? ('Held ' + (j.holdMs / 1000).toFixed(1) + 's — sent.') : 'Tap sent.')
+        ? (j.holdMs
+            ? ('Held ' + (j.holdMs / 1000).toFixed(1) + 's — sent. Watch the picture; press again if it did not complete.')
+            : (wantsHold
+                ? 'That was a quick tap, and this challenge needs a press and HOLD — press the button and keep holding for several seconds.'
+                : 'Tap sent.'))
         : ('Refused: ' + (j.error || 'unknown'));
     })
     .catch(function () { document.getElementById('status').textContent = 'Tap failed to send.'; })
-    .then(function () { busy = false; setTimeout(shot, 600); });
+    .then(function () {
+      if (replayTimer) { clearInterval(replayTimer); replayTimer = null; }
+      document.getElementById('dot').style.opacity = 0;
+      busy = false; setTimeout(shot, 600);
+    });
 }
 
 // ⛔ The CSS above stops the long-press menu on every mobile browser that
