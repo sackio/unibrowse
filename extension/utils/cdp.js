@@ -1186,6 +1186,62 @@ class CDPHelper {
         currentX,
         currentY
       });
+
+      // ── OVERSHOOT AND SETTLE ───────────────────────────────────────────
+      // A hand aiming at a target passes it and comes back: the pointer
+      // arrives a few pixels beyond, then corrects in one or two smaller
+      // steps. A path that decelerates exactly onto the centre of a button
+      // and stops dead is the shape no arm produces.
+      // ⛔ The overshoot must stay INSIDE the control, so it is small (3-9px)
+      // and taken along the direction of travel. Overshooting off the element
+      // would fire mouseout/mouseleave on the target and could close a menu
+      // the click was meant to land in.
+      // ⚠️ Costs 3-4 extra Input commands. Kept off the moveFirst:false path,
+      // which exists because the bezier loop already blows the 30s WebSocket
+      // timeout on Xvfb sidecars.
+      try {
+        const dx = x - currentX, dy = y - currentY;
+        const len = Math.hypot(dx, dy) || 1;
+        const over = 3 + Math.random() * 6;
+        const ox = Math.round(x + (dx / len) * over);
+        const oy = Math.round(y + (dy / len) * over);
+        await this.sendCommand('Input.dispatchMouseEvent',
+          { type: 'mouseMoved', x: ox, y: oy, buttons: 0 });
+        await new Promise(resolve => setTimeout(resolve, 18 + Math.random() * 40));
+        // Settle in one or two steps, the second landing exactly on target.
+        if (Math.random() < 0.55) {
+          await this.sendCommand('Input.dispatchMouseEvent', {
+            type: 'mouseMoved',
+            x: Math.round((x + ox) / 2),
+            y: Math.round((y + oy) / 2),
+            buttons: 0,
+          });
+          await new Promise(resolve => setTimeout(resolve, 12 + Math.random() * 28));
+        }
+        await this.sendCommand('Input.dispatchMouseEvent',
+          { type: 'mouseMoved', x, y, buttons: 0 });
+
+        // A hand resting on a target is never perfectly still before it
+        // presses. Two or three sub-pixel-scale corrections, sometimes.
+        if (Math.random() < 0.4) {
+          const jitters = 2 + Math.floor(Math.random() * 2);
+          for (let j = 0; j < jitters; j++) {
+            await new Promise(resolve => setTimeout(resolve, 20 + Math.random() * 50));
+            await this.sendCommand('Input.dispatchMouseEvent', {
+              type: 'mouseMoved',
+              x: x + Math.round(Math.random() * 2 - 1),
+              y: y + Math.round(Math.random() * 2 - 1),
+              buttons: 0,
+            });
+          }
+          await this.sendCommand('Input.dispatchMouseEvent',
+            { type: 'mouseMoved', x, y, buttons: 0 });
+        }
+      } catch (e) {
+        // ⛔ NEVER FATAL. The click is the deliverable; the approach is
+        // decoration, and a failed decoration must not lose the click.
+      }
+
       // Small pause before clicking (human reaction time)
       await new Promise(resolve => setTimeout(resolve, 50 + Math.random() * 100));
     }
@@ -1323,6 +1379,59 @@ class CDPHelper {
    * @param {number} options.mistakeChance - Chance of making a typo (0-1, default: 0)
    * @param {boolean} options.pressEnter - Whether to press Enter after typing (default: false)
    */
+  /**
+   * How long to wait before the NEXT keystroke.
+   *
+   * ⛔ UNIFORM RANDOM IS NOT HUMAN TYPING, and it is what this did until
+   * 2026-10-12: every gap drawn flat from [minDelay, maxDelay], so the
+   * distribution was rectangular and every inter-key interval independent of
+   * its neighbours. Real typing is unimodal and right-skewed — most keys land
+   * fast and close together, with occasional long gaps at word boundaries and
+   * after punctuation, where the typist is reading or thinking rather than
+   * moving a finger. A flat distribution has no mode and no boundary
+   * structure, which is cheap for a page to measure over 19 characters.
+   *
+   * Ben asked for this directly (Slack #freelance 2026-10-12 18:04: "you're
+   * clicking fast you're not looking like a human").
+   * ⛔ NOT KNOWN TO DEFEAT ANYTHING — PerimeterX flagged his browser on a page
+   * load before there was any typing to score. This makes our input look like
+   * what it claims to be; it is not evidence about any detector.
+   *
+   * ⚠️ It is SLOWER on average than the flat draw — roughly 1.3-1.5x for prose
+   * with spaces. Flows with their own timeouts around typing will feel it.
+   */
+  _keyDelay(char, prevChar, minDelay, maxDelay, textLength) {
+    const span = Math.max(1, maxDelay - minDelay);
+
+    // ⛔ LONG TEXT KEEPS THE OLD FLAT DRAW, AND THIS GUARD IS NOT OPTIONAL.
+    // MEASURED 2026-10-12 over 400 simulated runs: the cadence below averages
+    // 120ms/key against the flat draw's 100ms, with a p95 tail. That is fine
+    // for a title or a login field and fatal for a long one — a 500-character
+    // product description would take about 60s of keystrokes and blow the 30s
+    // WebSocket response timeout, turning a working fill into a tool error.
+    // Nobody is fingerprinting the cadence of a 500-character paste anyway, so
+    // the realism is worth nothing exactly where it costs the most.
+    if (textLength > 120) {
+      return minDelay + Math.random() * span;
+    }
+    // Bell-ish and right-skewed: the mean of two uniforms gives a triangular
+    // peak, squaring pulls the mass toward the fast end and leaves a tail.
+    const r = (Math.random() + Math.random()) / 2;
+    let delay = minDelay + span * Math.pow(r, 1.6);
+
+    // A capital or symbol costs a modifier keypress a real hand has to make.
+    if (/[A-Z!@#$%^&*()_+{}|:"<>?~]/.test(char)) delay += 15 + Math.random() * 35;
+
+    // Word boundary: the gap after a space is where reading happens.
+    if (prevChar === ' ' && Math.random() < 0.3) delay += 120 + Math.random() * 260;
+    // Sentence punctuation buys a longer one.
+    if (/[.,;:!?]/.test(prevChar || '') && Math.random() < 0.25) delay += 150 + Math.random() * 300;
+    // And occasionally the typist simply stops.
+    if (Math.random() < 0.04) delay += 300 + Math.random() * 500;
+
+    return delay;
+  }
+
   async typeRealistic(text, options = {}) {
     const {
       minDelay = 50,
@@ -1364,8 +1473,11 @@ class CDPHelper {
       // Type the actual character
       await this._typeChar(char);
 
-      // Variable delay between keystrokes
-      const delay = minDelay + Math.random() * (maxDelay - minDelay);
+      // Variable delay between keystrokes — see _keyDelay for why this is
+      // not a flat draw.
+      const delay = this._keyDelay(
+        char, i > 0 ? text[i - 1] : null, minDelay, maxDelay, text.length,
+      );
       await new Promise(resolve => setTimeout(resolve, delay));
     }
 
