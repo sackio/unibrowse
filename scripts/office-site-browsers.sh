@@ -48,7 +48,55 @@ PROFILES_ROOT="/home/ben/.chrome-profiles"
 LOG_DIR="$PROFILES_ROOT/logs"
 CHROME_BIN="/usr/bin/google-chrome"
 
-export DISPLAY="${DISPLAY:-:1}"
+# ⛔⛔ DO NOT DEFAULT DISPLAY TO :1. THE NUMBER IS ALLOCATED BY GDM AND CHANGES
+# ACROSS A LOGOUT. MEASURED 2026-10-12: Ben's session was :1; `scripts` logged
+# office out at his direction (Slack #scripts 03:15) and afterwards the ONLY
+# socket was /tmp/.X11-unix/X0, owned by gdm — the GREETER. A defaulted :1 then
+# resolves to nothing, or worse to whatever GDM happens to hold, and Chrome
+# launches against the wrong display while every `list` line still reads "up".
+# ⚠️ This line previously read `export DISPLAY="${DISPLAY:-:1}"`, which fails
+# toward a PLAUSIBLE WRONG VALUE rather than an error — the most expensive
+# failure shape there is, and the same one this file's other traps are about.
+# `scripts` flagged it before it cost anything.
+#
+# Resolution order: an explicit UNIBROWSE_DISPLAY override (recovery), then the
+# Display property of THIS USER's logind session. The greeter belongs to gdm, so
+# filtering on our own user excludes it by construction rather than by guessing.
+# ⛔ No fallback guess. Commands that need X fail loudly via require_display;
+# list/map/down keep working with no X session at all, which is the state right
+# after a logout and exactly when you need to inspect.
+resolve_display() {
+  if [ -n "${UNIBROWSE_DISPLAY:-}" ]; then echo "$UNIBROWSE_DISPLAY"; return 0; fi
+  local sid d me
+  me="$(id -un)"
+  while read -r sid; do
+    [ -n "$sid" ] || continue
+    d="$(loginctl show-session "$sid" -p Display --value 2>/dev/null)"
+    if [ -n "$d" ] && [ -S "/tmp/.X11-unix/X${d#:}" ]; then echo "$d"; return 0; fi
+  done < <(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$me" '$3==u {print $1}')
+  return 1
+}
+
+if _resolved_display="$(resolve_display)"; then
+  export DISPLAY="$_resolved_display"
+else
+  unset DISPLAY
+fi
+
+# Call this from anything that actually talks to X (launch, tile, enumerate
+# monitors). Reading state does not need it.
+require_display() {
+  [ -n "${DISPLAY:-}" ] && return 0
+  {
+    echo "⛔ no X session for $(id -un): cannot resolve DISPLAY, and this command needs it."
+    echo "   X sockets present: $(ls /tmp/.X11-unix/ 2>/dev/null | tr '\n' ' ')"
+    echo "   (an X0 owned by gdm is the GREETER — nobody is logged in)"
+    echo "   ⛔ NOT defaulting to :1: that silently targets the greeter or nothing."
+    echo "   If someone IS logged in and this still fails, override explicitly:"
+    echo "     UNIBROWSE_DISPLAY=:N $0 $*"
+  } >&2
+  exit 3
+}
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/1000/bus}"
 
@@ -180,6 +228,7 @@ running_pid() { # the browser process owning this exact profile, or empty
 }
 
 cmd_monitors() {
+  require_display
   echo "office monitors (DISPLAY=$DISPLAY):"
   # ⚠️ The output NAME is the LAST field, not the second: the second carries
   # xrandr's "+*" primary markers (+*HDMI-0), which is not a name anything
@@ -207,6 +256,7 @@ cmd_list() {
 }
 
 cmd_up() {
+  require_display
   local name="$1" mon slot url dir geo w h x y pid
   mon="$(site_field "$name" monitor)" || { echo "unknown site: $name" >&2; return 1; }
   slot="$(site_field "$name" slot)"
@@ -300,6 +350,7 @@ cmd_map() { # site -> the extensionId the server knows it by
 }
 
 cmd_place() { # re-tile a RUNNING site onto its slot, without restarting it
+  require_display
   # ⭐ Window geometry is an X operation, not input: no pointer moves, nothing
   # is clicked, and a logged-in browser keeps its session. That is why this
   # exists rather than down/up — once these profiles hold logins, restarting

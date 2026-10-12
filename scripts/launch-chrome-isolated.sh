@@ -96,10 +96,21 @@ echo
 # Launch Chrome with extension
 echo -e "${BLUE}→ Launching Chrome...${NC}"
 
-# Set DISPLAY if not already set (for X11)
-# Default to :1 as that's the typical display for the office server
-if [ -z "$DISPLAY" ]; then
-    export DISPLAY=:1
+# ⛔ DO NOT DEFAULT DISPLAY TO :1. GDM ALLOCATES THE NUMBER AND IT CHANGES ACROSS
+# A LOGOUT. MEASURED 2026-10-12: Ben's session was :1, office was logged out at
+# his direction (#scripts 03:15), and afterwards the only socket was
+# /tmp/.X11-unix/X0 owned by gdm — the GREETER. A defaulted :1 launches Chrome
+# against nothing, or against the greeter, and still looks like it worked.
+# ⚠️ This block used to read `if [ -z "$DISPLAY" ]; then export DISPLAY=:1; fi`,
+# with the comment "the typical display for the office server". Typical is not
+# current, and the failure is silent.
+if [ -z "${DISPLAY:-}" ]; then
+    echo "⛔ DISPLAY is unset and this script will NOT guess :1." >&2
+    echo "   X sockets present: $(ls /tmp/.X11-unix/ 2>/dev/null | tr '\n' ' ')" >&2
+    echo "   (an X0 owned by gdm is the GREETER — nobody is logged in)" >&2
+    echo "   Resolve it: loginctl show-session <your-session> -p Display --value" >&2
+    echo "   or pass it explicitly: DISPLAY=:N $0 ..." >&2
+    exit 3
 fi
 
 "$CHROME_BIN" \
