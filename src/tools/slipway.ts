@@ -105,9 +105,11 @@ export const openSlipway: Tool = {
             subject: "Slipway is open",
             content:
               `Drive ${session.label} from your phone:\n\n${url}\n\n` +
-              `Pick a tab at the top, then tap the picture where you would tap the page. ` +
+              `Pick a tab at the top — every tab in that browser is listed, and \u25cf marks one ` +
+              `that is not attached yet, which picking it fixes. Then tap the picture where ` +
+              `you would tap the page. ` +
               `Hold for a press-and-hold. Expires in ${mins} min.\n\n` +
-              `⚠️ This link can read and drive every tab attached to that browser until it expires. ` +
+              `⚠️ This link can read and drive every tab open in that browser until it expires. ` +
               `Treat it like a password and tell me when you are done so I can close it.`,
           })
         : { ok: false, error: "not published" };
@@ -124,7 +126,7 @@ export const openSlipway: Tool = {
           notifiedTo: notified.ok ? holder : null,
           notifyError: notified.error,
           capability:
-            "⚠️ The holder of this URL can read and drive EVERY tab attached to " +
+            "⚠️ The holder of this URL can read and drive EVERY tab OPEN IN " +
             `${p.extensionId} until ${new Date(session.expiresAt).toISOString()}. ` +
             "Bounded to that one browser and that TTL; not single-use.",
           nextStep: notified.ok

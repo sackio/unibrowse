@@ -1179,13 +1179,13 @@ export const CancelCaptchaSolveTool = z.object({
 // ⚠️ A Slipway link grants MORE than a captcha link and the description says so
 // out loud, because the two look alike and only one of them is safe to hand
 // around. A captcha session is one tab, ten minutes, single use. A Slipway
-// session is every tab attached to ONE browser, for hours, reusable.
+// session is every tab in ONE browser, for hours, reusable.
 export const OpenSlipwayTool = z.object({
   name: z.literal("browser_open_slipway"),
   description: z.literal(
     "Open a Slipway session: a phone-sized page that drives ONE attached browser — pick any of its attached tabs, see a live screenshot, send real taps (with press-and-hold), typing, scrolling and Enter, and start or stop a session recording. " +
     "Published as an ATC artifact so it works off-LAN with no VPN, and the link is sent to whoever will use it. " +
-    "⚠️ THE LINK IS THE CREDENTIAL AND IT IS BROADER THAN A CAPTCHA LINK: its holder can read and drive EVERY tab attached to the named browser until it expires (default 8h) or you close it. It is bounded to that one browser and to that TTL, and to nothing else — no single-use, no rect clamp. Treat it accordingly and prefer a short ttlSeconds when the job is short. " +
+    "⚠️ THE LINK IS THE CREDENTIAL AND IT IS BROADER THAN A CAPTCHA LINK: its holder can read and drive EVERY tab OPEN IN the named browser (the picker lists them all and attaches on select) until it expires (default 8h) or you close it. It is bounded to that one browser and to that TTL, and to nothing else — no single-use, no rect clamp. Treat it accordingly and prefer a short ttlSeconds when the job is short. " +
     "⭐ PASS `agent`: the link notice is then sent AS you, so it appears in YOUR channel or thread rather than a bare DM. " +
     "Close it with browser_close_slipway the moment the job is done."
   ),

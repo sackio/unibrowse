@@ -16,7 +16,8 @@
  * depends on a boolean, which is the shape where the dangerous default wins.
  *
  * ⚠️ SAY THE CAPABILITY PLAINLY: whoever holds a Slipway URL can click, type
- * and read inside every tab attached to the named browser, for as long as the
+ * and read inside every tab OPEN IN the named browser — not merely the ones
+ * already attached, since the roster attaches on select — for as long as the
  * session lives. That is strictly more than the captcha relay grants, and it is
  * bounded on only two axes now:
  *   · ONE BROWSER — `extensionId` is required at mint and cannot be changed by
@@ -50,6 +51,17 @@ export interface SlipwayTab {
   title: string | null;
   url: string | null;
   reservedTo: string | null;
+  /**
+   * ⭐ FALSE MEANS "OPEN IN THIS BROWSER BUT NOT DRIVEABLE YET", NOT "absent".
+   *
+   * The roster deliberately spans every tab the browser has. Listing only the
+   * attached ones showed Ben a ONE-ITEM menu holding a platform.claude.com
+   * login tab an agent had left there and none of his own 17 pages — measured
+   * on his Chrome 2026-10-12 16:07 — which is what "let's work on the app this
+   * is not working still for me" (#unibrowse 15:39) actually was. Picking an
+   * unattached tab attaches it first.
+   */
+  attached: boolean;
 }
 
 export interface SlipwaySession {
@@ -312,21 +324,26 @@ function poll() {
 
     // Only rebuild the <select> when the roster actually changed — rebuilding
     // it on every poll closes the native picker under the operator's finger.
-    var key = (s.tabs || []).map(function (t) { return t.tabTarget + ':' + (t.title || ''); }).join('|');
+    var key = (s.tabs || []).map(function (t) {
+      return t.tabTarget + ':' + (t.title || '') + ':' + (t.attached ? 1 : 0);
+    }).join('|');
     if (key !== lastTabsKey) {
       lastTabsKey = key;
       var sel = document.getElementById('tabs');
       sel.innerHTML = '';
       if (!(s.tabs || []).length) {
-        sel.innerHTML = '<option value="">No attached tabs</option>';
+        sel.innerHTML = '<option value="">No tabs in this browser</option>';
         haveTab = false;
         document.getElementById('shot').src = BLANK;
-        setStatus('This browser has nothing attached yet — press "Attach current tab".');
+        setStatus('This browser has no tabs open at all — open one, or press "Attach current tab".');
       } else {
         (s.tabs || []).forEach(function (t) {
           var o = document.createElement('option');
           o.value = String(t.tabTarget);
-          o.textContent = (t.title || t.label || String(t.tabTarget)).slice(0, 60) +
+          // '●' marks a tab that is open but not attached yet. Picking it
+          // attaches it, so the marker is information, not a warning.
+          o.textContent = (t.attached ? '' : '\u25cf ') +
+                          (t.title || t.label || String(t.tabTarget)).slice(0, 60) +
                           (t.reservedTo ? ' [' + t.reservedTo + ']' : '');
           sel.appendChild(o);
         });
@@ -335,6 +352,12 @@ function poll() {
     if (s.tabTarget !== null && s.tabTarget !== undefined) {
       document.getElementById('tabs').value = String(s.tabTarget);
       if (!haveTab) { haveTab = true; shot(); }
+    } else if ((s.tabs || []).length) {
+      // ⛔ The empty-roster fault one level in: tabs EXIST but none is chosen,
+      // so the <img> still has no src and still renders a broken-image icon.
+      haveTab = false;
+      document.getElementById('shot').src = BLANK;
+      setStatus('Pick a tab above to start driving it. \u25cf = not attached yet; picking it attaches it.');
     }
   }).catch(function () {});
 }
@@ -487,6 +510,14 @@ export function registerSlipwayRoutes(
      * presented as "the tab menu just says loading and the image is broken".
      */
     attachCurrent: (s: SlipwaySession) => Promise<number | string>;
+    /**
+     * Attach ONE named tab of this browser and return the id it ended up with.
+     *
+     * ⚠️ Carries the same exemption as attachCurrent, for the same reason: it
+     * runs only when the person holding the page picks that tab out of the
+     * roster. Minting still attaches nothing.
+     */
+    attachTab: (s: SlipwaySession, tabTarget: number | string) => Promise<number | string>;
   },
 ) {
   /** A live session, or the response already sent. */
@@ -618,12 +649,23 @@ export function registerSlipwayRoutes(
           if (!hit) {
             return res.status(404).json({
               ok: false,
-              error: `tab ${want} is not attached to this browser`,
+              error: `tab ${want} is not open in this browser`,
               available: tabs.map((t) => t.tabTarget),
             });
           }
+          // ⭐ ATTACH ON SELECT. Most picks are now of a tab we are not driving
+          // yet, because the roster spans the whole browser.
+          // ⛔ Do NOT skip this and let the screenshot discover the problem: a
+          // capture against an unattached tab fails with a message about the
+          // debugger, which on a phone reads as the page being broken rather
+          // than as one missing step.
+          if (!hit.attached) {
+            const tabId = await deps.attachTab(s, hit.tabTarget);
+            s.tabTarget = tabId;
+            return res.json({ ok: true, tabTarget: s.tabTarget, justAttached: true });
+          }
           s.tabTarget = hit.tabTarget;
-          return res.json({ ok: true, tabTarget: s.tabTarget });
+          return res.json({ ok: true, tabTarget: s.tabTarget, justAttached: false });
         }
 
         if (cmd === "attach") {

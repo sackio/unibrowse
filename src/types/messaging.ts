@@ -212,6 +212,13 @@ export interface SocketMessageMap {
   // Multi-tab management tools
   /** `live` adds liveUrl/liveTitle/urlChanged/titleChanged per tab. DEFAULTS TRUE at the tool boundary (2026-09-26); the wire field is still explicit. */
   browser_list_attached_tabs: { live?: boolean } | Record<string, never>;
+  /**
+   * chrome.tabs.query — EVERY tab in the browser, attached or not, which is
+   * why it carries no tabTarget. Long called by browser_list_tabs in
+   * tools/tabs.ts and long absent from this map; the gap only surfaced when a
+   * second caller (Slipway's tab roster) passed a typed payload.
+   */
+  browser_list_tabs: { extensionId?: string } | Record<string, never>;
   browser_set_tab_label: { tabId: number; label: string };
   browser_detach_tab: { tabId: number };
   browser_get_active_tab: Record<string, never>;

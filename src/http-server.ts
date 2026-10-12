@@ -687,11 +687,14 @@ async function main() {
         { only: [s.extensionId] },
       );
       const out: SlipwayTab[] = [];
+      const seen = new Set<string>();
       for (const r of results) {
         if (r.error) continue;
         for (const t of (r.result?.tabs ?? []) as any[]) {
+          const tabTarget = t.tabId ?? t.label;
+          seen.add(String(tabTarget));
           out.push({
-            tabTarget: t.tabId ?? t.label,
+            tabTarget,
             label: t.label ?? null,
             // Prefer LIVE title/url: the attach-time record never updates on
             // navigation and fails toward "nothing changed", which on a tab
@@ -699,8 +702,49 @@ async function main() {
             title: t.liveTitle ?? t.title ?? null,
             url: redactUrl(t.liveUrl ?? t.url),
             reservedTo: t.reservation?.owner ?? null,
+            attached: true,
           });
         }
+      }
+
+      // ⭐ THEN EVERY OTHER TAB IN THAT SAME BROWSER. `browser_list_tabs` is
+      // chrome.tabs.query and needs no attachment, which is the whole point:
+      // attachment is a property of OUR connection, not of what the person is
+      // looking at. Measured on Ben's Chrome 2026-10-12 16:07 — 17 tabs, one
+      // attached, and that one a login page an agent had left behind.
+      // ⚠️ THE ONE-BROWSER BOUND IS UNCHANGED. Both calls are scoped to
+      // s.extensionId, so nothing outside that browser can enter the roster;
+      // the bound was never "only attached tabs".
+      try {
+        const all: any = await globalContext.sendSocketMessage(
+          "browser_list_tabs",
+          { extensionId: s.extensionId } as any,
+        );
+        // ⛔ THE EXTENSION RETURNS A BARE ARRAY, not { tabs }. Reading only
+        // `all.tabs` got `undefined`, which this loop treats as "no other
+        // tabs" — a silent empty roster that looked exactly like the bug being
+        // fixed. tools/tabs.ts already handled both shapes; this is the same
+        // defence, and the reason it is a comment is that the success path and
+        // the wrong-shape path are byte-identical from here.
+        const rows: any[] = Array.isArray(all) ? all : (all?.tabs ?? []);
+        for (const t of rows) {
+          if (typeof t?.tabId !== "number" || seen.has(String(t.tabId))) continue;
+          out.push({
+            tabTarget: t.tabId,
+            label: null,
+            title: t.title ?? null,
+            url: redactUrl(t.url),
+            reservedTo: null,
+            attached: false,
+          });
+        }
+      } catch (err: any) {
+        // ⛔ FALL BACK TO THE ATTACHED LIST, NEVER TO AN EMPTY ONE. "No tabs"
+        // is the reading that stops the holder trying anything at all, and it
+        // would here be a lie about the browser caused by one failed call.
+        console.error(
+          `[slipway] browser_list_tabs failed for ${s.extensionId}: ${err?.message ?? err}`,
+        );
       }
       return out;
     },
@@ -757,6 +801,16 @@ async function main() {
     // header forbids.
     attachCurrent: async (s) => {
       const r = await globalContext.ensureAttached({ extensionId: s.extensionId });
+      return r.tabId;
+    },
+
+    // The roster's unattached half is only useful if picking one works.
+    attachTab: async (s, tabTarget) => {
+      const tabId = Number(tabTarget);
+      if (!Number.isFinite(tabId)) {
+        throw new Error(`cannot attach ${tabTarget}: a Chrome tab id is required`);
+      }
+      const r = await globalContext.ensureAttached({ tabId, extensionId: s.extensionId });
       return r.tabId;
     },
 
