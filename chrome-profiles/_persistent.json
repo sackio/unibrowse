@@ -2,6 +2,6 @@
   {
     "profileName": "ecobee-broker",
     "owner": "ha",
-    "resetCost": "full Auth0 password re-seed on an account with a lock history; a process-only restart self-heals in ~40s instead"
+    "resetCost": "⛔ THE PROFILE SURVIVING IS NECESSARY AND NOT SUFFICIENT — the LABELLED TAB DOES NOT COME BACK. Measured by `ha` (measured 2026-10-11 06:21 EDT on an ecobee config-entry reload teardown; date confirmed by `ha` after I declined to assert one I could not place): the process returned in 15-20s under the SAME extension id with tabCount 0, and NEITHER the sidecar NOR the integration recreated the `ecobee-broker` tab — both container sidecars held only their __unibrowse_seed tab. Without the labelled tab the JWT macro has nothing to drive and the ecobee integration STALLS SILENTLY; it once stacked with a dead Auth0 session and blocked the fix for hours. Rebuild is MANUAL and `ha`'s own: navigate to the consumerportal pinned to the sidecar's extensionId, then browser_set_tab_label to `ecobee-broker`, then confirm climates keep polling. ⛔ Do not rebuild it for them. ⇒ DM `ha` the moment the sidecar re-registers AND INCLUDE THE extensionId — it held across a process restart but a CONTAINER restart is a different event and they will not assume it carried over. A full profile WIPE additionally costs an Auth0 password re-seed on an account with a lock history. ⚠️ The previous text here read \"a process-only restart self-heals in ~40s\", which understated this to nothing and was quoted at `ha` as a reason the restart was cheap."
   }
 ]
