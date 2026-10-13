@@ -88,6 +88,48 @@ spec:
       labels:
         app: unibrowse-sidecar
     spec:
+      # ⭐ PINNED TO server3 BY `cluster`, 2026-10-13 16:32, for replicas:1 ONLY.
+      # The barn worker pool cannot host this at all: measured 16:31:24, total
+      # free across the offerable pool 15.70 Gi, largest single-node block
+      # 2.70 Gi (worker42), nodes at or above 4 Gi = ZERO. ⚠️ Free blocks live
+      # minutes — that is a timestamp, not a standing fact; re-measure before
+      # believing it either way.
+      #
+      # ⛔ NOT server4, and that is a technical no rather than a question for
+      # Ben: on 2026-10-06 `cluster` read it at 106.9 GiB free, placed 47 GiB of
+      # pods, and by 17:04 it was at load 488 with io full avg300 63% and 111
+      # D-state threads — PAGE-CACHE THRASH, with request accounting never
+      # exceeded. The ATC broker runs there, so the whole fleet degraded. Chrome
+      # is a page-cache-heavy workload and server4's RAID5 is still mid-rebuild.
+      #
+      # ⚠️ THREE THINGS ABOUT server3 THAT kubectl CANNOT TELL YOU:
+      #  · A ~72 Gi tradedesk score phase recurs daily and overlaps a 94.1 Gi
+      #    wake reserve. This pod's 4 Gi is ~6% of the current free block and
+      #    survives that; a larger footprint would not.
+      #  · `bellwether` runs 10 capped Docker containers OUTSIDE k8s — 9.8 GiB
+      #    resident against caps summing 75 GiB, invisible to kubectl and to
+      #    free-capacity, and they grow toward those caps during a NAS stall.
+      #    ⇒ server3's k8s "free memory" is a BOOKKEEPING figure, not a host
+      #    memory figure. Do not size anything here off kubectl alone.
+      #  · It carries a WAKE-SHORT(29) flag.
+      #
+      # ⛔ replicas > 1 IS BLOCKED AND WILL NOT CLEAR ON ITS OWN. Three per node
+      # needs a 12 Gi block; the pool's largest is 2.70 Gi, and the memory is
+      # held by quantum-feed `qf-surface-w` StatefulSet REQUESTS which
+      # quantum-engine is keeping at 6 Gi. Their 16:45 change lowers USAGE, not
+      # requests, so it frees nothing schedulable. ⇒ Ask `cluster` before
+      # raising replicas; they hold either a request reduction or Ben's
+      # decision. ⛔ Do not shrink this pod's request to fit instead — 2 Gi does
+      # not fit a 1.67 Gi block either, and the 2Gi shape is the exact
+      # condition that took SEVEN workers NotReady on 2026-09-12.
+      #
+      # ⭐ The image resolves here: server3's
+      # certs.d/192.168.1.207:5050/hosts.toml tries server4 FIRST with the NAS
+      # as fallback (verified on server3 itself, 2026-10-13), and the exact
+      # nested path answers 200 from the server4 mirror —
+      # /v2/unibrowse/chromium-host-chrome/manifests/2026-10-13.
+      nodeSelector:
+        kubernetes.io/hostname: server3
       # Chrome ignores SIGTERM politeness when mid-flush of its cookie jar, and
       # here the profile IS the asset. Give it room to exit cleanly.
       terminationGracePeriodSeconds: 45
