@@ -93,19 +93,39 @@ spec:
       terminationGracePeriodSeconds: 45
       containers:
         - name: chromium-host
-          # ⛔ THE REGISTRY IS 192.168.1.168:32000, NOT 192.168.1.207:5050. Measured
-          # 2026-10-13 after a push to .207:5050 failed: office's docker trusts only
-          # 192.168.1.42:32000 and 192.168.1.168:32000 as insecure registries, .42 is
-          # unreachable, and .207:5050 answers /v2/ with 200 but TIMES OUT on
-          # /v2/_catalog. .168:32000 is microk8s's own registry and holds the cluster's
-          # live images (qf-*, node-exporter, ollama …), so it is demonstrably what the
-          # nodes pull from.
-          # ⚠️ Pushing to .207:5050 from office would need `insecure-registries` in
-          # /etc/docker/daemon.json plus a docker restart — which would bounce every
-          # container on office, mcp-server and the live sidecars included. Not worth it
-          # for a registry that cannot list itself.
+          # ⛔ NAME IT .207:5050 AND PUSH THE BYTES TO .168:32000. Those are not in
+          # conflict, and getting it wrong costs the fallback silently.
+          #
+          # ⭐ HOW RESOLUTION ACTUALLY WORKS (`cluster`, measured 2026-10-13 on server4
+          # and workers 5/10/13/22/34). .207:5050 is the CANONICAL registry name here —
+          # all 325 running containers in the cluster are named .207:5050/... and zero
+          # are named .168:32000/.... Each node's
+          # certs.d/192.168.1.207:5050/hosts.toml lists server4 (.168:32000) as the
+          # FIRST host tried for a .207:5050-named image, with the NAS as automatic
+          # fallback, so "a node that cannot reach server4 keeps working" (its own
+          # comment, 2026-08-02, Ben's server4 consolidation).
+          # ⇒ A .207:5050-named image survives server4's registry being down.
+          #   An image NAMED .168:32000/... resolves to server4 ONLY.
+          #
+          # ⚠️ I GOT THIS WRONG FIRST: I read .168:32000's catalog, saw the cluster's
+          # live images in it, and concluded the nodes pull from it. That catalog is the
+          # MIRROR. A by-name pull of .207:5050 is what put those images there.
+          # ⛔ Do NOT record ".207:5050 is unusable" anywhere. What is true is narrower:
+          # office's docker CLIENT does not trust it (no entry in
+          # /etc/docker/daemon.json, and adding one needs a docker restart that would
+          # bounce mcp-server and the live sidecars), and its /v2/_catalog ENUMERATION
+          # times out. Neither affects by-name pulls, which 325 containers demonstrate.
+          #
+          # ⚠️ HONEST LIMIT ON THIS IMAGE'S FALLBACK: the bytes are on the server4
+          # mirror only, because office cannot push to the NAS. So the fallback PATH
+          # exists and the fallback COPY does not — if server4's registry goes down this
+          # pull fails. Someone with push access to .207:5050 has to put it there.
+          # ⚠️ The repository PATH must match what the node asks for: a pull of
+          # .207:5050/unibrowse/chromium-host-chrome requests exactly
+          # /v2/unibrowse/chromium-host-chrome/... from server4. A flattened name like
+          # unibrowse-chromium-host-chrome does NOT match and is never found.
           # ⛔ Build on office and push; do not build on cluster nodes (`cluster`).
-          image: 192.168.1.168:32000/unibrowse-chromium-host-chrome:2026-10-13
+          image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-13
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:

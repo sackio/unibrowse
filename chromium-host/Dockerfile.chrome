@@ -54,11 +54,15 @@
 # ⚠️ BUILD FROM THE REPO ROOT, not from chromium-host/ — this image needs
 # extension/ which lives at the root, so the context must contain both:
 #   docker build -f chromium-host/Dockerfile.chrome \
-#     -t 192.168.1.168:32000/unibrowse-chromium-host-chrome:<tag> .
-#   docker push 192.168.1.168:32000/unibrowse-chromium-host-chrome:<tag>
-# ⛔ THE REGISTRY IS .168:32000, NOT .207:5050 — see the long note in
-# k8s/chromium-sidecar.yaml. office's docker does not trust .207:5050 and that
-# host cannot even list its own catalog.
+#     -t 192.168.1.168:32000/unibrowse/chromium-host-chrome:<tag> .
+#   docker push 192.168.1.168:32000/unibrowse/chromium-host-chrome:<tag>
+# ⛔ BUT THE MANIFEST NAMES IT .207:5050/unibrowse/chromium-host-chrome, and
+# that is deliberate — .207:5050 is the cluster's canonical registry name and
+# each node tries server4 (.168:32000) first for it, keeping the NAS as a
+# fallback. Pushing to the server4 mirror under the SAME repository path is
+# what makes a canonical-name pull find it. Full mechanism, and the honest
+# limit (the NAS has no copy, so the fallback path exists without the fallback
+# bytes), in the long note in k8s/chromium-sidecar.yaml.
 # ⛔ Push from office; do NOT build on cluster nodes (cluster, 2026-10-13).
 #
 # ⭐ MEASURED IN THE BUILT IMAGE 2026-10-13, all three faults fixed:
