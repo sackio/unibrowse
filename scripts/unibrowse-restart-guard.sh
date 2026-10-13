@@ -70,10 +70,56 @@
 
 set -uo pipefail
 
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVER="${UNIBROWSE_SERVER:-http://localhost:9010}"
 QUIET=0
 [ "${1:-}" = "--quiet" ] && QUIET=1
 log() { [ "$QUIET" -eq 1 ] || echo "$@"; }
+
+# ⛔ ADDED 2026-10-12 AFTER A RESTART LANDED AHEAD OF ITS OWN BUILD.
+# The question "is a deploy ALREADY pending?" had no cheap answer, so nobody
+# asked it. Measured tonight: the running process started 18:05:35, commit
+# ca5ae92 was made at 18:05:41 and dist was built at 18:06:21 — so the process
+# was six seconds older than the commit it was supposed to be carrying. The
+# exemption Ben asked for at 18:01 was built, never loaded, and read as
+# delivered. An auto-capture of the host he had just exempted then ran for 22
+# minutes. Nothing errored.
+# ⭐ This is the only reading that settles it: PROCESS START vs BUILD TIME. A
+# container grep cannot, because dist/ is bind-mounted and goes green the
+# instant a build finishes with the old code still in memory.
+# ⚠️ PENDING here is a FLOOR, not a diagnosis. A rebuild can be comment-only
+# (measured 2026-10-10 on d88d0cb), which makes this read PENDING when nothing
+# functional is owed. Check `git log --stat` before concluding you must restart.
+deploy_state() {
+  local started dist_mtime src_commit
+  started="$(docker inspect -f '{{.State.StartedAt}}' unibrowse-mcp-server 2>/dev/null)" || return 0
+  [ -z "$started" ] && return 0
+  started="$(date -d "$started" +%s 2>/dev/null)" || return 0
+  dist_mtime="$(find "$REPO/dist" -maxdepth 2 -name '*.js' -printf '%T@\n' 2>/dev/null \
+                | sort -rn | head -1 | cut -d. -f1)"
+  src_commit="$(cd "$REPO" 2>/dev/null && git log -1 --format=%ct -- src/ 2>/dev/null)"
+  [ -z "$dist_mtime" ] && return 0
+
+  log ""
+  log "⛔ IS A DEPLOY ALREADY PENDING?  (process start vs build time — the only reading that settles it)"
+  log "   process started : $(date -d "@$started" '+%Y-%m-%d %H:%M:%S')"
+  log "   newest dist/*.js: $(date -d "@$dist_mtime" '+%Y-%m-%d %H:%M:%S')"
+  [ -n "$src_commit" ] && \
+  log "   newest src/ commit: $(date -d "@$src_commit" '+%Y-%m-%d %H:%M:%S')"
+
+  if [ -n "$src_commit" ] && [ "$src_commit" -gt "$dist_mtime" ]; then
+    log "   ⛔ src/ WAS COMMITTED AFTER THE LAST BUILD — \`npm run build\` FIRST or you ship nothing."
+  fi
+  if [ "$dist_mtime" -gt "$started" ]; then
+    log "   ⛔ PENDING: dist/ is $((dist_mtime - started))s NEWER than the running process."
+    log "      ⇒ The process cannot have loaded that build. Whatever it contains is NOT live,"
+    log "        however green a container grep looks."
+    log "      ⚠️ A FLOOR, not a diagnosis — a comment-only rebuild reads identical. Confirm with:"
+    log "        git log --stat --since=\"\$(date -d @$started '+%Y-%m-%d %H:%M:%S')\" -- src/"
+  else
+    log "   ✅ The running process is NEWER than the newest build — nothing in dist/ is stranded."
+  fi
+}
 
 resp="$(curl -s -m 10 "$SERVER/extensions" 2>/dev/null)"
 if [ -z "$resp" ]; then
@@ -152,5 +198,6 @@ if [ $rc -eq 0 ] || [ $rc -eq 1 ]; then
   log "     docker exec unibrowse-mcp-server sh -c 'grep -l <new-symbol> /app/dist/*.js'"
   log "     docker exec unibrowse-mcp-server sh -c 'echo \$NEW_ENV_VAR'   # empty ⇒ NOT applied"
   log "   Measured 2026-10-11: code live + env empty read as a clean deploy and shipped nothing."
+  deploy_state
 fi
 exit $rc
