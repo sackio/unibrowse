@@ -32,13 +32,29 @@ screen — which is why it is for sessions the operator is watching, not for thi
 
 `ws://<host>:9010/ws` — one WebSocket, path `/ws` exactly (`src/ws.ts:30`).
 
-**Auth.** When `UNIBROWSE_API_KEYS` is set the upgrade requires a valid key as
-`?key=<key>`, `Authorization: Bearer <key>`, or an `X-API-Key` header; without
-one the upgrade is refused `401 Unauthorized: missing or invalid API key`
-(`src/ws.ts:32-38`). When it is unset every upgrade is accepted. ⚠️ So a peer
-that works on the LAN today can start failing at the handshake the moment keys
-are switched on, and the failure is an HTTP status on the upgrade, not a
-protocol error — handle it where you handle connection failures.
+**Auth — and a LAN peer needs NO key, which is not what the obvious reading
+says.** `src/ws.ts:32-38` refuses an upgrade that fails `verifyWebSocketAuth`,
+and that function (`src/utils/auth.ts:214`) is three lines:
+
+```ts
+if (!isAuthEnabled()) return true;   // UNIBROWSE_API_KEYS unset  -> open
+if (isLocalClient(req)) return true; // on the LAN                -> open
+return isValidKey(extractKey(req));  // otherwise a key is required
+```
+
+⭐ MEASURED 2026-10-13, and it is why the first Slipway build worked when it
+should not have: `UNIBROWSE_API_KEYS` IS set on office, the phone peer sends no
+key, and it registered anyway — because 192.168.1.200 is a local client. I had
+this documented the other way round and would have sent someone hunting a key
+they do not need.
+
+⇒ A key is required only for a peer reaching the server from OFF the LAN
+(e.g. through the `browser.pushbuild.com` proxy). Supply it as `?key=<key>`,
+`Authorization: Bearer <key>` or an `X-API-Key` header; without it the upgrade
+is refused `401 Unauthorized: missing or invalid API key`. ⚠️ That refusal is an
+HTTP status on the upgrade, not a protocol error, so handle it where you handle
+connection failures — and note the key lives in the mcp-server container's
+environment, so read it from there rather than from any note.
 
 **Heartbeat.** The server pings every 30 s and terminates any peer that did not
 pong within one interval (`src/http-server.ts:1637-1650`). Most WS clients
@@ -49,6 +65,13 @@ If yours does not, you must, or you get dropped every 30 s.
 `proxy_read_timeout` (600 s) when idle. A phone adds its own hazards the
 heartbeat does NOT solve: doze, network handoff, and process death. Reconnect
 with backoff and re-register; see §2 on why that is safe.
+
+⭐ MEASURED on the first phone build, 2026-10-13: the peer registered and then
+dropped **twice with close code 1006** — socket vanished, no close frame. That
+code is the diagnosis: a clean teardown sends 1000/1001, so 1006 is process
+death or the network going away, never an orderly exit. ⇒ A peer whose socket
+lives in an Activity cannot stay connected on Android. Put it in a foreground
+service, and read the close code before theorising about the protocol.
 
 ---
 
@@ -174,7 +197,7 @@ should instead implement:
 | `browser_realistic_type` | `{text, selector?, tabTarget?}` | |
 | `browser_evaluate` | `{expression, tabTarget?}` | the lever that makes a thin peer useful |
 | `browser_get_visible_text` | `{selector?, maxLength?, tabTarget?}` | |
-| `browser_list_tabs` | `{extensionId?}` or `{}` | |
+| `browser_list_tabs` | `{extensionId?}` or `{}` | result: a bare array OR `{tabs:[…]}` — `src/tools/tabs.ts:66` accepts both |
 | `browser_list_attached_tabs` | `{live?}` or `{}` | called at registration |
 | `browser_ensure_attached` | `{tabId, label, autoOpenUrl}` | **this is the create-a-tab path** |
 | `browser_go_back` / `browser_go_forward` | `{tabTarget?}` | |
