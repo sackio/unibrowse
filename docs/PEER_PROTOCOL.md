@@ -192,8 +192,9 @@ should instead implement:
 | message | payload | notes |
 |---|---|---|
 | `browser_navigate` | `{url, tabTarget?}` | |
-| `browser_screenshot` | `{tabTarget?}` | |
+| `browser_screenshot` | `{tabTarget?}` | ⛔ **result is a BARE base64 string** — see below |
 | `browser_realistic_click` | `{x, y, button?, clickCount?, moveFirst?, moveDuration?}` | coordinates, no ref needed |
+| `browser_realistic_mouse_move` | `{x, y, currentX, currentY, duration}` | ⛔ **sent before every click** — see below |
 | `browser_realistic_type` | `{text, selector?, tabTarget?}` | |
 | `browser_evaluate` | `{expression, tabTarget?}` | the lever that makes a thin peer useful |
 | `browser_get_visible_text` | `{selector?, maxLength?, tabTarget?}` | |
@@ -214,6 +215,30 @@ one from you would be ignored.
 argument is `tabTarget`, not `tabId`. The schemas strip unknown keys silently,
 so a misnamed field is dropped and you get a plausible wrong answer with no
 error.
+
+### Three result shapes that bite, all measured 2026-10-13 against a live peer
+
+⛔ **`browser_screenshot` must answer with a BARE base64 string, not `{data}`.**
+`src/tools/custom.ts` hands the socket result straight to `imageResponse()`,
+which requires a string; an object arrives at the client as
+`content[0].data: {…}` and **the whole tool call is rejected by MCP schema
+validation after a completely successful round trip** — the bitmap was fine and
+the error names neither the peer nor the screenshot.
+⚠️ `src/tools/recordings.ts:584` reads `shot?.data ?? shot` and tolerates both.
+That one tolerant call site is not the contract, and reading it as one is how a
+peer ships the object form. A string satisfies every path.
+
+⛔ **`browser_realistic_click` is not one message.** `src/tools/realistic-input.ts:123`
+walks the cursor first, so the server sends **`browser_realistic_mouse_move`
+before the click** unless the caller passes `moveFirst: false`. A peer that
+throws "unsupported" for the move fails every default click *before any click is
+attempted*, and the error the agent sees names the move, not the click. A
+touchscreen peer has no cursor — answer it anyway, plainly.
+
+⚠️ **`realisticClick` and `realisticMouseMove` return `result.message` if you
+provide one**, else a generic "Clicked at (x, y)". That string is the only thing
+the calling agent sees, so it is where a peer should say *how* it clicked.
+
 
 ---
 
@@ -295,6 +320,30 @@ commit and they build, sign and publish. This seat owns the browser, this
 protocol and the driving half. ⛔ The install itself still needs the operator's
 go at the moment of install and he taps the prompt himself; auto-confirm failed
 on a normal install there on 2026-10-13.
+
+### ⛔ The WebView input trap, measured on the operator's phone 2026-10-13
+
+A synthetic tap built with `MotionEvent.obtain(downTime, eventTime, action, x,
+y, metaState)` **is silently dropped by Chromium inside a WebView**: that short
+overload produces `source = SOURCE_UNKNOWN` and `toolType = UNKNOWN`. The tap
+reports success, `dispatchTouchEvent` returns, and the page sees **zero**
+`pointerdown`, `touchstart`, `mousedown` or `click`, with the URL unchanged —
+on a WebView correctly measured and laid out. Only the long `obtain()` overload
+can state `InputDevice.SOURCE_TOUCHSCREEN` and
+`MotionEvent.TOOL_TYPE_FINGER`, and that is the difference between a tap and
+nothing at all.
+
+⚠️ Second half of the same fault: `ACTION_UP` dispatched in the same loop as
+`ACTION_DOWN`, carrying an `eventTime` 60ms in the future that had not happened
+yet. A tap needs real elapsed time and a UI-thread turn between the two events —
+post `DOWN`, post `UP` delayed, and never sleep on the UI thread to make the gap.
+
+⭐ **The lesson that outlives the fix: verify the tap, do not assume it.** Arm a
+capture-phase probe on `pointerdown`/`touchstart`/`mousedown` before dispatch,
+read it after, and report *which kind* of click the caller actually got. This
+whole class — screenshot of an unlaid-out WebView, tap into a view with no size,
+tap with the wrong input source — fails toward "success", which is the expensive
+direction.
 
 Their `docs/slipway.md` records four Android traps already paid for: non-null
 `onNewIntent` on compileSdk 35, manual insets on the root view, a cleartext

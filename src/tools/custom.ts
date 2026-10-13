@@ -79,7 +79,17 @@ export const screenshot: Tool = {
         "browser_screenshot",
         validatedParams,
       );
-      return imageResponse(screenshot, "image/png", max_tokens);
+      // ⛔ imageResponse NEEDS A STRING, and a peer that answers `{data}` used to
+      // take the whole call down with an MCP schema-validation error naming
+      // `content[0].data` — after a completely successful round trip, with nothing
+      // in the message mentioning the screenshot or the peer. MEASURED 2026-10-13
+      // against the Slipway phone peer. `src/tools/recordings.ts:584` has always
+      // read `shot?.data ?? shot`; this is the same tolerance at the call site the
+      // peer protocol actually documents.
+      // ⚠️ NOT A LICENCE FOR THE OBJECT FORM — docs/PEER_PROTOCOL.md still says a
+      // bare base64 string, because only that satisfies every path.
+      const shotData = (screenshot as any)?.data ?? screenshot;
+      return imageResponse(shotData, "image/png", max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to capture screenshot: ${error.message}`, false, error, max_tokens);
