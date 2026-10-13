@@ -188,13 +188,36 @@ spec:
             - name: UNIBROWSE_AUTOLAUNCH_PROFILE
               value: "$(POD_NAME)"      # k8s expands $(VAR) from earlier entries
           resources:
-            # ⛔ request == limit, deliberately. See the packing table above.
+            # ⛔ request == limit on cpu/memory, deliberately. See the packing
+            # table above.
+            #
+            # ⭐ ephemeral-storage IS DECLARED, and that is not boilerplate.
+            # `cluster` measured 2026-10-13 ~16:38: server5 went
+            # DiskPressure=True and its kubelet evicted 36 pods in five minutes,
+            # SELECTING VICTIMS BY EPHEMERAL-STORAGE CONSUMPTION AMONG PODS THAT
+            # DECLARE NO EPHEMERAL-STORAGE REQUEST. A pod with no request is not
+            # "unlimited", it is FIRST IN LINE — the omission reads as modesty
+            # and behaves as a volunteer.
+            # ⚠️ Where the bytes actually go, so these numbers are not guesses:
+            # Chrome's disk cache and shader cache live inside the profile,
+            # which is PROFILES_DIR=/app/.chrome-profiles — the PVC, NOT
+            # ephemeral storage. What lands on the container rootfs is logs,
+            # crash dumps and /tmp, which is why 512Mi is a realistic request
+            # rather than a token one.
+            # ⛔ The 2Gi LIMIT is enforced by eviction: exceed it and the
+            # kubelet kills this pod. That is the intended trade — a pod that
+            # dies for its own disk use beats a node that goes DiskPressure and
+            # takes someone else's work with it. If this pod starts getting
+            # evicted, find what is writing to the rootfs; do not just raise
+            # the number.
             requests:
               cpu: "1"
               memory: 4Gi
+              ephemeral-storage: 512Mi
             limits:
               cpu: "1"
               memory: 4Gi
+              ephemeral-storage: 2Gi
           volumeMounts:
             - name: profile
               mountPath: /app/.chrome-profiles
