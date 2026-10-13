@@ -20,6 +20,15 @@
 # ⛔ PROFILES ARE NODE-LOCAL AND THAT IS A CORRECTNESS ISSUE, not a durability
 # nicety. `microk8s-hostpath` PVs carry node affinity, so:
 #   · pod restart   -> same node, profile intact, extension id REUSED
+#     ⚠️ THE PVC ALONE DOES NOT GIVE YOU THAT. Every persistent-profile
+#     launch wipes Default/Local Extension Settings, which is where the
+#     extension keeps its id. The id survives only because the autostart
+#     seeds it back from <PROFILES_DIR>/.unibrowse-identities/<profile>.json,
+#     a sibling of Default/ that the wipe cannot reach (server.js, and the
+#     same scheme as src/tools/chrome-launcher.ts:40).
+#     ⛔ Do not clear .unibrowse-identities/ to "reset" a pod. That is the
+#     one file whose loss re-mints the id, and re-minting is the
+#     external-contract event described below.
 #   · node loss     -> profile GONE, and the pod CANNOT schedule elsewhere
 # Node loss is routine here, not a tail risk: one worker has been dead five days
 # through three power cycles, another power-cycles itself unannounced. A lost

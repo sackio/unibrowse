@@ -1040,6 +1040,34 @@ server.listen(PORT, () => console.log(`[chromium-host] listening on :${PORT}, pr
  *
  *   UNIBROWSE_AUTOLAUNCH_PROFILE   profile name to launch (e.g. "pod-0")
  *   UNIBROWSE_SERVER_URL           serverHint, e.g. "ws://192.168.1.199:9010/ws"
+ *   UNIBROWSE_AUTOLAUNCH_URL       optional extra URL after the seed page
+ *
+ * ⛔⛔ THE SEED URL IS THE WHOLE MECHANISM, AND `serverHint` IS NOT.
+ * Caught 2026-10-13 by grepping for a reader of managed-server.json and
+ * finding none: `writeServerSeed()` writes <profileDir>/managed-server.json
+ * and NOTHING in this repo ever reads it — not src/, not extension/. What
+ * actually tells the extension where to dial is the bootstrap page
+ * `<http>/__unibrowse_seed?ws=…&http=…&eid=…`, served by mcp-server and
+ * handled by extension/unibrowse-seed.js at document_start, which writes
+ * chrome.storage.local before background.js's resolveServerConfig() probes.
+ * src/tools/chrome-launcher.ts:246 prepends it — so every launch that comes
+ * through POST /launch gets it, and a launch that calls launchChromium()
+ * DIRECTLY, as this autostart does, does not.
+ *
+ * ⛔ Two consequences if the seed is missing, neither of which looks like
+ * this bug from the outside:
+ *   1. resolveServerConfig() finds no stored config and defaults to
+ *      localhost:9010 — i.e. the sidecar's OWN container. The pod runs, the
+ *      browser runs, and no extension ever registers with mcp-server.
+ *   2. No `eid` ⇒ no stable identity. wipeStaleExtensionData() runs on EVERY
+ *      persistent-profile launch and removes Local Extension Settings, which
+ *      is exactly where __unibrowseExtensionId lives ⇒ a NEW extension id on
+ *      every pod restart. That is the fault that produced 1,329 distinct ids
+ *      in 26h on ha's ecobee-broker, and it is an external-contract event
+ *      (other seats match on extension ids and on how many exist).
+ * ⇒ The PVC alone does NOT make the id survive. The PVC plus the `eid` seed
+ *   does, because the identity file is a sibling of Default/ and the wipe
+ *   cannot reach it.
  *
  * ⚠️ freshProfile is FALSE here, deliberately and non-negotiably. The whole
  * point of the per-replica PVC is that the profile — and therefore the stable
@@ -1049,22 +1077,66 @@ server.listen(PORT, () => console.log(`[chromium-host] listening on :${PORT}, pr
  */
 const AUTOLAUNCH_PROFILE = process.env.UNIBROWSE_AUTOLAUNCH_PROFILE || "";
 const AUTOLAUNCH_SERVER  = process.env.UNIBROWSE_SERVER_URL || "";
-const AUTOLAUNCH_URL     = process.env.UNIBROWSE_AUTOLAUNCH_URL || "about:blank";
+const AUTOLAUNCH_URL     = process.env.UNIBROWSE_AUTOLAUNCH_URL || "";
+
+// ⚠️ MUST STAY BYTE-COMPATIBLE WITH stableExtensionIdFor() in
+// src/tools/chrome-launcher.ts:40 — same directory, same filename flattening,
+// same JSON shape, same `ext_<uuid>` format. The two paths share one profiles
+// dir, so if they disagree the same profile gets two identities and the
+// mismatch only shows up as a duplicate registration days later.
+const stableExtensionIdForProfile = (profileName) => {
+  if (!profileName) return null;
+  const key = String(profileName).replace(/[^A-Za-z0-9._-]/g, "_");
+  const file = path.join(PROFILES_DIR, ".unibrowse-identities", `${key}.json`);
+  try {
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (parsed?.extensionId) return String(parsed.extensionId);
+    }
+  } catch { /* corrupt → re-mint below */ }
+  try {
+    const id = `ext_${crypto.randomUUID()}`;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(
+      { extensionId: id, profileName, mintedAt: new Date().toISOString() }, null, 2));
+    console.log(`[chromium-host] minted stable extensionId ${id} for profile ${profileName} (${file})`);
+    return id;
+  } catch (e) {
+    // Not fatal: the browser still comes up and still registers, it just
+    // mints a fresh id each restart. Say so, because that is the expensive
+    // failure and it is otherwise silent.
+    console.warn(`[chromium-host] ⚠️ could not persist a stable extensionId (${file}): ${e.message} — this profile will get a NEW id on every restart`);
+    return null;
+  }
+};
+
+// ws://host:9010/ws → http://host:9010, which is where /__unibrowse_seed lives.
+const seedBootstrapUrl = (wsHint, profileName) => {
+  const httpHint = String(wsHint).replace(/^ws/, "http").replace(/\/ws$/, "");
+  const eid = stableExtensionIdForProfile(profileName);
+  return `${httpHint}/__unibrowse_seed?ws=${encodeURIComponent(wsHint)}&http=${encodeURIComponent(httpHint)}`
+    + (eid ? `&eid=${encodeURIComponent(eid)}` : "");
+};
 
 if (AUTOLAUNCH_PROFILE) {
   if (!AUTOLAUNCH_SERVER) {
-    // ⛔ Fail LOUD rather than launching a browser that cannot find its server.
-    // Without a serverHint, writeServerSeed() is a no-op and the extension
-    // comes up with nowhere to dial — which presents upstream as "the pod is
-    // running but no extension ever registered", the least diagnosable shape.
+    // ⛔ Fail LOUD rather than launching a browser that cannot find its
+    // server. With no server URL there is no seed page to build, so the
+    // extension defaults to localhost:9010 inside this container — which
+    // presents upstream as "the pod is running but no extension ever
+    // registered", the least diagnosable shape there is.
     console.error("[chromium-host] ⛔ UNIBROWSE_AUTOLAUNCH_PROFILE is set but UNIBROWSE_SERVER_URL is not. Refusing to autolaunch a browser with no server to dial.");
   } else {
     setTimeout(() => {
-      console.log(`[chromium-host] autolaunching profile=${AUTOLAUNCH_PROFILE} server=${AUTOLAUNCH_SERVER}`);
+      const seedUrl = seedBootstrapUrl(AUTOLAUNCH_SERVER, AUTOLAUNCH_PROFILE);
+      // The seed goes FIRST and on the command line, so its content script
+      // runs at document_start before the background worker auto-connects.
+      const urls = AUTOLAUNCH_URL ? [seedUrl, AUTOLAUNCH_URL] : [seedUrl];
+      console.log(`[chromium-host] autolaunching profile=${AUTOLAUNCH_PROFILE} server=${AUTOLAUNCH_SERVER} seed=${seedUrl}`);
       launchChromium({
         profileName: AUTOLAUNCH_PROFILE,
         serverHint: AUTOLAUNCH_SERVER,
-        urls: [AUTOLAUNCH_URL],
+        urls,
         freshProfile: false,
       }).then(
         (r) => console.log(`[chromium-host] autolaunch ok: pid=${r?.pid} display=${r?.display} ext=${r?.extensionId || "pending"}`),
