@@ -1,0 +1,141 @@
+# Browser sidecars on the barn microk8s cluster, to take Chrome load off office.
+# Ben asked for this, Slack #unibrowse 2026-10-13 10:39 EDT.
+#
+# ⭐ WHY A POD IS A GOOD FIT: each sidecar is one Chrome, one Xvfb and one
+# OUTBOUND WebSocket. Nothing reaches into it — it dials mcp-server and
+# registers itself — so there is no Service, no Ingress and no published port.
+# The only stateful part is the Chrome profile, which is one PVC per replica.
+#
+# Every number below was measured by `cluster` on 2026-10-13, not assumed.
+#
+# ⛔ DO NOT RAISE replicas UNTIL YOU HAVE CHECKED FREE MEMORY. At 4Gi requests
+# on a 15.298 GiB worker only 3 pods fit with a safe reserve. `cluster` measured
+# the packing:
+#     2Gi -> 7 pods, 1.3 GiB free,  8.5% reserve  BAD
+#     3Gi -> 5 pods, 0.3 GiB free,  2.0% reserve  BAD
+#     4Gi -> 3 pods, 3.3 GiB free, 21.6% reserve  OK
+# The 2Gi shape is the exact 1.3-GiB-free condition that took SEVEN workers
+# NotReady on 2026-09-12. request == limit == 4Gi is not padding.
+#
+# ⛔ PROFILES ARE NODE-LOCAL AND THAT IS A CORRECTNESS ISSUE, not a durability
+# nicety. `microk8s-hostpath` PVs carry node affinity, so:
+#   · pod restart   -> same node, profile intact, extension id REUSED
+#   · node loss     -> profile GONE, and the pod CANNOT schedule elsewhere
+# Node loss is routine here, not a tail risk: one worker has been dead five days
+# through three power cycles, another power-cycles itself unannounced. A lost
+# profile means a NEW extension id on return, which is an EXTERNAL-CONTRACT
+# event — other seats match on extension ids and on how many exist. `alpaca`'s
+# signup broke exactly this way when office went from 1 to 17 extensions.
+# ⇒ Nothing pinned-by-id belongs in a pod. Ben's desktop Chrome and the
+#   `claudelogin` browser that `agents` depends on STAY ON OFFICE.
+#
+# ⛔⛔ DO NOT "FIX" THE ABOVE WITH NFS. Putting profiles on /mnt/nas so they
+# survive node loss is the obvious workaround and it is a trap: Chrome profiles
+# are LevelDB and SQLite, and both corrupt over NFS. (`cluster`, 2026-10-13.)
+#
+# ⛔ reclaimPolicy on microk8s-hostpath is DELETE: deleting a PVC destroys that
+# profile and its logins. Delete a PVC only when you mean to lose the session.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: unibrowse
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: unibrowse-sidecar-env
+  namespace: unibrowse
+data:
+  PORT: "9020"
+  PROFILES_DIR: "/app/.chrome-profiles"
+  EXTENSION_DIR: "/app/extension"
+  # ⚠️ The pod dials OUT to office across the 192.168.0.x -> 192.168.1.x router
+  # boundary. Egress was measured OPEN from worker10 to 192.168.1.199:9010, and
+  # there are no NetworkPolicies cluster-wide.
+  # Read by server.js as the autolaunch serverHint. ⛔ If this is unset while
+  # UNIBROWSE_AUTOLAUNCH_PROFILE is set, the sidecar refuses to launch rather
+  # than starting a browser with nowhere to dial.
+  UNIBROWSE_SERVER_URL: "ws://192.168.1.199:9010/ws"
+  # Fault (3) from Dockerfile.chrome. Resolves only because that image installs
+  # tzdata; on the Alpine image this value is accepted and silently ignored.
+  TZ: "America/New_York"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: unibrowse-sidecar
+  namespace: unibrowse
+spec:
+  # ⛔ Start at 1 and PROVE the three fingerprint fixes before scaling. See the
+  # replica warning in the header.
+  replicas: 1
+  serviceName: unibrowse-sidecar   # headless; required by StatefulSet, unused
+  selector:
+    matchLabels:
+      app: unibrowse-sidecar
+  template:
+    metadata:
+      labels:
+        app: unibrowse-sidecar
+    spec:
+      # Chrome ignores SIGTERM politeness when mid-flush of its cookie jar, and
+      # here the profile IS the asset. Give it room to exit cleanly.
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: chromium-host
+          # ⛔ Pushed to the LAN registry; do not build on nodes (`cluster`).
+          # Plain HTTP — nodes already pull from it in production.
+          image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-13
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: unibrowse-sidecar-env
+          env:
+            # One profile per replica, derived from the pod ordinal, so replica
+            # N always returns to its own profile and keeps its extension id.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # ⭐ THIS IS WHAT MAKES THE POD OUTBOUND-ONLY. Without it, a browser
+            # only starts when something POSTs /launch into the sidecar — and
+            # nothing on 192.168.1.x can reach into a pod on 192.168.0.x without
+            # a Service, a NodePort and a route back. With it, the sidecar
+            # launches its own browser at startup and the chromium dials out.
+            # ⇒ No Service and no Ingress in this file, deliberately.
+            - name: UNIBROWSE_AUTOLAUNCH_PROFILE
+              value: "$(POD_NAME)"      # k8s expands $(VAR) from earlier entries
+          resources:
+            # ⛔ request == limit, deliberately. See the packing table above.
+            requests:
+              cpu: "1"
+              memory: 4Gi
+            limits:
+              cpu: "1"
+              memory: 4Gi
+          volumeMounts:
+            - name: profile
+              mountPath: /app/.chrome-profiles
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        # ⛔⛔ /dev/shm DEFAULTS TO 64Mi IN A CONTAINER and Chrome mmaps far
+        # more, so without this it falls over. ⚠️ AND a memory-backed emptyDir
+        # COUNTS AGAINST THE POD'S MEMORY LIMIT — this 512Mi is 512Mi that
+        # Chrome and Xvfb do not get. That interaction is what bites people:
+        # a 2Gi limit with this mount leaves Chrome ~1.5Gi. (`cluster`.)
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: profile
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # The only class on this cluster. Node-local; see the header.
+        storageClassName: microk8s-hostpath
+        resources:
+          requests:
+            storage: 2Gi

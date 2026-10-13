@@ -1,0 +1,127 @@
+# Sidecar image built on REAL Google Chrome instead of Alpine's chromium.
+#
+# ⭐ WHY THIS EXISTS — three fingerprint faults, one cause, measured 2026-10-13
+# on the live Alpine sidecar (`unibrowse-chromium-host`):
+#
+#   1. NO WebGL AT ALL. `webgl`, `webgl2` and `experimental-webgl` all return
+#      null while canvas 2D works. A desktop browser with zero WebGL is far
+#      stranger to an anti-bot gate than a driven one, because no real desktop
+#      presents that way.
+#   2. It identifies as CHROMIUM, not Google Chrome — `navigator.userAgentData
+#      .brands` reads ["Not;A=Brand/8", "Chromium/150"]. Real Chrome carries a
+#      "Google Chrome" brand entry.
+#   3. NO tzdata. `/usr/share/zoneinfo` is absent, so the container reports UTC
+#      and setting TZ alone leaves it on UTC while LOOKING fixed.
+#
+# ⛔ NO FLAG FIXES (1). Measured, not assumed — all three candidate flag sets
+# were tested and all three failed:
+#     --use-gl=angle --use-angle=gl          -> WEBGL=NO
+#     --use-gl=egl                           -> WEBGL=NO
+#     --use-gl=angle --use-angle=swiftshader -> WEBGL=NO
+# The non-headless run named the cause in its own log:
+#     Extension not supported: VK_KHR_surface / VK_KHR_xcb_surface
+#     eglInitialize SwANGLE failed with EGL_NOT_INITIALIZED
+#     Exiting GPU process due to errors during initialization
+# `libvulkan.so.1` is present but there is no usable Vulkan ICD and no
+# `libvk_swiftshader.so` anywhere in the image. Alpine's chromium package
+# simply does not ship SwiftShader. mesa's `swrast_dri.so` IS present and does
+# not help — ANGLE wants Vulkan, not DRI.
+#
+# ⭐ CONTROL that proves it is the browser and not the method: office's host
+# `google-chrome`, same headless --dump-dom probe, same machine, no GPU:
+#     WEBGL=YES via webgl2
+#     RENDERER=ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)),
+#                     SwiftShader driver)
+# Google Chrome BUNDLES its own SwiftShader Vulkan driver, so WebGL works with
+# no flags, no GPU and no configuration. ⇒ Fixing (1) and (2) is one change:
+# ship real Chrome. (3) comes free from a Debian base.
+#
+# ⛔⛔ WHY NOT JUST PATCH THE ALPINE IMAGE: it cannot be rebuilt at all. Its
+# Dockerfile pins chromium=150.0.7871.181-r0 and alpine 3.24 no longer offers
+# that package, so `compose build chromium-host` FAILS. That failure is
+# deliberate (read Dockerfile's header: an unpinned rebuild once moved chromium
+# 148 -> 149 silently and cost three weeks of undiagnosable macro failure).
+# This file is the deliberate version decision that situation has been owed.
+#
+# ⚠️ HONEST LIMIT ON THE PIN. Google's apt repo serves ONLY current stable, so
+# `CHROME_VERSION` pins what we ASKED for and the build records what it GOT —
+# it cannot resurrect an old version once Google rotates it. That is weaker
+# than the Alpine pin was, and pretending otherwise would recreate exactly the
+# silent-drift failure the other Dockerfile was written to prevent.
+# ⇒ For true reproducibility, cache the .deb (see CHROME_DEB_URL below) and
+# build from that instead. Do it before relying on this image in production.
+#
+# ⚠️ BUILD FROM THE REPO ROOT, not from chromium-host/ — this image needs
+# extension/ which lives at the root, so the context must contain both:
+#   docker build -f chromium-host/Dockerfile.chrome \
+#     -t 192.168.1.207:5050/unibrowse/chromium-host-chrome:<tag> .
+# ⛔ Push to the registry; do NOT build on cluster nodes (cluster, 2026-10-13).
+
+ARG NODE_BASE=node:22-bookworm-slim
+FROM ${NODE_BASE}
+
+# The version we ASK for. The build prints what it actually installed; if they
+# differ, Google has rotated stable and that is a fact to record, not to ignore.
+# 155.0.8059.39 = what office's own host Chrome runs as of 2026-10-13, chosen so
+# the sidecars stop diverging from the host browser (the host was on Chrome 155
+# while the sidecars were on Chromium 150 — two different fingerprints).
+ARG CHROME_VERSION=155.0.8059.39
+# Set this to a cached .deb URL to make the build reproducible. When set it
+# takes precedence over the apt path above.
+ARG CHROME_DEB_URL=
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ⭐ tzdata is listed FIRST because it is fault (3) and it is the one that fails
+# silently: without it TZ=America/New_York is accepted and ignored.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      tzdata \
+      ca-certificates curl gnupg \
+      xvfb \
+      fonts-liberation fonts-noto-color-emoji \
+      libnss3 libfreetype6 libharfbuzz0b \
+      tini \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    if [ -n "${CHROME_DEB_URL}" ]; then \
+      curl -fsSL -o /tmp/chrome.deb "${CHROME_DEB_URL}"; \
+    else \
+      curl -fsSL -o /usr/share/keyrings/google-chrome.asc \
+        https://dl.google.com/linux/linux_signing_key.pub; \
+      echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.asc] https://dl.google.com/linux/chrome/deb/ stable main" \
+        > /etc/apt/sources.list.d/google-chrome.list; \
+      apt-get update; \
+      apt-get download "google-chrome-stable=${CHROME_VERSION}-1" \
+        || { echo "⚠️ ${CHROME_VERSION} not in Google's repo (they serve only current stable) — taking current and RECORDING it"; \
+             apt-get download google-chrome-stable; }; \
+      mv google-chrome-stable_*.deb /tmp/chrome.deb; \
+    fi; \
+    apt-get install -y --no-install-recommends /tmp/chrome.deb; \
+    rm -f /tmp/chrome.deb; \
+    rm -rf /var/lib/apt/lists/*; \
+    # ⭐ Record what we ACTUALLY got, in the image, so a future bisect has a
+    # reference point that does not depend on anyone's memory.
+    google-chrome --version | tee /etc/unibrowse-chrome-version; \
+    test -f /opt/google/chrome/libvk_swiftshader.so \
+      || echo "⚠️ libvk_swiftshader.so not where expected — verify WebGL before trusting this image"
+
+# ⚠️ CHROME_PATH is read by server.js. Must point at Chrome, not chromium.
+ENV CHROME_PATH=/usr/bin/google-chrome
+# Fault (3). Overridable per-deployment; the point is that a named zone now
+# RESOLVES, because tzdata is installed above.
+ENV TZ=America/New_York
+
+WORKDIR /app
+
+# ⚠️ In compose, server.js and extension/ are BIND-MOUNTED from the repo, so a
+# code change needs only a container recreate. A K8s pod has no such mount, so
+# both are baked in here and an extension change becomes an image rebuild.
+# That is a real tradeoff, accepted deliberately for the cluster deployment.
+COPY chromium-host/server.js ./server.js
+COPY extension ./extension
+
+EXPOSE 9020
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "server.js"]

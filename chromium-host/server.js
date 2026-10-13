@@ -1020,3 +1020,56 @@ const server = http.createServer(async (req, res) => {
 
 runStartupCleanup();
 server.listen(PORT, () => console.log(`[chromium-host] listening on :${PORT}, profiles=${PROFILES_DIR}, extension=${EXTENSION_DIR}`));
+
+/* ---------- Autostart, for environments nothing can reach into ----------
+ * ⭐ WHY THIS EXISTS. In compose, mcp-server POSTs /launch into this sidecar
+ * over the docker network, so a browser only ever starts because something
+ * outside asked. That makes the sidecar INBOUND-dependent, and it is easy to
+ * miss because the chromium it spawns then dials OUT — so the data path looks
+ * outbound while the control path is not.
+ *
+ * ⛔ MEASURED CONSEQUENCE, caught 2026-10-13 while writing k8s/chromium-sidecar.yaml:
+ * a pod on the barn cluster (192.168.0.x) cannot be POSTed to from office
+ * (192.168.1.x) without a Service plus a NodePort plus a route back across the
+ * router. I had already told `cluster` and Ben that "nothing has to reach INTO
+ * the pod" — that was wrong for the control path.
+ *
+ * ⇒ With these two variables set, the sidecar launches its own browser at
+ * startup and the pod becomes genuinely outbound-only: no Service, no
+ * NodePort, no inbound rule. /launch still works for anyone who can reach it.
+ *
+ *   UNIBROWSE_AUTOLAUNCH_PROFILE   profile name to launch (e.g. "pod-0")
+ *   UNIBROWSE_SERVER_URL           serverHint, e.g. "ws://192.168.1.199:9010/ws"
+ *
+ * ⚠️ freshProfile is FALSE here, deliberately and non-negotiably. The whole
+ * point of the per-replica PVC is that the profile — and therefore the stable
+ * extension id — survives a restart. A fresh launch on every pod start would
+ * delete the profile dir and re-mint the id on every reschedule, which is an
+ * external-contract event other seats match on.
+ */
+const AUTOLAUNCH_PROFILE = process.env.UNIBROWSE_AUTOLAUNCH_PROFILE || "";
+const AUTOLAUNCH_SERVER  = process.env.UNIBROWSE_SERVER_URL || "";
+const AUTOLAUNCH_URL     = process.env.UNIBROWSE_AUTOLAUNCH_URL || "about:blank";
+
+if (AUTOLAUNCH_PROFILE) {
+  if (!AUTOLAUNCH_SERVER) {
+    // ⛔ Fail LOUD rather than launching a browser that cannot find its server.
+    // Without a serverHint, writeServerSeed() is a no-op and the extension
+    // comes up with nowhere to dial — which presents upstream as "the pod is
+    // running but no extension ever registered", the least diagnosable shape.
+    console.error("[chromium-host] ⛔ UNIBROWSE_AUTOLAUNCH_PROFILE is set but UNIBROWSE_SERVER_URL is not. Refusing to autolaunch a browser with no server to dial.");
+  } else {
+    setTimeout(() => {
+      console.log(`[chromium-host] autolaunching profile=${AUTOLAUNCH_PROFILE} server=${AUTOLAUNCH_SERVER}`);
+      launchChromium({
+        profileName: AUTOLAUNCH_PROFILE,
+        serverHint: AUTOLAUNCH_SERVER,
+        urls: [AUTOLAUNCH_URL],
+        freshProfile: false,
+      }).then(
+        (r) => console.log(`[chromium-host] autolaunch ok: pid=${r?.pid} display=${r?.display} ext=${r?.extensionId || "pending"}`),
+        (e) => console.error(`[chromium-host] autolaunch FAILED: ${e?.message || e}`),
+      );
+    }, 1000);
+  }
+}
