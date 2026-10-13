@@ -93,9 +93,19 @@ spec:
       terminationGracePeriodSeconds: 45
       containers:
         - name: chromium-host
-          # ⛔ Pushed to the LAN registry; do not build on nodes (`cluster`).
-          # Plain HTTP — nodes already pull from it in production.
-          image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-13
+          # ⛔ THE REGISTRY IS 192.168.1.168:32000, NOT 192.168.1.207:5050. Measured
+          # 2026-10-13 after a push to .207:5050 failed: office's docker trusts only
+          # 192.168.1.42:32000 and 192.168.1.168:32000 as insecure registries, .42 is
+          # unreachable, and .207:5050 answers /v2/ with 200 but TIMES OUT on
+          # /v2/_catalog. .168:32000 is microk8s's own registry and holds the cluster's
+          # live images (qf-*, node-exporter, ollama …), so it is demonstrably what the
+          # nodes pull from.
+          # ⚠️ Pushing to .207:5050 from office would need `insecure-registries` in
+          # /etc/docker/daemon.json plus a docker restart — which would bounce every
+          # container on office, mcp-server and the live sidecars included. Not worth it
+          # for a registry that cannot list itself.
+          # ⛔ Build on office and push; do not build on cluster nodes (`cluster`).
+          image: 192.168.1.168:32000/unibrowse-chromium-host-chrome:2026-10-13
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
