@@ -222,6 +222,26 @@ monitor_geometry() { # monitor_geometry <output> -> "W H X Y"
 
 profile_dir() { echo "$PROFILES_ROOT/$1"; }
 
+# ⛔ ADDED 2026-10-12. cmd_down used to TERM and return in the same breath, so
+# `down X` followed by `up X` launched a new Chrome INTO a still-dying one. A
+# second Chrome on the same --user-data-dir does not start a browser: it hands
+# its URL to the instance that still owns the profile and exits (the comment in
+# cmd_up has said so all along). The new browser therefore never existed, the
+# dying one then exited too, and the launch was reported as "no extension
+# registered within 150s" — which reads as an extension fault.
+# MEASURED: three site browsers (claudelogin, alpacasignup, contra) were all
+# up-but-unregistered tonight and all three registered in 10-92s on a manual
+# relaunch that polled for the old pid to die first. That poll is the only thing
+# the manual sequence had and this script did not.
+wait_for_exit() { # wait_for_exit <pid> [secs] -> 0 gone, 1 still alive
+  local pid="$1" secs="${2:-20}" i=0
+  while [ "$i" -lt "$secs" ]; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 1; i=$((i + 1))
+  done
+  ! kill -0 "$pid" 2>/dev/null
+}
+
 running_pid() { # the browser process owning this exact profile, or empty
   # ⛔ `pgrep -f` ALSO MATCHES ANY SHELL whose command line mentions the profile
   # — a diagnostic one-liner, another seat's grep, a cron wrapper. MEASURED
@@ -282,15 +302,30 @@ cmd_up() {
 
   pid="$(running_pid "$dir" || true)"
   if [ -n "$pid" ]; then
-    # ⚠️ Idempotent on purpose. A second Chrome on the same --user-data-dir does
-    # NOT start a second browser; it hands the URL to the running one and exits,
-    # which looks like success and silently does something else.
-    echo "$name: already up (pid $pid) — leaving it alone"
-    return 0
+    # ⚠️ Idempotent on purpose WHEN THE BROWSER IS REACHABLE. A second Chrome on
+    # the same --user-data-dir does NOT start a second browser; it hands the URL
+    # to the running one and exits, which looks like success and silently does
+    # something else.
+    # ⛔ BUT A RUNNING BROWSER THAT IS NOT REGISTERED CANNOT BE HEALED BY `up`,
+    # and that is the state this script kept reporting and could not fix.
+    # Asked for by `agents` 2026-10-12 21:16 so the login path heals itself.
+    local stored
+    stored="$(cat "$(extid_file "$name")" 2>/dev/null || true)"
+    if [ -n "$stored" ] && live_ext_ids | grep -qxF "$stored"; then
+      echo "$name: already up (pid $pid) and registered as $stored — leaving it alone"
+      return 0
+    fi
+    echo "$name: up (pid $pid) but its stored id is ${stored:-absent} and not connected — recycling"
+    kill -TERM "$pid"
+    if ! wait_for_exit "$pid" 20; then
+      echo "$name: ⚠️ pid $pid survived TERM — not launching, a launch now would hand off to it" >&2
+      return 1
+    fi
+    sleep 2
   fi
 
-  local ids_before
-  ids_before="$(live_ext_ids)"
+  local launch_t0
+  launch_t0="$(date +%s)"
 
   geo="$(slot_geometry "$mon" "$slot")"
   [ -n "$geo" ] || { echo "$name: monitor $mon not found — run '$0 monitors'" >&2; return 1; }
@@ -341,7 +376,7 @@ SEED
   #    is reported, not silently skipped: alpacasignup launched at 09:15 and had
   #    still not registered 11 minutes later, and nothing said so.
   local newid
-  if newid="$(await_new_ext_id "$ids_before" "$name")"; then
+  if newid="$(await_registration "$launch_t0" "$name")"; then
     printf '%s\n' "$newid" > "$(extid_file "$name")"
     echo "$name: registered as $newid (recorded in $(extid_file "$name"))"
   else
@@ -379,20 +414,41 @@ for e in d.get("connected",[]): print(e.get("extensionId",""))' 2>/dev/null || t
 
 extid_file() { printf '%s/%s.extid\n' "$PROFILES_ROOT" "$1"; }
 
-# Wait for an id that was NOT present before the launch. Prints it, or nothing.
-await_new_ext_id() {
-  local before="$1" waited=0 now fresh
+# Wait for an extension that CONNECTED AFTER <t0>. Prints its id, or nothing.
+#
+# ⛔ REWRITTEN 2026-10-12. This used to diff the id SET against a snapshot taken
+# before the launch and wait for an id that was not in it. That is wrong
+# whenever the extension REUSES its stored id, which is the normal case: the id
+# lives in chrome.storage.local inside the profile, so a relaunched browser
+# comes back as the SAME extension. MEASURED tonight: contra relaunched twice
+# and returned as ext_b8aeffe4 both times. The set difference is then empty, so
+# a browser that registered in 92s was reported as "NO new extension registered
+# within 150s" — and the failure branch then DELETED its .extid pointer, which
+# is how a healthy browser became an unaddressable one.
+# ⭐ connectedForMs is the reading that does not care whether the id is new: it
+# is the extension's OWN connection age, so "connected after we launched" is
+# directly measurable. The 10s slack absorbs poll latency and clock skew
+# between this host and the server.
+# ⚠️ Still refuses to guess when two extensions connect inside the window — a
+# wrong pointer is worse than an absent one, which was right the first time.
+await_registration() {
+  local t0="$1" name="$2" waited=0 fresh n
   while [ "$waited" -lt 150 ]; do
     sleep 5; waited=$((waited + 5))
-    now="$(live_ext_ids)"
-    fresh="$(printf '%s\n' "$now" | grep -vxF -f <(printf '%s\n' "$before") 2>/dev/null | grep . || true)"
-    case "$(printf '%s\n' "$fresh" | grep -c . || true)" in
+    fresh="$(curl -s -m 5 "${UNIBROWSE_SERVER:-http://127.0.0.1:9010}/extensions" 2>/dev/null \
+      | /usr/bin/python3 -c 'import json,sys,time
+t0=float(sys.argv[1])
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+age_limit=(time.time()-t0)+10
+for e in d.get("connected",[]):
+    if float(e.get("connectedForMs") or 0)/1000.0 <= age_limit:
+        print(e.get("extensionId",""))' "$t0" 2>/dev/null || true)"
+    n="$(printf '%s\n' "$fresh" | grep -c . || true)"
+    case "$n" in
       0) ;;
-      1) printf '%s\n' "$fresh"; return 0 ;;
-      # ⛔ Two new ids means something else connected during our window. Writing
-      #    either one down would be a guess; an unrecorded site is recoverable,
-      #    a wrong pointer is what we are here to stop.
-      *) echo "⚠️ $2: $(printf '%s\n' "$fresh" | grep -c .) new extensions appeared during the launch window — refusing to guess which is ours; not recorded" >&2
+      1) printf '%s\n' "$fresh" | grep . ; return 0 ;;
+      *) echo "⚠️ $name: $n extensions connected during the launch window — refusing to guess which is ours; not recorded" >&2
          return 1 ;;
     esac
   done
@@ -515,6 +571,14 @@ cmd_down() { # graceful; never a pattern kill
   # Chrome on the box, including Ben's.
   echo "$name: TERM $pid"
   kill -TERM "$pid"
+  if wait_for_exit "$pid" 20; then
+    echo "$name: exited"
+  else
+    # Deliberately NOT escalated to KILL: a Chrome that will not go on TERM is
+    # usually mid-flush of its cookie jar, and the profile IS the asset here.
+    echo "$name: ⚠️ still alive 20s after TERM — do NOT 'up' it yet, a launch now would hand off to it" >&2
+    return 1
+  fi
 }
 
 case "${1:-}" in
