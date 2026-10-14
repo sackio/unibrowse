@@ -21,17 +21,43 @@
 # ⚠️ HOST-LOCAL, OFFICE. Profiles live under /home/ben, which is different
 # content on every host. This script is about office's monitors and nothing else.
 #
-# ⛔ CHROME 155 IGNORES --load-extension UNLESS YOU ALSO DISABLE
-# DisableLoadExtensionCommandLineSwitch, AND IT FAILS SILENTLY. MEASURED here
+# ⛔ CHROME 155 IGNORES --load-extension, AND IT FAILS SILENTLY. MEASURED here
 # 2026-10-10: the first contra launch came up fine, placed correctly, looking
 # healthy — and its profile's Preferences held only Chrome's three built-in
 # component extensions. No unibrowse, no error, no clue in the log. A browser
 # that launches and never connects is the worst shape this can fail in.
+# ⛔ CORRECTED 2026-10-14: THIS HEADER USED TO SAY "...UNLESS YOU ALSO DISABLE
+# DisableLoadExtensionCommandLineSwitch", AND THAT IS NOT TRUE. It contradicted
+# the comment at the launch site ~300 lines below, which records that this very
+# flag was tried FIRST and left the browser silently broken (as was
+# `developer_mode`). ⇒ The flag is NOT the fix and never was. The fix is the
+# Preferences seed at the launch site. The flag is still passed because it is
+# harmless and removing it is a behaviour change nobody has measured — do not
+# read its presence as evidence that it does anything. Memo `43d0b40f` also
+# lists it as a failed fix.
 # ⚠️ Both features go in ONE --disable-features flag; a second one does not
-# merge with the first.
-# ⚠️ scripts/launch-chrome-isolated.sh still lacks this and will hit it on any
-# host whose Chrome is current; the container sidecars are unaffected only
-# because they run an older Chromium.
+# merge with the first. (True regardless of whether either does anything.)
+# ⚠️ scripts/launch-chrome-isolated.sh lacks the Preferences seed and will hit
+# the --load-extension refusal on any host whose Chrome is current; the
+# container sidecars are unaffected only because they run an older Chromium.
+#
+# ⭐ WHAT THE SEED DOES AND DOES NOT EXPLAIN. MEASURED 2026-10-14 by reading
+# <profile>/Default/Preferences for ALL 18 slots: every one carries the seeded
+# entry for id `pikjoohganfooeancifkoccakcocchmk`, with fields the seed template
+# does not contain — `has_started_service_worker: true`, `active_permissions`,
+# `service_worker_registration_info` — i.e. Chrome LOADED the extension and its
+# worker RAN. `disable_reasons` empty, developer_mode true.
+# ⇒ The open "script-launched browsers do not register on :9010" fault (memo
+# `a356bc6e`) is therefore a REGISTRATION failure DOWNSTREAM of loading, not an
+# installation failure. Do not spend another cycle on whether the seed works.
+# ⚠️ Limit: `has_started_service_worker` means the worker started at some point,
+# and these files are written at SHUTDOWN, so they describe each browser's last
+# run and not a live state.
+# ⚠️ And note the id: it is the SHA256 of the extension's PATH, so office's id
+# (`/mnt/nas/data/code/unibrowse/extension`) is NOT the container's
+# (`/app/extension` → `edoicfpldmlabgdalemfgflpldiijdmm`). Probing a host
+# profile with a container-derived id returns "absent" for a present entry —
+# which is exactly the false negative that cost one round of this measurement.
 #
 # ⭐ THE ENV BLOCK IS LOAD-BEARING, not boilerplate. A Chrome launched without
 # DBUS_SESSION_BUS_ADDRESS + XDG_RUNTIME_DIR never registers on the AT-SPI bus,
