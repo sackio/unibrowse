@@ -142,5 +142,19 @@ COPY extension ./extension
 
 EXPOSE 9020
 
-ENTRYPOINT ["/sbin/tini", "--"]
+# ⛔ /usr/bin/tini, NOT /sbin/tini. MEASURED 2026-10-13: the first build of this
+# image shipped the Alpine path, carried over from chromium-host/Dockerfile where
+# tini is an apk at /sbin/tini. On Debian it is a dpkg at /usr/bin/tini, so every
+# container died instantly with
+#   OCI runtime create failed: unable to start container process:
+#   exec: "/sbin/tini": stat /sbin/tini: no such file or directory
+# and the pod CrashLoopBackOff'd on server3 after a perfectly good 416 MB pull.
+# ⚠️ HOW IT GOT PAST ME: I "probed inside the image" and reported WebGL, the UA
+# brands, the timezone and the Chrome version as proof it was good — by running
+# chrome directly with `docker run --entrypoint`. That never executes ENTRYPOINT,
+# so it proved the BROWSER worked and said nothing about whether the CONTAINER
+# could start. A control that tests the step before the one in doubt reads as
+# confirmation and is worth nothing. ⇒ Verify a container image by RUNNING it,
+# not by running something inside it.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "server.js"]

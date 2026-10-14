@@ -167,7 +167,15 @@ spec:
           # /v2/unibrowse/chromium-host-chrome/... from server4. A flattened name like
           # unibrowse-chromium-host-chrome does NOT match and is never found.
           # ⛔ Build on office and push; do not build on cluster nodes (`cluster`).
-          image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-13
+          # ⛔ TAG BUMPED TO -13b FOR A ONE-LINE FIX, AND THE NEW TAG IS THE
+          # POINT. imagePullPolicy is IfNotPresent, so re-pushing the SAME tag
+          # leaves a node that already pulled it on the OLD bytes forever — the
+          # fix never arrives and it reads as "the fix did not work".
+          # :2026-10-13 is BROKEN and must not be used: its ENTRYPOINT was
+          # /sbin/tini (the Alpine path) while this Debian image has tini at
+          # /usr/bin/tini, so every container died with an OCI exec error after a
+          # perfectly good 416 MB pull.
+          image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-13b
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
