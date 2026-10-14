@@ -354,7 +354,24 @@ async function launchViaChromiumHost(
   // ⚠️ The cause of the slowdown is NOT established; Chrome, Xvfb, DNS, the
   // seed page and mcp-server all checked out. So this is a wait sized to a
   // measurement, not a fix for whatever made the boot slow.
-  const EXT_REGISTER_WAIT_MS = 90_000;
+  // ⛔⛔ AND 90s WAS THE WRONG FIX — MEASURED 2026-10-14, MY OWN CLIENT KILLED THE
+  // CALL. I shipped a 90s blocking wait, launched one browser through it, and got
+  // "The operation timed out" from the MCP client while the chromium came up
+  // fine and registered ~30s in. That is STRICTLY WORSE than the 30s timeout it
+  // replaced: the old path at least returned a structured result carrying the pid
+  // and the display, and a transport timeout returns NOTHING the caller can act
+  // on. ⇒ THE WAIT MUST STAY WELL UNDER THE SHORTEST CLIENT TIMEOUT IN THE
+  // FLEET, which we do not control and cannot enumerate.
+  // ⇒ The durable half of the fix is NOT the length of this wait — it is that a
+  // timeout now returns `expectedExtensionId`, `registered: false` and a message
+  // saying the browser is still booting and must not be closed. Polling is the
+  // caller's job and costs them one cheap GET; blocking is ours and costs the
+  // whole call.
+  // ⚠️ Overridable for a caller that knows its own client limit, never raised
+  // here by default: the default must be safe for the seat with the TIGHTEST
+  // timeout, not the one with the most patience.
+  const EXT_REGISTER_WAIT_MS = Math.min(Math.max(
+    Number(process.env.UNIBROWSE_EXT_REGISTER_WAIT_MS) || 25_000, 5_000), 300_000);
   let spawnedExtensionId: string | null = null;
   const deadline = Date.now() + EXT_REGISTER_WAIT_MS;
   const startedAt = Date.now();
