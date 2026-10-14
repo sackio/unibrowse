@@ -344,11 +344,39 @@ async function launchViaChromiumHost(
   // a minimum of 3s before declaring success to absorb ben's-Chrome-style
   // reconnect races (where a pre-existing extension reconnects to mcp-server
   // and shows up as a newcomer briefly).
+  // ⛔ 30s WAS TOO SHORT AND THE TIMEOUT LOOKED LIKE A HARD FAILURE. MEASURED
+  // 2026-10-14 on office, two launches I made as controls while diagnosing
+  // `apis`: registration landed at ~45s (with a proxy) and 66s (without), on
+  // fresh profiles, with the sidecar running 73 chromium processes for other
+  // profiles. The old 30s window expired first, the tool returned
+  // `extensionId: null`, and the caller — correctly reading that as a failure —
+  // CLOSED a browser that was seconds from registering, three times in a row.
+  // ⚠️ The cause of the slowdown is NOT established; Chrome, Xvfb, DNS, the
+  // seed page and mcp-server all checked out. So this is a wait sized to a
+  // measurement, not a fix for whatever made the boot slow.
+  const EXT_REGISTER_WAIT_MS = 90_000;
   let spawnedExtensionId: string | null = null;
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + EXT_REGISTER_WAIT_MS;
   const startedAt = Date.now();
   while (Date.now() < deadline) {
     const current = context.listExtensions?.() ?? [];
+    // ⭐ WE ALREADY KNOW THE ID — match on it instead of on "a newcomer
+    // appeared". `stableExtId` is what we seeded into the bootstrap URL, so
+    // when it registers there is nothing to disambiguate and no settle window
+    // to wait out. The newcomer scan below stays for the case where no
+    // identities mount exists and the id is minted browser-side.
+    // ⚠️ GUARDED against the one way this can lie: relaunching a profile whose
+    // PREVIOUS instance is still connected would match its id immediately and
+    // report the OLD browser as the new one. So an id that was already present
+    // before this launch only counts once it has re-registered.
+    if (stableExtId) {
+      const mine: any = current.find((e: any) => e.extensionId === stableExtId);
+      if (mine && (!preLaunchExtensionIds.has(stableExtId) ||
+                   (mine.registeredAt ?? 0) > startedAt)) {
+        spawnedExtensionId = stableExtId;
+        break;
+      }
+    }
     const newcomers = current.filter((e: any) => !preLaunchExtensionIds.has(e.extensionId));
     if (newcomers.length > 0 && Date.now() - startedAt > 3_000) {
       // Pick the most-recently-registered newcomer (max registeredAt) rather
@@ -414,13 +442,29 @@ async function launchViaChromiumHost(
       message += `\nPass extensionId=${spawnedExtensionId} on subsequent tool calls to pin them to this chromium.`;
     }
   } else {
-    message += `\n(Extension id not seen within 30s — check browser_list_attached_tabs.)`;
+    // ⛔ SAY THAT THIS IS A TIMEOUT, NOT A DEAD BROWSER, AND SAY WHAT NOT TO DO.
+    // The old text ("not seen within 30s — check browser_list_attached_tabs")
+    // read as a failure, and the reasonable response to a failed launch —
+    // closing it and retrying — is what destroyed three browsers on 2026-10-14
+    // that had already registered by the time they were killed.
+    message += `\n⚠️ Extension not registered within ${Math.round(EXT_REGISTER_WAIT_MS / 1000)}s. `
+      + `The chromium IS running (pid ${pid}) and may still be booting — `
+      + `⛔ do NOT close it and relaunch. Poll GET /extensions or `
+      + `browser_list_attached_tabs`
+      + (stableExtId ? ` for ${stableExtId}, which is this profile's deterministic id` : ``)
+      + `, and close it only once you have decided to give up on it.`;
   }
   return jsonResponse({
     pid, profileDir,
     urls: userUrls,
     display,
     extensionId: spawnedExtensionId,
+    // ⚠️ ADDITIVE, deliberately. `extensionId` keeps meaning "registered and
+    // usable" — callers branch on it being non-null — so a browser that has
+    // not registered yet must not be handed back through that field. The id we
+    // seeded goes in its own field, and `registered` says which state we are in.
+    expectedExtensionId: stableExtId,
+    registered: spawnedExtensionId !== null,
     tabId: attachedTabIds[0] ?? null,
     tabIds: attachedTabIds,
     via: "chromium-host",
