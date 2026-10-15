@@ -405,11 +405,78 @@ services:
       - ./scripts/warm-logins:/app/warm-logins:ro
       - ./scripts/osdrive.sh:/usr/local/bin/osdrive.sh:ro
 
+  # ⭐ maker's Zazzle publisher, moved off office. Ben, Slack #unibrowse
+  # 2026-10-15: "make sure that maker and apis can also be fully off office and
+  # be on the headless". ⛔ RUN THIS ON server3, like `osdrive` and `warm`.
+  #
+  # ⛔ WHY NOT THE OS-INPUT RIG, which is what was actually asked for: maker's
+  # publisher drives `browser_execute_macro` against a sidecar (measured in
+  # maker/uploader/run.py, 2026-10-15), and macros are an EXTENSION feature.
+  # `warm` and `osdrive` have no extension and no CDP ON PURPOSE, so they cannot
+  # serve maker at any amount of effort. The PerimeterX story that motivated the
+  # OS-input lane belongs to their OLD driver (uploader/zz.py, headless
+  # Playwright) — the lane they already left.
+  #
+  # ⛔ chromium, NOT the branded-chrome image `warm` uses. Branded Google Chrome
+  # REFUSES --load-extension, so the extension would never load and the
+  # container would come up looking perfectly healthy with nothing connected.
+  # This is office's own pinned chromium 150 image pushed to the LAN registry:
+  # the Dockerfile can no longer be rebuilt (alpine dropped the pin) and the
+  # browser version is part of the fingerprint maker's 50/day already survives.
+  #
+  # ⭐ /app/extension IS LOAD-BEARING AS A PATH, not merely as a mount. An
+  # unpacked extension's id is sha256 of its DIRECTORY (chromium-host/server.js
+  # :356), so mounting the same bytes anywhere else mints a DIFFERENT extension
+  # id — and the copied profile's chrome.storage, which is where the server URL
+  # lives, is keyed by that id. Move the path and the browser connects nowhere.
+  #
+  # ⚠️ EGRESS DOES NOT CHANGE BY MOVING HERE, and the plan should not assume it
+  # does. MEASURED 2026-10-15 from both hosts and from inside the browser
+  # itself: office and server3 share one WAN address (74.104.230.49). Zazzle
+  # sees the IP it already sees; what moves is the dependency on office, not the
+  # reputation of the address.
+  sidecar-s3:
+    profiles: ["sidecar-s3"]
+    image: 192.168.1.207:5050/unibrowse/chromium-host:2026-10-15
+    container_name: unibrowse-sidecar-s3
+    restart: unless-stopped
+    init: true
+    shm_size: 512m
+    environment:
+      PORT: 9020
+      PROFILES_DIR: /app/.chrome-profiles
+      EXTENSION_DIR: /app/extension
+      CHROME_PATH: /usr/bin/chromium-browser
+      TZ: America/New_York
+    # ⛔ BOUND TO LOOPBACK. :9020 spawns a browser for anyone who can reach it
+    # and has no authentication of its own; the launch calls are made on server3
+    # over ssh. ⛔ Do not publish it on the LAN address "for convenience".
+    ports:
+      - "127.0.0.1:9020:9020"
+    volumes:
+      # ⛔ The profiles live in a LOCAL volume: Chrome profiles are LevelDB plus
+      # SQLite and both corrupt over NFS.
+      - sidecar_s3_profiles:/app/.chrome-profiles
+      # ⭐ …except the staging directory, which MUST be the NAS one. maker's
+      # uploader container (on this same host) writes the design PNG there, and
+      # the macro hands the browser /app/.chrome-profiles/zazzle-staging/<name>.
+      # ⚠️ It is shared, not host-local — /staging in their container is this
+      # same NAS path, which is how their server3 uploader already drives
+      # office's sidecar.
+      - ./chrome-profiles/zazzle-staging:/app/.chrome-profiles/zazzle-staging
+      - ./extension:/app/extension:ro
+      - ./chromium-host/server.js:/app/server.js:ro
+
 networks:
   unibrowse-network:
     driver: bridge
 
 volumes:
+  # Profiles for the server3 sidecar (maker's zazzle browser). ⛔ Local, never
+  # the NAS: LevelDB and SQLite both corrupt over NFS. ⚠️ It holds a logged-in
+  # Zazzle seller session, so a `down -v` on server3 costs maker a re-login.
+  sidecar_s3_profiles:
+    driver: local
   # ⚠️ HOST-LOCAL, and that is the point: it lives on whichever host runs the
   # osdrive profile, which is server3. It holds the logged-in Fiverr, Upwork
   # and Freelancer sessions, so losing it means re-logins that need Ben for ID
