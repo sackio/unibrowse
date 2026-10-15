@@ -247,11 +247,34 @@ services:
       # ⛔ Matches office's rig. Changing it invalidates every coordinate in
       # freelance's scripts and every recorded gesture path.
       OSDRIVE_GEOM: 1920x1080x24
+      # ⛔ Without these Chrome reports "WebGL1 blocklisted" under Xvfb and the
+      # page sees no WebGL at all. MEASURED 2026-10-15 — ANGLE wants a Vulkan
+      # window surface SwiftShader's ICD does not provide, and the software
+      # fallback is gated. Empty on office's rig, where the host has GPUs.
+      OSDRIVE_CHROME_EXTRA_ARGS: "--use-angle=swiftshader --enable-unsafe-swiftshader"
     # Chrome mmaps far more than the 64Mi a container gets by default.
     shm_size: 512m
+    # ⭐ THIS IS WHAT LETS CHROME KEEP ITS OWN SANDBOX IN A CONTAINER, and the
+    # alternative is worse. MEASURED on server3 2026-10-15: docker's default
+    # seccomp profile blocks the clone flags Chrome's zygote needs, and it dies
+    # with "Failed to move to new namespace ... errno = Operation not
+    # permitted" then "Zygote process exited prematurely".
+    # ⛔ The usual fix is --no-sandbox, and that is the wrong trade HERE: this
+    # browser visits Fiverr and Upwork with live logins, so the renderer
+    # sandbox is the boundary that matters most. Relaxing the container's
+    # seccomp keeps Chrome's sandbox; --no-sandbox would remove it.
+    security_opt:
+      - seccomp:unconfined
     volumes:
       - osdrive_profile:/app/.chrome-profiles
       - /mnt/nas/data/files/osdrive:/app/shots
+      # ⭐ Mounted, not baked, so a fix to the driver script needs a container
+      # recreate and not an image rebuild + a 1.4 GB transfer to this host.
+      # ⚠️ It bit once already: a `docker cp` of the script followed by a
+      # compose recreate silently reverted it to the image's copy, and the
+      # symptom was Chrome refusing to start on a stale SingletonLock — a
+      # failure two steps from the cause.
+      - ./scripts/osdrive.sh:/usr/local/bin/osdrive.sh:ro
 
 networks:
   unibrowse-network:

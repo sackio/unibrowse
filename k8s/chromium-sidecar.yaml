@@ -69,6 +69,14 @@ data:
   # Fault (3) from Dockerfile.chrome. Resolves only because that image installs
   # tzdata; on the Alpine image this value is accepted and silently ignored.
   TZ: "America/New_York"
+  # ⛔ WITHOUT THIS THE POD MINTS A NEW EXTENSION ID ON EVERY START, measured
+  # 2026-10-15: three ids across three launches of this one pod. The `eid` seed
+  # cannot prevent it — the service worker resolves its id before the seed page
+  # can run, and the wipe empties the storage it would have read. Full mechanism
+  # in chromium-host/server.js above wipeStaleExtensionData().
+  # ⚠️ Extension ids are an external contract: other seats match on them and on
+  # how many exist, so churn here reaches other seats as a tab/identity fault.
+  UNIBROWSE_PRESERVE_EXTENSION_IDENTITY: "1"
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -188,7 +196,7 @@ spec:
           # returned webgl2=YES on SwiftShader with tz America/New_York.
           # ⚠️ It still reports userAgentData brand `Chromium`, not `Google
           # Chrome`. That field is NOT fixed here; see Dockerfile.chrome.
-          image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-15
+          image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-15b
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:

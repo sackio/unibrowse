@@ -265,6 +265,32 @@ const STALE_EXTENSION_DIRS = [
   "Default/Extension Rules",
 ];
 const STALE_SINGLETON_FILES = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
+// ⛔⛔ THE WIPE IS WHY A POD GETS A NEW EXTENSION ID ON EVERY START, and the
+// seeded `eid` does NOT save it. MEASURED 2026-10-15 on unibrowse-sidecar-0:
+// three different ids across three launches of one pod, with the identity file
+// still holding the id minted on 2026-10-13 and nothing ever adopting it.
+// MECHANISM, which is a RACE and not a missing feature:
+//   · background.js resolves its id when the service worker starts: it reads
+//     chrome.storage.local.__unibrowseExtensionId and, finding nothing, MINTS a
+//     random one, writes it, caches it in self, and registers with it.
+//   · unibrowse-seed.js writes the seeded `eid` into that same key — but it is
+//     a content script on the seed PAGE, so it cannot run before the worker.
+//   · storage.local for the extension IS Default/Local Extension Settings,
+//     which this function deletes, so each launch starts from empty and the
+//     worker always wins the race.
+// ⇒ The seed can only ever fix the NEXT launch, and the wipe removes it again
+//   first. This is the same fault as the 1,329 ids in 26h on ha's
+//   ecobee-broker, and it is an EXTERNAL-CONTRACT event: other seats match on
+//   extension ids and on how many exist.
+// ⭐ So a caller that needs a stable identity sets
+//   UNIBROWSE_PRESERVE_EXTENSION_IDENTITY=1 and keeps Local Extension Settings,
+//   which the PVC then carries across restarts. ⛔ DEFAULT IS OFF, deliberately:
+//   ha's ecobee_silent broker hardcodes freshProfile:false precisely to keep
+//   Auth0 cookies while getting a clean extension slate, and flipping the
+//   default would change that seat's behaviour without telling them.
+const PRESERVE_EXTENSION_IDENTITY =
+  String(process.env.UNIBROWSE_PRESERVE_EXTENSION_IDENTITY || "") === "1";
+
 const wipeStaleExtensionData = (profileDir) => {
   const removed = [];
   for (const f of STALE_SINGLETON_FILES) {
@@ -272,6 +298,10 @@ const wipeStaleExtensionData = (profileDir) => {
     try { fs.lstatSync(p); fs.unlinkSync(p); removed.push(f); } catch {}
   }
   for (const rel of STALE_EXTENSION_DIRS) {
+    // Keeping this one directory is the whole of the fix; see the note above.
+    if (PRESERVE_EXTENSION_IDENTITY && /Local Extension Settings/.test(rel)) {
+      continue;
+    }
     const p = path.join(profileDir, rel);
     if (!fs.existsSync(p)) continue;
     try {

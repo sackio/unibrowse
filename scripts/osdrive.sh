@@ -34,6 +34,14 @@ GEOM="${OSDRIVE_GEOM:-1920x1080x24}"
 PROFILE_ROOT="${OSDRIVE_PROFILE_ROOT:-/mnt/nas/data/code/unibrowse/chrome-profiles}"
 SHOT_DIR="${OSDRIVE_SHOT_DIR:-/mnt/nas/data/files/osdrive}"
 CHROME_BIN="${OSDRIVE_CHROME:-/usr/bin/google-chrome}"
+# ⭐ EXTRA FLAGS, EMPTY BY DEFAULT SO OFFICE'S RIG IS UNCHANGED. The container
+# rig sets --use-angle=swiftshader --enable-unsafe-swiftshader, without which
+# Chrome reports "WebGL1 blocklisted" under Xvfb and the page sees NO WebGL at
+# all — a desktop browser with zero WebGL is a stranger thing to an anti-bot
+# gate than a driven one, because no real desktop presents that way.
+# ⛔ Do not make this a default: on a host WITH a GPU the same flags force
+# software rendering, which is a worse fingerprint, not a better one.
+OSDRIVE_CHROME_EXTRA_ARGS="${OSDRIVE_CHROME_EXTRA_ARGS:-}"
 cmd="${1:-help}"; shift || true
 
 x() { DISPLAY="$DISP" xdotool "$@"; }
@@ -43,6 +51,16 @@ up)
   prof="${1:-fiverr-osinput}"; shift || true
   url="${1:-https://www.fiverr.com/}"
   mkdir -p "$PROFILE_ROOT/$prof" "$SHOT_DIR"
+  # ⛔ A PROFILE THAT MOVED HOSTS CARRIES A LOCK THAT NAMES THE OLD ONE, and
+  # Chrome then refuses to start with "The profile appears to be in use by
+  # another Google Chrome process" — which reads as "something else is running"
+  # when nothing is. MEASURED 2026-10-15 moving fiverr-osinput to server3:
+  # SingletonLock is a symlink to <hostname>-<pid>, and both were office's.
+  # Same cause after any unclean exit. Paths are literal and inside the profile
+  # we are about to launch, so this cannot reach anything else.
+  for lock in SingletonLock SingletonSocket SingletonCookie; do
+    rm -f "$PROFILE_ROOT/$prof/$lock"
+  done
   # ⛔ OFFICE HAS NO Xvfb AND INSTALLING ONE NEEDS THE OPERATOR'S SAY-SO, so
   # this uses Xephyr, which is present. Xephyr is a NESTED X server: it draws
   # its screen as one window on :0 and owns its own input queue, so every
@@ -73,6 +91,7 @@ up)
     --no-first-run --no-default-browser-check \
     --disable-features=TranslateUI \
     --window-position=0,0 --window-size=1900,1040 \
+    $OSDRIVE_CHROME_EXTRA_ARGS \
     "$url" >/tmp/osdrive-chrome.log 2>&1 &
   sleep 8
   echo "display=$DISP profile=$PROFILE_ROOT/$prof"
