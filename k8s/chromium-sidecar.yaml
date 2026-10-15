@@ -175,7 +175,20 @@ spec:
           # /sbin/tini (the Alpine path) while this Debian image has tini at
           # /usr/bin/tini, so every container died with an OCI exec error after a
           # perfectly good 416 MB pull.
-          image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-13b
+          # ⛔ :2026-10-13b IS ALSO UNUSABLE FOR THIS DEPLOYMENT, for a second
+          # and unrelated reason found 2026-10-15: it drives BRANDED Google
+          # Chrome, and branded Chrome refuses --load-extension outright
+          # ("--load-extension is not allowed in Google Chrome, ignoring",
+          # extension_service.cc:423). The container starts, Xvfb starts, Chrome
+          # starts, and no extension is ever loaded — so nothing registers on
+          # :9010 and the pod is undriveable while looking healthy.
+          # ⭐ :2026-10-15 drives CHROME FOR TESTING instead, which honours the
+          # switch. Verified through the whole path, not by "Running": autolaunch
+          # → Xvfb → extension loaded → REGISTERED on :9010 → browser_evaluate
+          # returned webgl2=YES on SwiftShader with tz America/New_York.
+          # ⚠️ It still reports userAgentData brand `Chromium`, not `Google
+          # Chrome`. That field is NOT fixed here; see Dockerfile.chrome.
+          image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-15
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
@@ -218,8 +231,20 @@ spec:
             # takes someone else's work with it. If this pod starts getting
             # evicted, find what is writing to the rootfs; do not just raise
             # the number.
+            # ⭐ CPU REQUEST IS 500m WHILE THE LIMIT STAYS 1, AND THAT ASYMMETRY
+            # IS ON PURPOSE — it is NOT a relaxation of the memory rule above.
+            # MEASURED 2026-10-15 11:25 EDT: server3 is allocatable 32 CPU with
+            # 31.1 already requested by 33 pods, so cpu:"1" does not fit by
+            # 0.1 and the pod sat Pending with "1 Insufficient cpu" while the
+            # node ran at a fraction of that in reality.
+            # ⇒ The two resources fail DIFFERENTLY and must not be treated
+            # alike: exceeding a CPU limit THROTTLES, exceeding a memory limit
+            # gets the pod OOM-KILLED and can take the node with it. Memory
+            # therefore keeps request == limit; CPU does not need to.
+            # ⛔ DO NOT "FIX" MEMORY THE SAME WAY. The packing table above is
+            # about memory and still governs it.
             requests:
-              cpu: "1"
+              cpu: 500m
               memory: 4Gi
               ephemeral-storage: 512Mi
             limits:
