@@ -435,6 +435,13 @@ services:
   # itself: office and server3 share one WAN address (74.104.230.49). Zazzle
   # sees the IP it already sees; what moves is the dependency on office, not the
   # reputation of the address.
+  # ⛔⛔ BRING IT UP BY NAME: `docker compose up -d sidecar-s3`.
+  # NOT `docker compose --profile sidecar-s3 up -d` — a profile flag with no
+  # service name ALSO starts every service that has no `profiles:` key, which
+  # here is mongodb AND A SECOND mcp-server. On server3 that means a rival
+  # control plane and a second Mongo against the same NAS. Caught 2026-10-15
+  # when the "pull" it kicked off turned out to be mcp-server's image, not this
+  # one; nothing was created, because the pulls were cancelled first.
   sidecar-s3:
     profiles: ["sidecar-s3"]
     image: 192.168.1.207:5050/unibrowse/chromium-host:2026-10-15
@@ -448,6 +455,20 @@ services:
       EXTENSION_DIR: /app/extension
       CHROME_PATH: /usr/bin/chromium-browser
       TZ: America/New_York
+    # ⭐⭐ THIS LINE IS WHY A COPIED SIDECAR PROFILE WORKS HERE AT ALL, and it
+    # is also the cheapest half of tomorrow's mcp-server move. A sidecar
+    # extension stores the server it dials inside its own chrome.storage, and on
+    # office that value is the DOCKER NAME `mcp-server:9010` (extension/
+    # background.js:5265 says so in as many words) — a name that resolves on
+    # office's compose network and NOWHERE on server3. A profile copied here
+    # would launch, look healthy, and connect to nothing.
+    # ⇒ Resolve the name at the container instead of editing 12 browser
+    # profiles: point it at whichever host runs mcp-server. ⚠️ CHANGE THIS IP
+    # when :9010 moves to server4 (192.168.1.168) — that one edit re-points
+    # every container sidecar without touching a single profile. Host desktop
+    # browsers store a real IP and still need their options page.
+    extra_hosts:
+      - "mcp-server:192.168.1.199"
     # ⛔ BOUND TO LOOPBACK. :9020 spawns a browser for anyone who can reach it
     # and has no authentication of its own; the launch calls are made on server3
     # over ssh. ⛔ Do not publish it on the LAN address "for convenience".
