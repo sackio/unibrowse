@@ -10,6 +10,14 @@
 #   2. visits each logged-in site on a slow cycle, so the sites themselves
 #      refresh the cookies rather than letting them age out.
 #
+# ⚠️ WHAT A CYCLE CAN AND CANNOT DO ON AMAZON, measured 2026-10-15: amazon.com
+# serves an "unauthorized AI agent" interstitial with a Continue button on a
+# cold load, and this script does not press buttons — so an Amazon cycle stops
+# at the notice rather than reaching the account. What actually holds that
+# session is "Keep me signed in" on the sign-in form, which was NOT ticked at
+# the first login and is why the session lapsed within the hour. ⇒ Do not
+# "fix" this by letting the keepalive click: tick the box at login instead.
+#
 # ⛔ IT ONLY EVER NAVIGATES. No clicking, no forms, no checkout. A keepalive
 # that can press a button is a keepalive that can buy something, and this
 # browser holds Ben's saved cards.
@@ -28,11 +36,11 @@ PROFILE="${WARM_PROFILE:-warm-shopping}"
 LOCK="${WARM_LOCK:-/tmp/warm-drive.lock}"
 EVERY="${WARM_KEEPALIVE_SECONDS:-21600}"    # 6h
 FIRST_DELAY="${WARM_FIRST_DELAY:-300}"      # let a human finish logging in
-# ⛔ amazon.com is NOT in this default. It serves an interstitial saying that
-# "Continued access by an unauthorized AI agent violates Amazon's Conditions of
-# Use" — measured 2026-10-15 on the first cycle. We do not click through a
-# notice addressed to us. See the note in docker-compose.yml's warm service.
-SITES="${WARM_SITES:-https://www.ebay.com/ https://www.doordash.com/}"
+# ⚠️ amazon.com serves an "unauthorized AI agent" interstitial (measured
+# 2026-10-15). Ben ruled on it the same day — accessibility tool, his account,
+# his direction, non-abusive — so it stays in the list. Full quote and the
+# limits that still apply: docker-compose.yml, the `warm` service.
+SITES="${WARM_SITES:-https://www.amazon.com/ https://www.ebay.com/ https://www.doordash.com/}"
 export DISPLAY="${OSDRIVE_DISPLAY:-:98}"
 
 log() { echo "[warm-keepalive] $(date -Is) $*"; }
@@ -42,7 +50,7 @@ have_window() { xdotool search --onlyvisible --class chrome >/dev/null 2>&1; }
 ensure_chrome() {
   have_window && return 0
   log "no Chrome window — starting it"
-  bash "$OSDRIVE" up "$PROFILE" "${WARM_HOME_URL:-https://www.ebay.com/}" >/dev/null 2>&1 || true
+  bash "$OSDRIVE" up "$PROFILE" "${WARM_HOME_URL:-https://www.amazon.com/}" >/dev/null 2>&1 || true
   sleep 10
   have_window && log "Chrome is up" || log "⛔ Chrome did not start — read /tmp/osdrive-chrome.log"
 }
