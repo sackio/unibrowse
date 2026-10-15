@@ -26,8 +26,14 @@
 set -euo pipefail
 DISP="${OSDRIVE_DISPLAY:-:97}"
 GEOM="${OSDRIVE_GEOM:-1920x1080x24}"
-PROFILE_ROOT=/mnt/nas/data/code/unibrowse/chrome-profiles
-SHOT_DIR=/mnt/nas/data/files/osdrive
+# ⭐ Overridable so this same script runs inside a container, where neither NAS
+# path exists. Defaults are office's, so nothing changes for the existing rig.
+# ⛔ DO NOT POINT PROFILE_ROOT AT /mnt/nas IN A CONTAINER. A Chrome profile is
+# LevelDB plus SQLite and both corrupt over NFS; the profile belongs on local
+# disk (a docker volume), and only SHOT_DIR is safe on the NAS.
+PROFILE_ROOT="${OSDRIVE_PROFILE_ROOT:-/mnt/nas/data/code/unibrowse/chrome-profiles}"
+SHOT_DIR="${OSDRIVE_SHOT_DIR:-/mnt/nas/data/files/osdrive}"
+CHROME_BIN="${OSDRIVE_CHROME:-/usr/bin/google-chrome}"
 cmd="${1:-help}"; shift || true
 
 x() { DISPLAY="$DISP" xdotool "$@"; }
@@ -54,8 +60,16 @@ up)
     sleep 3
   fi
   # ⛔ NO --load-extension and NO --remote-debugging-port. Both are the point.
-  DISPLAY="$DISP" nohup /usr/bin/google-chrome \
+  # ⛔ --password-store=basic IS LOAD-BEARING WHEN THE PROFILE IS PORTABLE.
+  # MEASURED 2026-10-15 on fiverr-osinput: all 397 cookies carry the `v10`
+  # prefix and Local State has no os_crypt.encrypted_key, i.e. they are sealed
+  # with Chrome's fixed no-keyring key and therefore decrypt on any machine.
+  # Letting Chrome find a keyring instead would re-seal new cookies as `v11`
+  # and quietly make the profile non-portable — and the breakage would appear
+  # on the NEXT move, not this one.
+  DISPLAY="$DISP" nohup "$CHROME_BIN" \
     --user-data-dir="$PROFILE_ROOT/$prof" \
+    --password-store=basic \
     --no-first-run --no-default-browser-check \
     --disable-features=TranslateUI \
     --window-position=0,0 --window-size=1900,1040 \
