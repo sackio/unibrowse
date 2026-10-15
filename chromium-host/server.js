@@ -737,6 +737,15 @@ const launchChromium = async ({
     "--disable-default-apps",
     "--no-sandbox", "--disable-dev-shm-usage",   // we're in a container
   ];
+  // ⭐ GPU and fingerprint flags belong in deployment config, not in this file:
+  // the k8s ConfigMap sets them per deployment and the compose sidecar leaves
+  // them unset, so this line changes nothing by default.
+  // ⛔ Space-separated, and each entry must already be a complete flag. We do
+  // not parse or validate them — a flag Chrome rejects says so in its own
+  // stderr, whereas a flag we silently "corrected" would not.
+  for (const extra of String(process.env.UNIBROWSE_CHROME_EXTRA_ARGS || "").split(/\s+/)) {
+    if (extra) args.push(extra);
+  }
   if (width && height) args.push(`--window-size=${width},${height}`);
   if (headless) args.push("--headless=new", "--disable-gpu");
   // Scoped proxy egress. Validated here too: this endpoint is reachable

@@ -1,4 +1,48 @@
-# Sidecar image built on REAL Google Chrome instead of Alpine's chromium.
+# Sidecar image built on REAL Chrome instead of Alpine's chromium.
+#
+# ⛔⛔ CORRECTION 2026-10-15, AND IT INVALIDATES THIS FILE'S ORIGINAL CHOICE:
+# BRANDED GOOGLE CHROME CANNOT LOAD OUR EXTENSION AT ALL. Measured in this very
+# image (Chrome 155.0.8059.39), from Chrome's own stderr:
+#     WARNING:chrome/browser/extensions/extension_service.cc:423]
+#     --load-extension is not allowed in Google Chrome, ignoring.
+# It is a branded-build refusal, not a flag we got wrong: the browser starts, X
+# starts, the profile is written, and the extension is simply never loaded — so
+# nothing ever registers on :9010 and the sidecar is undriveable. The extension
+# id appears in the profile's Preferences (server.js seeds it for the incognito
+# grant), which makes the failure look like a load that went wrong rather than
+# one that never happened.
+# ⚠️ HOW THIS GOT PAST THE FIRST BUILD: the -13b container was never given
+# UNIBROWSE_AUTOLAUNCH_PROFILE, so it launched no browser and the absence of a
+# Chrome process was read as "the image is broken". That absence was CORRECT
+# BEHAVIOUR for the env it was given, and it hid the real fault for two days.
+# ⇒ A container that was never asked to do the thing is not evidence that it
+#   cannot.
+#
+# ⭐ SO THE BINARY IS CHROME FOR TESTING, not google-chrome-stable. Measured
+# 2026-10-15 through the full sidecar path (autolaunch → Xvfb → extension →
+# registration on :9010 → browser_evaluate):
+#   · --load-extension is HONOURED (no refusal line) and the extension REGISTERS
+#   · webgl2=YES, RENDERER=ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device
+#     (Subzero)), SwiftShader driver) — but ONLY with the two flags below
+#   · TZ=America/New_York resolves; Intl reports it and the offset is 240
+#   · ⚠️ navigator.userAgentData.brands = [Chromium/155, Not(A:Brand/24].
+#     CfT carries NO "Google Chrome" brand entry, so fault (2) below is NOT
+#     fixed by this image — it is narrowed to one field. Closing it needs the
+#     extension force-installed from a signed CRX under a Chrome policy, which
+#     in turn needs a `key` in extension/manifest.json — and that CHANGES THE
+#     UNPACKED EXTENSION ID (today it is derived from the directory PATH,
+#     server.js:327), which every existing profile has stored. Not a rush job.
+#
+# ⛔ WEBGL UNDER Xvfb NEEDS TWO FLAGS AND IS SILENT WITHOUT THEM. Measured
+# 2026-10-15: the same CfT binary gives webgl2=YES under `--headless=new` and
+# webgl2=NO in a real Xvfb window, because ANGLE wants a Vulkan window surface
+# (VK_KHR_xcb_surface) that SwiftShader's ICD does not provide, and modern
+# Chrome gates the software fallback. Both are required:
+#     --use-angle=swiftshader --enable-unsafe-swiftshader
+# They are baked into UNIBROWSE_CHROME_EXTRA_ARGS below so a deployment that
+# forgets them cannot quietly lose WebGL. ⚠️ This also means the Alpine-image
+# finding "no flag fixes WebGL" does NOT transfer: that test ran on an image
+# with no SwiftShader library present at all.
 #
 # ⭐ WHY THIS EXISTS — three fingerprint faults, one cause, measured 2026-10-13
 # on the live Alpine sidecar (`unibrowse-chromium-host`):
@@ -95,8 +139,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 # silently: without it TZ=America/New_York is accepted and ignored.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       tzdata \
-      ca-certificates curl gnupg \
+      ca-certificates curl gnupg unzip \
       xvfb \
+      xdotool imagemagick xclip x11-utils python3 procps \
       fonts-liberation fonts-noto-color-emoji \
       libnss3 libfreetype6 libharfbuzz0b \
       tini \
@@ -125,8 +170,34 @@ RUN set -eux; \
     test -f /opt/google/chrome/libvk_swiftshader.so \
       || echo "⚠️ libvk_swiftshader.so not where expected — verify WebGL before trusting this image"
 
-# ⚠️ CHROME_PATH is read by server.js. Must point at Chrome, not chromium.
-ENV CHROME_PATH=/usr/bin/google-chrome
+# ⭐ CHROME FOR TESTING — the binary we actually drive. Branded Chrome above
+# stays installed because its .deb is what pulls in the shared-library set CfT
+# also needs, and because it remains the control for "is this Chrome or is this
+# us" questions. It is not the browser the sidecar launches.
+#
+# ⭐ THIS PIN IS REAL, UNLIKE THE APT ONE. The CfT bucket keeps every version
+# forever at an immutable URL, so this build is reproducible in a way the
+# google-chrome-stable apt path can never be (Google serves only current
+# stable). That closes the "HONEST LIMIT ON THE PIN" admission above for the
+# binary we actually use.
+ARG CFT_VERSION=155.0.8059.79
+RUN set -eux; \
+    curl -fsSL -o /tmp/cft.zip \
+      "https://storage.googleapis.com/chrome-for-testing-public/${CFT_VERSION}/linux64/chrome-linux64.zip"; \
+    unzip -q /tmp/cft.zip -d /tmp/cft; \
+    mv /tmp/cft/chrome-linux64 /opt/cft; \
+    rm -rf /tmp/cft.zip /tmp/cft; \
+    /opt/cft/chrome --version | tee /etc/unibrowse-cft-version; \
+    test -f /opt/cft/libvk_swiftshader.so \
+      || { echo "⛔ libvk_swiftshader.so missing from CfT — WebGL would be off"; exit 1; }
+
+# ⚠️ CHROME_PATH is read by server.js. Points at Chrome for Testing: branded
+# Chrome refuses --load-extension (see the correction at the top of this file).
+ENV CHROME_PATH=/opt/cft/chrome
+# ⛔ REQUIRED FOR WEBGL UNDER Xvfb, and silent if removed. See the header.
+# A deployment may override this, and overriding it without these two flags
+# turns WebGL off with no error anywhere.
+ENV UNIBROWSE_CHROME_EXTRA_ARGS="--use-angle=swiftshader --enable-unsafe-swiftshader"
 # Fault (3). Overridable per-deployment; the point is that a named zone now
 # RESOLVES, because tzdata is installed above.
 ENV TZ=America/New_York
@@ -139,6 +210,21 @@ WORKDIR /app
 # That is a real tradeoff, accepted deliberately for the cluster deployment.
 COPY chromium-host/server.js ./server.js
 COPY extension ./extension
+# ⭐ THE OS-INPUT LANE SHIPS IN THE SAME IMAGE, DELIBERATELY. `freelance` drives
+# Fiverr, Upwork and Freelancer with NO extension and NO debugger — XTEST input
+# and X screenshots only — because Fiverr's PerimeterX tripped on extension
+# navigation and Upwork blocked extension browsers at Cloudflare (Ben,
+# #freelance 2026-10-12 18:26). That lane needs BRANDED google-chrome, which is
+# installed above and which is useless for the extension lane for the exact
+# reason recorded at the top of this file. One image, two binaries, and which
+# one you get is CHROME_PATH (sidecar) or OSDRIVE_CHROME (os-input).
+# ⛔ Set OSDRIVE_PROFILE_ROOT to a LOCAL volume. A Chrome profile on NFS
+# corrupts — LevelDB and SQLite both.
+COPY scripts/osdrive.sh /usr/local/bin/osdrive.sh
+RUN chmod +x /usr/local/bin/osdrive.sh
+ENV OSDRIVE_PROFILE_ROOT=/app/.chrome-profiles \
+    OSDRIVE_SHOT_DIR=/app/shots \
+    OSDRIVE_CHROME=/usr/bin/google-chrome
 
 EXPOSE 9020
 
