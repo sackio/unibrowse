@@ -415,6 +415,26 @@ SEED
     "$url" \
     >>"$LOG_DIR/$name.log" 2>&1 </dev/null
 
+  # ⚠️ MINIMIZE BEFORE THE REGISTRATION WAIT, not after. That wait runs up to
+  # 150s and the window would paint on Ben's desktop for the whole of it, which
+  # is the symptom this is here to remove. Retried for ~12s because Chrome maps
+  # its frame a few seconds after exec and there is nothing to minimize before
+  # that; the loop stops on the first window it genuinely minimizes.
+  # ⚠️ Deliberately on BOTH paths — a launch that never registers leaves a blank
+  # window behind, and that is precisely the one Ben saw every 5 minutes.
+  local mz_pid mz try
+  mz_pid="$(running_pid "$dir" || true)"
+  if [ -n "$mz_pid" ]; then
+    for try in 1 2 3 4 5 6 7 8 9 10 11 12; do
+      mz="$(minimize_site_windows "$mz_pid")"
+      if [ "${mz:-0}" -gt 0 ]; then echo "$name: minimized $mz window(s)"; break; fi
+      sleep 1
+    done
+    if [ "${mz:-0}" = "0" ]; then
+      echo "⚠️ $name: no WM-managed window to minimize after 12s — it may still be painting" >&2
+    fi
+  fi
+
   # ⭐ Record the id this launch produced, while the mapping is unambiguous.
   # ⚠️ The MV3 service worker does not connect instantly — claudelogin took ~90s
   #    on 2026-10-12 — so this waits up to 150s. A browser that never registers
@@ -462,6 +482,34 @@ live_ext_ids() {
 try: d=json.load(sys.stdin)
 except Exception: sys.exit(0)
 for e in d.get("connected",[]): print(e.get("extensionId",""))' 2>/dev/null || true
+}
+
+# ⭐ MINIMIZE A SITE BROWSER'S WINDOWS. Prints how many it actually minimized.
+# Ben authorized making this permanent — Slack #scripts 2026-10-15 17:01, "yes"
+# to `a2g` ("make minimize at launch permanent in unibrowse's launcher?").
+# ⛔ MINIMIZE, NOT CLOSE AND NOT KILL. His first instruction in that thread was
+# "close them"; `scripts` corrected it in the same thread because claudelogin is
+# the browser claude-login-auto drives and alpacasignup carries a signup
+# session. These browsers must keep running — only the painting is unwanted.
+# ⛔ GUARD ON WM_STATE, because windowminimize SUCCEEDS on a window the WM does
+# not manage and changes nothing — so a success return is not evidence of a
+# minimized window. MEASURED by `scripts` 2026-10-15: Chrome pid 2145872 owned
+# both 0x3a00003 (WM_STATE Iconic after minimize) and 0x3c00001 (WM_STATE "not
+# found", minimize returned success and the window stayed put). Without the
+# guard this function would report 2 and leave one window painting.
+# ⚠️ NOT --onlyvisible here: a window already Iconic must still be counted, or a
+# second call reads as a total failure and the caller retries pointlessly.
+# ⚠️ Offscreen was RULED OUT, not overlooked: mutter clamps a move past the
+# desktop bounds back inside (measured +7680+2190 -> +6736+1602) and the
+# 8-monitor layout's largest gap is a 240px strip left of DP-0.
+minimize_site_windows() {
+  local pid="$1" wid n=0 st
+  for wid in $(xdotool search --pid "$pid" 2>/dev/null); do
+    st="$(xprop -id "$wid" WM_STATE 2>/dev/null || true)"
+    case "$st" in *"window state"*) ;; *) continue ;; esac
+    if xdotool windowminimize "$wid" 2>/dev/null; then n=$((n + 1)); fi
+  done
+  printf '%s\n' "$n"
 }
 
 extid_file() { printf '%s/%s.extid\n' "$PROFILES_ROOT" "$1"; }
@@ -656,6 +704,11 @@ cmd_place() { # re-tile a RUNNING site onto its slot, without restarting it
   geo="$(slot_geometry "$mon" "$slot")"; read -r w h x y <<<"$geo"
   # ⚠️ Chrome owns several X windows per process; only the named visible one is
   # the browser frame. Moving an unnamed one silently does nothing useful.
+  # ⚠️ A MINIMIZED SITE HAS NO VISIBLE WINDOW, so since minimize-at-launch became
+  # permanent (Ben, #scripts 2026-10-15) this reports "no visible window found"
+  # for a browser that is perfectly healthy. That is not a fault. To re-tile one,
+  # un-minimize it first: `xdotool windowactivate <wid>`, then `place`, then
+  # `minimize-at-launch` takes over again on the next relaunch.
   for wid in $(xdotool search --pid "$pid" --onlyvisible 2>/dev/null); do
     [ -n "$(xdotool getwindowname "$wid" 2>/dev/null)" ] || continue
     xdotool windowsize "$wid" "$w" "$h" 2>/dev/null || continue
