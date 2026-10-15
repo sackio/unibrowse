@@ -341,7 +341,26 @@ cmd_up() {
       echo "$name: already up (pid $pid) and registered as $stored — leaving it alone"
       return 0
     fi
-    echo "$name: up (pid $pid) but its stored id is ${stored:-absent} and not connected — recycling"
+    # ⛔⛔ AN ABSENT .extid IS NOT EVIDENCE THAT THE BROWSER IS UNREGISTERED, and
+    # treating it as such made this script KILL ITS OWN HEALTHY BROWSER every 5
+    # minutes. MEASURED 2026-10-15 15:50: claudelogin and alpacasignup were both
+    # connected (`map` resolved ext_bb94966c and ext_c07b1a74 against the live
+    # registry) while BOTH .extid files were absent — deleted by the launch
+    # path's failure branch, which had mis-attributed registration. cmd_up then
+    # read "stored id absent and not connected", TERMed a working browser, and
+    # relaunched it; the relaunch mis-attributed again and deleted the pointer
+    # again. That is the perpetual blank-window loop Ben saw, and the ~4-minute
+    # "death" `scripts` measured was this kill, not a crash.
+    # ⇒ Ask the profile before concluding anything, and heal the pointer in
+    # place. The .extid file is a cache; the profile's own store plus the live
+    # registry are the authority.
+    local resolved
+    if resolved="$(live_id_for_profile "$name")"; then
+      printf '%s\n' "$resolved" > "$(extid_file "$name")"
+      echo "$name: already up (pid $pid) and registered as $resolved — recovered a missing pointer, leaving it alone"
+      return 0
+    fi
+    echo "$name: up (pid $pid) but its stored id is ${stored:-absent}, and this profile resolves to no live extension — recycling"
     kill -TERM "$pid"
     if ! wait_for_exit "$pid" 20; then
       echo "$name: ⚠️ pid $pid survived TERM — not launching, a launch now would hand off to it" >&2
@@ -407,8 +426,15 @@ SEED
     echo "$name: registered as $newid (recorded in $(extid_file "$name"))"
   else
     rm -f "$(extid_file "$name")"
-    echo "⚠️ $name: launched (pid $(running_pid "$dir" || echo '?')) but NO new extension registered within 150s." >&2
-    echo "   Chrome is running; its service worker is not talking to ${UNIBROWSE_SERVER:-http://127.0.0.1:9010}." >&2
+    echo "⚠️ $name: launched (pid $(running_pid "$dir" || echo '?')) but no extension could be attributed to it after ${AWAIT_WAITED:-?}s." >&2
+    if [ "${AWAIT_AMBIG_MAX:-0}" -gt 1 ]; then
+      # ⇒ The server HAS fresh connections; we could not prove which is ours, and
+      # this profile's store never produced a live id. Do not blame the worker.
+      echo "   ⚠️ Up to ${AWAIT_AMBIG_MAX} extensions connected inside the window and this profile's own store never resolved to a live id." >&2
+      echo "   ⇒ Check \`$0 map\` before concluding anything: it may already know this site's id." >&2
+    else
+      echo "   Chrome is running; its service worker is not talking to ${UNIBROWSE_SERVER:-http://127.0.0.1:9010}." >&2
+    fi
     echo "   ⛔ Any stale $(extid_file "$name") has been REMOVED — a pointer nobody can reach is worse than none." >&2
     return 4
   fi
@@ -440,6 +466,33 @@ for e in d.get("connected",[]): print(e.get("extensionId",""))' 2>/dev/null || t
 
 extid_file() { printf '%s/%s.extid\n' "$PROFILES_ROOT" "$1"; }
 
+# ⭐ WHICH EXTENSION BELONGS TO THIS PROFILE — ANSWERED FROM THE PROFILE ITSELF.
+# The extension writes its own server-facing uuid into the profile's leveldb
+# store, so the mapping is derivable per profile and does NOT depend on timing.
+# Same mechanism cmd_map already uses, factored out so the launch path can use
+# it too. Collect every candidate and let the live registry pick: the store
+# ACCUMULATES uuids across launches, so disk alone cannot say which is current.
+# ⚠️ Returns nothing when the curl fails, which makes "not registered" the
+# answer on an unreachable server. That is the right way round — the caller
+# must not record a pointer it could not verify.
+live_id_for_profile() {
+  local name="$1" store uuids u live_ids
+  store="$(profile_dir "$name")/Default/Local Extension Settings"
+  live_ids="$(curl -s -m 5 "${UNIBROWSE_SERVER:-http://127.0.0.1:9010}/extensions" 2>/dev/null \
+    | /usr/bin/python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+for e in d.get("connected",[]): print(e.get("extensionId",""))' 2>/dev/null || true)"
+  [ -n "$live_ids" ] || return 1
+  uuids="$( { strings "$store"/*/* 2>/dev/null \
+          | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+          || true; } | awk '!seen[$0]++')"
+  for u in $uuids; do
+    if printf '%s\n' "$live_ids" | grep -qxF "ext_$u"; then printf 'ext_%s\n' "$u"; return 0; fi
+  done
+  return 1
+}
+
 # Wait for an extension that CONNECTED AFTER <t0>. Prints its id, or nothing.
 #
 # ⛔ REWRITTEN 2026-10-12. This used to diff the id SET against a snapshot taken
@@ -457,10 +510,35 @@ extid_file() { printf '%s/%s.extid\n' "$PROFILES_ROOT" "$1"; }
 # between this host and the server.
 # ⚠️ Still refuses to guess when two extensions connect inside the window — a
 # wrong pointer is worse than an absent one, which was right the first time.
+# ⛔⛔ THE AMBIGUITY BRANCH USED TO `return 1` ON THE FIRST POLL, AND THAT BUILT A
+# PERPETUAL RELAUNCH LOOP THAT PUT A BLANK about:blank WINDOW ON BEN'S DESKTOP
+# EVERY 5 MINUTES. He raised it himself (#scripts 2026-10-15 15:46, "it's like
+# blank unibrows windows are opening small with about blank").
+# MECHANISM, measured 2026-10-15: claudelogin and alpacasignup are driven by TWO
+# CRONS ON THE SAME `*/5` SCHEDULE, so they launch in the same minute. Each one's
+# extension connects inside the OTHER's attribution window, both poll n=2, both
+# return 1, both DELETE their .extid — so both read as down on the next tick and
+# relaunch. Mutual, deterministic, and it cannot clear itself: the more reliably
+# both browsers register, the more reliably each poisons the other's window.
+# ⇒ Recency across ALL extensions is the wrong instrument. It cannot distinguish
+# two concurrent launches, and two concurrent launches are GUARANTEED here.
+# ⭐ Ask the profile instead (live_id_for_profile): the uuid is in that profile's
+# own store and no other launch can touch it. Recency survives only as a
+# fallback for a virgin profile whose store has not flushed yet — and it now
+# KEEPS WAITING through ambiguity instead of giving up, because the deterministic
+# answer usually arrives a few seconds later anyway.
+# ⚠️ The old failure text claimed "NO new extension registered within 150s"
+# after waiting as little as 5 seconds, and then asserted the service worker was
+# not talking to :9010. Both were false on 2026-10-15: `map` resolved BOTH ids
+# against the live registry at the same moment. A duration in a message must be
+# the duration actually waited.
 await_registration() {
-  local t0="$1" name="$2" waited=0 fresh n
+  local t0="$1" name="$2" waited=0 fresh n id ambig_max=0
   while [ "$waited" -lt 150 ]; do
     sleep 5; waited=$((waited + 5))
+    # (a) DETERMINISTIC — this profile's own store, cross-checked against live.
+    if id="$(live_id_for_profile "$name")"; then printf '%s\n' "$id"; return 0; fi
+    # (b) FALLBACK — recency, for a profile whose store has not flushed yet.
     fresh="$(curl -s -m 5 "${UNIBROWSE_SERVER:-http://127.0.0.1:9010}/extensions" 2>/dev/null \
       | /usr/bin/python3 -c 'import json,sys,time
 t0=float(sys.argv[1])
@@ -474,10 +552,11 @@ for e in d.get("connected",[]):
     case "$n" in
       0) ;;
       1) printf '%s\n' "$fresh" | grep . ; return 0 ;;
-      *) echo "⚠️ $name: $n extensions connected during the launch window — refusing to guess which is ours; not recorded" >&2
-         return 1 ;;
+      *) if [ "$n" -gt "$ambig_max" ]; then ambig_max="$n"; fi ;;
     esac
   done
+  # Exported so the caller can say what actually happened rather than guessing.
+  AWAIT_WAITED="$waited"; AWAIT_AMBIG_MAX="$ambig_max"
   return 1
 }
 
