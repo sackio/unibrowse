@@ -68,7 +68,19 @@ up)
   # on office's real desktop. That is what keeps the standing order against
   # coordinate-clicking :0 intact. ⚠️ The visible cost is one window on the
   # operator's screen while the rig is up; `kill` takes it away.
-  if [ ! -e "/tmp/.X11-unix/X${DISP#:}" ]; then
+  # ⛔ A SOCKET FILE IS NOT A LIVE X SERVER, and treating it as one takes the whole
+  # rig PERMANENTLY dark. MEASURED 2026-10-15 on unibrowse-warm: /tmp/.X11-unix/X98
+  # outlived its Xvfb by 6 minutes, so an `-e` test skipped the launch and every
+  # Chrome start after it died with "Missing X server or $DISPLAY" for 18 minutes.
+  # The keepalive logged "Chrome did not start", which names the symptom and hides
+  # the cause — this is the failure-toward-"something else is wrong" shape.
+  # ⇒ PROBE THE DISPLAY, and clear the corpse, because Xvfb refuses to replace it
+  # ("Server is already active for display N") and that reads as a running server.
+  # ⚠️ The rm is bounded by the case: $DISP is a display number, never a path.
+  if ! DISPLAY="$DISP" xdotool getdisplaygeometry >/dev/null 2>&1; then
+    case "$DISP" in
+      :[0-9]|:[0-9][0-9]) rm -f "/tmp/.X11-unix/X${DISP#:}" ;;
+    esac
     if command -v Xvfb >/dev/null 2>&1; then
       Xvfb "$DISP" -screen 0 "$GEOM" -nolisten tcp >/tmp/osdrive-x.log 2>&1 &
     else
