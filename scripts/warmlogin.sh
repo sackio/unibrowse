@@ -44,6 +44,12 @@ getval() {
 
 in_container() { docker exec -e DISPLAY="$DISP" "$CONTAINER" "$@"; }
 
+# ⚠️ The lock scripts/warm-keepalive.sh respects. Held only while a `login`
+# runs, so an unattended keepalive cycle cannot navigate out from under a
+# half-typed password.
+lock_acquire() { mkdir "${WARM_LOCK:-/tmp/warm-drive.lock}" 2>/dev/null; }
+lock_release() { rmdir "${WARM_LOCK:-/tmp/warm-drive.lock}" 2>/dev/null || true; }
+
 cmd="${1:-help}"; shift || true
 case "$cmd" in
 
@@ -134,6 +140,8 @@ login)  # login SITE — the whole sign-in, keyboard-only. SITE: amazon|ebay|doo
     fi
   }
 
+  lock_acquire || echo "⚠️ another driver holds ${WARM_LOCK:-/tmp/warm-drive.lock} — continuing anyway"
+  trap lock_release EXIT
   "$0" go "$url" >/dev/null; sleep 7
   in_container osdrive.sh key Escape >/dev/null; sleep 0.2
   focus
