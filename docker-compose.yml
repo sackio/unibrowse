@@ -276,6 +276,94 @@ services:
       # failure two steps from the cause.
       - ./scripts/osdrive.sh:/usr/local/bin/osdrive.sh:ro
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # WARM SESSIONS — the always-logged-in shopping browser. ⛔ server3 ONLY:
+  #   ssh -p 4999 ben@192.168.0.103
+  #   cd /mnt/nas/data/code/unibrowse && docker compose --profile warm up -d
+  #
+  # ⭐ WHY IT EXISTS. Ben, Slack #unibrowse 2026-10-15 12:0x: "I'm wondering if
+  # we can keep our always logged in Amazon eBay doordash and other things that
+  # I want to keep always logged in on some always warm container". Then, after
+  # I recommended he type his own passwords through a live relay: "no I
+  # definitely want to give you my password credentials ... and I do want you to
+  # that report credentials appropriate env files" — so the credential-handling
+  # design below is his call, made after that recommendation, not a default.
+  #
+  # ⛔ SEPARATE PROFILE AND SEPARATE VOLUME FROM `osdrive`, DELIBERATELY. This
+  # one holds saved cards and delivery addresses; osdrive is where a freelance
+  # agent experiments. One compromised session must not reach the other, so
+  # they share no cookie jar, no password store and no display.
+  #
+  # ⛔ NO EXTENSION, NO CDP, NO PUBLISHED PORT — the same three omissions as
+  # osdrive, for a second reason on top of fingerprinting: a browser reachable
+  # on :9010 is drivable by EVERY agent seat on the LAN, and this one can place
+  # orders against Ben's cards. Driving it requires SSH to server3 plus
+  # `docker exec`, which is a far smaller set of callers than the MCP surface.
+  #
+  # ⛔ THE CREDENTIALS ARE NOT IN THIS FILE AND NOT IN THE CONTAINER'S ENV.
+  # A container's environment is readable by `docker inspect`, by `docker exec
+  # env`, and in /proc by every user on the host — i.e. by every agent seat on
+  # server3. They live in ONE mode-600 file on server3:
+  #       /home/ben/.secrets/unibrowse-warm.env     (host-local, NOT the NAS)
+  # read host-side by scripts/warmlogin.sh, which pipes each value over STDIN
+  # into `osdrive.sh type-secret` so it never appears in argv either.
+  # Template, names only: scripts/warmlogin.env.example
+  #
+  # ⛔ NO NAS MOUNT HERE, AND THAT IS NOT AN OVERSIGHT. osdrive writes its
+  # screenshots to /mnt/nas/data/files/osdrive, which is readable by every seat
+  # on every host. A screenshot of this browser shows a logged-in Amazon
+  # account — address, order history, last four of a card. Shots stay inside the
+  # volume; pull the one you need with `docker exec ... cat` instead.
+  warm:
+    profiles: ["warm"]
+    image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-15
+    container_name: unibrowse-warm
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    command: ["sleep", "infinity"]
+    environment:
+      HOME: /home/node
+      TZ: America/New_York
+      OSDRIVE_PROFILE_ROOT: /app/.chrome-profiles
+      OSDRIVE_SHOT_DIR: /app/shots
+      # ⭐ BRANDED Chrome, not Chrome for Testing. CfT reports
+      # userAgentData.brands = [Chromium, Not(A:Brand] with no "Google Chrome"
+      # entry (measured 2026-10-15), and this browser signs into retail
+      # accounts. The branded build is also the one that REFUSES
+      # --load-extension, which is the behaviour we want here.
+      OSDRIVE_CHROME: /usr/bin/google-chrome
+      # ⛔ :98, not :97. :97 is freelance's osdrive rig on this same host; a
+      # stray coordinate must not be able to click one from the other.
+      OSDRIVE_DISPLAY: ":98"
+      OSDRIVE_GEOM: 1920x1080x24
+      OSDRIVE_CHROME_EXTRA_ARGS: "--use-angle=swiftshader --enable-unsafe-swiftshader"
+    shm_size: 512m
+    # ⭐ THE ONE PUBLISHED PORT, and it is not a browser port. scripts/osrelay.py
+    # serves a page that shows display :98 and replays the viewer's own pointer
+    # and keystrokes into it with xdotool — that is how a captcha or a 2FA
+    # prompt reaches Ben: he solves it himself, with his own gesture, from his
+    # phone. ⛔ Bound to server3's LAN address only, and the ATC artifact proxy
+    # is what makes it reachable off-LAN; nothing here is public.
+    # ⛔ WHOEVER HOLDS THE RELAY URL CAN MOVE THE MOUSE AND PRESS KEYS INSIDE A
+    # BROWSER HOLDING BEN'S CARDS, until the TTL expires. Start it for a solve
+    # and let it expire; do not leave it running.
+    # ⛔ An agent must not drive a bot-check widget itself — this exists to carry
+    # a HUMAN's gesture, not to answer the check on our own judgement.
+    ports:
+      - "192.168.0.103:9702:9702"
+    # Keeps Chrome's own renderer sandbox; --no-sandbox would remove it. See the
+    # measurement in the osdrive service above.
+    security_opt:
+      - seccomp:unconfined
+    volumes:
+      - warm_profile:/app/.chrome-profiles
+      # Mounted, not baked: the relay and the login macros are iterated against
+      # live sign-in pages, and an image rebuild per fix means a 1.4 GB push.
+      - ./scripts/osrelay.py:/usr/local/bin/osrelay.py:ro
+      - ./scripts/warm-logins:/app/warm-logins:ro
+      - ./scripts/osdrive.sh:/usr/local/bin/osdrive.sh:ro
+
 networks:
   unibrowse-network:
     driver: bridge
@@ -286,6 +374,12 @@ volumes:
   # and Freelancer sessions, so losing it means re-logins that need Ben for ID
   # and 2FA. ⛔ Do not `docker compose down -v` this host.
   osdrive_profile:
+    driver: local
+  # ⛔⛔ THE MOST EXPENSIVE VOLUME ON THIS NETWORK TO LOSE. It holds the warm
+  # Amazon / eBay / DoorDash sessions, their saved cards and addresses. It is
+  # host-local to server3 and there is no backup — losing it means re-logins
+  # that need Ben for every 2FA code. ⛔ Never `docker compose down -v` here.
+  warm_profile:
     driver: local
   slipway_state:
     driver: local

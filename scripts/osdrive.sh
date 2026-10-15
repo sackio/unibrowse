@@ -132,6 +132,18 @@ drag)  # drag X1 Y1 X2 Y2 [ms]
   "$0" move "$3" "$4" "${5:-600}"; sleep 0.06; x mouseup 1
   ;;
 type)  x type --clearmodifiers --delay "${2:-90}" -- "$1" ;;
+# ⭐ type-secret — TYPE A PASSWORD WITHOUT THE VALUE EVER REACHING argv.
+# `type` puts its argument on the command line, and a container's command line
+# is readable in the HOST's `ps` by every user on that host, plus `docker
+# inspect` and the shell history of whoever ran it. This variant reads the value
+# from STDIN and hands it to xdotool's own --file - , so it exists only in a
+# pipe: nothing to find in ps, nothing written to disk, nothing echoed back.
+# ⛔ Never "improve" this into `type-secret <value>`. The argv form is the leak.
+# ⚠️ The trailing newline is stripped deliberately — xdotool would type it as
+# Return and submit the form before the next field is filled.
+#   usage:  printf %s "$pw" | osdrive.sh type-secret [delay]
+type-secret)
+       tr -d '\r\n' | x type --clearmodifiers --delay "${1:-90}" --file - ;;
 key)   x key --clearmodifiers -- "$1" ;;
 wheel) n="${1:-3}"; b=4; [ "$n" -lt 0 ] && { b=5; n=$(( -n )); }
        for _ in $(seq 1 "$n"); do x click "$b"; sleep 0.12; done ;;
