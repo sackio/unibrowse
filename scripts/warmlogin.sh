@@ -102,30 +102,56 @@ login)  # login SITE — the whole sign-in, keyboard-only. SITE: amazon|ebay|doo
         # opens OVER the Continue button, so a click there hits the bubble; with
         # the bubble dismissed, Return submits the form.
   site="${1:?usage: warmlogin.sh login amazon|ebay|doordash}"
+  # FOCUS_XY / SUBMIT_XY empty  ⇒  the page autofocuses its field and Return
+  # submits. Set  ⇒  this site does NOT autofocus and needs a real click.
+  # ⚠️ MEASURED PER SITE 2026-10-15, because the two behave differently and
+  # assuming either way loses a password into whatever had focus:
+  #   amazon  /ap/signin  AUTOFOCUSES  (probe string landed with zero clicks)
+  #   ebay    /signin/    DOES NOT     (probe went nowhere; field stayed empty)
+  # ⇒ A site whose coordinates are set is a site whose layout can move. If a
+  # shot shows an empty field after `login`, re-measure the coordinates; do not
+  # retry the macro, because a retry types the password again with no target.
+  FOCUS_XY=""; SUBMIT_XY=""
   case "$site" in
     amazon)   url="https://www.amazon.com/gp/sign-in.html"; U=AMAZON_EMAIL;   P=AMAZON_PASSWORD ;;
-    ebay)     url="https://signin.ebay.com/signin/";        U=EBAY_EMAIL;     P=EBAY_PASSWORD ;;
+    ebay)     url="https://signin.ebay.com/signin/";        U=EBAY_EMAIL;     P=EBAY_PASSWORD
+              FOCUS_XY="950 345"; SUBMIT_XY="950 409" ;;
     doordash) url="https://www.doordash.com/consumer/login/"; U=DOORDASH_EMAIL; P=DOORDASH_PASSWORD ;;
     *) echo "⛔ unknown site: $site"; exit 1 ;;
   esac
   [ -n "$(getval "$U")" ] || { echo "⛔ $U is not set in $ENVFILE — nothing to log in with"; exit 1; }
   [ -n "$(getval "$P")" ] || { echo "⛔ $P is not set in $ENVFILE"; exit 1; }
 
+  focus() { [ -n "$FOCUS_XY" ] && { in_container osdrive.sh move $FOCUS_XY 400 >/dev/null
+                                     in_container osdrive.sh click 1 >/dev/null; sleep 1; }; true; }
+  submit() {
+    in_container osdrive.sh key Escape >/dev/null; sleep 0.2
+    if [ -n "$SUBMIT_XY" ]; then
+      in_container osdrive.sh move $SUBMIT_XY 350 >/dev/null
+      in_container osdrive.sh click 1 >/dev/null
+    else
+      in_container osdrive.sh key Return >/dev/null
+    fi
+  }
+
   "$0" go "$url" >/dev/null; sleep 7
   in_container osdrive.sh key Escape >/dev/null; sleep 0.2
+  focus
   "$0" secret "$U" >/dev/null
-  in_container osdrive.sh key Escape >/dev/null; sleep 0.2
-  in_container osdrive.sh key Return >/dev/null; sleep 6
-  in_container osdrive.sh key Escape >/dev/null; sleep 0.2
+  submit; sleep 7
+  focus
   "$0" secret "$P" >/dev/null
-  in_container osdrive.sh key Escape >/dev/null; sleep 0.2
-  in_container osdrive.sh key Return >/dev/null; sleep 9
+  submit; sleep 9
   # ⛔ THE ONLY HONEST SUCCESS SIGNAL HERE IS A HUMAN-READ SCREENSHOT. There is
   # no DOM to query — no extension, no CDP — so a title match is a HINT, never
   # proof. ⚠️ It fails toward "fine": a captcha page and a signed-in page can
   # share a title. Read the shot before believing a login worked.
   echo "window title: $(in_container osdrive.sh title 2>/dev/null | head -2 | tr '\n' ' ')"
   echo "⇒ read the screenshot: warmlogin.sh shot > /tmp/x.png"
+  # ⚠️ EXPECT TO STOP HERE ON EBAY. MEASURED 2026-10-15: username → Continue
+  # returns "Please verify yourself to continue" with an hCaptcha "I am human"
+  # checkbox, BEFORE the password is ever asked for. ⛔ We do not tick it —
+  # `warmlogin.sh relay` hands the display to Ben and he ticks it himself.
   ;;
 
 relay)  # relay [ttl-seconds] — show display :98 to Ben so HE solves the
