@@ -47,8 +47,12 @@ in_container() { docker exec -e DISPLAY="$DISP" "$CONTAINER" "$@"; }
 # ⚠️ The lock scripts/warm-keepalive.sh respects. Held only while a `login`
 # runs, so an unattended keepalive cycle cannot navigate out from under a
 # half-typed password.
-lock_acquire() { mkdir "${WARM_LOCK:-/tmp/warm-drive.lock}" 2>/dev/null; }
-lock_release() { rmdir "${WARM_LOCK:-/tmp/warm-drive.lock}" 2>/dev/null || true; }
+# ⚠️ IN THE CONTAINER'S /tmp, NOT THE HOST'S. The keepalive runs inside the
+# container and this script runs outside it; two /tmp paths that read the same
+# in a script are two different directories, and a lock neither side can see is
+# worse than no lock — it reads as held when it is absent.
+lock_acquire() { docker exec "$CONTAINER" mkdir "${WARM_LOCK:-/tmp/warm-drive.lock}" 2>/dev/null; }
+lock_release() { docker exec "$CONTAINER" rmdir "${WARM_LOCK:-/tmp/warm-drive.lock}" 2>/dev/null || true; }
 
 cmd="${1:-help}"; shift || true
 case "$cmd" in

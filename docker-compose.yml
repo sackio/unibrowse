@@ -321,12 +321,38 @@ services:
     restart: unless-stopped
     init: true
     user: "1000:1000"
-    command: ["sleep", "infinity"]
+    # ⭐ THE KEEPALIVE IS THE CONTAINER'S MAIN PROCESS, authorised by Ben in
+    # Slack #unibrowse 2026-10-15 ("yes I definitely want to keep alive"). It
+    # starts Chrome if the display is empty and then visits each site every 6h,
+    # so a container restart heals itself instead of leaving a dark rig that
+    # looks healthy. ⛔ It only navigates — see the script header.
+    # ⚠️ Replacing `sleep infinity` means a crash in the loop now restarts the
+    # container (restart: unless-stopped). That is the behaviour I want here,
+    # but it also means a broken edit to the script is a crash-loop, not a
+    # silent no-op: check `docker logs unibrowse-warm` after changing it.
+    command: ["bash", "/usr/local/bin/warm-keepalive.sh"]
     environment:
       HOME: /home/node
       TZ: America/New_York
       OSDRIVE_PROFILE_ROOT: /app/.chrome-profiles
       OSDRIVE_SHOT_DIR: /app/shots
+      WARM_PROFILE: warm-shopping
+      # 6h. ⚠️ Lower it and you are driving a card-holding browser more often
+      # for no gain — a session cookie does not age out in an afternoon.
+      WARM_KEEPALIVE_SECONDS: "21600"
+      # ⛔ AMAZON IS DELIBERATELY ABSENT FROM THIS LIST. MEASURED 2026-10-15,
+      # the first keepalive cycle: amazon.com served an interstitial reading
+      # "Continued access by an unauthorized AI agent violates Amazon's
+      # Conditions of Use, to which our customers have agreed", with a Continue
+      # button. That is not a bot check to hand to the operator — it is the site
+      # telling automated clients to stop, and pressing Continue is the thing it
+      # forbids. Ben can authorise an agent against HIS ACCOUNT; he cannot
+      # authorise one against Amazon's terms, so this is not a permission
+      # question he can settle for us.
+      # ⇒ The warm Amazon SESSION stays (it is his, and he can drive it himself
+      # through the relay — a human at the controls is not an agent). What stops
+      # is us visiting it on a timer. ⛔ Do not add amazon.com back here.
+      WARM_SITES: "https://www.ebay.com/ https://www.doordash.com/"
       # ⭐ BRANDED Chrome, not Chrome for Testing. CfT reports
       # userAgentData.brands = [Chromium, Not(A:Brand] with no "Google Chrome"
       # entry (measured 2026-10-15), and this browser signs into retail
@@ -339,6 +365,17 @@ services:
       OSDRIVE_GEOM: 1920x1080x24
       OSDRIVE_CHROME_EXTRA_ARGS: "--use-angle=swiftshader --enable-unsafe-swiftshader"
     shm_size: 512m
+    # ⛔ /app/shots MUST BE A MOUNT, not a directory made by hand. MEASURED
+    # 2026-10-15: I created it once with `docker exec -u 0 mkdir`, which lives
+    # in the container's WRITABLE LAYER — so the next `compose up` recreated the
+    # container without it and Chrome would not start at all ("mkdir: cannot
+    # create directory '/app/shots': Permission denied"), because /app is
+    # root-owned and the rig runs as uid 1000.
+    # ⭐ tmpfs rather than a volume, and that is the right trade here: a
+    # screenshot of this browser shows a logged-in retail account, so shots
+    # SHOULD die with the container. Pull the one you need over `docker exec`.
+    tmpfs:
+      - /app/shots:uid=1000,gid=1000,mode=0700,size=64m
     # ⭐ THE ONE PUBLISHED PORT, and it is not a browser port. scripts/osrelay.py
     # serves a page that shows display :98 and replays the viewer's own pointer
     # and keystrokes into it with xdotool — that is how a captcha or a 2FA
@@ -361,6 +398,7 @@ services:
       # Mounted, not baked: the relay and the login macros are iterated against
       # live sign-in pages, and an image rebuild per fix means a 1.4 GB push.
       - ./scripts/osrelay.py:/usr/local/bin/osrelay.py:ro
+      - ./scripts/warm-keepalive.sh:/usr/local/bin/warm-keepalive.sh:ro
       - ./scripts/warm-logins:/app/warm-logins:ro
       - ./scripts/osdrive.sh:/usr/local/bin/osdrive.sh:ro
 
