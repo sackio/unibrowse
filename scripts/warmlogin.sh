@@ -173,8 +173,13 @@ relay)  # relay [ttl-seconds] — show display :98 to Ben so HE solves the
     exit 0
   fi
   ttl="${1:-900}"
-  docker exec -d -e DISPLAY="$DISP" "$CONTAINER" sh -c \
+  # ⭐ REUSE THE TOKEN ON A RESTART OR BEN'S LINK DIES. The ATC artifact proxies
+  # to /r/<token>/, so a fresh token 404s the page he already has open, and the
+  # failure looks like the relay being down rather than the URL having moved.
+  #   OSRELAY_TOKEN=<the old one> warmlogin.sh relay
+  docker exec -d -e DISPLAY="$DISP" -e OSRELAY_TOKEN="${OSRELAY_TOKEN:-}" "$CONTAINER" sh -c \
     "python3 /usr/local/bin/osrelay.py --display $DISP --port 9702 --bind 0.0.0.0 --ttl $ttl \
+       --notify ${WARM_NOTIFY:-unibrowse} \
        --prompt 'Solve this and sign in — your own taps and keystrokes' \
        >/tmp/osrelay-98.log 2>&1 & echo \$! > /tmp/osrelay-98.pid"
   sleep 3

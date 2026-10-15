@@ -27,6 +27,7 @@ Usage: osrelay.py [--display :97] [--port 9701] [--bind 192.168.1.199] [--ttl 18
 Prints the LAN URL and the token on startup.
 """
 import argparse, json, os, re, secrets, subprocess, threading, time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -36,7 +37,40 @@ ap.add_argument("--port", type=int, default=9701)
 ap.add_argument("--bind", default="192.168.1.199")
 ap.add_argument("--ttl", type=int, default=1800)
 ap.add_argument("--prompt", default="Drive the browser on office display :97")
+# ⛔ WITHOUT THIS, PRESSING "Done" TELLS NOBODY. Until 2026-10-15 /done only set
+# local state and printed a line, so the agent waiting on the solve learned
+# nothing — measured that day: Ben solved an eBay hCaptcha, pressed Done, and I
+# found out because I was diffing screenshots, then because he asked. The
+# captcha relay DMs on solve; this script predates it and did not.
+# ⚠️ The notify is best-effort BY DESIGN and its result is reported in the
+# response: a failed DM must not make a solved captcha look unsolved.
+ap.add_argument("--notify", default=os.environ.get("OSRELAY_NOTIFY", ""),
+                help="ATC subscriber to DM when the operator presses Done")
+ap.add_argument("--broker", default=os.environ.get("ATC_URL", "http://192.168.1.168:3030"))
 A = ap.parse_args()
+
+
+def notify_done(note: str) -> bool:
+    """DM the owning seat that the human finished. Never raises."""
+    if not A.notify:
+        return False
+    body = f"osrelay: operator pressed Done on display {A.display}."
+    if note:
+        body += f" Note: {note}"
+    try:
+        req = urllib.request.Request(
+            A.broker.rstrip("/") + "/messages",
+            data=json.dumps({"to": A.notify, "from": "osrelay",
+                             "subject": "osrelay: Done pressed",
+                             "content": body}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            r.read()
+        print(f"[osrelay] notified {A.notify}", flush=True)
+        return True
+    except Exception as e:
+        print(f"[osrelay] notify FAILED: {e}", flush=True)
+        return False
 
 # ⭐ REUSING A TOKEN IS WHAT KEEPS A PUBLISHED LINK ALIVE ACROSS A RESTART.
 # The ATC artifact proxies to /r/<token>/, so a fresh token silently 404s the
@@ -184,12 +218,20 @@ PAGE = r"""<!doctype html>
   body { margin:0; background:#15171b; color:#e8eaed; font:15px/1.4 -apple-system,system-ui,sans-serif; }
   header { padding:12px 14px 8px; } h1 { font-size:16px; margin:0 0 4px; }
   .sub { font-size:12px; color:#9aa0aa; }
-  #wrap { position:relative; padding:8px 10px 10px; }
+  #wrap { position:relative; padding:8px 10px 10px; overflow:hidden; }
   /* Same four properties as the captcha page, for the same measured reason:
      without them a long press on a real phone becomes a selection or a scroll
      and the release is lost. */
   #shot { width:100%; display:block; border-radius:8px; border:1px solid #2b2f37;
-          touch-action:none; -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }
+          touch-action:none; -webkit-touch-callout:none; -webkit-user-select:none; user-select:none;
+          transform-origin:0 0; will-change:transform; }
+  /* ⭐ A 1920px desktop squeezed to a phone's width makes a 48px checkbox ~10px
+     wide, which is smaller than a fingertip can aim at — measured against
+     eBay's hCaptcha box on 2026-10-15, where Ben could not land a tap at all.
+     Hence the two-finger pinch below. ⛔ Page zoom is NOT the fix: iOS Safari
+     ignores user-scalable=no, and its own zoom moves the picture out from under
+     the coordinate mapping, so a tap then lands somewhere else on the desktop. */
+  body { overscroll-behavior:none; }
   #badge { position:absolute; top:14px; right:16px; padding:3px 8px; border-radius:6px;
            background:rgba(10,12,15,.72); color:#4ade80; font-size:11px; font-weight:600;
            pointer-events:none; opacity:0; transition:opacity .3s; }
@@ -208,7 +250,7 @@ PAGE = r"""<!doctype html>
 <header><h1 id="prompt">Loading…</h1><div class="sub"><span id="left"></span></div></header>
 <div id="wrap"><img id="shot" alt="screen"><div id="dot"></div><div id="badge"></div></div>
 <div class="row"><input id="txt" placeholder="Type here to send keys" autocomplete="off"></div>
-<div class="bar"><button id="pause" style="flex:0 0 auto">Pause</button><button id="send">Send text</button><button id="done" class="go">Done</button></div>
+<div class="bar"><button id="pause" style="flex:0 0 auto">Pause</button><button id="zreset" style="flex:0 0 auto">1:1</button><button id="send">Send text</button><button id="done" class="go">Done</button></div>
 <div id="status">Touch the picture and it moves the real mouse on office.</div>
 <div class="hint">The picture is live. While your press is being replayed it zooms in on the
 pointer, so you watch the button fill as it happens. Your whole gesture is replayed — the path you
@@ -280,6 +322,44 @@ function end(e){ if(!track||busy||stopped) return; var pts=track; track=null;
      // Stay fast for a few seconds: the thing he is waiting to see is what the
      // page does AFTER the button is released.
      hot=Date.now()+5000; }); }
+// ── PINCH TO ZOOM ─────────────────────────────────────────────────────────
+// ⭐ Two fingers zoom and pan the PICTURE; one finger still means "replay this
+// gesture on the real desktop". Keeping those on different finger counts is
+// what lets a 10px target be tapped without inventing a second mode to be in.
+// ⭐ THE COORDINATE MAPPING NEEDS NO CHANGE AND THAT IS DELIBERATE: rel() reads
+// getBoundingClientRect(), which reports the TRANSFORMED box, so a tap is still
+// the same fraction of the image however it is scaled or panned.
+var z=1, px=0, py=0, pinch=null;
+function applyT(){ var el=document.getElementById('shot');
+  el.style.transform='translate('+px+'px,'+py+'px) scale('+z+')'; }
+function dist(t){ var dx=t[0].clientX-t[1].clientX, dy=t[0].clientY-t[1].clientY;
+  return Math.hypot(dx,dy); }
+function mid(t){ return {x:(t[0].clientX+t[1].clientX)/2, y:(t[0].clientY+t[1].clientY)/2}; }
+document.addEventListener('touchstart', function(e){
+  if(e.touches.length!==2) return;
+  // A second finger means the one-finger gesture that just started was aiming,
+  // not pressing — drop it rather than replaying a stray tap on the desktop.
+  track=null; document.getElementById('dot').style.opacity=0;
+  pinch={d:dist(e.touches), m:mid(e.touches)}; e.preventDefault();
+  s('Pinch to zoom — one finger still taps.'); }, {passive:false});
+document.addEventListener('touchmove', function(e){
+  if(!pinch||e.touches.length!==2) return;
+  var d=dist(e.touches), m=mid(e.touches), nz=Math.min(8,Math.max(1,z*(d/(pinch.d||1)))), r=nz/z;
+  // Anchored zoom: the image point under the old midpoint stays under the new
+  // one. screen = p + z*img, so p1 = m1 - r*(m0 - p0). Panning falls out of it
+  // for free — moving two fingers without spreading them is r=1.
+  px = m.x - r*(pinch.m.x - px);
+  py = m.y - r*(pinch.m.y - py);
+  z=nz; pinch={d:d,m:m}; applyT(); e.preventDefault(); }, {passive:false});
+document.addEventListener('touchend', function(e){ if(e.touches.length<2) pinch=null; });
+document.addEventListener('touchcancel', function(){ pinch=null; });
+// iOS Safari ignores user-scalable=no and zooms the PAGE on pinch and on
+// double-tap, which breaks the mapping. These three events are how it asks.
+['gesturestart','gesturechange','gestureend'].forEach(function(n){
+  document.addEventListener(n, function(e){ e.preventDefault(); }, {passive:false}); });
+document.addEventListener('dblclick', function(e){ e.preventDefault(); }, {passive:false});
+document.getElementById('zreset').onclick=function(){ z=1; px=0; py=0; applyT(); s('Zoom reset.'); };
+
 document.addEventListener('pointerup', end);
 document.addEventListener('pointercancel', end);
 window.addEventListener('blur', end);
@@ -412,7 +492,8 @@ class H(BaseHTTPRequestHandler):
             STATE["state"] = "done"
             STATE["note"] = str(body.get("note") or "")[:500] or None
             print("[osrelay] operator pressed Done", flush=True)
-            return self._json(200, {"state": STATE["state"]})
+            notified = notify_done(STATE["note"] or "")
+            return self._json(200, {"state": STATE["state"], "notified": notified})
         return self._json(404, {"error": "no such path"})
 
 
