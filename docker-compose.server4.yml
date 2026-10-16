@@ -1,0 +1,85 @@
+# server4 override for running the unibrowse stack on 192.168.1.168.
+#
+# HISTORY: created 2026-07-22 as a FAILOVER override while office was down, and
+# rewritten 2026-10-16 07:1x EDT for the planned office→server4 migration. The
+# original covered ports only, which is not enough — see the three env/volume
+# notes below, each of which fails SILENTLY on server4.
+#
+# Usage (explicit -f only; plain `docker compose up` on office ignores this file):
+#   docker compose -f docker-compose.yml -f docker-compose.server4.yml up -d --build
+#
+# ⛔ NO `--profile chromium-host` UNLESS YOU HAVE LOADED THE IMAGE FIRST. The
+# original usage line carried that profile because the failover needed browsers.
+# chromium-host CANNOT BE BUILT (its Dockerfile pins chromium
+# 150.0.7871.181-r0, which alpine 3.24 no longer serves) and it is NOT in the
+# NAS registry at 192.168.1.207:5050 — measured 2026-10-16, the catalog has no
+# unibrowse repo at all. The only copies are local images on office and server3.
+#   office:  docker save unibrowse-chromium-host:latest | gzip
+#   server4: docker load
+# The chromium-host block below exists so that, once loaded, compose uses the
+# loaded image instead of trying to build it. `!reset` needs Compose v2.24+;
+# server4 has v5.3.1 (measured 2026-10-16).
+services:
+  mongodb:
+    # ⛔ PINNED, NOT `mongo:latest`. Office runs v8.0.15 (measured 2026-10-16)
+    # from a `mongo:latest` tag resolved months ago. A fresh `latest` pull on
+    # server4 gets whatever is current, and a version skew between the host that
+    # dumped and the host that restores is not something you want to discover
+    # mid-window. Match office, deliberately.
+    image: mongo:8.0.15
+    ports: !override
+      - "127.0.0.1:27019:27017"  # 27018 is phony-mongodb on s4 (verified listening 2026-10-16)
+  mcp-server:
+    environment:
+      # ⛔ THE URL WE HAND TO OTHER PEOPLE. docker-compose.yml defaults this to
+      # http://192.168.1.199:9010 — OFFICE. Left unset here, every parked-send
+      # link (/shared/:id) and recording replay page (/review/:id) this server
+      # mails out would point at a host that is no longer serving :9010.
+      # Nothing errors; the message is delivered containing a dead URL.
+      UNIBROWSE_PUBLIC_URL: http://192.168.1.168:9010
+    ports: !override
+      - "127.0.0.1:9010:9010"
+      - "192.168.1.168:9010:9010"  # s4 LAN IP, replaces office's 192.168.1.199
+    # ⛔ RESTATED IN FULL because `volumes` is a LIST and a list cannot be
+    # merged — the one mount that has to change forces every other one to be
+    # repeated. Keep this in sync with docker-compose.yml if that file's mounts
+    # change. The ONLY difference from the base file is the last line.
+    volumes: !override
+      - ./dist:/app/dist:ro
+      - ./extension:/app/extension:ro
+      - ./chrome-profiles:/app/.chrome-profiles
+      - ./recordings:/app/recordings
+      - slipway_state:/app/state
+      # ⛔⛔ THE LITERAL NAS PATH, NOT `/home/ben/files/...`. The base file's
+      # default is ${FETCHED_HOST_DIR:-/home/ben/files/unibrowse-fetched}, and
+      # on OFFICE /home/ben/files is a SYMLINK to /mnt/nas/data/files, so that
+      # default resolves to the NAS. ON SERVER4 IT IS A REAL LOCAL DIRECTORY
+      # (measured 2026-10-16: `readlink -f` returns itself). Inheriting the
+      # default here would create a host-local store, hide every previously
+      # fetched file, and make UNIBROWSE_FETCHED_HOST — which the server quotes
+      # to callers as the host path — a lie that nothing detects.
+      # ⇒ A path under /home/<user> is not evidence of host-local, in EITHER
+      # direction. Resolve it per host.
+      - /mnt/nas/data/files/unibrowse-fetched:/app/fetched
+  chromium-host:
+    build: !reset null
+    image: unibrowse-chromium-host:latest
+
+# ⛔ AN EXPLICIT SUBNET, BECAUSE SERVER4'S DOCKER ADDRESS POOLS ARE FULL.
+# Measured 2026-10-16: 32 networks, and BOTH default pools are exhausted —
+# 172.17–172.31/16 and 192.168.16–240/20 are every one allocated. Creating a
+# network with no subnet therefore fails outright:
+#   "all predefined address pools have been fully subnetted"
+# ⇒ Naming a subnet skips pool allocation entirely, so this needs no change to
+# /etc/docker/daemon.json and therefore NO DOCKER DAEMON RESTART. That matters:
+# server4 is a barn k8s worker (calico) and hosts other seats' stacks (phony,
+# iota, lgghub, pantry, atc-net, …); bouncing its daemon to widen a pool would
+# take all of them down to deploy this one.
+# ⚠️ 10.77/24 chosen clear of what is already routed on that host: calico pods
+# live across 10.1.0.0/16 and wireguard wg0 owns 10.100.0.0/24. Verify with
+# `ip -4 route` before reusing this value on another host.
+networks:
+  unibrowse-network:
+    ipam:
+      config:
+        - subnet: 10.77.0.0/24
