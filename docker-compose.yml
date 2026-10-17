@@ -552,6 +552,22 @@ services:
     # belonging to other seats. Do not tighten these without a peak measurement.
     # ⚠️ Setting swap.max=0 stops NEW swapping; it does NOT evict pages already in
     # swap. Host swap does not drop when you apply this.
+    # ⛔ CPU CAP, added 2026-10-17 at `cluster`'s ask — this container had NO
+    # ceiling at all (no nanocpus, no cpuset, no quota) while both siblings were
+    # capped at 2. MEASURED the same day: sustained draw is ~0.14 cores (13.57% of
+    # one core, 71 chromium processes idle), so `cluster`'s own test — "does it
+    # need more than 2 cores SUSTAINED" — answers no. 4 is PEAK headroom.
+    # ⚠️ WHY NOT 2 LIKE THE SIBLINGS: this is the MULTI-TENANT one, holding ~100
+    # attached tabs for other seats, where warm/osdrive drive ONE profile each.
+    # 2 cores spread over ~100 tabs throttles other seats' work; 4 bounds the
+    # blast radius on a 32-core host without doing that.
+    # ⭐ DISCRIMINATOR for raising it: other seats reporting tool timeouts or slow
+    # loads against sidecar tabs. The idle CPU% here will never show that need.
+    # Applied live 2026-10-17 with `docker update --cpus=4` — no restart, StartedAt
+    # unchanged, attached tabs survived. THIS LINE is what keeps it after a
+    # recreate; ⛔ do not run `compose up -d` on server3 to apply it (that kills
+    # warm sessions and other seats' tabs — use `docker update`).
+    cpus: 4
     mem_limit: 14g
     memswap_limit: 14g
     restart: unless-stopped
