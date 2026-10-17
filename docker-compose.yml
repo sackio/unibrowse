@@ -367,6 +367,27 @@ services:
       OSDRIVE_DISPLAY: ":98"
       OSDRIVE_GEOM: 1920x1080x24
       OSDRIVE_CHROME_EXTRA_ARGS: "--use-angle=swiftshader --enable-unsafe-swiftshader"
+    # ⛔ CPU CAP, added 2026-10-17 after `cluster` measured this container at
+    # 938-1060% CPU — ~10 of server3's 32 cores, sustained over 38h, uncapped. I
+    # confirmed it independently (3 samples; memory was 464 MiB, so not memory).
+    # ⭐ THE BURN IS CHROME'S GPU PROCESS DOING SOFTWARE GL. The swiftshader args
+    # above are the only way this display gets WebGL, and the process reported
+    # --gpu-recent-crash-count=1, so it had already crashed and respawned. An IDLE
+    # warm session has no legitimate need for ten cores ⇒ this caps a SPIN; it is
+    # not a capacity decision. The container sits pinned AT this ceiling, which
+    # means the spin itself is still unfixed.
+    # ⛔ Do NOT drop the swiftshader args to "fix" it without settling the WebGL
+    # question: this browser signs into Ben's retail accounts, and a missing WebGL
+    # renderer is itself a bot signal.
+    # ⚠️ server3 is the cluster's only untainted large node and its pod requests
+    # already sum to 31.90 of 32 cpu, so host-docker compute here is INVISIBLE to
+    # the scheduler and to bin/free-capacity. Destination is a cluster pod with
+    # requests+limits (Ben, Slack #cluster 2026-10-05 14:52); this cap is the
+    # fallback until that is arranged, not the goal.
+    # ⚠️ The LIVE container was capped with `docker update --cpus=2`, deliberately
+    # NOT a restart — a restart destroys the warm sessions this container exists to
+    # hold. This line is only what makes the cap survive the next `compose up -d`.
+    cpus: 2
     shm_size: 512m
     # ⛔ /app/shots MUST BE A MOUNT, not a directory made by hand. MEASURED
     # 2026-10-15: I created it once with `docker exec -u 0 mkdir`, which lives
