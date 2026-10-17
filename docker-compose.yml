@@ -257,8 +257,20 @@ services:
     # belonging to other seats. Do not tighten these without a peak measurement.
     # ⚠️ Setting swap.max=0 stops NEW swapping; it does NOT evict pages already in
     # swap. Host swap does not drop when you apply this.
-    mem_limit: 4g
-    memswap_limit: 4g
+    # ⭐ 6g, not the 4g first applied. `cluster` supplied the peak instrument I
+    # said I lacked — `grep VmHWM /proc/<pid>/status`, kernel-maintained peak RSS,
+    # present on 5.15 where cgroup memory.peak needs >= 5.19 — and it moved this
+    # number: osdrive's summed per-process VmHWM is 3341 MiB against the 1894 MiB
+    # current+swap floor I had sized from, 1.76x higher. Sizing from current RSS
+    # alone would have been wrong here.
+    # ⚠️ Read that sum as APPROXIMATE, not a bound in either direction: it
+    # OVERSTATES a simultaneous peak because processes peak at different times, and
+    # it UNDERSTATES because a child that already exited took its figure with it
+    # (this rig's GPU process has crashed and respawned). 4g was only 1.23x the
+    # sum; 6g restores real margin, and headroom is free because memswap==mem
+    # denies swap at any size.
+    mem_limit: 6g
+    memswap_limit: 6g
     restart: unless-stopped
     init: true
     # Chrome refuses to run as root without --no-sandbox, and adding that flag
