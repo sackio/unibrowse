@@ -162,9 +162,16 @@ export const GoForwardTool = z.object({
 
 export const WaitTool = z.object({
   name: z.literal("browser_wait"),
-  description: z.literal("Wait for a specified time in seconds"),
+  description: z.literal("Wait for a specified time in seconds. Takes `time`; `seconds` is accepted as an alias."),
   arguments: z.object({
-    time: z.number().default(1).describe("The time to wait in seconds (default: 1)"),
+    time: z.number().optional().describe("The time to wait in seconds (default: 1)"),
+    // ⭐ Alias, not redundancy. zod strips an unknown key, so a caller writing
+    // `seconds: 8` previously got the silent `time` default of 1 and a response
+    // reading "Waited for 1 seconds" — truthful, and indistinguishable from a
+    // broken tool. Measured 2026-10-16: cost five wasted calls and a filed bug
+    // before the schema was read. Accepting both names removes the trap rather
+    // than documenting it. Same two-names idiom as browser_switch_tab.
+    seconds: z.number().optional().describe("Alias for `time`."),
   }).merge(MaxTokensSchema),
 });
 

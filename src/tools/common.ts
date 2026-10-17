@@ -132,13 +132,15 @@ export const wait: Tool = {
   handle: async (context, params) => {
     try {
       const { max_tokens } = params || {};
-      const { time } = WaitTool.shape.arguments.parse(params);
+      const { time, seconds } = WaitTool.shape.arguments.parse(params);
+      // Neither key given ⇒ the documented 1s default. `time` wins if both are.
+      const secs = time ?? seconds ?? 1;
       // Pure server-side sleep — no extension round-trip needed. This both
       // avoids gratuitously waking a browser thread and unblocks callers in
       // multi-extension mode (browser_wait is temporal, not tab-specific, so
       // it shouldn't fail wsFor's disambiguation check).
-      await new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, time) * 1000));
-      return textResponse(`Waited for ${time} seconds`, max_tokens);
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, secs) * 1000));
+      return textResponse(`Waited for ${secs} seconds`, max_tokens);
     } catch (error) {
       const { max_tokens } = params || {};
       return errorResponse(`Failed to wait: ${error.message}`, false, error, max_tokens);
