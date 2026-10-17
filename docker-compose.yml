@@ -229,6 +229,36 @@ services:
     profiles: ["osdrive"]
     image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-15
     container_name: unibrowse-osdrive
+    # ⛔ CPU CAP, added 2026-10-17. `cluster` measured 6 LIVE swiftshader
+    # processes in this cgroup, so the software-GL mechanism that pegged `warm` at
+    # ~10 cores is RUNNING here too, not merely configured — it is quiet only
+    # because nothing is driving it. ⚠️ Config.Cmd greps clean for swiftshader on
+    # all three because the args are passed at runtime: the PROCESS LIST is the
+    # instrument, not the container config. (My own `docker top -eo args` check
+    # returned 0 for all three and was WRONG — docker top needs a PID field in the
+    # ps format or it errors out and prints nothing.)
+    cpus: 2
+    # ⛔ MEMORY BOUND WITH SWAP DISABLED, added 2026-10-17 at `cluster`'s ask.
+    # memswap_limit EQUAL to mem_limit means the container gets NO swap allowance.
+    # That is the point: server3's sda is forced write-through because the PERC
+    # H710P cache battery is Failed, and the host was at 23G of 31G swap used, so
+    # an unbounded swap allowance lands IO on a write-through disk.
+    # ⭐ MEASURED on server3 2026-10-17 before setting these — all three of our
+    # containers WERE swapping: warm 139 MiB, osdrive 268 MiB, sidecar-s3 1.23 GiB
+    # (~1.64 GiB of that 23G is ours; `cluster` had explicitly NOT attributed it).
+    # ⚠️ memory.peak is not exposed on this host, so there is NO high-water mark to
+    # size from. These are current RSS + already-swapped pages (which must fault
+    # back in once swap is denied), roughly doubled for Chrome spikes:
+    #   warm 666 MiB floor · osdrive 1894 MiB floor · sidecar-s3 6348 MiB floor.
+    # ⇒ The limits are deliberately generous. The defect being fixed is the SWAP
+    # allowance, not growth, and memswap==mem achieves that at any size — so a
+    # roomy limit buys protection without risking an OOM kill.
+    # ⛔ An OOM kill here is not cheap: sidecar-s3 was holding ~100 attached tabs
+    # belonging to other seats. Do not tighten these without a peak measurement.
+    # ⚠️ Setting swap.max=0 stops NEW swapping; it does NOT evict pages already in
+    # swap. Host swap does not drop when you apply this.
+    mem_limit: 4g
+    memswap_limit: 4g
     restart: unless-stopped
     init: true
     # Chrome refuses to run as root without --no-sandbox, and adding that flag
@@ -318,6 +348,27 @@ services:
     profiles: ["warm"]
     image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-15
     container_name: unibrowse-warm
+    # ⛔ MEMORY BOUND WITH SWAP DISABLED, added 2026-10-17 at `cluster`'s ask.
+    # memswap_limit EQUAL to mem_limit means the container gets NO swap allowance.
+    # That is the point: server3's sda is forced write-through because the PERC
+    # H710P cache battery is Failed, and the host was at 23G of 31G swap used, so
+    # an unbounded swap allowance lands IO on a write-through disk.
+    # ⭐ MEASURED on server3 2026-10-17 before setting these — all three of our
+    # containers WERE swapping: warm 139 MiB, osdrive 268 MiB, sidecar-s3 1.23 GiB
+    # (~1.64 GiB of that 23G is ours; `cluster` had explicitly NOT attributed it).
+    # ⚠️ memory.peak is not exposed on this host, so there is NO high-water mark to
+    # size from. These are current RSS + already-swapped pages (which must fault
+    # back in once swap is denied), roughly doubled for Chrome spikes:
+    #   warm 666 MiB floor · osdrive 1894 MiB floor · sidecar-s3 6348 MiB floor.
+    # ⇒ The limits are deliberately generous. The defect being fixed is the SWAP
+    # allowance, not growth, and memswap==mem achieves that at any size — so a
+    # roomy limit buys protection without risking an OOM kill.
+    # ⛔ An OOM kill here is not cheap: sidecar-s3 was holding ~100 attached tabs
+    # belonging to other seats. Do not tighten these without a peak measurement.
+    # ⚠️ Setting swap.max=0 stops NEW swapping; it does NOT evict pages already in
+    # swap. Host swap does not drop when you apply this.
+    mem_limit: 2g
+    memswap_limit: 2g
     restart: unless-stopped
     init: true
     user: "1000:1000"
@@ -467,6 +518,30 @@ services:
     profiles: ["sidecar-s3"]
     image: 192.168.1.207:5050/unibrowse/chromium-host:2026-10-15
     container_name: unibrowse-sidecar-s3
+    # ⛔ NO CPU CAP HERE, deliberately. I proposed one and `cluster` was right to
+    # refuse it: this container reads 11-13% = ~0.13 cores, so a cap addresses
+    # nothing measured. Memory and swap are what was unbounded.
+    # ⛔ MEMORY BOUND WITH SWAP DISABLED, added 2026-10-17 at `cluster`'s ask.
+    # memswap_limit EQUAL to mem_limit means the container gets NO swap allowance.
+    # That is the point: server3's sda is forced write-through because the PERC
+    # H710P cache battery is Failed, and the host was at 23G of 31G swap used, so
+    # an unbounded swap allowance lands IO on a write-through disk.
+    # ⭐ MEASURED on server3 2026-10-17 before setting these — all three of our
+    # containers WERE swapping: warm 139 MiB, osdrive 268 MiB, sidecar-s3 1.23 GiB
+    # (~1.64 GiB of that 23G is ours; `cluster` had explicitly NOT attributed it).
+    # ⚠️ memory.peak is not exposed on this host, so there is NO high-water mark to
+    # size from. These are current RSS + already-swapped pages (which must fault
+    # back in once swap is denied), roughly doubled for Chrome spikes:
+    #   warm 666 MiB floor · osdrive 1894 MiB floor · sidecar-s3 6348 MiB floor.
+    # ⇒ The limits are deliberately generous. The defect being fixed is the SWAP
+    # allowance, not growth, and memswap==mem achieves that at any size — so a
+    # roomy limit buys protection without risking an OOM kill.
+    # ⛔ An OOM kill here is not cheap: sidecar-s3 was holding ~100 attached tabs
+    # belonging to other seats. Do not tighten these without a peak measurement.
+    # ⚠️ Setting swap.max=0 stops NEW swapping; it does NOT evict pages already in
+    # swap. Host swap does not drop when you apply this.
+    mem_limit: 14g
+    memswap_limit: 14g
     restart: unless-stopped
     init: true
     shm_size: 512m
