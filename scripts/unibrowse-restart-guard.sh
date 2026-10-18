@@ -121,6 +121,55 @@ deploy_state() {
   fi
 }
 
+# ⛔ ADDED 2026-10-18 AFTER A RESTART KILLED A LINK AN OPERATOR WAS HOLDING.
+# Captcha sessions live in the server's MEMORY. The restart at 13:12 destroyed
+# session 100ca851, minted at 13:08 and sitting in Ben's phone; `apis` had to
+# tell me, and the page said only "no captcha session".
+# ⭐ What made it invisible: I checked `docker logs` for captcha activity. A
+# session that has been minted and not yet tapped writes NOTHING, so a link
+# waiting on a human is byte-identical to no link at all. That check fails
+# toward "safe to restart", which is the expensive direction.
+# ⚠️ Slipway sessions survive (777d945); captcha sessions do not. Both are shown
+# because both mean a person is mid-task, and only one is destroyed.
+relay_state() {
+  local rs count destroyed
+  rs="$(curl -s -m 10 "$SERVER/relay-sessions" 2>/dev/null)"
+  # ⛔ AN EMPTY OR 404 ANSWER IS NOT "NO SESSIONS". A server older than this
+  # endpoint cannot answer, and silence there must not read as a green light.
+  if [ -z "$rs" ] || ! printf '%s' "$rs" | grep -q '"liveCount"'; then
+    log ""
+    log "⚠️  RELAY SESSIONS: UNKNOWN — this server has no /relay-sessions endpoint."
+    log "    That is NOT zero. Ask the seat that minted any captcha or slipway link"
+    log "    before restarting; a captcha link dies with the process."
+    return 0
+  fi
+  count="$(printf '%s' "$rs" | python3 -c 'import json,sys; print(json.load(sys.stdin)["liveCount"])' 2>/dev/null || echo "?")"
+  destroyed="$(printf '%s' "$rs" | python3 -c 'import json,sys; print(json.load(sys.stdin)["destroyedByRestart"])' 2>/dev/null || echo "?")"
+  if [ "$count" = "0" ]; then
+    log ""
+    log "✅ RELAY SESSIONS: none live — no captcha or slipway link is in anyone's hands."
+    return 0
+  fi
+  echo ""
+  echo "⛔ HOLD: $count RELAY SESSION(S) LIVE, $destroyed OF WHICH THIS RESTART DESTROYS."
+  printf '%s' "$rs" | python3 -c "$(cat <<'PY'
+import json, sys
+d = json.load(sys.stdin)
+for s in d["sessions"]:
+    mins = round(s["secondsRemaining"] / 60)
+    print("   %-8s %s  requester=%-16s taps=%-3s typed=%-3s %smin left  %s"
+          % (s["kind"], s["id"], s.get("requester") or "?", s["taps"], s["typed"], mins,
+             s.get("label") or ""))
+print("")
+print("   ⛔ A captcha session is in THIS process's memory: restarting kills the page the")
+print("      operator is looking at, and all they see is \"no captcha session\".")
+print("   ⇒ DM the requester and wait for solved/expired, or get their explicit OK.")
+PY
+)"
+  RELAY_HOLD=1
+}
+RELAY_HOLD=0
+
 resp="$(curl -s -m 10 "$SERVER/extensions" 2>/dev/null)"
 if [ -z "$resp" ]; then
   echo "[guard] mcp-server unreachable at $SERVER — cannot tell what a restart would cost."
@@ -199,5 +248,12 @@ if [ $rc -eq 0 ] || [ $rc -eq 1 ]; then
   log "     docker exec unibrowse-mcp-server sh -c 'echo \$NEW_ENV_VAR'   # empty ⇒ NOT applied"
   log "   Measured 2026-10-11: code live + env empty read as a clean deploy and shipped nothing."
   deploy_state
+  relay_state
+fi
+# ⛔ A LIVE RELAY SESSION IS AT LEAST AS BLOCKING AS AN ATTACHED TAB, so it must
+# reach the exit code too: a caller that only checks $? would otherwise be told
+# "clear" while a link is out.
+if [ "${RELAY_HOLD:-0}" -eq 1 ] && [ $rc -eq 0 ]; then
+  rc=1
 fi
 exit $rc

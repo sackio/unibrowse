@@ -8,12 +8,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 import { appConfig } from "@/config/app.config";
-import { registerCaptchaRoutes, sweepCaptchaSessions, FIELD_RECTS_JS, focusedSetJs } from "@/captcha";
+import { registerCaptchaRoutes, sweepCaptchaSessions, listCaptchaSessions, FIELD_RECTS_JS, focusedSetJs } from "@/captcha";
 import {
   registerSlipwayRoutes,
   sweepSlipwaySessions,
   loadSlipwaySessions,
   type SlipwayTab,
+  listSlipwaySessions,
 } from "@/slipway";
 import { takeFetchDestination } from "@/utils/fetch-destinations";
 
@@ -456,6 +457,55 @@ async function main() {
   // reject. ⛔ It is NOT proof a sign-in will complete: the container sidecar
   // requests a magic link happily and then hangs forever consuming one. Necessary,
   // not sufficient — treat a true here as "worth attempting", never as success.
+  // ⛔ A LINK IN SOMEBODY'S HAND IS THE ONE THING A RESTART REALLY DESTROYS.
+  // Captcha and Slipway sessions live in THIS PROCESS's memory, so a restart
+  // kills a page an operator is looking at — and nothing said so before a
+  // restart was decided. Measured 2026-10-18 13:12: I grepped the container log
+  // for captcha activity, saw none, and restarted. A session minted four
+  // minutes earlier and not yet TAPPED logs nothing, so "waiting on the
+  // operator" and "idle" were byte-identical — Ben's link died mid-solve.
+  // ⇒ The only honest check is the session table itself, which is what this is.
+  // ⛔ NO TOKENS IN THIS RESPONSE. The token IS the capability (whoever holds it
+  // can drive that browser), and this endpoint is LAN-open and unauthenticated.
+  app.get("/relay-sessions", (_req, res) => {
+    const now = Date.now();
+    const captcha = listCaptchaSessions()
+      .filter((s) => s.state === "pending")
+      .map((s) => ({
+        kind: "captcha" as const,
+        id: s.id,
+        // ⚠️ A captcha session has `prompt` (what the operator was asked to do),
+        // not `label` — only Slipway has a label. Reported as `label` so the
+        // guard can print one column for both kinds.
+        label: s.prompt ?? null,
+        requester: s.requester ?? null,
+        extensionId: s.extensionId ?? null,
+        taps: s.taps,
+        typed: s.typed,
+        secondsRemaining: Math.max(0, Math.round((s.expiresAt - now) / 1000)),
+      }));
+    const slipway = listSlipwaySessions()
+      .filter((s) => s.state === "live")
+      .map((s) => ({
+        kind: "slipway" as const,
+        id: s.id,
+        label: s.label ?? null,
+        requester: s.requester ?? null,
+        extensionId: s.extensionId ?? null,
+        taps: s.taps,
+        typed: s.typed,
+        secondsRemaining: Math.max(0, Math.round((s.expiresAt - now) / 1000)),
+      }));
+    res.json({
+      // ⚠️ Slipway sessions PERSIST across a restart (777d945) and captcha
+      // sessions do NOT. Both are listed because both mean a human is holding a
+      // page right now; only the captcha ones are destroyed by the restart.
+      liveCount: captcha.length + slipway.length,
+      destroyedByRestart: captcha.length,
+      sessions: [...captcha, ...slipway],
+    });
+  });
+
   app.get("/extensions", (_req, res) => {
     const identities = globalContext.describeExtensions();
     const usable = identities.filter(
