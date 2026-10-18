@@ -733,6 +733,13 @@ async function main() {
     // ⭐ SET THE WHOLE FIELD, which is what makes delete and paste work on the
     // phone. The verdict string comes straight back to the page so a lost focus
     // is reported to the operator instead of swallowing their text.
+    scroll: async (s, y) => {
+      await globalContext.sendSocketMessage("browser_scroll", {
+        x: 0, y, tabTarget: s.tabTarget,
+        ...(s.extensionId ? { extensionId: s.extensionId } : {}),
+      } as any);
+    },
+
     setValue: async (s, text) => {
       const r: any = await globalContext.sendSocketMessage("browser_evaluate", {
         expression: focusedSetJs(text),

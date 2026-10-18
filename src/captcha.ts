@@ -334,12 +334,16 @@ const PAGE = String.raw`<!doctype html>
     <div id="wrap"><img id="shot" alt="page"><div id="dot"></div></div>
     <div class="row"><input id="txt" placeholder="Tap a box in the picture, then type here" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text" enterkeyhint="go"></div>
     <div class="bar">
+      <button id="up">▲ Scroll up</button>
+      <button id="down">▼ Scroll down</button>
+    </div>
+    <div class="bar">
       <button id="clear">Clear</button>
       <button id="send">Send text</button>
       <button id="done" class="go">Done</button>
     </div>
     <div id="status">Tap the image where you would tap the page. Tap a text box and your keyboard opens — then what you type, delete or paste here goes straight into that field.</div>
-    <div class="hint">Taps become real clicks in the browser. The picture refreshes every couple of seconds.</div>
+    <div class="hint">Taps become real clicks in the browser. The picture refreshes every couple of seconds. The picture is only what fits on screen — scroll if the button you need is further down the page.</div>
   </div>
 </div>
 <script>
@@ -618,6 +622,31 @@ document.getElementById('send').onclick = function () {
                         document.getElementById('status').textContent = 'Text sent.'; setTimeout(shot, 600); });
 };
 
+// ⭐ SCROLL, because the picture is only the viewport. A submit button below
+// the fold is not in the image at all, and before this there was nothing the
+// operator could do about it.
+// ⛔ RELOAD THE RECTS AFTER SCROLLING — they are viewport-relative, so every
+// one of them is wrong the moment the page moves, and a stale rect means a tap
+// on empty space opens the keyboard (or a tap on a field does not).
+function scrollBy(y) {
+  var st = document.getElementById('status');
+  st.textContent = 'Scrolling…';
+  kbChain = kbChain.then(function () {
+    return fetch('text', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                           body: JSON.stringify({ scroll: y }) })
+      .then(function (r) { return r.json(); })
+      .catch(function () { return null; });
+  });
+  kbChain.then(function (j) {
+    st.textContent = (j && j.ok) ? 'Scrolled. Tap where you want to press.'
+                                 : ('Could not scroll: ' + ((j && j.error) || 'no answer'));
+    liveKb = false;
+    setTimeout(function () { shot(); loadFields(); }, 250);
+  });
+}
+document.getElementById('up').onclick = function () { scrollBy(-400); };
+document.getElementById('down').onclick = function () { scrollBy(400); };
+
 // ⭐ CLEAR EMPTIES THE FIELD IN THE TAB, not just this box. Ben, #apis
 // 2026-10-18: "there's no ability for me to delete".
 document.getElementById('clear').onclick = function () {
@@ -732,6 +761,19 @@ export function registerCaptchaRoutes(
      * the Send box, which is the pre-2026-10-18 behaviour.
      */
     setValue?: (s: CaptchaSession, text: string) => Promise<string>;
+    /**
+     * Scroll the tab by a pixel delta.
+     *
+     * ⛔ WITHOUT THIS THE RELAY CANNOT REACH ANYTHING BELOW THE FOLD, and the
+     * failure is silent: the screenshot is the viewport, so a submit button
+     * further down the form is not in the picture and there is nothing to tap.
+     * Suspected on the BLS registration form 2026-10-18 — two sessions ended
+     * `solved` with the code typed into the field and the form NEVER SUBMITTED
+     * (`apis`, taps=4 typed=15). ⚠️ Suspected, not proven: the tab was reserved
+     * to another seat and I did not take it over to measure the geometry.
+     * ⚠️ Scrolling invalidates every field rect, so the page reloads them after.
+     */
+    scroll?: (s: CaptchaSession, y: number) => Promise<void>;
     /**
      * Called once when the human presses Done, so the blocked requester is
      * TOLD rather than having to poll for it (Ben, Slack #unibrowse
@@ -896,6 +938,24 @@ export function registerCaptchaRoutes(
     // ⭐ A KEY RIDES THE `text` PATH, for the same reason holdMs rides `tap`:
     // the nginx write surface is exactly {tap, text, done} and a fourth verb is
     // that seat's change, not a local edit.
+    // ⭐ SCROLL RIDES THE SAME PATH, for the same reason holdMs rides `tap`:
+    // the nginx write surface is exactly {tap, text, done}.
+    const rawScroll = req.body?.scroll;
+    if (rawScroll !== undefined && rawScroll !== null) {
+      const y = Number(rawScroll);
+      if (!Number.isFinite(y) || Math.abs(y) > 5000) {
+        return res.status(400).json({ ok: false, error: "scroll must be -5000..5000" });
+      }
+      if (!deps.scroll) {
+        return res.status(501).json({ ok: false, error: "this server cannot scroll the page" });
+      }
+      try {
+        await deps.scroll(s, Math.round(y));
+        return res.json({ ok: true, scrolled: Math.round(y) });
+      } catch (err: any) {
+        return res.status(502).json({ ok: false, error: err.message });
+      }
+    }
     // ⭐ A WHOLE-VALUE WRITE RIDES THE SAME PATH, for the same reason a key
     // does: the nginx write surface is exactly {tap, text, done}.
     const rawValue = req.body?.value;
