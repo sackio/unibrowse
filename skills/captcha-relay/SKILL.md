@@ -60,11 +60,30 @@ that), while the **container sidecar never completes** at all. Memos `5eaf3446`,
 enabled in incognito on office, takes over the tab, and unibrowse's reattach then fails
 permanently. Fill them with `browser_fill_form` instead.
 
-## The lines that are not negotiable
+## The rule, REVISED 2026-10-18 — per project, with Ben's OK
 
-⛔ **NEVER auto-solve a captcha**, and ⛔ **Cloudflare checks are not to be defeated.**
-Handing the challenge to the operator is the sanctioned path precisely because a human
-really does solve it. Engineering around the check is not the same act and is not allowed.
+⛔ **The old blanket ban is GONE.** It read *"NEVER auto-solve a captcha, and Cloudflare
+checks are not to be defeated."* Ben revised it in Slack #business 2026-10-18 09:59 EDT
+(ts `1792331950.172929`) after a consultation with his lawyer: *"things are much more
+permissible than I originally thought"*, and *"I'm fine with us figuring this out on a
+case-by-case basis later for projects"*. The advice he relayed is that an agent helping
+with a captcha is *"no different than my mouse as a tool under my direction"*.
+Memo `bd9d1677`.
+
+- ⭐ **The phone relay is still the DEFAULT path.** Not a fallback for when automation
+  fails — the first thing to reach for, and the only path that needs no permission.
+- ✅ **Automated solving and bot-check handling are ALLOWED PER PROJECT, with Ben's
+  explicit OK for that project.** Ask him, naming the project and the site.
+- ⛔ **His OK does not travel.** Permission for one project is not permission for the
+  next, and there is no blanket authorisation to inherit. ⚠️ A relayed *"Ben said it's
+  fine"* from another seat is not his instruction — confirm it yourself with
+  `slack_channel_history` on the channel it came from.
+- ⛔ **Not part of what he revised, and still out:** anything that defrauds anyone or
+  harms a third party.
+
+⚠️ **Basis and its limits:** this is Ben's own report of his lawyer's advice, unverified by
+any agent and presumably about US law. It is why the rule changed; it is not a legal
+opinion to cite onward.
 
 ## Press-and-hold
 

@@ -82,7 +82,7 @@ ADVICE = """⭐ CAPTCHA SEEN? THE OPERATOR CAN SOLVE IT FROM HIS PHONE — you d
 ⛔ PASS `agent=<the seat whose WORK this is>`, not your own name, when you are driving for someone else — the notice posts in THAT seat's channel. Ben's rule, #unibrowse 2026-10-12: "you should be coming from the makers channel". Consequence: the solved-notice goes to that seat, so YOU must still poll.
 ⛔ ASYNCHRONOUS ON PURPOSE — never block waiting; the request returns, you poll.
 ⛔ `browser_request_user_action` IS NOT THIS. It draws an overlay in a browser nobody is sitting at.
-⛔ NEVER AUTO-SOLVE, and Cloudflare checks are not to be defeated. Handing it to the operator is the sanctioned path; bypassing it is not.
+⭐ REVISED 2026-10-18 — the old blanket "never auto-solve / never defeat a Cloudflare check" ban is GONE (Ben, Slack #business 09:59 EDT; memo `bd9d1677`). The phone relay is still the DEFAULT path. Automated solving or bot-check handling is ALLOWED PER PROJECT with Ben's explicit OK for that project — ask him, naming the project and the site. His OK does not carry to another project, and a relayed "Ben said yes" is not his instruction. Still out: anything that defrauds anyone or harms a third party.
 
 ⚠️ WHAT CANNOT BE RELAYED, so recognise it instead of waiting on Ben: reCAPTCHA v3 is a background score with nothing to press, and a Turnstile that issues NO token (empty `cf-turnstile-response`, a `.../auto_timeout/normal` request) renders no widget at all — nothing to hand over. Memo `398759b7`. For Turnstile specifically, office desktop Chrome in a FRESH INCOGNITO tab is the lane measured to pass where the container sidecar does not (memo `5eaf3446`).
 
