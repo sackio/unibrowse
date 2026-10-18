@@ -180,6 +180,46 @@ export function listCaptchaSessions(): CaptchaSession[] {
   return [...sessions.values()].sort((a, b) => b.createdAt - a.createdAt);
 }
 
+/**
+ * Runs IN THE TAB and returns normalised rects of everything a keyboard can type
+ * into. ⛔ Plain ES5 and a flat array: this string crosses the socket to the
+ * extension's MAIN-world relay, and anything fancier has mangled before.
+ *
+ * Excludes the controls a keyboard is useless on (checkbox/radio/button/submit),
+ * anything hidden, disabled or readonly, anything smaller than a few px, and
+ * anything scrolled out of view — a rect the operator cannot see is a rect that
+ * would open the keyboard on a tap that hit something else.
+ */
+export const FIELD_RECTS_JS = String.raw`(function(){
+  if (!document.body) return [];
+  var sel = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio])'
+    + ':not([type=button]):not([type=submit]):not([type=reset]):not([type=file])'
+    + ',textarea,[contenteditable=""],[contenteditable="true"]';
+  var W = window.innerWidth || 1, H = window.innerHeight || 1;
+  var n = document.querySelectorAll(sel), out = [];
+  for (var i = 0; i < n.length && out.length < 40; i++) {
+    var e = n[i];
+    if (e.disabled || e.readOnly) continue;
+    var r = e.getBoundingClientRect();
+    if (r.width < 6 || r.height < 6) continue;
+    if (r.bottom < 0 || r.top > H || r.right < 0 || r.left > W) continue;
+    var st = window.getComputedStyle(e);
+    if (st.visibility === 'hidden' || st.display === 'none' || Number(st.opacity) === 0) continue;
+    out.push({ fx: r.left / W, fy: r.top / H, fw: r.width / W, fh: r.height / H });
+  }
+  return out;
+})()`;
+
+/**
+ * The editing keys the page may send. ⛔ An allowlist, not free text: this is a
+ * public-token endpoint, and "type whatever you name" is a different and much
+ * larger capability than "correct what you just typed".
+ */
+const KB_KEYS: Record<string, true> = {
+  Backspace: true, Delete: true, Enter: true, Tab: true,
+  ArrowLeft: true, ArrowRight: true, Home: true, End: true,
+};
+
 function publicView(s: CaptchaSession) {
   return {
     id: s.id,
@@ -253,12 +293,12 @@ const PAGE = String.raw`<!doctype html>
   </header>
   <div id="live">
     <div id="wrap"><img id="shot" alt="page"><div id="dot"></div></div>
-    <div class="row"><input id="txt" placeholder="Type an answer, if it needs one" autocomplete="off"></div>
+    <div class="row"><input id="txt" placeholder="Tap a box in the picture to type into it" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
     <div class="bar">
       <button id="send">Send text</button>
       <button id="done" class="go">Done</button>
     </div>
-    <div id="status">Tap the image where you would tap the page.</div>
+    <div id="status">Tap the image where you would tap the page. Tap a text box and your keyboard opens.</div>
     <div class="hint">Taps become real clicks in the browser. The picture refreshes every couple of seconds.</div>
   </div>
 </div>
@@ -326,6 +366,41 @@ function poll() {
 // else must not relocate the click.
 var holdStart = null, holdFx = 0, holdFy = 0, holdTimer = null;
 
+// ⭐ WHY THE PAGE KNOWS WHERE THE TEXT BOXES ARE. A phone raises its native
+// keyboard only when .focus() happens INSIDE the touch gesture. Focusing after
+// the tap's fetch resolves is already too late — the keyboard simply never
+// appears, which is the "clanky thing" Ben reported (#apis 2026-10-18 12:32).
+// So the rects come down with /state and the decision is made synchronously in
+// pointerdown, before anything is sent.
+var fields = [], liveKb = false, sentLen = 0, kbChain = Promise.resolve();
+
+function loadFields() {
+  return fetch('state?fields=1').then(function (r) { return r.json(); })
+    .then(function (s) { fields = (s && s.fields) || []; })
+    .catch(function () { /* ⛔ fail to NO fields: the Send box still works */ });
+}
+
+function hitField(fx, fy) {
+  for (var i = 0; i < fields.length; i++) {
+    var f = fields[i];
+    if (fx >= f.fx && fx <= f.fx + f.fw && fy >= f.fy && fy <= f.fy + f.fh) return true;
+  }
+  return false;
+}
+
+// ⛔ SERIALISED. Each keystroke is its own request and they must land in the
+// order they were typed; two parallel fetches would race and spell the captcha
+// wrong, which on an image captcha is indistinguishable from misreading it.
+function sendKb(body) {
+  kbChain = kbChain.then(function () {
+    return fetch('text', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                           body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); })
+      .catch(function () { return null; });
+  });
+  return kbChain;
+}
+
 function holdLabel() {
   if (holdStart === null) return;
   var secs = ((Date.now() - holdStart) / 1000).toFixed(1);
@@ -340,6 +415,15 @@ document.addEventListener('pointerdown', function (e) {
   holdFx = (e.clientX - r.left) / r.width;
   holdFy = (e.clientY - r.top) / r.height;
   holdStart = Date.now();
+  // ⛔ THIS .focus() MUST STAY IN THE POINTERDOWN HANDLER. It is the whole
+  // mechanism: inside the gesture the phone opens its keyboard, one tick later
+  // it does not. Do not move it into the tap response.
+  liveKb = hitField(holdFx, holdFy);
+  if (liveKb) {
+    var box = document.getElementById('txt');
+    box.value = ''; sentLen = 0;
+    box.focus();
+  }
   var dot = document.getElementById('dot');
   dot.style.left = (e.clientX - r.left + 10) + 'px';
   dot.style.top = (e.clientY - r.top + 10) + 'px';
@@ -412,6 +496,9 @@ function endHold(e) {
       document.getElementById('dot').style.opacity = 0;
       document.getElementById('done').disabled = false;
       busy = false; setTimeout(shot, 600);
+      // The tap may have opened a form, dismissed an overlay or moved things,
+      // so the rects from before it are stale.
+      loadFields();
     });
 }
 
@@ -435,12 +522,46 @@ document.addEventListener('pointerup', endHold);
 document.addEventListener('pointercancel', endHold);
 window.addEventListener('blur', endHold);
 
+// ⭐ TYPE STRAIGHT THROUGH. In live mode each character goes to the page as it
+// is typed, so there is no second step and nothing to press. A deletion becomes
+// the same number of Backspaces, because the box on this page and the field in
+// the tab are two different strings and only the edits travel.
+document.getElementById('txt').addEventListener('input', function () {
+  if (!liveKb) return;
+  var v = this.value, last = null;
+  if (v.length > sentLen) {
+    var add = v.slice(sentLen);
+    sentLen = v.length;
+    last = sendKb({ text: add });
+  } else if (v.length < sentLen) {
+    var back = sentLen - v.length;
+    sentLen = v.length;
+    for (var i = 0; i < back; i++) last = sendKb({ key: 'Backspace' });
+  }
+  if (last) last.then(function () { setTimeout(shot, 350); });
+});
+
+// Enter submits the form in the TAB, which is what a captcha box usually wants.
+document.getElementById('txt').addEventListener('keydown', function (e) {
+  if (!liveKb || e.key !== 'Enter') return;
+  e.preventDefault();
+  sendKb({ key: 'Enter' }).then(function () { setTimeout(shot, 500); });
+});
+
 document.getElementById('send').onclick = function () {
-  var v = document.getElementById('txt').value;
+  var el = document.getElementById('txt');
+  var v = el.value;
   if (!v) return;
+  // ⛔ IN LIVE MODE EVERY CHARACTER HAS ALREADY GONE. Sending again would type
+  // it twice, and a doubled captcha answer looks like the relay garbling it.
+  if (liveKb) {
+    el.value = ''; sentLen = 0;
+    document.getElementById('status').textContent = 'Already typed into the page as you went.';
+    return;
+  }
   fetch('text', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ text: v }) })
-    .then(function () { document.getElementById('txt').value = '';
+    .then(function () { el.value = '';
                         document.getElementById('status').textContent = 'Text sent.'; setTimeout(shot, 600); });
 };
 
@@ -459,7 +580,7 @@ document.getElementById('done').onclick = function () {
   fetch('done', { method: 'POST' }).then(poll);
 };
 
-shot(); poll();
+shot(); poll(); loadFields();
 setInterval(function () { if (!busy) shot(); }, 2200);
 setInterval(poll, 2000);
 </script>
@@ -512,6 +633,30 @@ export function registerCaptchaRoutes(
     focusTab?: (s: CaptchaSession) => Promise<{ wasFocused: boolean } | void>;
     type: (s: CaptchaSession, text: string) => Promise<void>;
     /**
+     * Normalised rects of the tab's own editable fields, so the PAGE can tell —
+     * before it sends anything — whether a tap is landing on a text box.
+     *
+     * ⭐ THIS EXISTS BECAUSE OF A MOBILE RULE, NOT FOR TIDINESS. A phone opens
+     * its native keyboard only when .focus() runs INSIDE a user gesture. A tap
+     * handler that waited for the tap response before focusing would be past
+     * the gesture, and the keyboard would never appear — so the page has to
+     * already know. Asked for by Ben, Slack #apis 2026-10-18 12:32: "when I
+     * click something that is now a tax input or whatever my phone's keyboard
+     * should come up it shouldn't be this clanky thing where I have to type in
+     * an answer".
+     * ⚠️ Optional, and an empty list is the safe answer: no rects means no
+     * keyboard and the operator still has the Send text box. It must never
+     * refuse a tap.
+     */
+    fields?: (s: CaptchaSession) => Promise<Array<{ fx: number; fy: number; fw: number; fh: number }>>;
+    /**
+     * One editing key, for the keys a text box needs that typing cannot express
+     * — Backspace above all. ⚠️ Optional: without it the page still types,
+     * it just cannot correct, and the route says so rather than silently
+     * dropping the keystroke.
+     */
+    pressKey?: (s: CaptchaSession, key: string) => Promise<void>;
+    /**
      * Called once when the human presses Done, so the blocked requester is
      * TOLD rather than having to poll for it (Ben, Slack #unibrowse
      * 2026-10-12).
@@ -555,10 +700,28 @@ export function registerCaptchaRoutes(
   // Same page without the trailing slash, so a pasted link works either way.
   app.get("/captcha/:token", (req: any, res: any) => res.redirect(`/captcha/${req.params.token}/`));
 
-  app.get("/captcha/:token/state", (req: any, res: any) => {
+  // ⭐ `?fields=1` RIDES /state RATHER THAN ADDING A PATH. nginx proxies this
+  // mount's GETs, and /state and /shot are the two that are PROVEN to reach us
+  // through it; a brand-new path name is exactly the thing that would work on
+  // the LAN and 404 on the phone. Same reasoning that put holdMs on `tap`.
+  // ⚠️ OPT-IN PER REQUEST because it costs a round trip into the tab: the 2s
+  // status poll asks without it, and only a page load or a tap asks with it.
+  app.get("/captcha/:token/state", async (req: any, res: any) => {
     const s = resolveSession(String(req.params.token || ""));
     if (!s) return res.status(404).json({ error: "no such captcha session" });
-    res.json(publicView(s));
+    const view: any = publicView(s);
+    if (req.query?.fields !== undefined && s.state === "pending" && deps.fields) {
+      // ⛔ A FAILED PROBE MUST NOT FAIL THE POLL. The page needs `state` to
+      // show the countdown and to notice `solved`; losing that because a
+      // field scan threw would break the whole screen over a nicety.
+      try {
+        view.fields = await deps.fields(s);
+      } catch (err: any) {
+        view.fields = [];
+        view.fieldsError = String(err?.message ?? err);
+      }
+    }
+    res.json(view);
   });
 
   app.get("/captcha/:token/shot", async (req: any, res: any) => {
@@ -654,6 +817,26 @@ export function registerCaptchaRoutes(
   app.post("/captcha/:token/text", async (req: any, res: any) => {
     const s = live(req, res);
     if (!s) return;
+    // ⭐ A KEY RIDES THE `text` PATH, for the same reason holdMs rides `tap`:
+    // the nginx write surface is exactly {tap, text, done} and a fourth verb is
+    // that seat's change, not a local edit.
+    const rawKey = req.body?.key;
+    if (rawKey !== undefined && rawKey !== null && rawKey !== "") {
+      const key = String(rawKey);
+      if (!deps.pressKey) {
+        return res.status(501).json({ ok: false, error: "this server cannot send key events" });
+      }
+      if (!KB_KEYS[key]) {
+        return res.status(400).json({ ok: false, error: `key must be one of: ${Object.keys(KB_KEYS).join(", ")}` });
+      }
+      try {
+        await deps.pressKey(s, key);
+        s.typed++;
+        return res.json({ ok: true, key, typed: s.typed });
+      } catch (err: any) {
+        return res.status(502).json({ ok: false, error: err.message });
+      }
+    }
     const text = String(req.body?.text ?? "");
     if (!text) return res.status(400).json({ ok: false, error: "empty text" });
     if (text.length > 500) return res.status(400).json({ ok: false, error: "text too long" });

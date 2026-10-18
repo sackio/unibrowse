@@ -8,7 +8,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 import { appConfig } from "@/config/app.config";
-import { registerCaptchaRoutes, sweepCaptchaSessions } from "@/captcha";
+import { registerCaptchaRoutes, sweepCaptchaSessions, FIELD_RECTS_JS } from "@/captcha";
 import {
   registerSlipwayRoutes,
   sweepSlipwaySessions,
@@ -660,6 +660,29 @@ async function main() {
     type: async (s, text) => {
       await globalContext.sendSocketMessage("browser_realistic_type", {
         text, tabTarget: s.tabTarget,
+        ...(s.extensionId ? { extensionId: s.extensionId } : {}),
+      } as any);
+    },
+
+    // ⭐ READ THE TAB'S TEXT BOXES so the phone page can open the keyboard on a
+    // tap that lands in one. See FIELD_RECTS_JS and the `fields` dep for why
+    // this has to be known BEFORE the tap rather than after it.
+    // ⛔ FAILS TO AN EMPTY LIST, NEVER THROWS UPWARDS. No rects just means no
+    // keyboard shortcut and the operator uses the Send text box as before; a
+    // throw here would break the status poll that carries the countdown.
+    fields: async (s) => {
+      const r: any = await globalContext.sendSocketMessage("browser_evaluate", {
+        expression: FIELD_RECTS_JS,
+        tabTarget: s.tabTarget,
+        ...(s.extensionId ? { extensionId: s.extensionId } : {}),
+      } as any);
+      const v = r?.result ?? r?.value ?? r;
+      return Array.isArray(v) ? v : [];
+    },
+
+    pressKey: async (s, key) => {
+      await globalContext.sendSocketMessage("browser_press_key", {
+        key, tabTarget: s.tabTarget,
         ...(s.extensionId ? { extensionId: s.extensionId } : {}),
       } as any);
     },
