@@ -90,8 +90,25 @@ log() { [ "$QUIET" -eq 1 ] || echo "$@"; }
 # ⚠️ PENDING here is a FLOOR, not a diagnosis. A rebuild can be comment-only
 # (measured 2026-10-10 on d88d0cb), which makes this read PENDING when nothing
 # functional is owed. Check `git log --stat` before concluding you must restart.
+# ⛔ CORRECTED 2026-10-18, MEASURED: THIS READ A STOPPED CONTAINER AS "THE
+# RUNNING PROCESS". On office `docker inspect unibrowse-mcp-server` returns the
+# LOCAL container, which is stopped (Running=false, StartedAt 2026-10-15) while
+# the server that answers $SERVER runs on server4. So every run from office
+# reported "PENDING: dist is 251446s newer than the running process" — which
+# trains the reader to ignore the one line that settles whether a deploy is
+# owed. ⭐ A container's StartedAt is a fact about a container, not about the
+# process serving your requests; check Running before believing it is the same.
 deploy_state() {
-  local started dist_mtime src_commit
+  local started dist_mtime src_commit running
+  running="$(docker inspect -f '{{.State.Running}}' unibrowse-mcp-server 2>/dev/null)" || true
+  if [ "$running" = "false" ]; then
+    log ""
+    log "⚠️  DEPLOY STATE: UNKNOWN FROM THIS HOST — the local unibrowse-mcp-server container"
+    log "    is STOPPED, so its timestamps are NOT the process answering $SERVER."
+    log "    ⇒ Read it where the server actually runs, e.g.:"
+    log "      ssh -p 4999 ben@server4 docker inspect -f '{{.State.StartedAt}}' unibrowse-mcp-server"
+    return 0
+  fi
   started="$(docker inspect -f '{{.State.StartedAt}}' unibrowse-mcp-server 2>/dev/null)" || return 0
   [ -z "$started" ] && return 0
   started="$(date -d "$started" +%s 2>/dev/null)" || return 0
@@ -161,9 +178,19 @@ for s in d["sessions"]:
           % (s["kind"], s["id"], s.get("requester") or "?", s["taps"], s["typed"], mins,
              s.get("label") or ""))
 print("")
-print("   ⛔ A captcha session is in THIS process's memory: restarting kills the page the")
-print("      operator is looking at, and all they see is \"no captcha session\".")
-print("   ⇒ DM the requester and wait for solved/expired, or get their explicit OK.")
+# ⛔ DO NOT WARN ABOUT CAPTCHA WHEN EVERY LIVE SESSION IS SLIPWAY. Slipway
+# sessions persist across a restart (777d945) and captcha sessions do not;
+# telling the reader to wait when nothing would be lost is how a correct
+# warning gets ignored the next time it is real.
+if d["destroyedByRestart"]:
+    print("   \u26d4 A captcha session lives in THIS process's memory: restarting kills the page")
+    print("      the operator is looking at, and all they see is \"no captcha session\".")
+    print("   \u21d2 DM the requester and wait for solved/expired, or get their explicit OK.")
+else:
+    print("   \u2705 All of these are SLIPWAY sessions, which PERSIST across a restart (777d945).")
+    print("      Nothing here is destroyed. The link holder sees one failed refresh, no more.")
+    print("   \u26a0 Still worth a word if someone is mid-task: tabTarget routing degrades until")
+    print("      each extension re-announces.")
 PY
 )"
   RELAY_HOLD=1
