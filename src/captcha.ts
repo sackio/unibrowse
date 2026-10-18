@@ -215,6 +215,45 @@ export const FIELD_RECTS_JS = String.raw`(function(){
  * public-token endpoint, and "type whatever you name" is a different and much
  * larger capability than "correct what you just typed".
  */
+/**
+ * ⛔ FULL REPLACE, NOT A DIFF. The phone box and the field in the tab are two
+ * strings, and the first attempt at this streamed only the EDITS — appended
+ * characters as text, deletions as Backspace. Measured failure, Ben on his
+ * phone 2026-10-18 13:03 (#apis): the field read "vvsNSTRMXansnstRmx" — every
+ * attempt appended to the last, and Backspace deleted nothing. Setting the
+ * whole value makes delete, paste and a mid-string edit all work by
+ * construction, because the page is the only source of truth.
+ * ⚠️ Goes through the native value setter, so a React/Vue controlled input sees
+ * the change; a bare `.value =` is swallowed by the framework's own setter.
+ */
+export function focusedSetJs(text: string): string {
+  return `(function(){
+    var v = ${JSON.stringify(text)};
+    var e = document.activeElement;
+    if (!e || e === document.body) return 'NO_FOCUS';
+    var tag = (e.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea') {
+      if (e.disabled || e.readOnly) return 'NOT_EDITABLE:readonly';
+      try {
+        var proto = tag === 'input' ? window.HTMLInputElement.prototype
+                                    : window.HTMLTextAreaElement.prototype;
+        var d = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (d && d.set) d.set.call(e, v); else e.value = v;
+      } catch (err) { e.value = v; }
+      try { e.setSelectionRange(v.length, v.length); } catch (err) {}
+      e.dispatchEvent(new Event('input', { bubbles: true }));
+      e.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'OK';
+    }
+    if (e.isContentEditable) {
+      e.textContent = v;
+      e.dispatchEvent(new Event('input', { bubbles: true }));
+      return 'OK';
+    }
+    return 'NOT_EDITABLE:' + tag;
+  })()`;
+}
+
 const KB_KEYS: Record<string, true> = {
   Backspace: true, Delete: true, Enter: true, Tab: true,
   ArrowLeft: true, ArrowRight: true, Home: true, End: true,
@@ -273,7 +312,7 @@ const PAGE = String.raw`<!doctype html>
          border:2px solid #4ade80; border-radius:50%; pointer-events:none;
          opacity:0; transition:opacity .45s; }
   .bar { display:flex; gap:8px; padding:0 10px 12px; }
-  button { flex:1; padding:13px; font-size:15px; font-weight:600; border:0;
+  button { flex:1; padding:13px; font-size:14px; font-weight:600; border:0;
            border-radius:8px; background:#2b2f37; color:#e8eaed; }
   button.go { background:#2563eb; color:#fff; }
   button:disabled { opacity:.45; }
@@ -293,12 +332,13 @@ const PAGE = String.raw`<!doctype html>
   </header>
   <div id="live">
     <div id="wrap"><img id="shot" alt="page"><div id="dot"></div></div>
-    <div class="row"><input id="txt" placeholder="Tap a box in the picture to type into it" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
+    <div class="row"><input id="txt" placeholder="Tap a box in the picture, then type here" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text" enterkeyhint="go"></div>
     <div class="bar">
+      <button id="clear">Clear</button>
       <button id="send">Send text</button>
       <button id="done" class="go">Done</button>
     </div>
-    <div id="status">Tap the image where you would tap the page. Tap a text box and your keyboard opens.</div>
+    <div id="status">Tap the image where you would tap the page. Tap a text box and your keyboard opens — then what you type, delete or paste here goes straight into that field.</div>
     <div class="hint">Taps become real clicks in the browser. The picture refreshes every couple of seconds.</div>
   </div>
 </div>
@@ -372,7 +412,7 @@ var holdStart = null, holdFx = 0, holdFy = 0, holdTimer = null;
 // appears, which is the "clanky thing" Ben reported (#apis 2026-10-18 12:32).
 // So the rects come down with /state and the decision is made synchronously in
 // pointerdown, before anything is sent.
-var fields = [], liveKb = false, sentLen = 0, kbChain = Promise.resolve();
+var fields = [], liveKb = false, kbChain = Promise.resolve(), kbTimer = null;
 
 function loadFields() {
   return fetch('state?fields=1').then(function (r) { return r.json(); })
@@ -421,7 +461,7 @@ document.addEventListener('pointerdown', function (e) {
   liveKb = hitField(holdFx, holdFy);
   if (liveKb) {
     var box = document.getElementById('txt');
-    box.value = ''; sentLen = 0;
+    box.value = '';
     box.focus();
   }
   var dot = document.getElementById('dot');
@@ -522,29 +562,37 @@ document.addEventListener('pointerup', endHold);
 document.addEventListener('pointercancel', endHold);
 window.addEventListener('blur', endHold);
 
-// ⭐ TYPE STRAIGHT THROUGH. In live mode each character goes to the page as it
-// is typed, so there is no second step and nothing to press. A deletion becomes
-// the same number of Backspaces, because the box on this page and the field in
-// the tab are two different strings and only the edits travel.
+// ⭐ THE BOX IS THE SOURCE OF TRUTH. Every change sends the WHOLE value and the
+// field in the tab is set to it, so delete, paste and editing the middle all
+// work. ⛔ DO NOT GO BACK TO STREAMING EDITS: that was the first version and it
+// appended every attempt onto the last while Backspace deleted nothing
+// (measured, Ben's phone 2026-10-18 13:03 — the field read
+// "vvsNSTRMXansnstRmx").
+// Debounced, because an IME fires input per keystroke and the field only has to
+// agree with the box once the typing pauses.
 document.getElementById('txt').addEventListener('input', function () {
   if (!liveKb) return;
-  var v = this.value, last = null;
-  if (v.length > sentLen) {
-    var add = v.slice(sentLen);
-    sentLen = v.length;
-    last = sendKb({ text: add });
-  } else if (v.length < sentLen) {
-    var back = sentLen - v.length;
-    sentLen = v.length;
-    for (var i = 0; i < back; i++) last = sendKb({ key: 'Backspace' });
-  }
-  if (last) last.then(function () { setTimeout(shot, 350); });
+  var v = this.value;
+  if (kbTimer) clearTimeout(kbTimer);
+  kbTimer = setTimeout(function () {
+    kbTimer = null;
+    sendKb({ value: v }).then(function (r) {
+      if (r && r.verdict && r.verdict !== 'OK') {
+        document.getElementById('status').textContent =
+          'The page lost the text box — tap it in the picture again, then type.';
+      }
+      setTimeout(shot, 300);
+    });
+  }, 140);
 });
 
 // Enter submits the form in the TAB, which is what a captcha box usually wants.
 document.getElementById('txt').addEventListener('keydown', function (e) {
   if (!liveKb || e.key !== 'Enter') return;
   e.preventDefault();
+  // Flush first: a debounced value still waiting would land AFTER the Enter and
+  // submit the previous string. sendKb is serialised, so order is kept.
+  if (kbTimer) { clearTimeout(kbTimer); kbTimer = null; sendKb({ value: this.value }); }
   sendKb({ key: 'Enter' }).then(function () { setTimeout(shot, 500); });
 });
 
@@ -552,17 +600,37 @@ document.getElementById('send').onclick = function () {
   var el = document.getElementById('txt');
   var v = el.value;
   if (!v) return;
-  // ⛔ IN LIVE MODE EVERY CHARACTER HAS ALREADY GONE. Sending again would type
-  // it twice, and a doubled captcha answer looks like the relay garbling it.
+  // In live mode this is a flush, not a second send: the write REPLACES the
+  // field, so pressing it after a pause cannot double the answer.
   if (liveKb) {
-    el.value = ''; sentLen = 0;
-    document.getElementById('status').textContent = 'Already typed into the page as you went.';
+    if (kbTimer) { clearTimeout(kbTimer); kbTimer = null; }
+    sendKb({ value: v }).then(function (r) {
+      document.getElementById('status').textContent =
+        (r && r.verdict === 'OK') ? 'Field set to what you typed.'
+                                  : 'Tap the text box in the picture, then press Send text again.';
+      setTimeout(shot, 400);
+    });
     return;
   }
   fetch('text', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ text: v }) })
     .then(function () { el.value = '';
                         document.getElementById('status').textContent = 'Text sent.'; setTimeout(shot, 600); });
+};
+
+// ⭐ CLEAR EMPTIES THE FIELD IN THE TAB, not just this box. Ben, #apis
+// 2026-10-18: "there's no ability for me to delete".
+document.getElementById('clear').onclick = function () {
+  var el = document.getElementById('txt');
+  el.value = '';
+  var st = document.getElementById('status');
+  if (!liveKb) { st.textContent = 'Box cleared. Tap a text box in the picture to clear that field.'; return; }
+  if (kbTimer) { clearTimeout(kbTimer); kbTimer = null; }
+  sendKb({ value: '' }).then(function (r) {
+    st.textContent = (r && r.verdict === 'OK') ? 'Field cleared.'
+                                               : 'Tap the text box in the picture again, then Clear.';
+    setTimeout(shot, 300);
+  });
 };
 
 document.getElementById('done').onclick = function () {
@@ -656,6 +724,14 @@ export function registerCaptchaRoutes(
      * dropping the keystroke.
      */
     pressKey?: (s: CaptchaSession, key: string) => Promise<void>;
+    /**
+     * Set the focused field's whole value. Returns the probe's verdict so the
+     * page can say "tap the box again" instead of silently losing the text —
+     * `OK`, `NO_FOCUS`, or `NOT_EDITABLE:<tag>`.
+     * ⚠️ Optional: without it the route answers 501 and the page falls back to
+     * the Send box, which is the pre-2026-10-18 behaviour.
+     */
+    setValue?: (s: CaptchaSession, text: string) => Promise<string>;
     /**
      * Called once when the human presses Done, so the blocked requester is
      * TOLD rather than having to poll for it (Ben, Slack #unibrowse
@@ -820,6 +896,27 @@ export function registerCaptchaRoutes(
     // ⭐ A KEY RIDES THE `text` PATH, for the same reason holdMs rides `tap`:
     // the nginx write surface is exactly {tap, text, done} and a fourth verb is
     // that seat's change, not a local edit.
+    // ⭐ A WHOLE-VALUE WRITE RIDES THE SAME PATH, for the same reason a key
+    // does: the nginx write surface is exactly {tap, text, done}.
+    const rawValue = req.body?.value;
+    if (typeof rawValue === "string") {
+      if (!deps.setValue) {
+        return res.status(501).json({ ok: false, error: "this server cannot set a field value" });
+      }
+      if (rawValue.length > 500) {
+        return res.status(400).json({ ok: false, error: "value too long" });
+      }
+      try {
+        const verdict = await deps.setValue(s, rawValue);
+        s.typed++;
+        // ⚠️ 200 WITH ok:false ON A BAD VERDICT. The request worked; the page
+        // did not have a field focused, and the operator is the only one who
+        // can fix that — so it has to reach them, not a log.
+        return res.json({ ok: verdict === "OK", verdict, length: rawValue.length, typed: s.typed });
+      } catch (err: any) {
+        return res.status(502).json({ ok: false, error: err.message });
+      }
+    }
     const rawKey = req.body?.key;
     if (rawKey !== undefined && rawKey !== null && rawKey !== "") {
       const key = String(rawKey);

@@ -8,7 +8,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 import { appConfig } from "@/config/app.config";
-import { registerCaptchaRoutes, sweepCaptchaSessions, FIELD_RECTS_JS } from "@/captcha";
+import { registerCaptchaRoutes, sweepCaptchaSessions, FIELD_RECTS_JS, focusedSetJs } from "@/captcha";
 import {
   registerSlipwayRoutes,
   sweepSlipwaySessions,
@@ -678,6 +678,19 @@ async function main() {
       } as any);
       const v = r?.result ?? r?.value ?? r;
       return Array.isArray(v) ? v : [];
+    },
+
+    // ⭐ SET THE WHOLE FIELD, which is what makes delete and paste work on the
+    // phone. The verdict string comes straight back to the page so a lost focus
+    // is reported to the operator instead of swallowing their text.
+    setValue: async (s, text) => {
+      const r: any = await globalContext.sendSocketMessage("browser_evaluate", {
+        expression: focusedSetJs(text),
+        tabTarget: s.tabTarget,
+        ...(s.extensionId ? { extensionId: s.extensionId } : {}),
+      } as any);
+      const v = r?.result ?? r?.value ?? r;
+      return typeof v === "string" ? v : String(v ?? "");
     },
 
     pressKey: async (s, key) => {
