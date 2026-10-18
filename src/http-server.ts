@@ -885,6 +885,44 @@ async function main() {
     },
 
     // The roster's unattached half is only useful if picking one works.
+    // ⭐ PORTED FROM THE CAPTCHA RELAY 2026-10-18 — the three fixes Slipway was
+    // missing: raise the window before a press, read the tab's text boxes so a
+    // tap can open the phone's keyboard, and set a field's whole value.
+    focusTab: async (s) => {
+      const r: any = await globalContext.sendSocketMessage("browser_evaluate", {
+        expression: "document.hasFocus()",
+        tabTarget: s.tabTarget, extensionId: s.extensionId,
+      } as any);
+      const v = r?.result ?? r?.value ?? r;
+      const wasFocused = v === true || v?.value === true;
+      if (!wasFocused) {
+        // browser_switch_tab does BOTH halves — tabs.update active:true and
+        // windows.update focused:true. The window half is the one that matters.
+        await globalContext.sendSocketMessage("browser_switch_tab", {
+          tabTarget: s.tabTarget, extensionId: s.extensionId,
+        } as any);
+      }
+      return { wasFocused };
+    },
+
+    fields: async (s) => {
+      const r: any = await globalContext.sendSocketMessage("browser_evaluate", {
+        expression: FIELD_RECTS_JS,
+        tabTarget: s.tabTarget, extensionId: s.extensionId,
+      } as any);
+      const v = r?.result ?? r?.value ?? r;
+      return Array.isArray(v) ? v : [];
+    },
+
+    setValue: async (s, text) => {
+      const r: any = await globalContext.sendSocketMessage("browser_evaluate", {
+        expression: focusedSetJs(text),
+        tabTarget: s.tabTarget, extensionId: s.extensionId,
+      } as any);
+      const v = r?.result ?? r?.value ?? r;
+      return typeof v === "string" ? v : String(v ?? "");
+    },
+
     attachTab: async (s, tabTarget) => {
       const tabId = Number(tabTarget);
       if (!Number.isFinite(tabId)) {

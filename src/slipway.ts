@@ -346,8 +346,9 @@ const PAGE = String.raw`<!doctype html>
   </header>
   <div id="live">
     <div id="wrap"><img id="shot" alt="page"><div id="dot"></div></div>
-    <div class="r"><input id="txt" placeholder="Type into the page" autocomplete="off"></div>
+    <div class="r"><input id="txt" placeholder="Tap a box in the picture, then type here" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text" enterkeyhint="go"></div>
     <div class="bar">
+      <button id="clear">Clear</button>
       <button id="send">Send text</button>
       <button id="enter">Enter</button>
     </div>
@@ -401,6 +402,34 @@ function shot() {
       .catch(function () { setStatus('Picture unavailable and the error could not be read.'); });
   };
   probe.src = 'shot?t=' + Date.now();
+}
+
+// ⭐ THE PHONE'S OWN KEYBOARD. A phone opens it only when .focus() runs INSIDE
+// the touch gesture, so the page cannot wait to be told it hit a text box — the
+// field rects come down with /state and the decision is made synchronously in
+// pointerdown. Ported from the captcha relay 2026-10-18.
+var fields = [], liveKb = false, kbTimer = null, kbChain = Promise.resolve();
+
+function loadFields() {
+  return fetch('state?fields=1').then(function (r) { return r.json(); })
+    .then(function (s) { fields = (s && s.fields) || []; })
+    .catch(function () { /* ⛔ fail to NO fields: the Send box still works */ });
+}
+
+function hitField(fx, fy) {
+  for (var i = 0; i < fields.length; i++) {
+    var f = fields[i];
+    if (fx >= f.fx && fx <= f.fx + f.fw && fy >= f.fy && fy <= f.fy + f.fh) return true;
+  }
+  return false;
+}
+
+// ⛔ SERIALISED. Two value writes in flight at once can land out of order, and
+// the later-arriving older string silently undoes what was typed after it.
+function sendVal(v) {
+  kbChain = kbChain.then(function () { return post({ cmd: 'value', value: v }); })
+    .catch(function () { return null; });
+  return kbChain;
 }
 
 function post(body) {
@@ -495,6 +524,14 @@ document.addEventListener('pointerdown', function (e) {
   holdFx = (e.clientX - r.left) / r.width;
   holdFy = (e.clientY - r.top) / r.height;
   holdStart = Date.now();
+  // ⛔ THIS .focus() MUST STAY IN THE POINTERDOWN HANDLER. Inside the gesture
+  // the phone raises its keyboard; one tick later it does not.
+  liveKb = hitField(holdFx, holdFy);
+  if (liveKb) {
+    var box = document.getElementById('txt');
+    box.value = '';
+    box.focus();
+  }
   var dot = document.getElementById('dot');
   dot.style.left = (e.clientX - r.left + 8) + 'px';
   dot.style.top = (e.clientY - r.top + 8) + 'px';
@@ -526,7 +563,7 @@ function endHold() {
                      : ('Refused: ' + (j.error || 'unknown')));
     })
     .catch(function () { setStatus('Tap failed to send.'); })
-    .then(function () { busy = false; setTimeout(shot, 500); });
+    .then(function () { busy = false; setTimeout(shot, 500); loadFields(); });
 }
 
 // ⛔ A hold that ends by cancellation or by leaving the window must still SEND,
@@ -538,10 +575,64 @@ window.addEventListener('blur', endHold);
 document.addEventListener('contextmenu', function (e) { if (e.target.id === 'shot') e.preventDefault(); });
 document.addEventListener('dragstart', function (e) { if (e.target.id === 'shot') e.preventDefault(); });
 
+// ⭐ THE BOX IS THE SOURCE OF TRUTH in live mode: every change sends the WHOLE
+// value and the field is set to it, so delete, paste and editing the middle all
+// work. ⛔ DO NOT GO BACK TO STREAMING EDITS — that version appended every
+// attempt onto the last while Backspace deleted nothing (measured on the
+// captcha relay, Ben's phone 2026-10-18 13:03).
+document.getElementById('txt').addEventListener('input', function () {
+  if (!liveKb) return;
+  var v = this.value;
+  if (kbTimer) clearTimeout(kbTimer);
+  kbTimer = setTimeout(function () {
+    kbTimer = null;
+    sendVal(v).then(function (j) {
+      if (j && j.verdict && j.verdict !== 'OK') {
+        setStatus('The page lost the text box — tap it in the picture again, then type.');
+      }
+      setTimeout(shot, 300);
+    });
+  }, 140);
+});
+
+document.getElementById('txt').addEventListener('keydown', function (e) {
+  if (!liveKb || e.key !== 'Enter') return;
+  e.preventDefault();
+  // Flush first: a debounced value still waiting would land AFTER the Enter and
+  // submit the previous string. sendVal is serialised, so order is kept.
+  if (kbTimer) { clearTimeout(kbTimer); kbTimer = null; sendVal(this.value); }
+  kbChain = kbChain.then(function () { return post({ cmd: 'key', key: 'Enter' }); });
+  kbChain.then(function () { setTimeout(shot, 700); });
+});
+
+// ⭐ CLEAR EMPTIES THE FIELD IN THE TAB, not just this box.
+document.getElementById('clear').onclick = function () {
+  var el = document.getElementById('txt');
+  el.value = '';
+  if (!liveKb) { setStatus('Box cleared. Tap a text box in the picture to clear that field.'); return; }
+  if (kbTimer) { clearTimeout(kbTimer); kbTimer = null; }
+  sendVal('').then(function (j) {
+    setStatus(j && j.verdict === 'OK' ? 'Field cleared.'
+                                      : 'Tap the text box in the picture again, then Clear.');
+    setTimeout(shot, 300);
+  });
+};
+
 document.getElementById('send').onclick = function () {
   var v = document.getElementById('txt').value;
   if (!v) return;
   setStatus('Typing…');
+  // In live mode this is a flush, not a second send: the write REPLACES the
+  // field, so pressing it after a pause cannot double what was typed.
+  if (liveKb) {
+    if (kbTimer) { clearTimeout(kbTimer); kbTimer = null; }
+    sendVal(v).then(function (j) {
+      setStatus(j && j.verdict === 'OK' ? 'Field set to what you typed.'
+                                        : 'Tap the text box in the picture, then press Send text again.');
+      setTimeout(shot, 400);
+    });
+    return;
+  }
   post({ text: v }).then(function (j) {
     if (j.ok) { document.getElementById('txt').value = ''; setStatus('Text sent.'); setTimeout(shot, 500); }
     else setStatus('Refused: ' + (j.error || 'unknown'));
@@ -628,6 +719,28 @@ export function registerSlipwayRoutes(
      * roster. Minting still attaches nothing.
      */
     attachTab: (s: SlipwaySession, tabTarget: number | string) => Promise<number | string>;
+    /**
+     * Raise the tab's window before a press, and report whether it already had
+     * focus. ⛔ BEST EFFORT, NEVER FATAL — ported from the captcha relay, where
+     * a hold replayed into an unfocused window did nothing and looked like a
+     * hold that had not been sent. A tap refused because the window could not
+     * be raised is strictly worse than a tap delivered to an unfocused one.
+     */
+    focusTab?: (s: SlipwaySession) => Promise<{ wasFocused: boolean } | void>;
+    /**
+     * The tab's editable field rects, normalised 0..1, so a tap that lands in
+     * one can open the phone's own keyboard INSIDE the touch gesture. ⚠️ Fails
+     * to an empty list: no rects just means no keyboard and the Send text box
+     * behaves as before, and it must never fail the status poll.
+     */
+    fields?: (s: SlipwaySession) => Promise<Array<{ fx: number; fy: number; fw: number; fh: number }>>;
+    /**
+     * Set the focused field's WHOLE value, returning the probe's verdict
+     * (`OK`, `NO_FOCUS`, `NOT_EDITABLE:<tag>`). Full replace, not a diff —
+     * streaming edits appended every attempt onto the last and Backspace
+     * deleted nothing (measured on the captcha relay, Ben 2026-10-18 13:03).
+     */
+    setValue?: (s: SlipwaySession, text: string) => Promise<string>;
   },
 ) {
   /** A live session, or the response already sent. */
@@ -684,7 +797,19 @@ export function registerSlipwayRoutes(
         tabs = null; // null means "could not read", NOT "no tabs" — see the page.
       }
     }
-    res.json(slipwayPublicView(s, tabs));
+    const view: any = slipwayPublicView(s, tabs);
+    // ⭐ OPT-IN, because it costs an evaluate in the tab and the countdown poll
+    // runs every couple of seconds. ⛔ NEVER FAILS THE POLL: the page's clock
+    // and tab roster must not depend on a field probe.
+    if (req.query?.fields !== undefined && s.state === "live" && deps.fields) {
+      try {
+        view.fields = await deps.fields(s);
+      } catch (err: any) {
+        view.fields = [];
+        view.fieldsError = String(err?.message ?? err);
+      }
+    }
+    res.json(view);
   });
 
   app.get("/slipway/:token/shot", async (req: any, res: any) => {
@@ -721,9 +846,26 @@ export function registerSlipwayRoutes(
       holdMs = Math.round(h);
     }
     try {
+      // ⛔ BEST EFFORT, AND NEVER FATAL — see the focusTab dep. Ported from the
+      // captcha relay 2026-10-18: a press replayed into a window sitting behind
+      // the operator's others does nothing and reads as a dead relay.
+      let wasFocused: boolean | null = null;
+      if (deps.focusTab) {
+        try {
+          const fr = await deps.focusTab(s);
+          wasFocused = fr && typeof fr.wasFocused === "boolean" ? fr.wasFocused : null;
+        } catch (err: any) {
+          console.error(`[slipway] focusTab failed for ${s.id}: ${err?.message ?? err}`);
+        }
+      }
       const vp = await deps.viewport(s);
       const x = Math.round(fx * vp.width), y = Math.round(fy * vp.height);
+      const started = Date.now();
       await deps.click(s, x, y, holdMs);
+      console.log(
+        `[slipway] tap ${s.id} (${x},${y}) holdMs=${holdMs ?? "-"} took=${Date.now() - started}ms ` +
+          `windowWasFocused=${wasFocused === null ? "?" : wasFocused}`,
+      );
       s.cursor = { x, y };
       s.taps++;
       res.json({ ok: true, x, y, holdMs: holdMs ?? null, taps: s.taps });
@@ -814,6 +956,30 @@ export function registerSlipwayRoutes(
           }
           await deps.pressKey(t, key);
           return res.json({ ok: true, key });
+        }
+
+        // ⭐ WHOLE-VALUE WRITE. This is what makes delete, paste and a
+        // mid-string edit work from a phone: the page is the source of truth
+        // and the field is set to it, rather than the page streaming edits it
+        // cannot keep in step.
+        if (cmd === "value") {
+          const t = onTab(req, res);
+          if (!t) return;
+          if (!deps.setValue) {
+            return res.status(501).json({ ok: false, error: "this server cannot set a field value" });
+          }
+          const raw = req.body?.value;
+          if (typeof raw !== "string") {
+            return res.status(400).json({ ok: false, error: "value must be a string" });
+          }
+          if (raw.length > 2000) {
+            return res.status(400).json({ ok: false, error: "value too long" });
+          }
+          const verdict = await deps.setValue(t, raw);
+          t.typed++;
+          // ⚠️ 200 WITH ok:false ON A BAD VERDICT: the request worked, the tab
+          // had no field focused, and only the operator can fix that.
+          return res.json({ ok: verdict === "OK", verdict, length: raw.length, typed: t.typed });
         }
 
         if (cmd === "record") {
