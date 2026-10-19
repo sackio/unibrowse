@@ -2,7 +2,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 
 import { OpenSlipwayTool, CloseSlipwayTool } from "@/types/tool-schemas";
 import { jsonResponse, errorResponse } from "@/utils/response-helpers";
-import { publishProxyArtifact, sendBrokerMessage, selfPublicBase } from "@/utils/atc-publish";
+import { publishProxyArtifact, sendBrokerMessage, selfPublicBase, seatReachable } from "@/utils/atc-publish";
 import {
   createSlipwaySession,
   getSlipwayById,
@@ -74,6 +74,19 @@ export const openSlipway: Tool = {
       });
 
       const holder = p.notify || "slack:U0NGEHS2J";
+
+      // ⛔ SAME PROBE AS THE CAPTCHA RELAY, AND IT MATTERS MORE HERE. `atc`
+      // measured a captcha mint on 2026-10-19 10:24:51Z whose `agent` resolved
+      // to nobody: the notice diverted, the operator was never pinged, and the
+      // tool returned success. A Slipway link is a LIVE CAPABILITY — it reads
+      // and drives every tab in that browser until the TTL expires — so a
+      // notice nobody receives leaves one open with no one watching it.
+      // ⚠️ The no-`agent` path was never affected: "unibrowse" resolves.
+      const reach = requester
+        ? await seatReachable(requester)
+        : { reachable: null as boolean | null, basis: "no `agent` was passed" };
+      const sendAs = requester && reach.reachable !== false ? requester : "unibrowse";
+
       const target = `${selfPublicBase()}/slipway/${session.token}/`;
       const published = await publishProxyArtifact({
         target,
@@ -101,7 +114,11 @@ export const openSlipway: Tool = {
             // (#agents 2026-10-09) on the reasoning that a captcha is the one
             // alert no agent can action, so routing it to a seat's channel
             // guarantees nobody solves it.
-            from: requester ?? "unibrowse",
+            // ⛔ `sendAs`, NOT `requester`: an `agent` that resolves to nobody
+            // gives the bridge nothing to route on, so it falls back to this
+            // seat's own name — which resolves — rather than riding a name
+            // measured to divert. The response reports which was used.
+            from: sendAs,
             subject: "Slipway is open",
             content:
               `Drive ${session.label} from your phone:\n\n${url}\n\n` +
@@ -125,13 +142,23 @@ export const openSlipway: Tool = {
           publishError: published.error,
           notifiedTo: notified.ok ? holder : null,
           notifyError: notified.error,
+          // ⚠️ THE RESOLUTION, NOT A GUESS — and `false` is a legitimate answer
+          // for a real seat with no channel, never evidence the name is wrong.
+          requester,
+          requesterReachable: reach.reachable,
+          requesterBasis: reach.basis,
+          sentAs: sendAs,
           capability:
             "⚠️ The holder of this URL can read and drive EVERY tab OPEN IN " +
             `${p.extensionId} until ${new Date(session.expiresAt).toISOString()}. ` +
             "Bounded to that one browser and that TTL; not single-use.",
-          nextStep: notified.ok
-            ? `Close it with browser_close_slipway sessionId ${session.id} when the job is done.`
-            : `⚠️ NOBODY WAS NOTIFIED — send this URL to its user yourself, then close it with browser_close_slipway sessionId ${session.id}.`,
+          // ⛔ `notified.ok` MEANS THE BROKER ACCEPTED AND FANNED OUT, not that
+          // a human saw it. That distinction is the whole 2026-10-19 defect.
+          nextStep: !notified.ok
+            ? `⚠️ NOBODY WAS NOTIFIED — send this URL to its user yourself, then close it with browser_close_slipway sessionId ${session.id}.`
+            : reach.reachable === false
+              ? `⚠️ SEND THIS URL TO ITS USER YOURSELF — "${requester}" resolves to nobody (${reach.basis}), so the notice cannot be relied on to have reached anyone. A Slipway left open is a live capability: close it with browser_close_slipway sessionId ${session.id}.`
+              : `Close it with browser_close_slipway sessionId ${session.id} when the job is done.`,
         },
         true,
         max_tokens,

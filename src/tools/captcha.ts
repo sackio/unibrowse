@@ -6,7 +6,7 @@ import {
   CancelCaptchaSolveTool,
 } from "@/types/tool-schemas";
 import { jsonResponse, errorResponse } from "@/utils/response-helpers";
-import { publishProxyArtifact, sendBrokerMessage, selfPublicBase } from "@/utils/atc-publish";
+import { publishProxyArtifact, sendBrokerMessage, selfPublicBase, seatReachable } from "@/utils/atc-publish";
 import {
   createCaptchaSession,
   getSessionById,
@@ -191,10 +191,37 @@ export const requestCaptchaSolve: Tool = {
       });
 
       const solver = p.notify || "slack:U0NGEHS2J";
+
+      // ⛔ ASK WHETHER THE REQUESTER CAN BE REACHED *BEFORE* PROMISING IT
+      // ANYTHING. Measured on us by `atc` 2026-10-19 10:24:51Z:
+      // `agent=alpaca-signup` has no /subscribers row, the notice diverted to
+      // the `atc` seat, the operator was never pinged, and this tool returned
+      // success with nothing in it to suggest otherwise. One probe removes the
+      // whole class — the caller gets the resolution, not a guess.
+      // ⚠️ Costs one ~60ms local HTTP call per mint and cannot fail the mint:
+      // `seatReachable` answers `null` rather than throwing.
+      const reach = requester
+        ? await seatReachable(requester)
+        : { reachable: null as boolean | null, basis: "no `agent` was passed" };
+
+      // ⛔ DO NOT SEND AS A NAME THAT RESOLVES TO NOBODY. Sending as the
+      // requester is what puts the notice in that seat's own channel (Ben,
+      // #unibrowse 2026-10-12), and that is kept whenever the name resolves.
+      // When it does NOT, the sender-based routing has nothing to route on, so
+      // we fall back to the name this tool used before `agent` existed rather
+      // than riding an unroutable one.
+      // ⚠️ THIS IS MITIGATION, NOT A PROVEN FIX, and the response says so:
+      // NOTIFY_FROM is itself `basis: none` as a recipient, and whether the
+      // bridge treats an unbound SENDER as a plain DM (what this file recorded
+      // from `atc` on 2026-09-12) or diverts it (what `atc` measured on
+      // 2026-10-19) is the open question. ⇒ The caller is told to send the URL
+      // itself rather than being told the operator was pinged.
+      const sendAs = requester && reach.reachable !== false ? requester : NOTIFY_FROM;
+
       const published = await publishArtifact(session, solver);
       const url = published.url || `${selfPublicBase()}/captcha/${session.token}/`;
       const notified = published.url
-        ? await notify(solver, url, session, requester ?? NOTIFY_FROM)
+        ? await notify(solver, url, session, sendAs)
         : { ok: false, error: "not published" };
 
       return jsonResponse(
@@ -223,15 +250,38 @@ export const requestCaptchaSolve: Tool = {
           // and NOBODY will be told when it is solved. Pass `agent` to get
           // both. Said here rather than left to be inferred from two nulls.
           requester,
-          notifiedVia: requester
-            ? `sent as "${requester}", so it lands in that correspondent's own channel if it has one, else the solver's DM`
-            : "the solver's DM (no `agent` was passed)",
-          solveNoticeTo: requester ?? null,
+          // ⚠️ THE RESOLUTION, NOT A GUESS. `false` is a legitimate answer for a
+          // real seat with no channel (a sidecar, `claude-login-auto`); `null`
+          // means the probe itself could not answer. ⛔ Neither value is
+          // evidence that the NAME is wrong — absence and deafness are not
+          // distinguished by the endpoint, and it says so itself.
+          requesterReachable: reach.reachable,
+          requesterBasis: reach.basis,
+          sentAs: sendAs,
+          notifiedVia:
+            !requester
+              ? "the solver's DM (no `agent` was passed)"
+              : reach.reachable === true
+                ? `sent as "${requester}", which resolves (${reach.basis}), so it lands in that correspondent's own channel`
+                : reach.reachable === false
+                  ? `⚠️ "${requester}" resolves to nobody (${reach.basis}), so it was NOT used as the sender — sent as "${NOTIFY_FROM}" instead, and WHERE THAT LANDS IS UNCONFIRMED`
+                  : `sent as "${requester}", but its resolution could not be checked (${reach.basis})`,
+          // ⚠️ `solveNoticeTo` NULL NOW HAS TWO CAUSES AND THEY ARE DIFFERENT
+          // FAULTS: no `agent` was passed, or the `agent` passed cannot be
+          // reached. Both mean the same thing operationally — polling is the
+          // only way you will learn — so the field reports the operational
+          // truth and `requesterBasis` carries the reason.
+          solveNoticeTo: reach.reachable === false ? null : (requester ?? null),
           // ⚠️ Say it plainly rather than leaving the caller to infer it from
           // two nulls: if nobody was told, the link is inert until someone is.
-          nextStep: notified.ok
-            ? `Poll browser_check_captcha_solve with sessionId ${session.id}.`
-            : `⚠️ NOBODY WAS NOTIFIED — send this URL to a human yourself, then poll browser_check_captcha_solve with sessionId ${session.id}.`,
+          // ⛔ `notified.ok` MEANS THE BROKER ACCEPTED AND FANNED OUT. It is
+          // NOT evidence a human saw it, which is exactly how the
+          // 2026-10-19 alpaca-signup mint read as a success.
+          nextStep: !notified.ok
+            ? `⚠️ NOBODY WAS NOTIFIED — send this URL to a human yourself, then poll browser_check_captcha_solve with sessionId ${session.id}.`
+            : reach.reachable === false
+              ? `⚠️ SEND THIS URL TO A HUMAN YOURSELF. The broker accepted the notice, but "${requester}" resolves to nobody, so neither the channel ping nor the solved-notice can be relied on. Then poll browser_check_captcha_solve with sessionId ${session.id}.`
+              : `Poll browser_check_captcha_solve with sessionId ${session.id}.`,
         },
         true,
         max_tokens,

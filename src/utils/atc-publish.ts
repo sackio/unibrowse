@@ -72,6 +72,55 @@ export async function publishProxyArtifact(opts: {
  * matched no subscriber and the message was accepted and dropped — the failure
  * shape a notification feature cannot afford to report as success.
  */
+/**
+ * Can a DM to this seat id actually be DRAINED by anybody?
+ *
+ * ⭐ WHY A RELAY NEEDS THIS AT REQUEST TIME. `sendBrokerMessage` reports
+ * `sent >= 1`, which means the BROKER accepted and fanned out — it is not
+ * evidence that a human or an agent will ever read it. The `atc` seat measured
+ * the gap on us 2026-10-19 10:24:51Z: `browser_request_captcha_solve` took
+ * `agent=alpaca-signup`, a name with no /subscribers row and no conv registry
+ * entry, returned a link and a success, the notice diverted to `atc`, and the
+ * operator was never pinged. ⇒ The requester could not tell a notifiable name
+ * from an unnotifiable one, and nothing in the response said so.
+ *
+ * ⚠️ `reachable: false` IS NOT AN ERROR AND MUST NOT BE TREATED AS ONE. Real
+ * seats legitimately read false: a container sidecar, or `claude-login-auto`,
+ * which has no channel by design. It means "nobody is draining this inbox", so
+ * the right response is to stop PROMISING a notice to that name — not to
+ * refuse the work.
+ *
+ * ⛔ `basis: "none"` DOES NOT MEAN THE SEAT DOES NOT EXIST. The endpoint's own
+ * note says so: absence and deafness are not distinguished. Never report a name
+ * as wrong on this evidence; report that nothing would read it.
+ *
+ * ⚠️ A `null` ANSWER IS THE THIRD CASE AND IS DELIBERATE. If the probe itself
+ * fails — broker down, timeout — we know NEITHER way, and collapsing that into
+ * `false` would invent a defect, while collapsing it into `true` would restore
+ * exactly the false promise this function exists to remove.
+ */
+export async function seatReachable(
+  id: string,
+): Promise<{ reachable: boolean | null; basis: string }> {
+  try {
+    const resp = await fetch(`${BROKER_BASE}/reachable/${encodeURIComponent(id)}`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!resp.ok) return { reachable: null, basis: `probe returned HTTP ${resp.status}` };
+    const data: any = await resp.json();
+    const seat = Array.isArray(data?.seats) ? data.seats[0] : null;
+    if (!seat || typeof seat.reachable !== "boolean") {
+      return { reachable: null, basis: "probe returned no verdict" };
+    }
+    return { reachable: seat.reachable, basis: String(seat.basis ?? "unknown") };
+  } catch (err: any) {
+    // ⛔ NEVER let this throw into a caller's happy path. A captcha that cannot
+    // be minted because a DIAGNOSTIC failed would be a worse bug than the one
+    // this function reports.
+    return { reachable: null, basis: `probe failed: ${err?.message ?? "unknown"}` };
+  }
+}
+
 export async function sendBrokerMessage(msg: {
   to: string;
   from: string;
