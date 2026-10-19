@@ -207,7 +207,7 @@ SITES=(
   # ⛔ Never sign anything in here; it holds no persistent session by design.
   # ⚠️ Its exit's PORT IS NOT STABLE — vpn-proxy's own header says a reroll keeps
   # its port only by coincidence of ordering — so it is read at every launch.
-  "alpacavpn|DVI-I-1|corner|about:blank"
+  "alpacavpn|DVI-I-1|full|about:blank"
 )
 
 site_field() { # site_field <name> <monitor|slot|url>
@@ -240,7 +240,18 @@ slot_geometry() { # slot_geometry <monitor> <left|right|corner> -> "W H X Y"
   # window over the monitor's bottom-right. All 16 half-slots are spoken for,
   # and the login browser only ever shows transient incognito windows, so
   # overlapping a site costs less than evicting one.
-  if [ "$2" = "corner" ]; then
+  # ⭐ `full` IS FOR A BROWSER THAT IS RELAYED TO A PHONE, and the size is the
+  # whole point rather than a preference. MEASURED 2026-10-19 09:06 EDT on a live
+  # captcha: a `corner` window (960x620) captures a 928x435 viewport, and the
+  # Cloudflare checkbox on Alpaca's signup sat BELOW THE FOLD. Ben, #alpaca:
+  # "images broken you need to get unibrows to fix it" — the picture was fine;
+  # the thing he needed was not in it. Full-monitor gives 1836x813, 3.7x the
+  # area, measured on the same page after resizing the live window.
+  # ⚠️ Costs nothing on screen: every window here is minimised right after launch,
+  # so a bigger window overlaps no site and is never painted.
+  if [ "$2" = "full" ]; then
+    echo "$w $h $x $y"
+  elif [ "$2" = "corner" ]; then
     cw=960; ch=620
     [ "$cw" -gt "$w" ] && cw="$w"
     [ "$ch" -gt "$h" ] && ch="$h"
