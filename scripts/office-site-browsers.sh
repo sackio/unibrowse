@@ -408,6 +408,7 @@ cmd_up() {
     local stored
     stored="$(cat "$(extid_file "$name")" 2>/dev/null || true)"
     if [ -n "$stored" ] && live_ext_ids | grep -qxF "$stored"; then
+      hide_stray_windows "$name" "$pid"
       echo "$name: already up (pid $pid) and registered as $stored — leaving it alone"
       return 0
     fi
@@ -427,6 +428,7 @@ cmd_up() {
     local resolved
     if resolved="$(live_id_for_profile "$name")"; then
       printf '%s\n' "$resolved" > "$(extid_file "$name")"
+      hide_stray_windows "$name" "$pid"
       echo "$name: already up (pid $pid) and registered as $resolved — recovered a missing pointer, leaving it alone"
       return 0
     fi
@@ -598,6 +600,45 @@ minimize_site_windows() {
     if xdotool windowminimize "$wid" 2>/dev/null; then n=$((n + 1)); fi
   done
   printf '%s\n' "$n"
+}
+
+# ⭐ MINIMIZE ON THE ALREADY-UP PATH TOO, not only at launch. The launch-time
+# minimize covers the one window Chrome maps at exec and nothing else, so an
+# INCOGNITO window opened later by a login or signup flow — minutes or days
+# after launch — paints on Ben's desktop and stays there when the flow leaves it
+# behind. That is what he was looking at, Slack #unibrowse 2026-10-19 12:57:
+# "I'm seeing an incognito alpaca login that's blank and an incognito Claude
+# login that's also blank". Both profiles had been up for days, so neither
+# window existed at its launch and no amount of launch-time minimizing could
+# have covered it.
+# ⭐ `up` already runs every 5 minutes from office's crontab for claudelogin,
+# which makes it the cheapest place to put this: no new job, no new convention,
+# and nothing for another seat to remember to do.
+# ⚠️ Safe because these profiles are agent-only and nobody drives them by hand.
+# ⚠️ Capture still works on a minimized window — the captcha relay reads it with
+# `import -window <id>`, measured on a live Turnstile 2026-10-19 09:06.
+# ⛔ COUNTS ONLY WINDOWS THAT WERE NOT ALREADY MINIMIZED, which is why it does
+# not just call minimize_site_windows: `xdotool windowminimize` SUCCEEDS on an
+# already-iconified window, so a count built on its exit status is always >=1
+# and this would log "minimized 1 stray window(s)" every 5 minutes forever.
+# MEASURED 2026-10-19 13:07: xprop reports `window state: Iconic` for one, and
+# WM_STATE is absent entirely on Chrome's non-WM-managed window.
+hide_stray_windows() { # hide_stray_windows <name> <pid>
+  local wid st n=0
+  for wid in $(xdotool search --pid "$2" 2>/dev/null); do
+    st="$(xprop -id "$wid" WM_STATE 2>/dev/null || true)"
+    case "$st" in *"window state"*) ;; *) continue ;; esac
+    case "$st" in *Iconic*) continue ;; esac
+    if xdotool windowminimize "$wid" 2>/dev/null; then n=$((n + 1)); fi
+  done
+  if [ "${n:-0}" -gt 0 ]; then
+    echo "$1: minimized $n stray window(s)"
+    # ⚠️ Also to the profile log: the crontab suppresses cmd_up's whole output
+    # when it contains "already up", so this line would otherwise never be seen.
+    printf '%s %s: minimized %s stray window(s)\n' "$(date -Is)" "$1" "$n" \
+      >> "$LOG_DIR/$1.log" 2>/dev/null || true
+  fi
+  return 0
 }
 
 extid_file() { printf '%s/%s.extid\n' "$PROFILES_ROOT" "$1"; }
