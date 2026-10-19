@@ -44,6 +44,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import type { Express } from "express";
+import { coalesceCapture } from "@/captcha";
 
 export type SlipwayState = "live" | "ended" | "expired";
 
@@ -369,7 +370,8 @@ const PAGE = String.raw`<!doctype html>
 <script>
 // ⛔ RELATIVE URLS ONLY — this page is mounted at /f/<id>/ by the artifact
 // proxy, so an absolute path resolves at the artifact domain root and 404s.
-var busy = false, stopped = false, shotFailed = false, haveTab = false;
+var busy = false, stopped = false, shotFailed = false, haveTab = false,
+    shotInFlight = false, shotAgain = false;
 // ⛔ A 1x1 TRANSPARENT PNG, SET BEFORE ANYTHING ELSE. An <img> with no src
 // renders the browser's broken-image icon, which says "this page is broken"
 // when the truth is "no tab is selected yet". Measured: that is exactly how
@@ -383,25 +385,48 @@ function setStatus(t) { document.getElementById('status').textContent = t; }
 // and an <img> cannot render JSON, so an onload-only handler shows a blank
 // frame — indistinguishable from "still loading". This cost the captcha relay a
 // report of "it's broken" when the real cause was a backgrounded tab.
+//
+// ⛔⛔ ONE REQUEST PER SHOT, AND ONE SHOT IN FLIGHT — same defect and same fix as
+// the captcha relay, where it was measured; the long version is in captcha.ts.
+// In short: Cache-Control: no-store makes img.src = probe.src a SECOND full
+// request, so a probe poll costs TWO compositor captures, and office Chrome
+// captures in 4.0s against this page's 2200ms poll (measured 2026-10-18). The
+// queue grew until the operator saw a broken image. Fetch once, render the
+// bytes we hold, and never run two captures at once.
 function shot() {
   if (stopped || !haveTab) return;
+  if (shotInFlight) { shotAgain = true; return; }
+  shotInFlight = true; shotAgain = false;
   var img = document.getElementById('shot');
-  var probe = new Image();
-  probe.onload = function () {
-    img.src = probe.src;
-    if (shotFailed) { shotFailed = false; setStatus(''); }
-  };
-  probe.onerror = function () {
-    shotFailed = true;
-    fetch('shot?t=' + Date.now())
-      .then(function (r) { return r.json(); })
-      .then(function (j) {
-        setStatus('Picture unavailable: ' + ((j && j.error) || 'unknown') +
-                  ' — the page is still there, this is the screenshot failing.');
-      })
-      .catch(function () { setStatus('Picture unavailable and the error could not be read.'); });
-  };
-  probe.src = 'shot?t=' + Date.now();
+  fetch('shot?t=' + Date.now())
+    .then(function (r) {
+      if (r.ok) return r.blob();
+      return r.json().then(
+        function (j) { throw new Error((j && j.error) || ('HTTP ' + r.status)); },
+        function () { throw new Error('HTTP ' + r.status); }
+      );
+    })
+    .then(function (b) {
+      return new Promise(function (ok, no) {
+        var fr = new FileReader();
+        fr.onload = function () { ok(fr.result); };
+        fr.onerror = function () { no(new Error('the picture could not be decoded')); };
+        fr.readAsDataURL(b);
+      });
+    })
+    .then(function (url) {
+      img.src = url;
+      if (shotFailed) { shotFailed = false; setStatus(''); }
+    })
+    .catch(function (err) {
+      shotFailed = true;
+      setStatus('Picture unavailable: ' + ((err && err.message) || 'unknown') +
+                ' — the page is still there, this is the screenshot failing.');
+    })
+    .then(function () {
+      shotInFlight = false;
+      if (shotAgain && !stopped && haveTab) { shotAgain = false; setTimeout(shot, 0); }
+    });
 }
 
 // ⭐ THE PHONE'S OWN KEYBOARD. A phone opens it only when .focus() runs INSIDE
@@ -816,7 +841,7 @@ export function registerSlipwayRoutes(
     const s = onTab(req, res);
     if (!s) return;
     try {
-      const b64 = await deps.screenshot(s);
+      const b64 = await coalesceCapture(s.id, () => deps.screenshot(s));
       s.lastShotAt = Date.now();
       const buf = Buffer.from(b64.replace(/^data:image\/\w+;base64,/, ""), "base64");
       res.setHeader("Cache-Control", "no-store");

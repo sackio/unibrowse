@@ -350,7 +350,7 @@ const PAGE = String.raw`<!doctype html>
 // ⛔ RELATIVE URLS ONLY. This page is served through an ATC artifact proxy that
 // mounts it at /f/<id>/, so an absolute path would resolve at the artifact
 // domain root and 404. A <base> tag is injected by the proxy for exactly this.
-var busy = false, stopped = false, shotFailed = false;
+var busy = false, stopped = false, shotFailed = false, shotInFlight = false, shotAgain = false;
 
 // ⛔ A FAILED SHOT MUST SAY SO. It used to fail silently: /shot answers with a
 // JSON error body on failure, an <img> cannot render JSON, and the old code had
@@ -359,30 +359,67 @@ var busy = false, stopped = false, shotFailed = false;
 // three captchas at once, reported the third as "doesn't even explain anything,
 // it's broken". It was: its tab was backgrounded, Page.captureScreenshot never
 // produced a frame, and the relay had no way to tell him that.
+//
+// ⛔⛔ ONE REQUEST PER SHOT, AND ONE SHOT IN FLIGHT. The fix above polled with a
+// probe Image and then assigned the loaded URL to the visible <img>. The
+// response carries Cache-Control: no-store, so that assignment is a SECOND
+// full request — TWO compositor captures per poll — and only the second one's
+// failure is visible, as a broken icon with no text, which is the very symptom
+// the probe was added to prevent.
+//
+// MEASURED 2026-10-18 20:21 EDT on session 9b5fe6d1, office Chrome
+// (ext_018237f9, X session locked, window at 3840,1080): /state answered in
+// 61ms through the same proxy and /shot in 4.00s, five times running — so the
+// cost is the compositor frame, not the network. This page asked for a new one
+// every 2200ms, i.e. ~8s of capture demanded per 2.2s on ONE extension socket.
+// The queue could only grow, and Ben (Slack #business-connect 20:20) saw it as
+// a broken image on his phone while the SAME relay had worked an hour earlier
+// on the MacBook, whose captures are fast enough that the arithmetic never
+// bites. ⇒ The old code was never wrong about fast browsers and never right
+// about slow ones; a fixed poll rate against a variable capture cost is the
+// defect, so the page now paces itself off the server instead of off a clock.
 function shot() {
   if (stopped) return;
+  // A poll that lands mid-capture asks for ONE more frame afterwards rather
+  // than joining a queue: the operator wants the latest frame, not every frame.
+  if (shotInFlight) { shotAgain = true; return; }
+  shotInFlight = true; shotAgain = false;
   var img = document.getElementById('shot');
-  var probe = new Image();
-  probe.onload = function () {
-    img.src = probe.src; img.dataset.nw = probe.naturalWidth; img.dataset.nh = probe.naturalHeight;
-    if (shotFailed) { shotFailed = false; document.getElementById('status').textContent = ''; }
-  };
-  probe.onerror = function () {
-    shotFailed = true;
-    // Re-request as a fetch to read WHY. The image load threw away the body.
-    fetch('shot?t=' + Date.now())
-      .then(function (r) { return r.json(); })
-      .then(function (j) {
-        document.getElementById('status').textContent =
-          'Picture unavailable: ' + ((j && j.error) || 'unknown') +
-          ' — the page is still there, this is the screenshot failing.';
-      })
-      .catch(function () {
-        document.getElementById('status').textContent =
-          'Picture unavailable and the error could not be read. The page may still be fine.';
+  fetch('shot?t=' + Date.now())
+    .then(function (r) {
+      if (r.ok) return r.blob();
+      // The body is the explanation. Read it here — there is no second request
+      // to read it from any more.
+      return r.json().then(
+        function (j) { throw new Error((j && j.error) || ('HTTP ' + r.status)); },
+        function () { throw new Error('HTTP ' + r.status); }
+      );
+    })
+    .then(function (b) {
+      // Render the bytes we already hold. An object URL would be cheaper, but a
+      // data: URL also survives this page being served behind a CSP that allows
+      // data: and not blob:, and 30KB of base64 is not worth the exposure.
+      return new Promise(function (ok, no) {
+        var fr = new FileReader();
+        fr.onload = function () { ok(fr.result); };
+        fr.onerror = function () { no(new Error('the picture could not be decoded')); };
+        fr.readAsDataURL(b);
       });
-  };
-  probe.src = 'shot?t=' + Date.now();
+    })
+    .then(function (url) {
+      img.src = url;
+      if (shotFailed) { shotFailed = false; document.getElementById('status').textContent = ''; }
+    })
+    .catch(function (err) {
+      shotFailed = true;
+      document.getElementById('status').textContent =
+        'Picture unavailable: ' + ((err && err.message) || 'unknown') +
+        ' — the page is still there, this is the screenshot failing.';
+    })
+    .then(function () {
+      shotInFlight = false;
+      if (shotAgain && !stopped) { shotAgain = false; setTimeout(shot, 0); }
+    });
 }
 
 function poll() {
@@ -692,6 +729,49 @@ setInterval(poll, 2000);
  * Adding a key would break the only thing that makes this work: a phone opening
  * a link with no LAN access and no login.
  */
+/**
+ * ⛔ ONE CAPTURE PER SESSION AT A TIME, AND IT CANNOT HANG FOREVER.
+ *
+ * Every /shot used to call `deps.screenshot` directly, so N callers meant N
+ * concurrent compositor captures on a SINGLE extension socket — and a relay
+ * page polls, so N grows on its own whenever a capture is slower than the poll
+ * interval. MEASURED 2026-10-18: 4.0s per capture on office Chrome with its X
+ * session locked, against a 2200ms poll. The page half of this fix paces one
+ * viewer; this half bounds every viewer, every stale page still open from
+ * before the fix, and my own probes, to one capture in flight per session.
+ *
+ * Callers arriving mid-capture share its result. They get a frame at most one
+ * capture old, which is what a poller wanted, and the extension sees one
+ * request instead of N.
+ *
+ * ⚠️ The timeout is NOT the extension's — CDP fails its own capture at 10s with
+ * a message worth reading, and that message still reaches the operator. This
+ * one catches the case where the socket never answers at all, so a dead
+ * capture cannot hold the shared slot until nginx gives up on everyone.
+ */
+const SHOT_TIMEOUT_MS = 20_000;
+const shotsInFlight = new Map<string, Promise<string>>();
+
+export function coalesceCapture(key: string, take: () => Promise<string>): Promise<string> {
+  const running = shotsInFlight.get(key);
+  if (running) return running;
+  const p = new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`capture did not answer within ${SHOT_TIMEOUT_MS / 1000}s`)),
+      SHOT_TIMEOUT_MS,
+    );
+    take().then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+  shotsInFlight.set(key, p);
+  // ⛔ Settled means free, whether it resolved or threw. A rejected promise left
+  // in the map would make every later poll fail with the SAME stale error.
+  p.catch(() => {}).then(() => { if (shotsInFlight.get(key) === p) shotsInFlight.delete(key); });
+  return p;
+}
+
 export function registerCaptchaRoutes(
   app: Express,
   deps: {
@@ -846,7 +926,7 @@ export function registerCaptchaRoutes(
     const s = live(req, res);
     if (!s) return;
     try {
-      const b64 = await deps.screenshot(s);
+      const b64 = await coalesceCapture(s.id, () => deps.screenshot(s));
       s.lastShotAt = Date.now();
       const buf = Buffer.from(b64.replace(/^data:image\/\w+;base64,/, ""), "base64");
       res.setHeader("Cache-Control", "no-store");

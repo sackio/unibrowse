@@ -60,19 +60,85 @@ test("a long press cannot raise a context menu or start a drag", () => {
   );
 });
 
+const slipway = fs.readFileSync(path.join(repoRoot, "src/slipway.ts"), "utf8");
+
+/** The body of the page's shot() in either relay, as source text. */
+function shotBody(src) {
+  const fn = src.slice(src.indexOf("function shot()"));
+  const end = fn.indexOf("\nfunction ", 1);
+  assert.notEqual(end, -1, "shot() must be followed by another function to bound it");
+  return fn.slice(0, end);
+}
+
 test("a screenshot that fails tells the operator why", () => {
-  const fn = captcha.slice(captcha.indexOf("function shot()"));
-  const body = fn.slice(0, fn.indexOf("function poll()"));
-  assert.match(body, /probe\.onerror/, "a failed image load must be handled at all");
+  for (const [name, src] of [["captcha", captcha], ["slipway", slipway]]) {
+    const body = shotBody(src);
+    assert.match(body, /\.json\(\)/, `${name}: the error body must be read, not discarded`);
+    assert.match(
+      body,
+      /Picture unavailable/,
+      `${name}: the operator must see text, not an empty frame`,
+    );
+  }
+});
+
+/**
+ * ⛔ THE ARITHMETIC, NOT THE RENDERING. Measured 2026-10-18 20:21 EDT: /shot
+ * took 4.00s five times running on office Chrome (X session locked) while
+ * /state answered in 61ms through the same proxy — so the cost is the
+ * compositor frame. The page polled every 2200ms and, because the response is
+ * no-store, each poll cost TWO captures: the probe Image, then the assignment
+ * to the visible <img>. ~8s of work demanded per 2.2s on one extension socket.
+ * Ben saw a broken image on his phone; the same relay had worked an hour
+ * earlier on a MacBook fast enough that the arithmetic never bit.
+ *
+ * ⇒ A fixed poll rate against a variable capture cost is the defect. These two
+ * assertions are the ones that make it impossible by construction, and neither
+ * is observable from a desktop browser or a server log — exactly like the three
+ * faults above.
+ */
+test("the page cannot outrun the capture it is polling", () => {
+  for (const [name, src] of [["captcha", captcha], ["slipway", slipway]]) {
+    const body = shotBody(src);
+    assert.ok(
+      !/new Image\(\)/.test(body),
+      `${name}: a probe Image costs a SECOND capture, because /shot is no-store`,
+    );
+    assert.equal(
+      (body.match(/fetch\('shot/g) || []).length,
+      1,
+      `${name}: exactly one request per shot`,
+    );
+    assert.match(
+      body,
+      /if \(shotInFlight\)/,
+      `${name}: a poll landing mid-capture must not start a second one`,
+    );
+  }
+});
+
+/**
+ * ⚠️ The page half only paces ONE viewer. A page already open from before the
+ * fix, a second phone, and my own probe all still arrive independently — so the
+ * bound has to exist server-side too, keyed on the session.
+ */
+test("concurrent callers share one capture per session", () => {
   assert.match(
-    body,
-    /fetch\('shot/,
-    "the error body must be re-fetched — the <img> load discards it",
+    captcha,
+    /export function coalesceCapture\(/,
+    "the coalescing helper must stay exported — slipway imports it",
   );
+  for (const [name, src] of [["captcha", captcha], ["slipway", slipway]]) {
+    assert.match(
+      src,
+      /coalesceCapture\(s\.id, \(\) => deps\.screenshot\(s\)\)/,
+      `${name}: /shot must go through the per-session coalescer`,
+    );
+  }
   assert.match(
-    body,
-    /Picture unavailable/,
-    "the operator must see text, not an empty frame",
+    captcha,
+    /shotsInFlight\.get\(key\) === p\) shotsInFlight\.delete\(key\)/,
+    "a settled capture must free the slot, or one failure poisons every later poll",
   );
 });
 

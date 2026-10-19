@@ -469,8 +469,15 @@ async function main() {
   // can drive that browser), and this endpoint is LAN-open and unauthenticated.
   app.get("/relay-sessions", (_req, res) => {
     const now = Date.now();
+    // ⛔ EXPIRY IS EVALUATED ON READ IN BOTH RELAYS, and nothing reads a session
+    // nobody is polling — so a dead link keeps `state: "pending"` in memory
+    // until the HOURLY sweep deletes it. Filtering on state alone made this
+    // endpoint, and the restart guard that reads it, HOLD a deploy on a link
+    // that expired up to an hour ago. Measured 2026-10-18 20:32: 9b5fe6d1 was
+    // past its expiry, read 0s remaining, and still counted as live.
+    // ⇒ Ask the clock here too. It fails toward HOLD, which is why it survived.
     const captcha = listCaptchaSessions()
-      .filter((s) => s.state === "pending")
+      .filter((s) => s.state === "pending" && s.expiresAt > now)
       .map((s) => ({
         kind: "captcha" as const,
         id: s.id,
@@ -485,7 +492,7 @@ async function main() {
         secondsRemaining: Math.max(0, Math.round((s.expiresAt - now) / 1000)),
       }));
     const slipway = listSlipwaySessions()
-      .filter((s) => s.state === "live")
+      .filter((s) => s.state === "live" && s.expiresAt > now)
       .map((s) => ({
         kind: "slipway" as const,
         id: s.id,
