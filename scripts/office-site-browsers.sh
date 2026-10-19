@@ -193,6 +193,21 @@ SITES=(
   # ⭐ Keep this one up even if the SITE browsers are taken down for load. Measured
   # 2026-10-11: an idle profile costs 0.0-0.4% of a core, and this is not a site.
   "alpacasignup|HDMI-0|corner|about:blank"
+  # ⛔ ALSO NOT A SITE, and it is `alpacasignup` with ONE difference: every byte it
+  # sends leaves through office's vpn-alpaca exit. `alpaca` asked for it
+  # 2026-10-19 05:59 EDT relaying Ben, Slack #alpaca 05:58 ("we need VPN
+  # working"). It exists to SPLIT ONE VARIABLE: their 05:30 and 05:47 signups ran
+  # in container chromium on that exit and Turnstile issued no token at all, while
+  # desktop Chrome passes Turnstile on the home IP. Those two runs differ in BOTH
+  # browser and IP, so neither can be blamed. This slot is desktop Chrome on the
+  # VPN IP — the cell that tells them which half Turnstile is rejecting.
+  # ⇒ ⛔ DO NOT "FIX" THIS SLOT BY DROPPING THE PROXY. A launch without it is
+  # byte-identical to alpacasignup and answers nothing; cmd_up refuses instead.
+  # ⚠️ Same incognito requirement as alpacasignup, from the same seeding template.
+  # ⛔ Never sign anything in here; it holds no persistent session by design.
+  # ⚠️ Its exit's PORT IS NOT STABLE — vpn-proxy's own header says a reroll keeps
+  # its port only by coincidence of ordering — so it is read at every launch.
+  "alpacavpn|DVI-I-1|corner|about:blank"
 )
 
 site_field() { # site_field <name> <monitor|slot|url>
@@ -247,6 +262,50 @@ monitor_geometry() { # monitor_geometry <output> -> "W H X Y"
 }
 
 profile_dir() { echo "$PROFILES_ROOT/$1"; }
+
+# ⭐ WHICH SLOTS EGRESS THROUGH A VPN EXIT. Deliberately a function and not a
+# fifth column in SITES: site_field reads the row with `IFS='|' read -r _ mon
+# slot url`, so a fifth field lands INSIDE $url ("about:blank|alpaca") and the
+# browser opens a bogus page instead of erroring.
+site_vpn_exit() { # site_vpn_exit <name> -> vpn-proxy exit name, or rc 1
+  case "$1" in
+    alpacavpn) echo "alpaca" ;;
+    *) return 1 ;;
+  esac
+}
+
+VPN_PROXY_BIN="/mnt/nas/data/code/scripts/vpn-proxy"
+
+# ⛔ READ THE PORT AT EVERY LAUNCH, NEVER HARDCODE IT. vpn-proxy's own caller
+# contract states that an exit returning to its old port after a stop+launch is
+# a coincidence of allocation ordering, not a guarantee. A hardcoded 18889 would
+# therefore keep working until someone rerolled the exit, and then Chrome would
+# dial a port owned by a DIFFERENT country's exit — or by nothing, which Chrome
+# reports as every site being unreachable rather than as a proxy fault.
+# ⭐ Fails closed, which is the property that matters here: `vpn-proxy get` reads
+# the port off the RUNNING container (_container_port) and exits 3 for a stopped
+# or unknown exit, rather than echoing a stale port out of the shared NAS state
+# file. Verified 2026-10-19: `get nosuchexit` -> rc 3, no output.
+vpn_proxy_url() { # vpn_proxy_url <exit-name> -> http://127.0.0.1:<port>, or rc 1
+  local out url
+  [ -x "$VPN_PROXY_BIN" ] || return 1
+  out="$("$VPN_PROXY_BIN" get "$1" 2>/dev/null)" || return 1
+  url="$(printf '%s\n' "$out" | sed -n 's/^export HTTP_PROXY=//p' | head -1)"
+  [ -n "$url" ] || return 1
+  printf '%s\n' "$url"
+}
+
+# ⛔ THE BYPASS LIST IS WHAT KEEPS THE EXTENSION ALIVE, not a performance tweak.
+# Same list the isolated launch builds (src/utils/proxy-spec.ts DEFAULT_BYPASS,
+# plus the mcp-server host appended the way buildProxyBypassList appends it).
+# The exit is a gluetun container with a killswitch, so LAN traffic sent INTO the
+# proxy does not merely take a longer path — it is dropped. Without this the MV3
+# worker never reaches :9010, no extension registers, and the launch reports
+# "no extension could be attributed to it", which reads as an extension fault.
+# ⚠️ 192.168.1.199 is already inside 192.168.0.0/16; it is listed anyway because
+# the isolated path lists it explicitly, and the two lists being literally the
+# same string is the point of this slot.
+PROXY_BYPASS_LIST="localhost;127.0.0.1;[::1];10.0.0.0/8;172.16.0.0/12;192.168.0.0/16;169.254.0.0/16;192.168.1.199"
 
 # ⛔ ADDED 2026-10-12. cmd_down used to TERM and return in the same breath, so
 # `down X` followed by `up X` launched a new Chrome INTO a still-dying one. A
@@ -402,6 +461,23 @@ ext.setdefault("settings", {}).setdefault(tmpl["id"], entry)
 ext.setdefault("ui", {})["developer_mode"] = True
 json.dump(prefs, open(prefs_path, "w"))
 SEED
+  # ⛔ A SLOT DECLARED AS VPN-ONLY REFUSES TO LAUNCH WITHOUT ITS EXIT. For
+  # alpacavpn a proxyless launch is not a degraded browser, it is the WRONG
+  # EXPERIMENT: it would sign up from the home IP, which is what alpacasignup
+  # already does, and the result would look like a successful run.
+  local -a proxy_args=()
+  local vpn_exit proxy_url
+  if vpn_exit="$(site_vpn_exit "$name")"; then
+    if ! proxy_url="$(vpn_proxy_url "$vpn_exit")"; then
+      echo "$name: ⛔ vpn exit '$vpn_exit' is not running — refusing to launch." >&2
+      echo "   A launch without it would egress from the HOME IP and read as a valid run." >&2
+      echo "   Bring it up: $VPN_PROXY_BIN up $vpn_exit   (or: $VPN_PROXY_BIN launch us $vpn_exit)" >&2
+      return 1
+    fi
+    proxy_args=( "--proxy-server=$proxy_url" "--proxy-bypass-list=$PROXY_BYPASS_LIST" )
+    echo "$name: egress via vpn-$vpn_exit at $proxy_url"
+  fi
+
   echo "$name: launching on $mon $slot half (${w}x${h}+${x}+${y}), profile $dir"
   setsid --fork "$CHROME_BIN" \
     --user-data-dir="$dir" \
@@ -412,6 +488,7 @@ SEED
     --disable-sync \
     --disable-default-apps \
     --disable-features=TranslateUI,DisableLoadExtensionCommandLineSwitch \
+    ${proxy_args[@]+"${proxy_args[@]}"} \
     "$url" \
     >>"$LOG_DIR/$name.log" 2>&1 </dev/null
 
