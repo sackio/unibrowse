@@ -319,6 +319,19 @@ const PAGE = String.raw`<!doctype html>
      ⛔ DO NOT PUT BACKTICKS IN THIS BLOCK — PAGE is a String.raw template. */
   #shot { width:100%; display:block; border-radius:8px; border:1px solid #2b2f37;
           touch-action:none; -webkit-touch-callout:none;
+  /* ⛔⛔ AN <img> WITH NO src IS A BROKEN-IMAGE ICON ON ANDROID, AND THE FIRST
+     FRAME TAKES SECONDS. Ben, Slack #alpaca 2026-10-19 09:06 EDT: "images
+     broken you need to get unibrows to fix it" — measured on that exact live
+     session, /shot was returning HTTP 200 and a clean 19756-byte PNG of the
+     signup form in 5.4-6.0s. Nothing was broken except this element, which
+     rendered as a broken icon for the whole wait, on every link minted.
+     ⚠️ I FIXED A DIFFERENT CAUSE OF THE SAME ICON ON 2026-10-18 (a no-store
+     double-request whose second failure showed an icon with no text) and
+     reported the symptom as solved. The icon had two causes; removing one left
+     a defect that looks identical from a phone, which is why the same words
+     came back 13 hours later.
+     ⇒ The element ships with a transparent pixel so it can NEVER render broken,
+     plus a dark panel so the wait reads as "nothing yet" rather than "failed". */
           -webkit-user-select:none; user-select:none; background:#0e1013; min-height:120px; }
   #dot { position:absolute; width:26px; height:26px; margin:-13px 0 0 -13px;
          border:2px solid #4ade80; border-radius:50%; pointer-events:none;
@@ -346,7 +359,7 @@ const PAGE = String.raw`<!doctype html>
     <div class="sub" id="meta"></div>
   </header>
   <div id="live">
-    <div id="wrap"><img id="shot" alt="page"><div id="dot"></div></div>
+    <div id="wrap"><img id="shot" alt="waiting for the first picture" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"><div id="dot"></div></div>
     <div class="r"><input id="txt" placeholder="Tap a box in the picture, then type here" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text" enterkeyhint="go"></div>
     <div class="bar">
       <button id="clear">Clear</button>
