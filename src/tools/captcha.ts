@@ -134,6 +134,61 @@ const NOTIFY_FROM = "unibrowse-captcha";
  */
 const OPERATOR_NOTICE_FROM = "unibrowse";
 
+/**
+ * Should THIS notice carry the @-mention that pings his phone?
+ *
+ * ⛔ THE RISK IS NOT NOTICE VOLUME, IT IS RE-MINT BURSTS, and `atc` measured it
+ * on the live broker log 2026-10-19 after I had shipped the mention. 38
+ * "Captcha needs you" notices since 10-12 is 5.4/day — nothing. But a failed
+ * captcha re-mints, and each re-mint was a fresh ping:
+ *     freelance/Fiverr      6 notices in  49 min  (press-and-hold retries)
+ *     apis/BLS              5 notices in  51 min  ("last code was wrong. New image")
+ *     pricetracker/eBay     5 notices in  56 min
+ *     business/ChromeStore  4 notices in 119 min
+ * ⇒ Unguarded, ONE BLS form pings his phone 5 times in under an hour, which is
+ * what actually trains a person to mute a channel.
+ *
+ * ⭐ ONLY THE PING IS DEDUPED — THE NOTICE IS ALWAYS POSTED. His 10-12 direction
+ * is about the notice, and a re-mint carries a NEW link that the old notice's
+ * link no longer substitutes for: sessions are single-use and expire. Dropping
+ * the post would hide the live link; dropping the ping only declines to buzz him
+ * twice about one form.
+ *
+ * ⚠️ THE WINDOW RUNS FROM THE LAST MENTION, NOT THE LAST NOTICE, and that choice
+ * is what makes a long burst behave correctly. Re-mints every 10 min would
+ * otherwise suppress the ping forever; measured from the last mention, the task
+ * rings again once 15 min have passed — by which point it has genuinely been
+ * waiting, which is `atc`'s point and is right.
+ *
+ * ⚠️ FAILS TOWARD RINGING, DELIBERATELY. The map is in this process's memory, so
+ * a restart forgets every task and the next notice pings. A missed ping is a
+ * captcha that expires untouched; a duplicate ping is a buzz. Those costs are
+ * not close, so the degraded state is the loud one.
+ *
+ * ⚠️ TASK KEY = requester + extension + TAB, because a captcha is bound to one
+ * tab and a re-mint of the same challenge targets that same tab. ⛔ Not the
+ * prompt: "said the last code was wrong. New image" is the same task with
+ * different words, and keying on text would ring for every retry. A re-mint
+ * that lands on a DIFFERENT tab does ring — a false ring, rare, and on the safe
+ * side of the asymmetry above.
+ */
+const MENTION_DEDUPE_MS = 15 * 60_000;
+const lastMentionedAt = new Map<string, number>();
+
+function shouldMention(session: CaptchaSession): boolean {
+  const key = `${session.requester ?? "-"}|${session.extensionId ?? "-"}|${String(session.tabTarget)}`;
+  const now = Date.now();
+  // Prune first, so a long-running server cannot accumulate a key per tab it
+  // has ever relayed. Cheap: this runs once per mint, not per poll.
+  for (const [k, t] of lastMentionedAt) {
+    if (now - t > MENTION_DEDUPE_MS) lastMentionedAt.delete(k);
+  }
+  const prev = lastMentionedAt.get(key);
+  if (prev !== undefined && now - prev <= MENTION_DEDUPE_MS) return false;
+  lastMentionedAt.set(key, now);
+  return true;
+}
+
 async function notify(
   to: string,
   url: string,
@@ -144,7 +199,9 @@ async function notify(
   // silent, and a captcha nobody is pushed about expires at 0 taps — measured
   // three times on 2026-10-19. ⭐ Empty for a seat-addressed notice, so this
   // cannot leak a mention into agent-to-agent traffic.
-  const mention = slackMention(to);
+  // ⚠️ AND SUPPRESSED ON A RE-MINT, so one stuck form cannot ring him five
+  // times — see shouldMention.
+  const mention = shouldMention(session) ? slackMention(to) : "";
   return sendBrokerMessage({
     to,
     from,

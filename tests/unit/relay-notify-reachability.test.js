@@ -211,3 +211,43 @@ test("a seat-addressed notice carries no mention", () => {
     "the solved-notice goes to an agent — a mention there is noise with no recipient",
   );
 });
+
+/**
+ * ⛔ THE RISK IS RE-MINT BURSTS, NOT NOTICE VOLUME. `atc` measured the live
+ * broker log 2026-10-19: 38 "Captcha needs you" notices since 10-12 is 5.4/day,
+ * but they arrive in bursts because a failed captcha re-mints — apis/BLS rang 5
+ * times in 51 minutes on ONE form. Unguarded, the mention turns that into five
+ * phone pings, which is what trains a person to mute a channel.
+ */
+test("a re-mint of the same task does not ring again", () => {
+  const fn = captcha.slice(captcha.indexOf("function shouldMention("));
+  const body = fn.slice(0, fn.indexOf("\nasync function "));
+  assert.match(body, /session\.tabTarget/, "the task key must be the tab the captcha is bound to");
+  assert.doesNotMatch(
+    body,
+    /session\.prompt/,
+    'keying on prompt text would ring for every retry — "New image" is the same task',
+  );
+  assert.match(body, /lastMentionedAt\.delete/, "the map must be pruned, not grown per tab forever");
+  assert.match(
+    captcha,
+    /shouldMention\(session\) \? slackMention\(to\) : ""/,
+    "the dedupe must gate the MENTION, never the notice",
+  );
+});
+
+/**
+ * ⭐ Only the ping is deduped. A re-mint carries a NEW link and the old one is
+ * expired or spent, so suppressing the POST would hide the live link — the
+ * opposite of the 10-12 direction.
+ */
+test("every notice is still posted, deduped or not", () => {
+  const fn = captcha.slice(captcha.indexOf("async function notify("));
+  const body = fn.slice(0, fn.indexOf("\n/**", 10));
+  assert.match(body, /return sendBrokerMessage\(/, "the send must be unconditional");
+  assert.doesNotMatch(
+    body,
+    /if \(!mention\) return/,
+    "a suppressed mention must never short-circuit the notice itself",
+  );
+});
