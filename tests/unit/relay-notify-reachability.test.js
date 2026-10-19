@@ -77,6 +77,52 @@ test("neither relay sends as a name that resolves to nobody", () => {
  * be a bigger bug than the one being fixed, so the probe is bounded and cannot
  * throw.
  */
+/**
+ * ⛔ THE FALLBACK THAT WAS THEATRE. For about three hours on 2026-10-19 the
+ * captcha relay fell back to `unibrowse-captcha` when the requester did not
+ * resolve — a name that is ITSELF unbound, so it diverts exactly like the one it
+ * was rescuing. `atc` measured the divert to commit b347914, 2026-10-14
+ * 13:10:48 EDT; before that an unbound sender really did produce an operator DM,
+ * which is why the recorded mechanism read correct for five weeks after it went
+ * false.
+ *
+ * ⚠️ The agent-less path had the same hole, and only luck hid it: no
+ * `unibrowse-captcha` notice had been minted since 10-12 19:16, so the first
+ * agent-less captcha after the bridge change would have vanished —
+ * `claude-login-auto`, which has no channel by design, included.
+ */
+test("an operator notice is never sent from an unbound sender", () => {
+  const captchaSrc = captcha;
+  assert.match(
+    captchaSrc,
+    /const OPERATOR_NOTICE_FROM = "unibrowse"/,
+    "the human-facing sender must be a name the bridge can resolve",
+  );
+  const route = captchaSrc.slice(captchaSrc.indexOf("const sendAs ="));
+  assert.match(
+    route.slice(0, 200),
+    /OPERATOR_NOTICE_FROM/,
+    "the fallback sender must resolve — NOTIFY_FROM is unbound and diverts",
+  );
+  assert.doesNotMatch(
+    route.slice(0, 200),
+    /: NOTIFY_FROM/,
+    "falling back to unibrowse-captcha is the 2026-10-19 theatre, reintroduced",
+  );
+});
+
+/**
+ * ⭐ SCOPE, from `atc`, so this is not over-corrected: the divert fires ONLY on
+ * the operator-DM path. A message addressed to an ordinary SEAT is untouched, so
+ * the solved-notice to the requester must keep its unbound provenance name — it
+ * must NOT be "fixed" along with the operator path.
+ */
+test("the solved-notice to a seat is left on its own sender", () => {
+  const fn = captcha.slice(captcha.indexOf("export async function notifySolvedToRequester"));
+  const body = fn.slice(0, fn.indexOf("\nfunction "));
+  assert.match(body, /from: NOTIFY_FROM/, "a seat-addressed DM is not affected by the divert");
+});
+
 test("the reachability probe cannot fail a mint", () => {
   const fn = publish.slice(publish.indexOf("export async function seatReachable"));
   const body = fn.slice(0, fn.indexOf("\nexport "));

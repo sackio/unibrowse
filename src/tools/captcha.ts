@@ -71,17 +71,62 @@ async function publishArtifact(
  * only goal was to make the phone buzz. Both behaviours are still here; which
  * one you get is decided by whether the caller identified itself.
  *
- * ⚠️ A REQUESTER WITH NO CHANNEL DEGRADES TO THE OLD BEHAVIOUR, SILENTLY AND
- * CORRECTLY. The bridge's lookup does not CREATE a channel, so a seat that has
- * never had one (a sidecar, `claude-login-auto`) resolves to the human's DM
- * exactly as before. Nothing is lost; the notice simply arrives where it used
- * to. ⇒ Do not read "it went to a DM" as this code having been bypassed.
+ * ⛔⛔ THE PARAGRAPH THAT USED TO SIT HERE WAS TRUE AND IS NOW FALSE, WHICH IS
+ * WHY IT IS QUOTED INSTEAD OF DELETED. It said: "a requester with no channel
+ * degrades to the old behaviour, silently and correctly … resolves to the
+ * human's DM exactly as before. Nothing is lost." That was correct for the
+ * bridge as it stood on 2026-09-12, when an unbound sender fell through to
+ * `route.kind === "dm"` and produced a real DM.
+ *
+ * ⛔ IT WENT FALSE ON 2026-10-14 13:10:48 EDT, atc commit `b347914`, which added
+ * `divertOperatorDm`. An UNBOUND SENDER ON THE OPERATOR-DM PATH NO LONGER DMs
+ * THE OPERATOR — it diverts to the `atc` seat. `atc` established the date with a
+ * clean split and no counterexamples either side: `unibrowse-captcha` produced 6
+ * real DMs to slack:U0NGEHS2J (10-09 21:15, 10-12 18:23/18:24/18:37/18:37,
+ * 19:16), all BEFORE b347914, and the only two diverts in a log spanning 09-22
+ * to now are `sure-watchdog` 10-15 20:07 and `alpaca-signup` 10-19, both after.
+ *
+ * ⚠️ THE EXPOSURE WAS NOT YET PAID, AND THAT IS LUCK, NOT DESIGN. No
+ * `unibrowse-captcha` line appears in the broker log after 10-12 19:16, so no
+ * agent-less captcha has been minted since the change — the first one would have
+ * vanished, `claude-login-auto` included.
+ *
+ * ⇒ THE HUMAN-FACING NOTICE IS SENT FROM A SENDER THAT RESOLVES. See
+ * OPERATOR_NOTICE_FROM. ⭐ SCOPE, from `atc`, so this is not over-corrected: the
+ * divert fires ONLY on the operator-DM path (`route.kind` dm with `to` = the
+ * human). A message addressed to an ordinary SEAT is untouched and still a plain
+ * DM — which is why `notifySolvedToRequester` below is deliberately left alone.
+ *
+ * ⚠️ THE LESSON IS NOT "THE BRIDGE CHANGED". It is that a recorded mechanism
+ * attributed to a seat and a date READ EXACTLY THE SAME five weeks after it
+ * stopped being true. Nothing in the comment could age, so nothing in it warned
+ * anyone. Date the claim and name the commit, as above.
  *
  * ⚠️ BEST EFFORT, AND THE CALLER IS TOLD WHEN IT FAILS. A captcha nobody is told
  * about blocks an agent until timeout, so a failure here must never be
  * swallowed. It is not fatal either: the URL is still returned.
  */
 const NOTIFY_FROM = "unibrowse-captcha";
+
+/**
+ * The sender for anything aimed at the OPERATOR.
+ *
+ * ⛔ IT MUST BE A NAME THE BRIDGE CAN RESOLVE, or the notice diverts and the
+ * operator is never pinged (see b347914 above). This seat's own name resolves
+ * (basis: channel), so the notice lands in #unibrowse.
+ *
+ * ⚠️ THIS IS A DELIBERATE DEPARTURE FROM A DECISION BEN MADE, AND HE IS TOLD:
+ * he approved `unibrowse-captcha` staying on an unbound name at source (#agents
+ * 2026-10-09), reasoning that a captcha is the one alert no agent can action, so
+ * routing it to a seat's channel guarantees nobody solves it. ⇒ THE MECHANISM
+ * THAT APPROVAL RESTED ON NO LONGER EXISTS: an unbound name does not DM him any
+ * more, it diverts to `atc`, so keeping it would deliver NOTHING rather than a
+ * DM. His later direction (#unibrowse 2026-10-12, "get notified about captchas
+ * on the channel of the agent or thread requesting it") already asks for channel
+ * routing, and Slipway has posted to #unibrowse on his explicit instruction
+ * since 10-12. A channel he reads beats a divert he does not.
+ */
+const OPERATOR_NOTICE_FROM = "unibrowse";
 
 async function notify(
   to: string,
@@ -207,16 +252,15 @@ export const requestCaptchaSolve: Tool = {
       // ⛔ DO NOT SEND AS A NAME THAT RESOLVES TO NOBODY. Sending as the
       // requester is what puts the notice in that seat's own channel (Ben,
       // #unibrowse 2026-10-12), and that is kept whenever the name resolves.
-      // When it does NOT, the sender-based routing has nothing to route on, so
-      // we fall back to the name this tool used before `agent` existed rather
-      // than riding an unroutable one.
-      // ⚠️ THIS IS MITIGATION, NOT A PROVEN FIX, and the response says so:
-      // NOTIFY_FROM is itself `basis: none` as a recipient, and whether the
-      // bridge treats an unbound SENDER as a plain DM (what this file recorded
-      // from `atc` on 2026-09-12) or diverts it (what `atc` measured on
-      // 2026-10-19) is the open question. ⇒ The caller is told to send the URL
-      // itself rather than being told the operator was pinged.
-      const sendAs = requester && reach.reachable !== false ? requester : NOTIFY_FROM;
+      // When it does NOT — and when no `agent` was passed at all — the fallback
+      // is this seat's own name, which resolves, so the notice lands in
+      // #unibrowse instead of diverting to `atc`.
+      // ⛔ NOT `NOTIFY_FROM`. That was the fallback for about three hours on
+      // 2026-10-19 and it was theatre: `unibrowse-captcha` is unbound, so it
+      // diverts exactly like the name it was rescuing. `atc` measured it and
+      // said so. The agent-less path had the same hole and nobody had minted
+      // one since 10-14 to discover it.
+      const sendAs = requester && reach.reachable !== false ? requester : OPERATOR_NOTICE_FROM;
 
       const published = await publishArtifact(session, solver);
       const url = published.url || `${selfPublicBase()}/captcha/${session.token}/`;
@@ -260,11 +304,11 @@ export const requestCaptchaSolve: Tool = {
           sentAs: sendAs,
           notifiedVia:
             !requester
-              ? "the solver's DM (no `agent` was passed)"
+              ? `sent as "${OPERATOR_NOTICE_FROM}" (no \`agent\` was passed), so it lands in that seat's channel`
               : reach.reachable === true
                 ? `sent as "${requester}", which resolves (${reach.basis}), so it lands in that correspondent's own channel`
                 : reach.reachable === false
-                  ? `⚠️ "${requester}" resolves to nobody (${reach.basis}), so it was NOT used as the sender — sent as "${NOTIFY_FROM}" instead, and WHERE THAT LANDS IS UNCONFIRMED`
+                  ? `⚠️ "${requester}" resolves to nobody (${reach.basis}), so it was NOT used as the sender — sent as "${OPERATOR_NOTICE_FROM}", which lands in that seat's channel rather than the requester's`
                   : `sent as "${requester}", but its resolution could not be checked (${reach.basis})`,
           // ⚠️ `solveNoticeTo` NULL NOW HAS TWO CAUSES AND THEY ARE DIFFERENT
           // FAULTS: no `agent` was passed, or the `agent` passed cannot be
