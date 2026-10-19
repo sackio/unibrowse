@@ -99,6 +99,36 @@ export async function publishProxyArtifact(opts: {
  * `false` would invent a defect, while collapsing it into `true` would restore
  * exactly the false promise this function exists to remove.
  */
+/**
+ * The Slack @-mention for a notice addressed to a human, or "" for anything else.
+ *
+ * ⛔⛔ A SLACK CHANNEL MESSAGE WITH NO MENTION RAISES NO PUSH ON HIS PHONE. A DM
+ * always does. That one sentence is why three captcha relays expired at 0 taps
+ * on 2026-10-19 while the operator was demonstrably present — he wrote "you can
+ * send me captchas to solve" in #alpaca at 06:13 EDT (ts 1792404792.025369) and
+ * a notice posted into that same channel still expired untouched 35 minutes
+ * later. Diagnosed by the `atc` seat; I had measured the 0-tap pattern and
+ * attributed it to the WRONG variable (time of day).
+ *
+ * ⚠️ THE NOTICE BEING DELIVERED AND THE NOTICE RINGING ARE DIFFERENT CLAIMS,
+ * and the broker can only report the first. `sent: 1` was true for every one of
+ * those three.
+ *
+ * ⭐ KEYED ON THE RECIPIENT, NOT ON A HARDCODED OPERATOR, which is what keeps it
+ * self-limiting: it fires only when the notice is addressed to a Slack human —
+ * who by definition has to act, since that is the only reason to address one —
+ * and stays silent for every seat-to-seat message. ⚠️ `atc`'s caution is real
+ * and this is the mechanism that honours it: a mention on every seat notice is
+ * how he ends up muting the channel.
+ *
+ * ⛔ DO NOT ADD THIS TO A NOTICE THAT DOES NOT NEED HIM. The value of a mention
+ * is entirely that it is rare.
+ */
+export function slackMention(to: string): string {
+  const m = /^slack:(U[A-Z0-9]{4,})$/.exec((to || "").trim());
+  return m ? `<@${m[1]}>` : "";
+}
+
 export async function seatReachable(
   id: string,
 ): Promise<{ reachable: boolean | null; basis: string }> {

@@ -169,3 +169,45 @@ test("an unreachable requester is told to send the link itself", () => {
     );
   }
 });
+
+/**
+ * ⛔⛔ DELIVERED AND RUNG ARE DIFFERENT CLAIMS, AND THE BROKER CAN ONLY REPORT
+ * THE FIRST. A Slack channel message with no @-mention raises no push on the
+ * operator's phone; a DM always does. Three captcha relays expired at 0 taps on
+ * 2026-10-19 with `sent: 1` on every one, and he was demonstrably present for
+ * the third — he wrote "you can send me captchas to solve" in #alpaca at 06:13
+ * EDT and a notice posted into that same channel expired untouched 35 minutes
+ * later. Diagnosed by `atc`; I had the 0-tap pattern and blamed time of day.
+ */
+test("a notice addressed to a human carries an @-mention", () => {
+  const mention = fs.readFileSync(path.join(repoRoot, "src/utils/atc-publish.ts"), "utf8");
+  assert.match(
+    mention,
+    /export function slackMention\(/,
+    "the mention must be derived in one place, not spelled into each notice",
+  );
+  assert.match(
+    mention,
+    /\^slack:\(U\[A-Z0-9\]/,
+    "it must key on the RECIPIENT being a Slack human, not on a hardcoded operator id",
+  );
+  for (const [name, src] of RELAYS) {
+    assert.match(src, /slackMention\(/, `${name}'s notice must carry the mention that makes it ring`);
+  }
+});
+
+/**
+ * ⚠️ THE GUARD THAT KEEPS THE MENTION WORTH ANYTHING. `atc`: a mention on every
+ * seat notice is how he ends up muting the channel. Keying on the recipient is
+ * what makes this self-limiting — agent-to-agent traffic gets "" and the
+ * solved-notice to a requesting SEAT must never acquire one.
+ */
+test("a seat-addressed notice carries no mention", () => {
+  const fn = captcha.slice(captcha.indexOf("export async function notifySolvedToRequester"));
+  const body = fn.slice(0, fn.indexOf("\nfunction "));
+  assert.doesNotMatch(
+    body,
+    /slackMention|<@U/,
+    "the solved-notice goes to an agent — a mention there is noise with no recipient",
+  );
+});

@@ -2,7 +2,13 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 
 import { OpenSlipwayTool, CloseSlipwayTool } from "@/types/tool-schemas";
 import { jsonResponse, errorResponse } from "@/utils/response-helpers";
-import { publishProxyArtifact, sendBrokerMessage, selfPublicBase, seatReachable } from "@/utils/atc-publish";
+import {
+  publishProxyArtifact,
+  sendBrokerMessage,
+  selfPublicBase,
+  seatReachable,
+  slackMention,
+} from "@/utils/atc-publish";
 import {
   createSlipwaySession,
   getSlipwayById,
@@ -120,7 +126,14 @@ export const openSlipway: Tool = {
             // measured to divert. The response reports which was used.
             from: sendAs,
             subject: "Slipway is open",
+            // ⛔ SAME MENTION, SAME REASON, AND IT APPLIES HERE BY THE SAME
+            // TEST: a Slipway notice exists only because a human has to drive
+            // something, so if it does not ring it has failed. `atc` scoped
+            // their advice to captcha-class notices; this qualifies on the
+            // criterion they gave rather than on the label, and it is keyed on
+            // the recipient, so a Slipway handed to a SEAT carries no mention.
             content:
+              `${slackMention(holder) ? slackMention(holder) + " " : ""}` +
               `Drive ${session.label} from your phone:\n\n${url}\n\n` +
               `Pick a tab at the top — every tab in that browser is listed, and \u25cf marks one ` +
               `that is not attached yet, which picking it fixes. Then tap the picture where ` +

@@ -6,7 +6,13 @@ import {
   CancelCaptchaSolveTool,
 } from "@/types/tool-schemas";
 import { jsonResponse, errorResponse } from "@/utils/response-helpers";
-import { publishProxyArtifact, sendBrokerMessage, selfPublicBase, seatReachable } from "@/utils/atc-publish";
+import {
+  publishProxyArtifact,
+  sendBrokerMessage,
+  selfPublicBase,
+  seatReachable,
+  slackMention,
+} from "@/utils/atc-publish";
 import {
   createCaptchaSession,
   getSessionById,
@@ -134,12 +140,17 @@ async function notify(
   session: CaptchaSession,
   from: string,
 ): Promise<{ ok: boolean; error: string | null }> {
+  // ⛔ THE MENTION IS WHAT MAKES HIS PHONE RING. Without it a channel post is
+  // silent, and a captcha nobody is pushed about expires at 0 taps — measured
+  // three times on 2026-10-19. ⭐ Empty for a seat-addressed notice, so this
+  // cannot leak a mention into agent-to-agent traffic.
+  const mention = slackMention(to);
   return sendBrokerMessage({
     to,
     from,
     subject: "Captcha needs you",
     content:
-      `A browser automation hit a captcha and is waiting.\n\n` +
+      `${mention ? mention + " " : ""}A browser automation hit a captcha and is waiting.\n\n` +
       `${session.prompt}\n\n` +
       `${url}\n\n` +
       `Tap the picture where you would tap the page. Link expires ` +
