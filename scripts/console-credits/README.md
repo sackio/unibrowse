@@ -68,12 +68,20 @@ Attestation mint times measured 2026-10-20, same WAN egress:
 | office `ext_bb94966c`, claude.ai, incognito | **506ms** 09:50 · **611ms** 10:35 — stable |
 | server4 sidecar, platform.claude.com, 1st+2nd mint | 2325ms · 2079ms |
 | server4 sidecar, every mint after | **NONE at ~14s**, 0 tokens on 3 widgets |
+| server4 sidecar, **re-probed 17:05 + 17:08 after ~6h rest** | `attestation-pending` — mint 9197ms then 9629ms, `hcaptchaTokenLens [0,0]`, 2 widgets, no token |
 
 A VIRGIN sidecar profile fails too (`NONE 14018ms`), so launching a clean profile does
 not help — the instinct toward isolation is what breaks it. The early successes then
 uniform failure is a budget being spent, not a fingerprint being rejected.
 ⭐ Office stayed at ~600ms throughout, so this did NOT exhaust a WAN-wide budget; the
 degradation is specific to the sidecar lane.
+⇒ **~6 HOURS OF REST IS NOT ENOUGH** (measured 2026-10-20 17:08). The only recovery
+actually observed is OVERNIGHT. The second mintOnly call the macro itself prescribes was
+made and did not help, so this is not the in-flight race the message describes.
+⚠️ The probe is claude.ai-scoped: on `platform.claude.com` the macro returns
+`error: wrong-page` and does nothing. Navigate to `claude.ai/login`, and **wait ~12s for
+the widget to MOUNT** — run it immediately after navigate and you get `no-attestation`
+with `widgets: 0`, which is a load-timing artefact, not a lane verdict.
 ⇒ **Rest it for hours** (ext_bb94966c recovered overnight on 10-17). Do not retry in a
 loop, and do not go borrow `agents`' login browser — `claude-login-auto` needs its mint
 budget for account swaps.
