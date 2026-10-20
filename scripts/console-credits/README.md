@@ -35,3 +35,45 @@ keeps the magic-link URLs — live single-use credentials — out of any LLM con
   throttle it — ben@sack.io and agents@sack.io stopped returning "link sent"
   after repeated debug attempts. `claude-login-auto` uses magic links to those
   same addresses, so back off rather than retrying.
+
+## ⛔ Three more traps, measured 2026-10-20 (the first run of this tool)
+
+- **The submit needs an attestation token AT CLICK TIME, and this script used to click
+  without one.** All three accounts returned a bare `no link-sent` while the page read
+  "Couldn't verify your browser. Try again." — no mail was sent, and it looked exactly
+  like the magic-link throttle warned about above. It is not that. `cc2.py` now mints
+  before clicking and reports the timing in a `mint` field.
+  ⚠️ "Try again." on the Console login page is PLAIN TEXT in `#email-error`, not a
+  control. There is nothing to press, unlike claude.ai's redeem page.
+- **`platform.claude.com/logout` does not end the session.** After one account signs in,
+  `/logout` then `/login` lands on `/dashboard` still signed in, so the layout probe
+  finds no email field and every later account in the batch dies "login card not laid
+  out". ⇒ Pass `UB_EXT=<extensionId>` so the script can clear cookies scoped by
+  `tabTarget`, or run ONE account per launched browser. The `WRONG ACCOUNT` guard is the
+  only thing that stops the first account's grant being reported under the other names.
+- **A failed `browser_evaluate` returns its error as content text, not as an error.**
+  `nav(B,"about:blank")` detaches the debugger (restricted URL), so the next evaluate
+  returned the 74-char string "Failed to evaluate JavaScript: Cannot attach debugger to
+  restricted URL: about:blank" — which the script took for the 6-digit code, typed into
+  `input[name=code]` and submitted. The page answered "There was an error verifying your
+  code", so the fault read as a code-flow problem while the real cause was a parked tab.
+  `ev()` now raises. The neutral URL between links is a real same-origin page.
+
+## ⚠️ LANE: the chromium-host sidecar is the WORST lane for this, and rest is the only fix
+
+Attestation mint times measured 2026-10-20, same WAN egress:
+
+| lane | mint |
+|---|---|
+| office `ext_bb94966c`, claude.ai, incognito | **506ms** 09:50 · **611ms** 10:35 — stable |
+| server4 sidecar, platform.claude.com, 1st+2nd mint | 2325ms · 2079ms |
+| server4 sidecar, every mint after | **NONE at ~14s**, 0 tokens on 3 widgets |
+
+A VIRGIN sidecar profile fails too (`NONE 14018ms`), so launching a clean profile does
+not help — the instinct toward isolation is what breaks it. The early successes then
+uniform failure is a budget being spent, not a fingerprint being rejected.
+⭐ Office stayed at ~600ms throughout, so this did NOT exhaust a WAN-wide budget; the
+degradation is specific to the sidecar lane.
+⇒ **Rest it for hours** (ext_bb94966c recovered overnight on 10-17). Do not retry in a
+loop, and do not go borrow `agents`' login browser — `claude-login-auto` needs its mint
+budget for account swaps.
