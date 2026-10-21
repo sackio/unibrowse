@@ -346,11 +346,35 @@ export const createTab: Tool = {
           );
         }
 
+        // ⛔ "THE CHECK DID NOT RUN" AND "THE CHECK FOUND NOTHING" ARE
+        //   DIFFERENT ANSWERS AND MUST NOT SHARE A SENTENCE. They shared one
+        //   until 2026-10-21, with the reason tucked into parentheses inside
+        //   the words "Reconciliation found no matching tab … so the tab
+        //   probably was not created" — so a check that never happened read as
+        //   a clean negative, and the caller believed a tab did not exist.
+        //   MEASURED that day: `thread-travel-1` got two of these 43s apart,
+        //   reported "reconciliation found no tab created", and BOTH tabs
+        //   existed (41946098 and 41946101) — created, navigated, attached AND
+        //   reserved to them. ⇒ This branch fires precisely when the create was
+        //   slow, which is precisely when a tab is most likely to exist, and it
+        //   was failing toward "nothing happened".
+        if (reconciled.kind === "unchecked") {
+          return errorResponse(
+            `Failed to create tab: ${msg}. ⛔ WHETHER A TAB WAS CREATED IS UNKNOWN — the ` +
+              `reconciliation check could not run (${reconciled.why}), so this is NOT a report ` +
+              `that no tab exists. The create may well have completed: it happens browser-side ` +
+              `(create, navigate, attach, reserve) and a timeout only means the answer did not ` +
+              `get back. ⇒ Read browser_list_attached_tabs and look for a tab attached since this ` +
+              `call started BEFORE you retry — a blind retry is how duplicate tabs happen.`,
+            false, err, max_tokens,
+          );
+        }
+
         return errorResponse(
-          `Failed to create tab: ${msg}. ⚠️ Reconciliation found no matching tab attached since ` +
-            `this call started${reconciled.kind === "unchecked" ? ` (the check itself failed: ${reconciled.why})` : ""}, ` +
-            `so the tab probably was not created — but a timeout cannot prove that. Before retrying, ` +
-            `confirm with browser_list_attached_tabs; a blind retry on this error is how duplicate tabs happen.`,
+          `Failed to create tab: ${msg}. ⚠️ Reconciliation RAN and found no matching tab attached ` +
+            `since this call started, so the tab probably was not created — but a timeout cannot ` +
+            `prove that. Before retrying, confirm with browser_list_attached_tabs; a blind retry on ` +
+            `this error is how duplicate tabs happen.`,
           false, err, max_tokens,
         );
       }
@@ -381,7 +405,16 @@ async function findTabCreatedSince(
     const res: any = await context.sendSocketMessage(
       "browser_list_attached_tabs",
       {},
-      { extensionId: params?.extensionId, timeoutMs: 10000 },
+      // ⛔ NOT 10s. This asks the extension over the SAME socket whose 30s
+      //   create just timed out, so a worker slow enough to blow that budget
+      //   will usually blow a 10s one too — and that failure lands in the
+      //   `unchecked` branch, the one branch that cannot tell the caller
+      //   anything. MEASURED 2026-10-21 (`thread-travel-1`, two calls 43s
+      //   apart on office desktop Chrome): both tabs existed and both
+      //   reconciles came back unusable. On that browser the attach lands
+      //   ~25s after the request, so by the time this runs the tab is already
+      //   there — the check only has to be patient enough to hear back.
+      { extensionId: params?.extensionId, timeoutMs: 20000 },
     );
     const tabs: any[] = res?.tabs ?? [];
     const wanted = params?.url ? String(params.url) : null;
