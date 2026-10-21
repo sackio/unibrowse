@@ -69,6 +69,7 @@ Attestation mint times measured 2026-10-20, same WAN egress:
 | server4 sidecar, platform.claude.com, 1st+2nd mint | 2325ms · 2079ms |
 | server4 sidecar, every mint after | **NONE at ~14s**, 0 tokens on 3 widgets |
 | server4 sidecar, **re-probed 17:05 + 17:08 after ~6h rest** | `attestation-pending` — mint 9197ms then 9629ms, `hcaptchaTokenLens [0,0]`, 2 widgets, no token |
+| office chromium-host sidecar, **virgin `cc-probe3`, 2026-10-21 09:15+09:16, after a FULL NIGHT** | `attestation-pending` — mint **8980ms then 9065ms**, `hcaptchaTokenLens [0,0]`, 2 widgets, no token |
 
 A VIRGIN sidecar profile fails too (`NONE 14018ms`), so launching a clean profile does
 not help — the instinct toward isolation is what breaks it. The early successes then
@@ -82,6 +83,18 @@ made and did not help, so this is not the in-flight race the message describes.
 `error: wrong-page` and does nothing. Navigate to `claude.ai/login`, and **wait ~12s for
 the widget to MOUNT** — run it immediately after navigate and you get `no-attestation`
 with `widgets: 0`, which is a load-timing artefact, not a lane verdict.
-⇒ **Rest it for hours** (ext_bb94966c recovered overnight on 10-17). Do not retry in a
-loop, and do not go borrow `agents`' login browser — `claude-login-auto` needs its mint
-budget for account swaps.
+⛔⛔ **AND OVERNIGHT IS NOT ENOUGH EITHER — THE "REST FIXES IT" MODEL IS FALSIFIED.**
+Measured 2026-10-21 09:15-09:16 on a VIRGIN `cc-probe3` profile, ~22h after the 10-20
+degradation and across a full night: ~9s mints, 2 widgets, 0-length tokens, no token. That
+is three virgin profiles on three consecutive days failing identically.
+⚠️ The overnight recovery on 10-17 was **ext_bb94966c, office's browser** — a DIFFERENT
+lane. Nothing has ever been observed to recover the *sidecar* lane, so do not read the
+10-17 datum as applying to it. ⇒ Treat the sidecar as BLOCKED, not as resting: a budget
+that ignores profile freshness and does not refill in 22h is not a budget. It did work
+twice on 10-20 (2325ms, 2079ms) before it stopped, so the lane is capable and something
+about it is now refused.
+⇒ **Go to the fallback lane** — a fresh incognito tab on office desktop Chrome
+(`ext_018237f9`), probed the same way (memo 5eaf3446). ⛔ CHECK IT IS IDLE FIRST: the
+concurrency ceiling is per-extension, one WebSocket and one MV3 worker, so probing it while
+a seat drives it starves live work. Do not retry in a loop, and do not go borrow `agents`'
+login browser — `claude-login-auto` needs its mint budget for account swaps.
