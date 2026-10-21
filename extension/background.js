@@ -745,16 +745,24 @@ class TabManager {
       this.lastUsedTabId = tabId;
       console.log('[TabManager] Tab info stored, now adding [MCP] prefix...');
 
-      // Add [MCP] prefix to tab title (do this AFTER storing in map)
+      // ⛔ STEALTH BY DEFAULT — WE NO LONGER BRAND THE TAB TITLE. Ben,
+      // #unibrowse 2026-10-21 11:25 EDT: "get rid of all the stuff like mCP
+      // renaming and all that crap and make our extension stealth by default".
+      // MEASURED that morning: Amazon serves its "unauthorized AI agent" page to
+      // any browser carrying this extension's footprint — on the warm rig the
+      // extension never even connected and the wall still appeared, so it is the
+      // injected evidence, not the remote control. A renamed document.title is
+      // the cheapest possible tell: one string compare from any page script.
+      // ⭐ We STRIP instead of skipping, so a tab that already carries the
+      // prefix from an older worker gets cleaned the first time we touch it.
       try {
         await cdp.evaluate(`
-          if (!document.title.startsWith('🟢 [MCP] ')) {
-            document.title = '🟢 [MCP] ' + document.title;
+          if (document.title.startsWith('🟢 [MCP] ')) {
+            document.title = document.title.replace('🟢 [MCP] ', '');
           }
         `, true);
-        console.log('[TabManager] Added [MCP] prefix to tab title');
       } catch (error) {
-        console.error('[TabManager] Failed to update tab title:', error);
+        console.error('[TabManager] Failed to clear tab title prefix:', error);
         // Continue anyway - tab is still attached
       }
 
@@ -3734,14 +3742,14 @@ class BackgroundController {
     }
 
     try {
-      // Don't add prefix if it's already there
-      if (this.state.originalTabTitle.startsWith('🟢 [MCP]')) {
-        return;
-      }
-
-      const newTitle = `🟢 [MCP] ${this.state.originalTabTitle}`;
-      await this.cdp.evaluate(`document.title = ${JSON.stringify(newTitle)}`, true);
-      console.log('[Background] Tab title updated with MCP indicator');
+      // ⛔ STEALTH: never brand the title. See the note in TabManager's attach
+      // path. This used to ADD the prefix; it now removes one if present, which
+      // is what keeps a browser running an older worker from staying marked.
+      await this.cdp.evaluate(`
+        if (document.title.startsWith('🟢 [MCP] ')) {
+          document.title = document.title.replace('🟢 [MCP] ', '');
+        }
+      `, true);
     } catch (error) {
       console.error('[Background] Failed to update tab title:', error);
     }
@@ -4025,74 +4033,27 @@ class BackgroundController {
       return;
     }
 
+    // ⛔ STEALTH BY DEFAULT — WE NO LONGER DRAW THE ON-PAGE INDICATOR. Ben,
+    // #unibrowse 2026-10-21 11:25 EDT. A fixed-position element with a known id
+    // sitting in the page is findable by one getElementById from any script on
+    // it, and MEASURED the same morning: Amazon walls any browser carrying this
+    // extension's footprint. ⭐ We still REMOVE an indicator left behind by an
+    // older worker, which is why this function survives rather than being
+    // deleted at every call site — deleting the calls would leave those stale
+    // elements on screen forever.
     try {
       await this.cdp.evaluate(`
         (() => {
-          // Remove any existing indicator
           const existing = document.getElementById('browser-mcp-indicator');
           if (existing) existing.remove();
-
-          // Create indicator using DOM methods (no innerHTML - works with TrustedHTML policies)
-          const container = document.createElement('div');
-          container.id = 'browser-mcp-indicator';
-          container.style.cssText = \`
-            position: fixed;
-            bottom: 16px;
-            right: 16px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 8px 16px;
-            border-radius: 8px;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            font-size: 13px;
-            font-weight: 500;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            z-index: 2147483647;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            pointer-events: none;
-            animation: mcpFadeIn 0.3s ease-out;
-          \`;
-
-          // Create pulse dot
-          const dot = document.createElement('div');
-          dot.style.cssText = \`
-            width: 8px;
-            height: 8px;
-            background: #10b981;
-            border-radius: 50%;
-            animation: mcpPulse 2s ease-in-out infinite;
-          \`;
-
-          // Create text node
-          const text = document.createTextNode('MCP Connected');
-
-          // Assemble indicator
-          container.appendChild(dot);
-          container.appendChild(text);
-
-          // Add animations
-          const style = document.createElement('style');
-          style.textContent = \`
-            @keyframes mcpFadeIn {
-              from { opacity: 0; transform: translateY(10px); }
-              to { opacity: 1; transform: translateY(0); }
-            }
-            @keyframes mcpPulse {
-              0%, 100% { opacity: 1; }
-              50% { opacity: 0.5; }
-            }
-          \`;
-          document.head.appendChild(style);
-
-          document.body.appendChild(container);
-        })();
+          return 'cleared';
+        })()
       `, true);
-      console.log('[Background] Tab indicator injected');
     } catch (error) {
-      console.error('[Background] Failed to inject indicator:', error);
+      console.error('[Background] Failed to clear page indicator:', error);
     }
+    return;
+
   }
 
   /**
