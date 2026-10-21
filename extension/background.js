@@ -6293,12 +6293,27 @@ class BackgroundController {
       // being explicit here keeps the "caller said nothing" case unambiguous.
       ...(typeof downDelay === 'number' ? { downDelay } : {})
     });
+    // ⚠️ The leading sentence is byte-identical to what it has always been,
+    // because callers parse it. A bringToFront failure is APPENDED, never
+    // substituted — and it must be reported: without the foreground, CDP Input
+    // events land on whichever tab has OS focus, so a "success" here can mean
+    // the click went to someone else's tab (cdp.js:1173, verified 2026-06-03).
+    const btfError = cdp._lastBringToFrontError;
+    let message = `${clickCount === 2 ? 'Double-' : ''}Clicked ${button || 'left'} button at (${x}, ${y})`;
+    if (btfError) {
+      message += ` ⛔ BUT Page.bringToFront FAILED (${btfError}) — this tab was NOT brought to the ` +
+        `foreground, and CDP Input events go to whichever tab holds OS focus, NOT to the tab whose ` +
+        `debugger session we called through. ⇒ TREAT THIS CLICK AS LANDING SOMEWHERE UNKNOWN, ` +
+        `possibly another tab on this browser. Verify the effect before retrying, and do not retry ` +
+        `an irreversible control blind.`;
+    }
     return {
       success: true,
       position: { x, y },
       button: button || 'left',
       clickCount: clickCount || 1,
-      message: `${clickCount === 2 ? 'Double-' : ''}Clicked ${button || 'left'} button at (${x}, ${y})`
+      ...(btfError ? { bringToFrontError: btfError } : {}),
+      message
     };
   }
 

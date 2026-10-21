@@ -1115,7 +1115,16 @@ class CDPHelper {
     // focus relative to the host's main display). Without this, Input events
     // observed leaking to a different focused tab. Best-effort: don't fail
     // the whole move if bringToFront errors (some targets don't support it).
-    try { await this.sendCommand('Page.bringToFront', {}); } catch { /* best-effort */ }
+    // ⛔ DO NOT SWALLOW THIS. A failed bringToFront does not degrade the move,
+    // it MISDIRECTS it: per the comment above, Input events then land on
+    // whichever tab has OS focus — someone else's tab, on a browser a human is
+    // using. Record it so the caller is told rather than reading success.
+    this._lastBringToFrontError = null;
+    try {
+      await this.sendCommand('Page.bringToFront', {});
+    } catch (e) {
+      this._lastBringToFrontError = e?.message || String(e);
+    }
 
     const points = this.generateBezierCurve(currentX, currentY, targetX, targetY, steps);
     const delayPerStep = duration / steps;
@@ -1177,7 +1186,53 @@ class CDPHelper {
     // ben's main Chrome's focused tab instead of the sidecar chromium's
     // unfocused tab). bringToFront takes the debugger-attached tab to
     // foreground, making subsequent Input commands land on it.
-    try { await this.sendCommand('Page.bringToFront', {}); } catch { /* best-effort */ }
+    // ⛔ See moveMouseRealistic: a swallowed failure here sends the click to a
+    // DIFFERENT TAB and reports success. Recorded, surfaced by the caller.
+    this._lastBringToFrontError = null;
+    try {
+      await this.sendCommand('Page.bringToFront', {});
+    } catch (e) {
+      this._lastBringToFrontError = e?.message || String(e);
+    }
+
+    // ⛔⛔ COORDINATES OUTSIDE THE VIEWPORT ARE A SILENT MISS, AND THIS IS THE
+    // SECOND TIME IT COST A SEAT A DAY. Input.dispatchMouseEvent takes CSS
+    // pixels of the VIEWPORT, so a point beyond it cannot reach the intended
+    // element — it hit-tests to whatever occupies that screen position, or to
+    // nothing. CDP accepts the dispatch either way and we used to answer
+    // "Clicked left button at (x, y)".
+    // MEASURED by the `shopping` seat 2026-10-21 on Amazon's buy box
+    // (ext_b39cdd9f, viewport 1280x598): at scrollY 0 #add-to-cart-button's own
+    // rect centre is y=710 — outside the viewport, where elementFromPoint
+    // returns null. Clicks dispatched at a rect read before a scroll landed on
+    // a DIV.a-row that merely happened to occupy those coordinates, and the
+    // failure was read first as an isTrusted problem, then as a Retina/DPR
+    // mismatch, then as an overlay. It was none of those: it was a stale rect.
+    // ⇒ Fail LOUDLY. A caller who meant it can scroll first
+    // (browser_scroll_to_element) and re-read the rect AFTER the scroll —
+    // a rect read in the same call as the scroll is already stale.
+    try {
+      const m = await this.sendCommand('Page.getLayoutMetrics', {});
+      const vp = m?.cssVisualViewport || m?.visualViewport;
+      const vw = vp?.clientWidth, vh = vp?.clientHeight;
+      if (typeof vw === 'number' && typeof vh === 'number' && vw > 0 && vh > 0) {
+        if (x < 0 || y < 0 || x > vw || y > vh) {
+          throw new Error(
+            `Refusing to click at (${x}, ${y}): OUTSIDE the ${Math.round(vw)}x${Math.round(vh)} ` +
+            `viewport, so the event cannot reach the element you measured — it would hit whatever ` +
+            `occupies that screen position, or nothing, and CDP would report success. ` +
+            `⇒ Scroll the target into view (browser_scroll_to_element), then RE-READ its ` +
+            `getBoundingClientRect AFTER the scroll settles; a rect read before or during the ` +
+            `scroll is stale. ⭐ Or skip coordinates entirely: on a native INPUT type=submit a ` +
+            `plain .click() submits the form and bypasses hit testing (memo 66689ec6).`
+          );
+        }
+      }
+    } catch (e) {
+      // Only the deliberate refusal propagates. If getLayoutMetrics itself is
+      // unavailable we must not block the click on a diagnostic.
+      if (/Refusing to click/.test(e?.message || '')) throw e;
+    }
 
     // Move mouse to position first if requested
     if (moveFirst) {
