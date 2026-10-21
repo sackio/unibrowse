@@ -464,12 +464,23 @@ async function launchViaChromiumHost(
     // read as a failure, and the reasonable response to a failed launch —
     // closing it and retrying — is what destroyed three browsers on 2026-10-14
     // that had already registered by the time they were killed.
+    // ⛔ AND GIVE A NUMBER. The warning above said "may still be booting" with
+    // no duration, so a caller who waited a couple of minutes still concluded
+    // failure and reaped it — measured 2026-10-20, `apis`, twice, which also
+    // sent them chasing their proxy as the cause. MEASURED the same evening on
+    // office at load average 24: 4/4 launches registered, at 60s, 90s, 150s
+    // and 177s. The MV3 service worker boot is what takes the minutes, so the
+    // latency tracks host load, not anything about the profile or the proxy.
     message += `\n⚠️ Extension not registered within ${Math.round(EXT_REGISTER_WAIT_MS / 1000)}s. `
       + `The chromium IS running (pid ${pid}) and may still be booting — `
       + `⛔ do NOT close it and relaunch. Poll GET /extensions or `
       + `browser_list_attached_tabs`
       + (stableExtId ? ` for ${stableExtId}, which is this profile's deterministic id` : ``)
-      + `, and close it only once you have decided to give up on it.`;
+      + `, and close it only once you have decided to give up on it.`
+      + `\n⚠️ ALLOW 5 MINUTES before deciding that. Registration is the MV3 service `
+      + `worker booting, so it tracks host load: measured 60-177s on office at load `
+      + `average 24. A browser whose pid is still alive has not failed. `
+      + `Raise UNIBROWSE_EXT_REGISTER_WAIT_MS (capped 300000) to wait inside the call instead.`;
   }
   return jsonResponse({
     pid, profileDir,
