@@ -191,6 +191,18 @@ export class Context {
     reason?: string;
   }> = [];
   private static readonly MAX_DISCONNECT_LOG = 50;
+  // ⛔ AND A PER-EXTENSION CAP, or the global one is a liability rather than a
+  // budget. MEASURED 2026-10-21: a kiosk Chrome (ext_939e7aec — sole tab the
+  // OpenBB "Live Wall" on server3:3081, zero attached tabs, driven by no seat)
+  // churns 1006 every 15-20 min and held 20 of the 50 rows. 40% of the fleet's
+  // entire disconnect history was spent on the one browser nobody uses, and the
+  // ring is exactly what memo 52ab66c1 tells a seat to read to tell a
+  // deliberate ↻ (1001) from a socket that vanished (1006) near a failure. A
+  // noisy peer evicting everyone else's rows breaks the diagnosis at the moment
+  // it is wanted, and it fails toward "no record", which reads as "nothing
+  // happened". Six rows still show a churn pattern; they just cannot crowd the
+  // board.
+  private static readonly MAX_DISCONNECT_PER_EXT = 6;
 
   /** Record a disconnect. Called from the ws close handler, before unregister. */
   recordDisconnect(entry: {
@@ -203,6 +215,16 @@ export class Context {
     reason?: string;
   }): void {
     this._disconnects.push({ ...entry, at: Date.now() });
+    // Shed this extension's OWN oldest rows first, so a churning peer pays for
+    // its noise instead of everyone else paying for it. Reverse iteration is
+    // required: we splice as we go, and walking backwards means the indices
+    // still ahead of us are untouched.
+    let own = 0;
+    for (let i = this._disconnects.length - 1; i >= 0; i--) {
+      if (this._disconnects[i].extensionId !== entry.extensionId) continue;
+      own += 1;
+      if (own > Context.MAX_DISCONNECT_PER_EXT) this._disconnects.splice(i, 1);
+    }
     if (this._disconnects.length > Context.MAX_DISCONNECT_LOG) {
       this._disconnects.splice(0, this._disconnects.length - Context.MAX_DISCONNECT_LOG);
     }
