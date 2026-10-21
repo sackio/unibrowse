@@ -677,6 +677,20 @@ function buildProxyBypassList(override, serverHint) {
   return base.join(";");
 }
 
+/* ---------- Portable-profile marker ------------------------------------ */
+// ⭐ A PROPERTY OF THE PROFILE, NOT OF THE CALL. A profile whose cookies were
+// sealed with Chrome's fixed no-keyring key (anything from an osdrive.sh rig,
+// which passes --password-store=basic so its profiles can move between hosts)
+// must be launched with that same flag here or Chrome cannot decrypt them.
+// Making it a launch argument instead would mean a caller who forgets it gets
+// a browser that comes up silently signed out — so it lives next to the
+// profile, where it cannot be forgotten. Sibling of Default/, like
+// .unibrowse-identity.json, so wipeStaleExtensionData cannot reach it.
+const PORTABLE_MARKER = ".unibrowse-portable";
+const isPortableProfile = (profileDir) => {
+  try { return fs.existsSync(path.join(profileDir, PORTABLE_MARKER)); } catch { return false; }
+};
+
 /* ---------- Launch a chromium ------------------------------------------ */
 const launchChromium = async ({
   profileName,
@@ -767,6 +781,19 @@ const launchChromium = async ({
     "--disable-default-apps",
     "--no-sandbox", "--disable-dev-shm-usage",   // we're in a container
   ];
+  // ⛔ OPT-IN BY MARKER, AND IT MUST STAY OPT-IN. MEASURED 2026-10-21: the warm
+  //   rig's Amazon session, transplanted into a sidecar profile, rendered
+  //   "Sign in"; the identical profile launched with this one flag rendered
+  //   "Hello, Benjamin". Without it Chrome picks a different password store,
+  //   cannot decrypt fixed-key cookies, and DROPS them — the browser looks
+  //   merely logged out, which sends you looking at the session instead of at
+  //   the launch. That cost an afternoon.
+  // ⛔ DO NOT flip this to a default. Every EXISTING sidecar profile's cookies
+  //   are sealed with whatever store Chrome picks WITHOUT the flag, so making
+  //   it global would make those undecryptable in turn — ha's ecobee-broker
+  //   auth among them. Safe only on a profile that arrived already sealed with
+  //   the fixed key, which is exactly what the marker asserts.
+  if (isPortableProfile(profileDir)) args.push("--password-store=basic");
   // ⭐ GPU and fingerprint flags belong in deployment config, not in this file:
   // the k8s ConfigMap sets them per deployment and the compose sidecar leaves
   // them unset, so this line changes nothing by default.
