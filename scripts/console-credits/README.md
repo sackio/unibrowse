@@ -98,3 +98,33 @@ about it is now refused.
 concurrency ceiling is per-extension, one WebSocket and one MV3 worker, so probing it while
 a seat drives it starves live work. Do not retry in a loop, and do not go borrow `agents`'
 login browser — `claude-login-auto` needs its mint budget for account swaps.
+
+## ⭐ SOLVED 2026-10-22 — the office-Chrome lane works, and 1Password was the whole blocker
+
+All three remaining accounts read on 2026-10-22 on **office desktop Chrome
+`ext_018237f9`, fresh incognito tabs**. Attestation minted every time: **8746ms cold,
+then 568ms and 436ms**, tokens 2583/2594/2568 chars. ⇒ The lane table above is still
+right about the SIDECAR (blocked, no token, three straight days) and was wrong only in
+having nothing to say about what blocked office Chrome.
+
+⛔ **1Password (`aeblfdkhhhdcdjpifhhbdiojplfjncoa`) makes the Console login page
+undriveable.** It injects a `chrome-extension://` iframe the moment the email input
+renders, and Chrome then refuses the debugger for the WHOLE tab: `browser_evaluate`,
+`browser_query_dom`, `browser_get_visible_text` and `browser_list_frames` all fail with
+`"Cannot access a chrome-extension:// URL of different extension"`, so there is no
+non-CDP path around it. Reproduced incognito AND regular. ⚠️ Chrome does NOT name the
+extension in that error — the message looks like a unibrowse fault and is not one.
+
+⇒ **Disable 1Password for the duration of the run, then re-enable it:**
+`browser_disable_extension({extensionId, id:"aeblfdkhhhdcdjpifhhbdiojplfjncoa"})`.
+⛔ **It needs Ben's authorisation each time** — he loses autofill while it is off
+(authorised 2026-10-22 via ask a3r). ⛔ **There is no incognito-only version of this
+fix:** Chrome's "Allow in incognito" toggle is not settable by any extension API —
+`chrome.management.setEnabled` is global-only and the toggle needs a gesture on
+`chrome://extensions`, a restricted URL. ⚠️ A pending extension update can land in the
+gap (measured: 1Password went 8.12.41.1 → 8.12.42.36 across one disable/enable cycle).
+
+⚠️ **EACH READ IS ONE ORG — whichever the account defaults to.** The script never
+touches the org switcher, and every account here has two orgs, so a clean run covers
+half of them. `o["orgs"]` in the output names which two; it does NOT say which one the
+billing page showed.
