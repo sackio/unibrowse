@@ -144,3 +144,26 @@ measured: `/api/organizations/0ce60700-…/credits` returns **403** while the sa
 the billing figures above belong to. ⇒ ⚠️ A second entry in `/api/organizations` can be a
 claude.ai-side org with no Console billing page, so do not report a missing half that does not
 exist. Check the switcher, not the API list.
+
+### ⛔ `money` CONTAINS SPENT AMOUNTS — IT IS NOT A LIST OF BALANCES (measured 2026-10-22)
+
+ben@sack.io returned `money: "$229.32 $0.00 $229.30 $29.30 $200.00 $170.70"` against grants
+`$29.30 of $200.00 … expires 10/24/2026` and `$200.00 of $200.00 … expires 11/24/2026`.
+**$170.70 is $200.00 − $29.30, i.e. the SPENT part of the first grant.** I read it as a
+balance and told Ben and `memo` that $170.70 expired on 10/24 when the real figure at risk
+was $29.30 — a 6x overstatement of a deadline that drives spend ORDER across the fleet.
+⇒ `o["grants"]` is the only authority: one grant per line, balance / scope / expiry / granted.
+Treat `o["money"]` as a debugging aid for "did the page render money at all", never as data.
+
+### ⭐ WHICH ORG IS A KEY ON? ONE HEADER, NO LOGIN (measured 2026-10-22)
+
+```
+curl -sS -o /dev/null -D - -H "x-api-key: $K" -H "anthropic-version: 2023-06-01" \
+  "https://api.anthropic.com/v1/models?limit=1" | grep -i anthropic-organization-id
+```
+Returns `anthropic-organization-id: <uuid>`. That settled "is agents2.key on agents2-credits
+or on the other org" in one call — no magic link, no 1Password disable window, no browser.
+⇒ Reach for this before driving the Console whenever the question is about a key's org.
+⚠️ It says which org the key bills to. It does NOT say whether a promotional grant applies to
+the traffic — a `sk-ant-usr-…` user key can bill a subscription instead. Only a balance
+re-read after a deliberate spend answers that.
