@@ -484,6 +484,16 @@ async function launchViaChromiumHost(
   //   either way and reads as healthy.
   const BG_COMPLETE_WAIT_MS = Math.min(Math.max(
     Number(process.env.UNIBROWSE_BG_COMPLETE_WAIT_MS) || 300_000, 0), 900_000);
+  // ⛔ REGISTRATION IS THE SOCKET CONNECTING, NOT THE WORKER BEING READY, AND THE
+  //   DIFFERENCE IS NOT COSMETIC. Measured 2026-10-22 on two virgin sidecar
+  //   profiles: creating the tab the instant the extension appeared in
+  //   `connected[]` returned a tabId and logged "opened <url>", while the tab
+  //   itself came up with an EMPTY url, was never attached (no TAB_ATTACHED) and
+  //   was absent from browser_list_attached_tabs — invisible to the caller who
+  //   asked for it. ⇒ Let the worker settle, then READ THE TAB BACK. A create
+  //   call returning a tabId is not evidence the tab carries the URL.
+  const BG_SETTLE_MS = Math.min(Math.max(
+    Number(process.env.UNIBROWSE_BG_SETTLE_MS) || 5_000, 0), 60_000);
   if (!spawnedExtensionId && stableExtId && autoAttach && userUrls.length > 0 && BG_COMPLETE_WAIT_MS > 0) {
     const bgExtId = stableExtId;
     const bgAgent = (validatedParams as any).agent;
@@ -507,19 +517,53 @@ async function launchViaChromiumHost(
             });
           } catch { /* non-fatal: costs discoverability, not correctness */ }
         }
+        await new Promise((r) => setTimeout(r, BG_SETTLE_MS));
+        // ⛔ POLL — DO NOT ASK ONCE. Measured 2026-10-22: a single read-back right
+        //   after the create came back empty while the tab was in fact loading, the
+        //   retry fired, and the profile ended up with TWO tabs on the same URL
+        //   (labels "example.com" and "example.com-2"), both attached and both
+        //   reserved. A verification that is cheaper to fail than the thing it
+        //   guards turns one missing tab into two unwanted ones.
+        const carries = async (url: string, withinMs = 12_000): Promise<boolean> => {
+          const until = Date.now() + withinMs;
+          const want = url.split("#")[0];
+          for (;;) {
+            try {
+              const list: any = await context.sendSocketMessage(
+                "browser_list_tabs", {}, { extensionId: bgExtId, timeoutMs: 10_000 },
+              );
+              const tabs: any[] = list?.tabs ?? [];
+              if (tabs.some((t: any) => typeof t?.url === "string" && t.url.startsWith(want))) return true;
+            } catch { /* fall through to the retry below */ }
+            if (Date.now() >= until) return false;
+            await new Promise((r) => setTimeout(r, 2_000));
+          }
+        };
+        const opened: string[] = [];
+        const unverified: string[] = [];
         for (const url of userUrls) {
-          try {
-            await context.sendSocketMessage(
-              "browser_create_tab",
-              { url, agent: bgAgent },
-              { extensionId: bgExtId, timeoutMs: 20_000 },
-            );
-            console.warn(`[chrome-launcher] background completion opened ${url} on ${bgExtId} `
-              + `(${Math.round((Date.now() - startedAt) / 1000)}s after launch of ${validatedParams.profileName})`);
-          } catch (e: any) {
-            console.warn(`[chrome-launcher] background completion could not open ${url} on ${bgExtId}: ${e?.message || e}`);
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              await context.sendSocketMessage(
+                "browser_create_tab",
+                { url, agent: bgAgent },
+                { extensionId: bgExtId, timeoutMs: 20_000 },
+              );
+            } catch (e: any) {
+              console.warn(`[chrome-launcher] background completion create failed for ${url} `
+                + `on ${bgExtId}: ${e?.message || e}`);
+            }
+            if (await carries(url)) { opened.push(url); break; }
+            if (attempt === 1) { await new Promise((r) => setTimeout(r, BG_SETTLE_MS)); continue; }
+            unverified.push(url);
           }
         }
+        console.warn(`[chrome-launcher] background completion on ${bgExtId} `
+          + `(${validatedParams.profileName}, ${Math.round((Date.now() - startedAt) / 1000)}s after launch): `
+          + `opened ${opened.length ? opened.join(", ") : "nothing"}`
+          + (unverified.length
+              ? ` — ⛔ UNVERIFIED, a tab was created but does not carry: ${unverified.join(", ")}`
+              : ""));
         return;
       }
       console.warn(`[chrome-launcher] background completion gave up on ${bgExtId} `
