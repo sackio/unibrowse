@@ -128,3 +128,19 @@ gap (measured: 1Password went 8.12.41.1 → 8.12.42.36 across one disable/enable
 touches the org switcher, and every account here has two orgs, so a clean run covers
 half of them. `o["orgs"]` in the output names which two; it does NOT say which one the
 billing page showed.
+
+### 2026-10-22, 4th read — agents2@sack.io, and "two orgs" is not always two READABLE orgs
+
+`agents2@sack.io` → one grant: **$200.00 of $200.00 remaining**, applies to Agent SDK, API,
+Batch API, Playground, Managed Agents · granted 10/17/2026 · **expires 11/20/2026**. Mint
+`ok 7096ms [2524,0,0]`, signout cleared 207 cookies.
+
+⭐ **The caveat above ("EACH READ IS ONE ORG") holds, but for THIS account there is no second
+org to read.** `/api/organizations` lists two — `agents2-credits~48393138` and
+`agents2@sack.io's Organization~0ce60700` — yet the Console's own org switcher offers only
+`agents2-credits` (Team API plan) plus "Create individual organization". Discriminator,
+measured: `/api/organizations/0ce60700-…/credits` returns **403** while the same path under
+`48393138-…` returns **404** ⇒ the session is scoped to `agents2-credits`, and that is the org
+the billing figures above belong to. ⇒ ⚠️ A second entry in `/api/organizations` can be a
+claude.ai-side org with no Console billing page, so do not report a missing half that does not
+exist. Check the switcher, not the API list.
