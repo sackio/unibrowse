@@ -249,6 +249,13 @@ async function launchViaChromiumHost(
   const userUrls = validatedParams.url
     ? (Array.isArray(validatedParams.url) ? validatedParams.url : [validatedParams.url])
     : ["chrome://extensions/"];
+  // ⚠️ `userUrls` is NOT evidence the caller asked for anything — with no `url`
+  //   it holds this launcher's own default. Measured 2026-10-22: a launch with
+  //   no url timed out and the timeout branch told the caller its "requested
+  //   URL" had not opened, naming a URL the caller never sent. Same failure
+  //   class as the one that branch exists to fix, one level up: a message that
+  //   calls our own default the caller's request.
+  const urlWasRequested = !!validatedParams.url;
   // Semantic upgrade when routing through the sidecar: `headless: true`
   // historically meant `--headless=new` (lightweight but anti-bot-detectable).
   // For the sidecar, treat `headless: true` as "isolated, no user window
@@ -462,6 +469,19 @@ async function launchViaChromiumHost(
   // ⚠️ It does NOT verify the pid is still the one we spawned. A caller who gave
   //   up and relaunched gets the same deterministic id, and opening their URL in
   //   that browser is still the outcome they asked for.
+  // ⚠️ 300s IS NOT ALWAYS ENOUGH, MEASURED 2026-10-22 07:26-07:34 EDT ON OFFICE.
+  //   A virgin sidecar profile (`bgtest-1022`) at load average 18.85 had still
+  //   not registered 7 MINUTES after spawn, with `ha`'s ecobee-broker chromium
+  //   (spawned 06:49) unregistered at 40+ minutes alongside it — both pids alive,
+  //   neither extension ever reaching the server. So the 60-177s figures above are
+  //   a floor, not a range, and on that host this window expires before the
+  //   extension arrives. ⛔ Do NOT read a longer default into this: nothing has
+  //   been observed to register at 8-15 minutes either, so raising it is a guess
+  //   until someone measures a late registration that actually lands. The knob is
+  //   there for a caller who has one. ⭐ The discriminator is whether the MV3
+  //   worker ever connects at all: GET /extensions for the deterministic id, or
+  //   mcp-server's "Extension registered:" line — not the pid, which stays alive
+  //   either way and reads as healthy.
   const BG_COMPLETE_WAIT_MS = Math.min(Math.max(
     Number(process.env.UNIBROWSE_BG_COMPLETE_WAIT_MS) || 300_000, 0), 900_000);
   if (!spawnedExtensionId && stableExtId && autoAttach && userUrls.length > 0 && BG_COMPLETE_WAIT_MS > 0) {
@@ -553,8 +573,11 @@ async function launchViaChromiumHost(
     //   extension and was skipped. Measured 2026-10-22: `ha` read the launch as
     //   having produced a browser with no tab and no explanation.
     if (userUrls.length > 0) {
-      message += `\n⛔ THE REQUESTED URL${userUrls.length > 1 ? "S WERE" : " WAS"} NOT OPENED — `
-        + `"URLs requested" above is your request, not an outcome.`
+      message += (urlWasRequested
+          ? `\n⛔ THE REQUESTED URL${userUrls.length > 1 ? "S WERE" : " WAS"} NOT OPENED — `
+            + `"URLs requested" above is your request, not an outcome.`
+          : `\n⚠️ NO TAB WAS OPENED — "URLs requested" above is this launcher's own default `
+            + `(${userUrls.join(", ")}); you did not ask for it.`)
         + (autoAttach
             ? ` A background completion is still waiting for this profile's extension and will open `
               + `${userUrls.join(", ")} (reserved to ${(validatedParams as any).agent || "nobody"}) if it registers `
