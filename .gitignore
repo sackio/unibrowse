@@ -79,3 +79,6 @@ dist/
 # on the NAS, so anything here is already readable fleet-wide without also
 # being committed.
 fetched/
+
+# Python bytecode from scripts/ (console-credits)
+__pycache__/
