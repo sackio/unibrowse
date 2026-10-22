@@ -441,6 +441,72 @@ async function launchViaChromiumHost(
     }
   }
 
+  // ⛔ A TIMED-OUT REGISTRATION USED TO DROP THE CALLER'S URLS ON THE FLOOR while
+  //   the response printed "URLs requested: <url>" as if they had been opened.
+  //   MEASURED 2026-10-22 on `ha`'s ecobee-broker: the extension registered 182s
+  //   after spawn (connectedForMs 204170 read at 04:10 against a 04:04:04 start),
+  //   far past this wait, so auto-attach never ran and the consumerportal tab
+  //   never existed. `ha`'s integration cannot read the warning text above — its
+  //   MCP client timed the call out before the response came back — so it scored
+  //   the launch dead and relaunched. ⛔ EVERY RELAUNCH REAPS THE PREVIOUS PID FOR
+  //   THE SAME PROFILE ("reaping for profile ecobee-broker: tracked=[4127]" then
+  //   SIGKILL), so each attempt destroyed the instance that had just become
+  //   usable. With a retry cadence shorter than the registration latency that
+  //   loop CANNOT converge, and it held their ecobee JWT down for over an hour.
+  // ⇒ Finish the job out of band. The call still returns fast — the lesson above
+  //   about blocking waits stands and is not being relitigated — but the URLs the
+  //   caller asked for are opened when the extension actually registers, carrying
+  //   the caller's own `agent` so the reservation lands with them and not with us.
+  // ⚠️ Fire-and-forget on purpose, and deliberately not awaited: it must not be
+  //   able to fail the call it belongs to, and there is no one left to report to.
+  // ⚠️ It does NOT verify the pid is still the one we spawned. A caller who gave
+  //   up and relaunched gets the same deterministic id, and opening their URL in
+  //   that browser is still the outcome they asked for.
+  const BG_COMPLETE_WAIT_MS = Math.min(Math.max(
+    Number(process.env.UNIBROWSE_BG_COMPLETE_WAIT_MS) || 300_000, 0), 900_000);
+  if (!spawnedExtensionId && stableExtId && autoAttach && userUrls.length > 0 && BG_COMPLETE_WAIT_MS > 0) {
+    const bgExtId = stableExtId;
+    const bgAgent = (validatedParams as any).agent;
+    const bgDeadline = Date.now() + BG_COMPLETE_WAIT_MS;
+    void (async () => {
+      while (Date.now() < bgDeadline) {
+        await new Promise((r) => setTimeout(r, 2_000));
+        const cur = context.listExtensions?.() ?? [];
+        const mine: any = cur.find((e: any) => e.extensionId === bgExtId);
+        // Same guard as the foreground loop: an id that was already connected
+        // before this launch only counts once it has re-registered, or we would
+        // decorate the PREVIOUS instance and report it as this one.
+        if (!mine) continue;
+        if (preLaunchExtensionIds.has(bgExtId) && !((mine.registeredAt ?? 0) > startedAt)) continue;
+        if (pid) {
+          try {
+            await fetch(`${hostUrl.replace(/\/$/, "")}/processes/${pid}/extension`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ extensionId: bgExtId }),
+            });
+          } catch { /* non-fatal: costs discoverability, not correctness */ }
+        }
+        for (const url of userUrls) {
+          try {
+            await context.sendSocketMessage(
+              "browser_create_tab",
+              { url, agent: bgAgent },
+              { extensionId: bgExtId, timeoutMs: 20_000 },
+            );
+            console.warn(`[chrome-launcher] background completion opened ${url} on ${bgExtId} `
+              + `(${Math.round((Date.now() - startedAt) / 1000)}s after launch of ${validatedParams.profileName})`);
+          } catch (e: any) {
+            console.warn(`[chrome-launcher] background completion could not open ${url} on ${bgExtId}: ${e?.message || e}`);
+          }
+        }
+        return;
+      }
+      console.warn(`[chrome-launcher] background completion gave up on ${bgExtId} `
+        + `(${validatedParams.profileName}) after ${Math.round(BG_COMPLETE_WAIT_MS / 1000)}s — never registered`);
+    })();
+  }
+
   const fresh = validatedParams.freshProfile !== false;
   let message = `✓ Chrome launched via chromium-host sidecar\n`;
   message += `  Profile: ${validatedParams.profileName} ${fresh ? "(fresh - no cookies/history)" : "(persistent)"}\n`;
@@ -481,6 +547,20 @@ async function launchViaChromiumHost(
       + `worker booting, so it tracks host load: measured 60-177s on office at load `
       + `average 24. A browser whose pid is still alive has not failed. `
       + `Raise UNIBROWSE_EXT_REGISTER_WAIT_MS (capped 300000) to wait inside the call instead.`;
+    // ⛔ SAY THAT THE URLS DID NOT OPEN. "URLs requested: <url>" above is the
+    //   caller's own request echoed back, not an outcome, and on this path
+    //   nothing has opened them — the auto-attach block needs a registered
+    //   extension and was skipped. Measured 2026-10-22: `ha` read the launch as
+    //   having produced a browser with no tab and no explanation.
+    if (userUrls.length > 0) {
+      message += `\n⛔ THE REQUESTED URL${userUrls.length > 1 ? "S WERE" : " WAS"} NOT OPENED — `
+        + `"URLs requested" above is your request, not an outcome.`
+        + (autoAttach
+            ? ` A background completion is still waiting for this profile's extension and will open `
+              + `${userUrls.join(", ")} (reserved to ${(validatedParams as any).agent || "nobody"}) if it registers `
+              + `within ${Math.round(BG_COMPLETE_WAIT_MS / 1000)}s of launch. Re-read browser_list_attached_tabs before opening it yourself.`
+            : ` autoAttach was off, so opening it is yours.`);
+    }
   }
   return jsonResponse({
     pid, profileDir,
