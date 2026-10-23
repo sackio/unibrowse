@@ -817,6 +817,11 @@ const launchChromium = async ({
   args.push(...urls);
 
   const env = { ...process.env };
+  // ⛔ BEFORE the spawn, not after: fontconfig scans once at process start, so a
+  // font installed later is invisible to a chromium already running. Awaited on
+  // every launch, but the promise is cached, so only the first one pays.
+  await ensureFonts();
+
   let xvfb = null, display = null;
   if (!headless) {
     // Pick a display that is not already taken. The old `:${90+random(100)}`
@@ -847,7 +852,14 @@ const launchChromium = async ({
       console.warn(`[chromium-host] no free display in :90-:189 (${taken.size} taken); falling back to random ${display} — collision likely`);
     }
     try {
-      xvfb = spawn("Xvfb", [display, "-screen", "0", "1280x1024x24", "-nolisten", "tcp"], { detached: true, stdio: "ignore" });
+      // ⚠️ 1280x1024 is a 5:4 resolution essentially no 2026 desktop runs, and
+      // `screen.width`/`height` are two of the cheapest values a page can read.
+      // 1920x1080 is the single most common desktop size, so it is the default
+      // here; UNIBROWSE_XVFB_SCREEN overrides it per deployment.
+      // ⛔ Nothing downstream may assume this number: window position and size
+      // are read from the X server at use time (the `window` action), precisely
+      // so a geometry change here cannot silently move every click.
+      xvfb = spawn("Xvfb", [display, "-screen", "0", XVFB_SCREEN, "-nolisten", "tcp"], { detached: true, stdio: "ignore" });
       xvfb.unref();
       const start = Date.now();
       while (Date.now() - start < 1500) {
@@ -998,6 +1010,59 @@ import * as humanmotion from "./humanmotion.js";
 import { execFile } from "node:child_process";
 
 const XDO_TIMEOUT_MS = 120_000;
+
+// ⚠️ Validated rather than trusted: a malformed geometry makes Xvfb exit at
+// once, and the symptom is every launch failing to find a display — which reads
+// as a sidecar fault, not as a typo in an env var.
+const XVFB_SCREEN = (() => {
+  const want = String(process.env.UNIBROWSE_XVFB_SCREEN || "1920x1080x24");
+  if (!/^\d{3,5}x\d{3,5}x(16|24|30)$/.test(want)) {
+    console.warn(`[chromium-host] UNIBROWSE_XVFB_SCREEN=${want} is not WxHxD — using 1920x1080x24`);
+    return "1920x1080x24";
+  }
+  return want;
+})();
+
+// ⛔ THE IMAGE SHIPS ONE USABLE FONT FAMILY. Measured 2026-10-23 by width
+// comparison in a sidecar page (fonts.check() is useless here — it returns true
+// for families that are absent): of 42 common Windows, macOS and Linux families,
+// exactly ONE was present, FreeSans. A real desktop browser exposes dozens, and
+// the installed set is a standard fingerprinting signal, so "one" identifies the
+// container as well as a label would.
+// ⚠️ Same constraint as xdotool: the image cannot be rebuilt (its Dockerfile pins
+// a chromium alpine no longer serves), so the sidecar installs these at boot.
+// ⛔ MUST COMPLETE BEFORE CHROMIUM STARTS — fontconfig scans at process start, so
+// a font installed after launch is invisible to that browser.
+const FONT_PKGS = ["ttf-dejavu", "ttf-liberation", "font-noto", "font-noto-cjk", "ttf-freefont"];
+let fontsReady = null;
+function ensureFonts() {
+  if (fontsReady) return fontsReady;
+  fontsReady = new Promise((resolve) => {
+    // ⛔ COUNT FAMILIES, NOT FILES. The image ships 33 font FILES and exactly one
+    // family a page can select (FreeSans), so a file-count threshold reports a
+    // healthy font set and installs nothing — measured 2026-10-23, and the first
+    // version of this check did precisely that. Ask for the families instead.
+    const probe = "fc-list : family 2>/dev/null | tr ',' '\\n' | " +
+                  "grep -icE '^(dejavu sans|liberation sans|noto sans)$'";
+    execFile("sh", ["-c", probe], (err, out) => {
+      const have = parseInt(String(out || "0").trim(), 10) || 0;
+      if (!err && have >= 3) return resolve(have);
+      console.warn(`[chromium-host] ${have}/3 desktop font families present — installing a desktop set`);
+      execFile("apk", ["add", "--no-cache", ...FONT_PKGS], { timeout: 300_000 }, (e2, _o, se) => {
+        if (e2) {
+          console.error(`[chromium-host] font install FAILED: ${String(se || e2.message).trim()}`);
+          return resolve(have);
+        }
+        execFile("sh", ["-c", "fc-cache -f >/dev/null 2>&1; " + probe], (_e3, out3) => {
+          const now = parseInt(String(out3 || "0").trim(), 10) || 0;
+          console.log(`[chromium-host] fonts installed: ${have} -> ${now}/3 desktop families`);
+          resolve(now);
+        });
+      });
+    });
+  });
+  return fontsReady;
+}
 
 // ⛔ xdotool IS NOT IN THE IMAGE, and a container recreate therefore DELETES it.
 // Measured 2026-10-23, the hard way: it had been `apk add`ed into the running
