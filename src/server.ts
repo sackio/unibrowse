@@ -23,6 +23,7 @@ import {
   startWatchExpiry,
 } from "@/watch/service";
 import { createWebSocketServer } from "@/ws";
+import { gate as humanModeGate } from "@/tools/human-mode";
 
 type Options = {
   name: string;
@@ -601,6 +602,14 @@ export async function createServerWithTools(options: Options): Promise<Server> {
       };
     }
 
+    // ⛔ HUMAN MODE, gated HERE because this is the one place every tool call
+    // passes through. A per-tool check would be one forgotten import away from
+    // a hole, and the hole would look exactly like the feature working.
+    const verdict = humanModeGate(request.params.name, request.params.arguments);
+    if (!verdict.allowed) {
+      return { content: [{ type: "text", text: verdict.message }], isError: true };
+    }
+
     try {
       const result = await tool.handle(globalContext, request.params.arguments);
       return result;
@@ -663,6 +672,14 @@ export async function createServerWithoutWebSocket(options: Options): Promise<Se
         ],
         isError: true,
       };
+    }
+
+    // ⛔ HUMAN MODE, gated HERE because this is the one place every tool call
+    // passes through. A per-tool check would be one forgotten import away from
+    // a hole, and the hole would look exactly like the feature working.
+    const verdict = humanModeGate(request.params.name, request.params.arguments);
+    if (!verdict.allowed) {
+      return { content: [{ type: "text", text: verdict.message }], isError: true };
     }
 
     try {

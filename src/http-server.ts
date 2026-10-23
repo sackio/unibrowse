@@ -45,6 +45,7 @@ import { sweepDeadProfiles } from "@/utils/dead-profiles";
 import { installLandingHandler, installZipHandler } from "@/install";
 import { requireApiKey, requireLan, isAuthEnabled, isLocalClient, getEffectiveClientIP } from "@/utils/auth";
 import * as realisticInput from "@/tools/realistic-input";
+import * as humanMode from "@/tools/human-mode";
 import * as multiTabManagement from "@/tools/multi-tab-management";
 import * as videoRecording from "@/tools/video-recording";
 import { fetchDestinations, getParked } from "@/tools/send-to-agent";
@@ -334,6 +335,17 @@ const realisticInputTools: Tool[] = [
   realisticInput.realisticType,
 ];
 
+// Human mode: OS-level input through the sidecar's X server, plus the switch
+// that refuses the scripted tools for a profile. See src/tools/human-mode.ts.
+const humanModeTools: Tool[] = [
+  humanMode.humanMode,
+  humanMode.humanClick,
+  humanMode.humanMove,
+  humanMode.humanType,
+  humanMode.humanScroll,
+  humanMode.humanKey,
+];
+
 const videoRecordingTools: Tool[] = [
   videoRecording.startVideoRecording,
   videoRecording.stopVideoRecording,
@@ -385,6 +397,7 @@ const snapshotTools: Tool[] = [
   ...extensionTools,
   ...macroTools,
   ...realisticInputTools,
+  ...humanModeTools,
   ...multiTabTools,
   ...videoRecordingTools,
   ...frameTools,

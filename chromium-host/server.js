@@ -974,6 +974,102 @@ const reaperSweep = () => {
 setInterval(reaperSweep, REAPER_INTERVAL_MS).unref?.();
 
 /* ---------- HTTP server ------------------------------------------------ */
+// ── HUMAN MODE: OS-LEVEL INPUT ──────────────────────────────────────────────
+//
+// Ben, #unibrowse 2026-10-23: "the key is we really need it to not be in the
+// browser that it gets solved it needs to be mouse and keyboard automation
+// that's made to look realistic", and then "in human mode the unibrowse
+// combination extension/ui-eye app should prevent scripted manipulation to
+// fill out things and force the agents to do human like movements".
+//
+// ⛔ WHY THE SIDECAR AND NOT mcp-server: xdotool and the Xvfb displays are
+// HERE. mcp-server runs in a container on server4 with no docker socket and no
+// python3, so it cannot reach either. It sends intent ("click this point on
+// :96"); this builds the gesture and runs it.
+//
+// ⭐ The whole gesture is ONE xdotool invocation, so a 120-step path costs one
+// spawn rather than 120. Typing is the exception — `xdotool type` swallows the
+// rest of an argv chain, so humanmotion.typeRuns returns separate invocations.
+//
+// ⚠️ NOTHING HERE GOES THROUGH A SHELL. Every argument is a separate argv
+// element, and `display` is matched against /^:\d{1,3}$/ before use, because
+// this endpoint takes a string from another host and hands it to a process.
+import * as humanmotion from "./humanmotion.js";
+import { execFile } from "node:child_process";
+
+const XDO_TIMEOUT_MS = 120_000;
+
+const xdotool = (display, args) => new Promise((resolve, reject) => {
+  execFile("xdotool", args, { env: { ...process.env, DISPLAY: display }, timeout: XDO_TIMEOUT_MS },
+    (err, stdout, stderr) => {
+      if (err) return reject(new Error(`xdotool ${args[0]}: ${String(stderr || err.message).trim()}`));
+      resolve(String(stdout).trim());
+    });
+});
+
+async function mouseAt(display) {
+  const out = await xdotool(display, ["getmouselocation", "--shell"]);
+  const d = Object.fromEntries(out.split("\n").filter((l) => l.includes("=")).map((l) => l.split("=")));
+  return { x: parseInt(d.X, 10), y: parseInt(d.Y, 10) };
+}
+
+async function humanInput(body) {
+  const { display, action } = body || {};
+  if (!/^:\d{1,3}$/.test(String(display || ""))) {
+    return { ok: false, error: `display must look like ":96", got ${JSON.stringify(display)}` };
+  }
+  const rng = new humanmotion.Rng(body.seed);
+  const opts = { rng, targetWidth: body.width, button: body.button };
+
+  try {
+    switch (action) {
+      case "where":
+        return { ok: true, ...(await mouseAt(display)) };
+
+      case "move":
+      case "hover": {
+        const from = await mouseAt(display);
+        await xdotool(display, humanmotion.moveChain(from.x, from.y, body.x, body.y, opts));
+        return { ok: true, ...(await mouseAt(display)), from };
+      }
+
+      case "click": {
+        const from = await mouseAt(display);
+        await xdotool(display, humanmotion.clickChain(from.x, from.y, body.x, body.y, opts));
+        return { ok: true, ...(await mouseAt(display)), from };
+      }
+
+      case "scroll":
+        await xdotool(display, humanmotion.scrollChain(body.notches ?? -3, opts));
+        return { ok: true, notches: body.notches ?? -3 };
+
+      case "type": {
+        const runs = humanmotion.typeRuns(String(body.text ?? ""), opts);
+        for (const run of runs) {
+          await xdotool(display, run.args);
+          if (run.gapSeconds > 0) await new Promise((r) => setTimeout(r, run.gapSeconds * 1000));
+        }
+        return { ok: true, chars: String(body.text ?? "").length, runs: runs.length };
+      }
+
+      case "key": {
+        const chain = [];
+        for (let i = 0; i < (body.repeat || 1); i++) {
+          chain.push("key", "--clearmodifiers", String(body.key),
+            "sleep", rng.uniform(0.05, 0.14).toFixed(3));
+        }
+        await xdotool(display, chain);
+        return { ok: true, key: body.key, repeat: body.repeat || 1 };
+      }
+
+      default:
+        return { ok: false, error: `unknown action ${JSON.stringify(action)} — one of where/move/hover/click/scroll/type/key` };
+    }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
 const readBody = (req) => new Promise((resolve, reject) => {
   let buf = "";
   req.on("data", (c) => buf += c);
@@ -1068,6 +1164,11 @@ const server = http.createServer(async (req, res) => {
         allowlistReadable: loadPersistent() !== null,
         instances: rows,
       });
+    }
+    if (req.method === "POST" && req.url === "/input") {
+      const body = JSON.parse(await readBody(req) || "{}");
+      const r = await humanInput(body);
+      return send(res, r.ok ? 200 : 400, r);
     }
     send(res, 404, { error: "no route", method: req.method, url: req.url });
   } catch (e) {

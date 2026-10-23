@@ -26,6 +26,7 @@ import * as userAction from "@/tools/user-action";
 import * as macros from "@/tools/macros";
 import * as recordings from "@/tools/recordings";
 import * as realisticInput from "@/tools/realistic-input";
+import * as humanMode from "@/tools/human-mode";
 import * as multiTabManagement from "@/tools/multi-tab-management";
 import * as chromeLauncher from "@/tools/chrome-launcher";
 import * as videoRecording from "@/tools/video-recording";
@@ -173,6 +174,17 @@ const realisticInputTools: Tool[] = [
   realisticInput.realisticType,
 ];
 
+// Human mode: OS-level input through the sidecar's X server, plus the switch
+// that refuses the scripted tools for a profile. See src/tools/human-mode.ts.
+const humanModeTools: Tool[] = [
+  humanMode.humanMode,
+  humanMode.humanClick,
+  humanMode.humanMove,
+  humanMode.humanType,
+  humanMode.humanScroll,
+  humanMode.humanKey,
+];
+
 const videoRecordingTools: Tool[] = [
   videoRecording.startVideoRecording,
   videoRecording.stopVideoRecording,
@@ -213,6 +225,7 @@ const snapshotTools: Tool[] = [
   ...extensionTools,
   ...macroTools,
   ...realisticInputTools,
+  ...humanModeTools,
   ...multiTabTools,
   ...videoRecordingTools,
 ];

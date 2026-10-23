@@ -188,6 +188,11 @@ services:
       # ⚠️ Still true and still needs deciding: the image cannot be rebuilt from
       # scratch until someone picks a chromium version deliberately.
       - ./chromium-host/server.js:/app/server.js:ro
+      # The motion model POST /input uses. Mounted from scripts/ rather than
+      # copied into chromium-host/ so there is exactly one humanmotion.js in
+      # the repo — scripts/motion-equivalence.py checks it against the Python
+      # twin, and a copy here would be the thing that quietly stops matching.
+      - ./scripts/humanmotion.js:/app/humanmotion.js:ro
 
   # ⛔⛔ RUN THIS ON server3, NOT ON office — THAT IS THE ENTIRE POINT OF IT.
   # Ben, #unibrowse 2026-10-15: "get freelance on it in a headless format on
@@ -611,6 +616,7 @@ services:
       - ./chrome-profiles/zazzle-staging:/app/.chrome-profiles/zazzle-staging
       - ./extension:/app/extension:ro
       - ./chromium-host/server.js:/app/server.js:ro
+      - ./scripts/humanmotion.js:/app/humanmotion.js:ro
 
 networks:
   unibrowse-network:

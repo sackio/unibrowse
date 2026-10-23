@@ -2279,3 +2279,92 @@ export const WatchPollTool = z.object({
       .describe("How long to block (default 15000, max 120000). A timeout is an answer, not an error."),
   }),
 });
+
+// ==================== HUMAN MODE ====================
+//
+// Ben, #unibrowse 2026-10-23: "in human mode the unibrowse combination
+// extension/ui-eye app should prevent scripted manipulation to fill out things
+// and force the agents to do human like movements", and earlier the same day
+// "it needs to not be in the browser that it gets solved it needs to be mouse
+// and keyboard automation that's made to look realistic".
+//
+// Default OFF, flipped per profile — his call, same thread.
+
+export const HumanModeTool = z.object({
+  name: z.literal("browser_human_mode"),
+  description: z.literal(
+    "Turn human mode on or off for one profile (by extensionId), or list what is on. " +
+    "While a profile is in human mode the scripted input tools are REFUSED for it — browser_click, browser_type, " +
+    "browser_fill_form, browser_select_option, browser_press_key, browser_submit_form, browser_drag, browser_hover, " +
+    "and browser_realistic_click/type/mouse_move (those still dispatch inside the browser, which is the thing human mode exists to stop). " +
+    "browser_evaluate is refused only when the script manipulates input (.value =, .click(), dispatchEvent, execCommand, form.submit); reading the DOM is unaffected. " +
+    "Use browser_human_click / browser_human_type / browser_human_scroll / browser_human_move / browser_human_key instead: those drive the real X server through xdotool, so the page sees hardware events. " +
+    "⚠️ ONLY WORKS ON A chromium-host SIDECAR PROFILE — it needs that profile's Xvfb display, and OS input goes wherever the pointer is, so the target tab must be the ACTIVE one in its window. " +
+    "⛔ The evaluate check is pattern-based: it is a guard rail that makes the scripted path something you have to deliberately defeat, NOT a sandbox. Do not describe it as one."
+  ),
+  arguments: z.object({
+    enable: z.boolean().optional().describe("true to turn human mode on for this profile, false to turn it off. Omit with list:true to just read the state."),
+    extensionId: z.string().optional().describe("The profile's extension id, e.g. ext_caf9ec42-… Required unless list:true."),
+    list: z.boolean().optional().describe("Return which profiles are currently in human mode and change nothing."),
+  }).merge(MaxTokensSchema),
+});
+
+const HumanTargetSchema = z.object({
+  selector: z.string().optional().describe("CSS selector of the element to act on. Its on-screen centre is computed and the pointer travels there. Either this or x/y."),
+  x: z.number().optional().describe("Viewport X in CSS pixels, if you are not using a selector."),
+  y: z.number().optional().describe("Viewport Y in CSS pixels, if you are not using a selector."),
+});
+
+export const HumanClickTool = z.object({
+  name: z.literal("browser_human_click"),
+  description: z.literal(
+    "Click by moving the real pointer there and pressing a real button, through the X server (xdotool/XTEST) rather than CDP. " +
+    "The page sees isTrusted:true events preceded by genuine pointer travel: a sigma-lognormal velocity profile, one ballistic stroke plus up to two corrections, hand drift, 8-12Hz tremor, and a press dwell. " +
+    "Pass `selector` and the element's rect and width are read for you (a narrow target is approached more slowly — Fitts's law). " +
+    "⚠️ The tab is switched to ACTIVE first, because OS-level input lands wherever the pointer is, not in whatever tab you named. " +
+    "⛔ Requires a chromium-host sidecar profile; there is no display to drive otherwise."
+  ),
+  arguments: HumanTargetSchema.extend({
+    button: z.number().optional().describe("1 left, 2 middle, 3 right (default: 1)"),
+    width: z.number().optional().describe("Target width in px for the Fitts timing. Derived from the selector's rect when you pass one."),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+});
+
+export const HumanMoveTool = z.object({
+  name: z.literal("browser_human_move"),
+  description: z.literal("Move the real pointer to an element or point without clicking — for hover menus, and for arriving somewhere before deciding. Same motion model as browser_human_click."),
+  arguments: HumanTargetSchema.extend({
+    width: z.number().optional().describe("Target width in px for the Fitts timing."),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+});
+
+export const HumanTypeTool = z.object({
+  name: z.literal("browser_human_type"),
+  description: z.literal(
+    "Type into whatever currently has focus, as real X key events, with per-key intervals drawn from a lognormal around ~52wpm plus pauses at word and sentence boundaries. " +
+    "⭐ Pass `selector` to human-click the field first, which is usually what you want — typing goes to the focused element and nothing else. " +
+    "⛔ NO SYNTHETIC TYPOS, deliberately: a 'realistic' wrong character in a credential, an address or an order quantity is a real-world error, and the realism it buys is unmeasured."
+  ),
+  arguments: z.object({
+    text: z.string().describe("Text to type"),
+    selector: z.string().optional().describe("Optional: human-click this element first to focus it."),
+    pressEnter: z.boolean().optional().describe("Press Return after typing (default: false)"),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+});
+
+export const HumanScrollTool = z.object({
+  name: z.literal("browser_human_scroll"),
+  description: z.literal("Scroll with real wheel events, in the bursts of a few notches a hand produces rather than one smooth sweep. Negative is down, positive is up."),
+  arguments: z.object({
+    notches: z.number().describe("Wheel notches; negative scrolls down (default: -3)"),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+});
+
+export const HumanKeyTool = z.object({
+  name: z.literal("browser_human_key"),
+  description: z.literal("Press a key as a real X key event, by X keysym — Return, Tab, Escape, ctrl+a, shift+Tab, Down. Use this rather than browser_press_key in human mode."),
+  arguments: z.object({
+    key: z.string().describe("X keysym or combination, e.g. 'Return', 'Tab', 'ctrl+a', 'shift+Tab'"),
+    repeat: z.number().optional().describe("How many times (default: 1)"),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+});
