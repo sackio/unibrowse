@@ -19,7 +19,11 @@
   // ('https://challenges.cloudflare.com') does not match the recipient
   // window's origin" and "Ignored message from unexpected source for event:
   // food". A plain Chrome through the SAME proxy, same second, rendered the
-  // widget normally. One variable: this extension.
+  // widget normally. ⚠️ I first read that as "attach breaks the challenge" and
+  // published it; it is NOT a general rule — an attached INCOGNITO tab on the
+  // same page mounts the widget fine. The 300030 cause is unknown. This guard
+  // is kept on its own merits: instrumenting a third party's challenge frame
+  // was never right, whatever else is going on.
   // ⚠️ The failure is SILENT from the caller's side — the host page just never
   // gets a token, which reads exactly like an IP being refused by Cloudflare.
   // That misreading cost the `alpaca` seat an evening of VPN-exit swapping.

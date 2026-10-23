@@ -45,10 +45,18 @@ const SESSION_AUTO_CAPTURE_VIDEO = false;
 // "Failed to execute 'postMessage' ... target origin
 // ('https://challenges.cloudflare.com') does not match the recipient window's
 // origin" and "Ignored message from unexpected source for event: food".
-// ⭐ THE CONTROL THAT NAMES THE CAUSE: an UNATTACHED tab in the SAME browser,
-// same profile, same proxy, same minute, renders the widget normally — as does
-// a plain Chrome with no extension at all. So it is not the exit IP and not
-// the extension's presence; it is what ATTACH does to the page.
+// ⚠️ An UNATTACHED tab in the SAME browser, same profile, same proxy, same
+// minute renders the widget normally, as does a plain Chrome with no extension
+// — so it is NOT the exit IP. ⛔ BUT DO NOT READ THAT AS "ATTACH IS THE CAUSE".
+// I did, and it was wrong: 20 minutes later the `alpaca` seat's own ATTACHED
+// INCOGNITO tab on this same page had the widget mounted and running. Both
+// sides of my control were non-incognito, so it cannot separate "attached"
+// from whatever else differs between a normal-profile tab and an incognito
+// one. 300030 is real and reproducible on non-incognito attached tabs; its
+// cause is UNKNOWN. (Not "extension not injected in incognito" either — the
+// extension is allowed in incognito on that profile.)
+// ⛔ A control that varies one factor only tells you about the configuration
+// you varied it in. Mine never tested the cell the consumer actually used.
 // ⛔ MEASURED 00:14: THIS EXEMPTION ALONE DOES NOT RESTORE THE WIDGET, so do
 // not re-run that experiment. With auto-capture correctly skipped — and again
 // after browser_stop_session_recording + a reload — `__ni_installed__` was
@@ -57,9 +65,11 @@ const SESSION_AUTO_CAPTURE_VIDEO = false;
 // recording, and attach also leaves a CDP debugger on the tab, which is
 // separately detectable. ⇒ The exemption is kept because recording this page
 // is pointless, NOT because it fixes Turnstile.
-// ⭐ THE ONLY MEASURED WAY TO GET A TURNSTILE WIDGET ON THIS PAGE IS AN
-// UNATTACHED TAB. Drive it with OS-level input (ui_eye on office's display)
-// or a plain Chrome; attach afterwards if you need the DOM.
+// ⚠️ An unattached tab is one measured way to get the widget; an attached
+// INCOGNITO tab is another. Neither is the blocker worth chasing — on EVERY
+// case where the widget mounted (attached or not, incognito or not, house IP
+// or vpn-default) verification never COMPLETED, reaching Cloudflare's own
+// "Stuck? Troubleshoot". That hang is the open problem, not the mount.
 const SESSION_AUTO_CAPTURE_EXEMPT_HOSTS = ['fiverr.com', 'app.alpaca.markets'];
 
 function isAutoCaptureExemptUrl(url) {
