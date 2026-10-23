@@ -80,6 +80,13 @@ const DEFAULTS = {
   scrollPauseProb: 0.3,
   scrollPauseMin: 350.0,
   scrollPauseMax: 1600.0,
+
+  dragTimeScale: 1.45,
+  dragTremorScale: 0.55,
+  dragGrabMin: 90.0,
+  dragGrabMax: 260.0,
+  dragHoldMin: 70.0,
+  dragHoldMax: 220.0,
 };
 
 // Physically adjacent keys on a US QWERTY board. A typo is a finger landing one
@@ -297,18 +304,58 @@ function path(x0, y0, x1, y1, opts = {}) {
 
 /** `path`, rounded to whole pixels, each step carrying the seconds to wait after it. */
 function steps(x0, y0, x1, y1, opts = {}) {
+  // ⛔ A collapsed sample's time is CARRIED FORWARD. See the Python docstring:
+  // discarding it delivered a 864ms model path in 600ms.
   const pts = path(x0, y0, x1, y1, opts);
   const out = [];
   let last = [Math.round(x0), Math.round(y0)];
+  let carried = 0.0;
   for (let i = 0; i < pts.length; i++) {
     const px = Math.round(pts[i].x);
     const py = Math.round(pts[i].y);
     const dt = i ? pts[i].t - pts[i - 1].t : 0.0;
-    if (px === last[0] && py === last[1] && i < pts.length - 1) continue;
+    if (px === last[0] && py === last[1] && i < pts.length - 1) { carried += dt; continue; }
     last = [px, py];
-    out.push([px, py, Math.max(dt, 1.0) / 1000.0]);
+    out.push([px, py, Math.max(dt + carried, 1.0) / 1000.0]);
+    carried = 0.0;
   }
   return out;
+}
+
+/**
+ * A drag: the grab pause, the travelled path, and the hold before release.
+ * Slower and steadier than a free move — a carrying arm braces and costs
+ * accuracy. Must stay identical to drag_steps in humanmotion.py.
+ * ⚠️ No settle jitter: jittering around a drop target is how you drop a thing
+ * on the wrong row.
+ */
+function dragSteps(x0, y0, x1, y1, opts = {}) {
+  const cfg = Object.assign({}, DEFAULTS, opts.cfg || {});
+  const rng = opts.rng || new Rng();
+  const slow = Object.assign({}, cfg, {
+    fittsA: cfg.fittsA * cfg.dragTimeScale,
+    fittsB: cfg.fittsB * cfg.dragTimeScale,
+    tremorAmpMin: cfg.tremorAmpMin * cfg.dragTremorScale,
+    tremorAmpMax: cfg.tremorAmpMax * cfg.dragTremorScale,
+  });
+  return {
+    grab: rng.uniform(cfg.dragGrabMin, cfg.dragGrabMax) / 1000.0,
+    steps: steps(x0, y0, x1, y1, { cfg: slow, rng, targetWidth: opts.targetWidth || cfg.targetWidth }),
+    hold: rng.uniform(cfg.dragHoldMin, cfg.dragHoldMax) / 1000.0,
+  };
+}
+
+/** The whole drag as one xdotool chain: press, carry, hold, release. */
+function dragChain(fromX, fromY, x, y, opts = {}) {
+  const rng = opts.rng || new Rng();
+  const button = String(opts.button || 1);
+  const d = dragSteps(fromX, fromY, x, y, Object.assign({}, opts, { rng }));
+  const chain = ["mousedown", button, "sleep", f3(d.grab)];
+  for (const [px, py, dt] of d.steps) {
+    chain.push("mousemove", String(px), String(py), "sleep", f3(dt));
+  }
+  chain.push("sleep", f3(d.hold), "mouseup", button);
+  return chain;
 }
 
 function settle(x, y, rng) {
@@ -567,6 +614,7 @@ function typeRuns(text, opts = {}) {
 export {
   Rng, DEFAULTS, path, steps, settle, pressTiming, keyDelays, scrollBursts, measure,
   moveChain, clickChain, scrollChain, typeRuns, typeProgram, scrollPlan, slip,
+  dragSteps, dragChain,
 };
 
 // `node humanmotion.js ...` runs the bench/emit; importing it does not.
@@ -577,6 +625,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const rng = new Rng(parseInt(a[1], 10));
     const st = steps(+a[2], +a[3], +a[4], +a[5], { rng, targetWidth: a[6] ? +a[6] : 20.0 });
     console.log(JSON.stringify(st.map(([x, y, dt]) => [x, y, Math.round(dt * 1e6) / 1e6])));
+    process.exit(0);
+  }
+  if (a[0] === "emit-drag") {
+    const rng = new Rng(parseInt(a[1], 10));
+    const d = dragSteps(+a[2], +a[3], +a[4], +a[5], { rng, targetWidth: a[6] ? +a[6] : 20.0 });
+    console.log(JSON.stringify({
+      grab: Math.round(d.grab * 1e6) / 1e6,
+      hold: Math.round(d.hold * 1e6) / 1e6,
+      steps: d.steps.map(([x, y, dt]) => [x, y, Math.round(dt * 1e6) / 1e6]),
+    }));
     process.exit(0);
   }
   if (a[0] === "emit-type") {

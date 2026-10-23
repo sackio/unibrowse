@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 SQRT2 = math.sqrt(2.0)
 TAU = 2.0 * math.pi
@@ -166,6 +166,16 @@ class MotionConfig:
     scroll_pause_prob: float = 0.3    # stop and read
     scroll_pause_min: float = 350.0
     scroll_pause_max: float = 1600.0
+
+    # dragging. A dragged hand is slower and steadier than a free one: the arm
+    # is braced, the eye is on the target the whole way, and there is a
+    # deliberate pause after the press before anything moves.
+    drag_time_scale: float = 1.45     # multiplies the Fitts time
+    drag_tremor_scale: float = 0.55   # a braced hand shakes less
+    drag_grab_min: float = 90.0       # after mousedown, before motion starts
+    drag_grab_max: float = 260.0
+    drag_hold_min: float = 70.0       # after arriving, before mouseup
+    drag_hold_max: float = 220.0
 
 
 @dataclass
@@ -337,18 +347,64 @@ def path(x0, y0, x1, y1, cfg: MotionConfig | None = None, rng=None,
 
 def steps(x0, y0, x1, y1, **kw) -> list[tuple[int, int, float]]:
     """`path`, rounded to whole pixels, with duplicate pixels collapsed and each
-    step carrying the seconds to sleep after it. What a front end actually wants."""
+    step carrying the seconds to sleep after it. What a front end actually wants.
+
+    ⛔ A COLLAPSED SAMPLE'S TIME IS CARRIED FORWARD, NOT DISCARDED. Dropping it
+    was a real bug, measured 2026-10-23: a 630px reach whose model time is 864ms
+    was being DELIVERED in 600ms, because about 30% of the samples land on a
+    pixel already occupied — slow ends of the stroke, pauses between
+    corrections — and each one took its own gap with it. The trajectory looked
+    right and ran at WindMouse speed, which is the one number a detector
+    actually checks.
+    """
     pts = path(x0, y0, x1, y1, **kw)
     out: list[tuple[int, int, float]] = []
     last = (int(round(x0)), int(round(y0)))
+    carried = 0.0
     for i, p in enumerate(pts):
         px, py = int(round(p.x)), int(round(p.y))
         dt = (p.t - pts[i - 1].t) if i else 0.0
         if (px, py) == last and i < len(pts) - 1:
+            carried += dt
             continue
         last = (px, py)
-        out.append((px, py, max(dt, 1.0) / 1000.0))
+        out.append((px, py, max(dt + carried, 1.0) / 1000.0))
+        carried = 0.0
     return out
+
+
+def drag_steps(x0, y0, x1, y1, cfg: MotionConfig | None = None, rng=None,
+               target_width: float | None = None) -> dict:
+    """A drag: the grab pause, the travelled path, and the hold before release.
+
+    Ben, #unibrowse 2026-10-23: "also need human-like dragging".
+
+    Returns {"grab": seconds, "steps": [(x, y, dt), ...], "hold": seconds}. The
+    caller presses, waits `grab`, walks `steps`, waits `hold`, releases.
+
+    A drag is not a move with the button down. It is SLOWER — the Fitts time is
+    scaled up, because carrying something costs accuracy — and STEADIER, with
+    the tremor damped, because the arm braces. Reusing the free-move path for it
+    would produce a drag that is quicker than the move that preceded it, which
+    is the opposite of what a hand does.
+
+    ⚠️ The settle correction is deliberately omitted. Jittering 1px around a
+    drop target is how you drop something on the wrong row; a hand arrives and
+    holds still.
+    """
+    cfg = cfg or MotionConfig()
+    rng = rng or Rng()
+    slow = replace(cfg,
+                   fitts_a=cfg.fitts_a * cfg.drag_time_scale,
+                   fitts_b=cfg.fitts_b * cfg.drag_time_scale,
+                   tremor_amp_min=cfg.tremor_amp_min * cfg.drag_tremor_scale,
+                   tremor_amp_max=cfg.tremor_amp_max * cfg.drag_tremor_scale)
+    return {
+        "grab": rng.uniform(cfg.drag_grab_min, cfg.drag_grab_max) / 1000.0,
+        "steps": steps(x0, y0, x1, y1, cfg=slow, rng=rng,
+                       target_width=target_width or cfg.target_width),
+        "hold": rng.uniform(cfg.drag_hold_min, cfg.drag_hold_max) / 1000.0,
+    }
 
 
 def settle(x, y, rng=None) -> list[tuple[int, int, float]]:
@@ -658,6 +714,15 @@ if __name__ == "__main__":
         width = float(sys.argv[7]) if len(sys.argv) > 7 else 20.0
         st = steps(x0, y0, x1, y1, rng=Rng(seed), target_width=width)
         print(json.dumps([[x, y, round(dt, 6)] for x, y, dt in st]))
+        raise SystemExit(0)
+
+    if len(sys.argv) > 1 and sys.argv[1] == "emit-drag":
+        seed = int(sys.argv[2])
+        x0, y0, x1, y1 = (float(v) for v in sys.argv[3:7])
+        width = float(sys.argv[7]) if len(sys.argv) > 7 else 20.0
+        d = drag_steps(x0, y0, x1, y1, rng=Rng(seed), target_width=width)
+        print(json.dumps({"grab": round(d["grab"], 6), "hold": round(d["hold"], 6),
+                          "steps": [[x, y, round(dt, 6)] for x, y, dt in d["steps"]]}))
         raise SystemExit(0)
 
     if len(sys.argv) > 1 and sys.argv[1] == "emit-type":

@@ -1101,6 +1101,23 @@ async function humanInput(body) {
       // wheel bursts for a caller that needs an exact amount — an arrow key
       // scrolls the FOCUSED scroller, which is not always the one under the
       // pointer.
+      // Ben, #unibrowse 2026-10-23: "also need human-like dragging". Press,
+      // pause, carry, hold, release — slower and steadier than a free move,
+      // and with no settle jitter at the end, because jittering around a drop
+      // target is how a thing lands on the wrong row.
+      case "drag": {
+        const from = (body.fromX != null && body.fromY != null)
+          ? { x: body.fromX, y: body.fromY }
+          : await mouseAt(display);
+        // Travel to the grab point first, as a hand does — a drag that begins
+        // with the pointer teleporting onto the handle is not a drag.
+        if (from.x !== (await mouseAt(display)).x || from.y !== (await mouseAt(display)).y) {
+          await xdotool(display, humanmotion.moveChain((await mouseAt(display)).x, (await mouseAt(display)).y, from.x, from.y, opts));
+        }
+        await xdotool(display, humanmotion.dragChain(from.x, from.y, body.x, body.y, opts));
+        return { ok: true, ...(await mouseAt(display)), from };
+      }
+
       case "scroll": {
         const notches = body.notches ?? -3;
         if (body.plan === false) {

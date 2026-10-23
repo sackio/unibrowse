@@ -75,6 +75,8 @@ TYPE_CASES = [
 
 SCROLL_CASES = [(11, -14), (7, 9), (99, -3), (5, 0)]
 
+DRAG_CASES = [(4, 100, 100, 700, 420, 40), (13, 900, 600, 120, 140, 16)]
+
 
 def check_generators() -> int:
     """The typing program and the scroll plan, which diverge for subtler reasons
@@ -114,6 +116,25 @@ def check_generators() -> int:
             bad += 1
             continue
         print(f"✅ {label}: {len(py)} ops identical, text exact")
+
+    for seed, x0, y0, x1, y1, w in DRAG_CASES:
+        args = [str(v) for v in (seed, x0, y0, x1, y1, w)]
+        py = run(["python3", "-I", "humanmotion.py", "emit-drag"] + args)
+        js = run(["node", "humanmotion.js", "emit-drag"] + args)
+        label = f"drag seed={seed} ({x0},{y0})->({x1},{y1}) w={w}"
+        same = (abs(py["grab"] - js["grab"]) <= 1e-9 and abs(py["hold"] - js["hold"]) <= 1e-9
+                and len(py["steps"]) == len(js["steps"])
+                and all(p[:2] == j[:2] and abs(p[2] - j[2]) <= 1e-9
+                        for p, j in zip(py["steps"], js["steps"])))
+        if not same:
+            print(f"⛔ {label}: diverged")
+            bad += 1
+            continue
+        if (py["steps"][-1][0], py["steps"][-1][1]) != (x1, y1):
+            print(f"⛔ {label}: ends at {py['steps'][-1][:2]}, not the drop point")
+            bad += 1
+            continue
+        print(f"✅ {label}: {len(py['steps'])} steps identical, lands on the drop point")
 
     for seed, notches in SCROLL_CASES:
         args = ["emit-scroll", str(seed), str(notches)]
@@ -160,7 +181,7 @@ def main():
               f"are no longer the same model. Fix before shipping either.")
         return 1
     print(f"\nAll checks passed: {len(CASES)} trajectories, {len(TYPE_CASES)} typing programs, "
-          f"{len(SCROLL_CASES)} scroll plans, and the ui-eye copy.")
+          f"{len(SCROLL_CASES)} scroll plans, {len(DRAG_CASES)} drags, and the ui-eye copy.")
     return 0
 
 
