@@ -794,13 +794,56 @@ const launchChromium = async ({
   //   auth among them. Safe only on a profile that arrived already sealed with
   //   the fixed key, which is exactly what the marker asserts.
   if (isPortableProfile(profileDir)) args.push("--password-store=basic");
-  // ⭐ GPU and fingerprint flags belong in deployment config, not in this file:
-  // the k8s ConfigMap sets them per deployment and the compose sidecar leaves
-  // them unset, so this line changes nothing by default.
+  // ── Fingerprint floor ───────────────────────────────────────────────────
+  // ⛔ WITHOUT THESE THE BROWSER HAS NO WebGL AND NO AUDIO DEVICE, and neither
+  // is a subtle tell: `canvas.getContext('webgl')` returning null and
+  // `enumerateDevices()` returning [] are things no real desktop browser does.
+  //
+  // MEASURED 2026-10-23 on this image (Chromium 150.0.7871.181 Alpine), headful
+  // on Xvfb, reading the result out of the page title over the devtools HTTP
+  // target list:
+  //   no flags                            → WEBGL=NULL
+  //   --use-angle=gl                      → WEBGL=OK, ANGLE (Mesa, llvmpipe …)
+  //   --use-angle=swiftshader             → WEBGL=NULL
+  // ⭐ `gl`, NOT `swiftshader`, and that ordering is the whole finding. ANGLE's
+  // SwiftShader backend wants a Vulkan window surface (VK_KHR_xcb_surface) that
+  // SwiftShader's ICD does not provide, so it works under --headless=new and
+  // fails in a real X window; and this image ships no SwiftShader library at
+  // all. ANGLE over desktop GL goes to Mesa's llvmpipe instead and needs no
+  // Vulkan surface, so it works headful, which is the only mode we run.
+  // ⚠️ The renderer string then says llvmpipe, which is itself a
+  // software-rasterizer tell. Having WebGL with llvmpipe beats having none;
+  // closing that gap means spoofing getParameter, which is independently
+  // detectable, so it is deliberately NOT done here.
+  //
+  // --use-fake-device-for-media-stream: measured 0 → 3 devices
+  // (audioinput, videoinput, audiooutput). ⚠️ A page GRANTED mic or camera
+  // permission sees "fake" in the labels; an unpermissioned one sees empty
+  // labels either way, which is the state a bot-detection probe reads.
+  //
+  // ⭐ Defaults, not impositions: anything a deployment names in
+  // UNIBROWSE_CHROME_EXTRA_ARGS wins, because that is the knob the k8s
+  // ConfigMap already uses and silently overriding it would be worse than
+  // having no default at all.
+  const extraArgsRaw = String(process.env.UNIBROWSE_CHROME_EXTRA_ARGS || "");
+  const FINGERPRINT_FLOOR = [
+    ["--use-gl=", "--use-gl=angle"],
+    ["--use-angle=", "--use-angle=gl"],
+    ["--ignore-gpu-blocklist", "--ignore-gpu-blocklist"],
+    ["--use-fake-device-for-media-stream", "--use-fake-device-for-media-stream"],
+  ];
+  if (!headless) {
+    for (const [prefix, flag] of FINGERPRINT_FLOOR) {
+      if (!extraArgsRaw.includes(prefix)) args.push(flag);
+    }
+  }
+
+  // ⭐ Further GPU and fingerprint flags belong in deployment config, not in
+  // this file: the k8s ConfigMap sets them per deployment.
   // ⛔ Space-separated, and each entry must already be a complete flag. We do
   // not parse or validate them — a flag Chrome rejects says so in its own
   // stderr, whereas a flag we silently "corrected" would not.
-  for (const extra of String(process.env.UNIBROWSE_CHROME_EXTRA_ARGS || "").split(/\s+/)) {
+  for (const extra of extraArgsRaw.split(/\s+/)) {
     if (extra) args.push(extra);
   }
   if (width && height) args.push(`--window-size=${width},${height}`);
