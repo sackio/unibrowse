@@ -17,6 +17,8 @@
  * that reports success having closed nothing. Each sidecar already publishes
  * its own live processes, so we ASK.
  */
+import { profileNameForExtensionId } from "./profile-identity.ts";
+
 export type Sidecar = { name: string; url: string };
 
 const trim = (u: string) => u.replace(/\/$/, "");
@@ -65,18 +67,47 @@ export async function sidecarFor(extensionId: string): Promise<Sidecar> {
   if (all.length === 1) return all[0];
 
   const errors: string[] = [];
+  const seen: Array<{ sidecar: string; processes: any[] }> = [];
   for (const s of all) {
     try {
       const resp = await fetch(`${s.url}/processes`);
       if (!resp.ok) { errors.push(`${s.name}: /processes ${resp.status}`); continue; }
       const { processes } = (await resp.json()) as any;
+      seen.push({ sidecar: s.name, processes: processes || [] });
       if ((processes || []).some((p: any) => p.extensionId === extensionId && p.alive)) return s;
     } catch (e: any) {
       errors.push(`${s.name}: ${e.message}`);
     }
   }
+
+  // ⭐ FALL BACK TO THE PROFILE NAME, because a sidecar often does not know the
+  // extensionId at all. It learns one only when mcp-server POSTs
+  // /processes/<pid>/extension, and that happens only if the extension
+  // registered while the launch call was still waiting. A browser that
+  // registers AFTER the launch returns keeps `extensionId: null` for the rest
+  // of its life — and resolving by extensionId alone then fails forever, so
+  // the browser could never be closed and leaked a Chrome plus an Xvfb
+  // display. MEASURED 2026-10-23: 5 of 7 live browsers on the office alpine
+  // sidecar were in that state and none of them was closable.
+  //
+  // The id is DERIVED FROM THE PROFILE NAME and written to the identity
+  // registry before the browser starts, so this mapping exists even for a
+  // browser that never registered.
+  const profileName = profileNameForExtensionId(extensionId);
+  if (profileName) {
+    for (const { sidecar, processes } of seen) {
+      if (processes.some((p: any) => p.profileName === profileName && p.alive)) {
+        const hit = all.find((s) => s.name === sidecar);
+        if (hit) return hit;
+      }
+    }
+  }
+
   throw new Error(
     `no configured sidecar is running ${extensionId} (asked ${all.map((s) => s.name).join(", ")})` +
+    (profileName
+      ? `; it belongs to profile ${JSON.stringify(profileName)}, and no sidecar reports a live process for that either`
+      : `; no identity file claims that extensionId, so it was not minted by this server`) +
     (errors.length ? `; ${errors.join("; ")}` : "") +
     `. ⇒ The browser may have exited, or it belongs to a sidecar this server does not know about.`,
   );

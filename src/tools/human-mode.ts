@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { profileNameForExtensionId } from "../utils/profile-identity.ts";
 import { listSidecars } from "../utils/sidecars.ts";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
@@ -234,6 +235,20 @@ async function displayFor(extensionId: string): Promise<Dsp> {
     throw new Error("UNIBROWSE_CHROMIUM_HOST is unset — human mode needs the chromium-host sidecar");
   }
   const seen: string[] = [];
+  // ⛔ MATCH ON THE PROFILE NAME AS WELL AS THE extensionId, and for the same
+  // reason the close path has to. A sidecar learns a pid's extensionId only
+  // when mcp-server POSTs /processes/<pid>/extension, which happens only if the
+  // extension registered while the launch call was still waiting. A browser
+  // that registers AFTER the launch returns keeps `extensionId: null` forever —
+  // and then EVERY human-input call against it failed with "no live
+  // chromium-host process for ext_…", about a browser that was running fine and
+  // had a perfectly good display.
+  //
+  // MEASURED 2026-10-23: this is what blocked a captcha-grid capture on a
+  // freshly launched profile, and it is the same root cause as the browsers that
+  // could not be closed. The lane's browsers were unaffected only because they
+  // happen to register inside the launch window.
+  const byProfile = profileNameForExtensionId(extensionId);
   for (const sc of all) {
     let processes: any[] = [];
     try {
@@ -244,7 +259,14 @@ async function displayFor(extensionId: string): Promise<Dsp> {
       seen.push(`${sc.name}: ${e.message}`);
       continue;
     }
-    const match = processes.find((p: any) => p.extensionId === extensionId && p.alive);
+    let match = processes.find((p: any) => p.extensionId === extensionId && p.alive);
+    // ⚠️ Only ever as a FALLBACK, and only for a process with no extensionId of
+    // its own. A process that reports a DIFFERENT extensionId is a different
+    // browser that happens to share a profile name, and driving a pointer into
+    // it would be the exact cross-browser mix-up displayFor exists to prevent.
+    if (!match && byProfile) {
+      match = processes.find((p: any) => p.profileName === byProfile && p.alive && !p.extensionId);
+    }
     if (!match) {
       seen.push(`${sc.name}: ${processes.map((p: any) => `${p.profileName}=${p.extensionId ?? "-"}`).join(", ") || "(none)"}`);
       continue;
@@ -255,6 +277,9 @@ async function displayFor(extensionId: string): Promise<Dsp> {
   throw new Error(
     `no live chromium-host process for ${extensionId} on any configured sidecar. Human input needs that ` +
     `profile's Xvfb display, so this only works on a sidecar profile, never on office's desktop Chrome. ` +
+    (byProfile
+      ? `That id was minted for profile ${JSON.stringify(byProfile)}, and no sidecar reports a live process for it either. `
+      : `No identity file claims that id, so it was not minted by this server. `) +
     `Asked ${all.map((s) => s.name).join(", ")} — ${seen.join(" | ")}`,
   );
 }

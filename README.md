@@ -8,7 +8,7 @@
 
 ## About
 
-**unibrowse** is an MCP server + Chrome extension that bridges the gap between AI agents and browser automation. With **72 comprehensive tools** including multi-tab management, it provides complete browser control through the Model Context Protocol, enabling AI applications like Claude, VS Code, Cursor, and Windsurf to automate your browser seamlessly.
+**unibrowse** is an MCP server + Chrome extension that bridges the gap between AI agents and browser automation. With **123 tools** including multi-tab management, it provides complete browser control through the Model Context Protocol, enabling AI applications like Claude, VS Code, Cursor, and Windsurf to automate your browser seamlessly.
 
 ## Features
 
@@ -16,7 +16,7 @@
 - 🔒 **Private**: Since automation happens locally, your browser activity stays on your device and isn't sent to remote servers
 - 👤 **Logged In**: Uses your existing browser profile, keeping you logged into all your services
 - 🥷🏼 **Stealth**: Avoids basic bot detection and CAPTCHAs by using your real browser fingerprint
-- 🛠️ **Comprehensive**: 72 tools covering navigation, DOM interaction, forms, cookies, downloads, history, bookmarks, and more
+- 🛠️ **Comprehensive**: 123 tools covering navigation, DOM interaction, forms, cookies, downloads, history, bookmarks, and more
 - 🔄 **Persistent HTTP**: Uses streamable HTTP transport on port 9010 for stable, multi-client connections
 - 📝 **Interaction Logging**: Background audit log tracks all user interactions for debugging and context retrieval
 - 🎯 **Multi-Tab Management**: Attach to and control multiple browser tabs simultaneously with label-based targeting
@@ -131,7 +131,7 @@ browser-mcp/
 - **extension/** - Chrome extension that enables browser automation
 - **config/** - PM2, systemd, and nodemon configurations
 - **scripts/** - Operational shell scripts and MongoDB utilities
-- **tests/** - Comprehensive test suites for all 72 tools
+- **tests/** - Test suites. ⚠️ They do NOT cover all 123 tools
 - **macros/** - Reusable JavaScript macros for common automation tasks
 - **docs/** - Design documents, guides, and additional documentation
 
