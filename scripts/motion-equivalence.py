@@ -42,8 +42,32 @@ def run(cmd):
     return json.loads(p.stdout)
 
 
+# The MacBook does not mount the NAS, so ui-eye cannot import the file next to
+# this one — it carries a copy. A copy that has quietly stopped matching is the
+# whole hazard, so check it by content rather than by seeded output: identical
+# bytes is a stronger claim than identical behaviour on six seeds.
+VENDORED = "/mnt/nas/data/code/ui-eye/src/ui_eye/client/humanmotion.py"
+
+
+def check_vendored() -> int:
+    import hashlib
+    canonical = os.path.join(HERE, "humanmotion.py")
+    try:
+        a = hashlib.md5(open(canonical, "rb").read()).hexdigest()
+        b = hashlib.md5(open(VENDORED, "rb").read()).hexdigest()
+    except FileNotFoundError as e:
+        print(f"⚠️  ui-eye copy not checked: {e}")
+        return 0
+    if a != b:
+        print(f"⛔ {VENDORED} has drifted from {canonical} ({b} vs {a}).\n"
+              f"   ⇒ cp {canonical} {VENDORED}  — the unibrowse one is canonical.")
+        return 1
+    print(f"✅ ui-eye copy byte-identical ({a[:12]})")
+    return 0
+
+
 def main():
-    failures = 0
+    failures = check_vendored()
     for seed, x0, y0, x1, y1, w in CASES:
         args = [str(v) for v in (seed, x0, y0, x1, y1, w)]
         py = run(["python3", "-I", "humanmotion.py", "emit"] + args)

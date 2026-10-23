@@ -23,7 +23,7 @@
 
 ## Tool Categories
 
-unibrowse provides 72 tools organized into 17 categories:
+unibrowse provides 78 tools organized into 18 categories:
 
 | Category | Tools | Description |
 |----------|-------|-------------|
@@ -44,6 +44,7 @@ unibrowse provides 72 tools organized into 17 categories:
 | **Network** | 3 | Connection state, throttling, cache management |
 | **Bookmarks** | 4 | List, create, delete, search bookmarks |
 | **Extension Management** | 4 | List, get info, enable, disable extensions |
+| **Human Mode** | 6 | OS-level pointer/keyboard through the sidecar's X server, and a per-profile switch that refuses the scripted input tools — see [HUMAN_MODE.md](docs/HUMAN_MODE.md) |
 
 See [TOOLS_REFERENCE.md](docs/TOOLS_REFERENCE.md) for complete documentation of all tools with parameters and examples.
 
