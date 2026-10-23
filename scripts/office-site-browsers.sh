@@ -208,6 +208,21 @@ SITES=(
   # ⚠️ Its exit's PORT IS NOT STABLE — vpn-proxy's own header says a reroll keeps
   # its port only by coincidence of ordering — so it is read at every launch.
   "alpacavpn|DVI-I-1|full|about:blank"
+  # ⛔ ALSO NOT A SITE, and it is `alpacavpn` with ONE variable changed: the exit.
+  # This one leaves through office's vpn-default instead of vpn-alpaca. `alpaca`
+  # asked for it 2026-10-22 21:33 EDT relaying Ben, Slack #tradedesk 21:25 ("we
+  # can also try different vpns"), after vpn-alpaca's Turnstile issued no token
+  # 3/3 at 21:15-21:24.
+  # ⭐ WHY A SECOND SLOT AND NOT A FLAG ON THE FIRST: the whole value of alpacavpn
+  # is that it differs from alpacasignup in exactly one way. Repointing it would
+  # destroy the only cell that isolates the exit, and the two exits could then
+  # never be compared against each other at all. Keep both.
+  # ⚠️ `full`, not `corner`, for the same measured reason as alpacavpn: this slot
+  # is relayed to Ben's phone and a corner window puts Cloudflare's checkbox below
+  # the fold (see slot_geometry).
+  # ⛔ Never sign anything in here; it holds no persistent session by design, and
+  # never point a session check at it.
+  "alpacavpn2|DVI-D-0|full|about:blank"
 )
 
 site_field() { # site_field <name> <monitor|slot|url>
@@ -281,6 +296,7 @@ profile_dir() { echo "$PROFILES_ROOT/$1"; }
 site_vpn_exit() { # site_vpn_exit <name> -> vpn-proxy exit name, or rc 1
   case "$1" in
     alpacavpn) echo "alpaca" ;;
+    alpacavpn2) echo "default" ;;
     *) return 1 ;;
   esac
 }
