@@ -1126,7 +1126,65 @@ const XVFB_SCREEN = (() => {
 // a chromium alpine no longer serves), so the sidecar installs these at boot.
 // ⛔ MUST COMPLETE BEFORE CHROMIUM STARTS — fontconfig scans at process start, so
 // a font installed after launch is invisible to that browser.
-const FONT_PKGS = ["ttf-dejavu", "ttf-liberation", "font-noto", "font-noto-cjk", "ttf-freefont"];
+// ⛔ TWO IMAGES, TWO PACKAGE MANAGERS, AND THE SECOND ONE FAILED SILENTLY TO
+// EVERYONE NOT READING ITS LOG. This file is bind-mounted into BOTH sidecars —
+// alpine/chromium-150 and Debian/Chrome-for-Testing-155 — so every self-heal
+// here that shelled out to `apk` simply did not happen on the second one.
+// Measured 2026-10-23 17:21 on the Chrome sidecar's first launch:
+//   [chromium-host] 1/3 desktop font families present — installing a desktop set
+//   [chromium-host] font install FAILED: spawn apk ENOENT
+// It then ran with FIVE font families, which is the fingerprint tell the whole
+// font floor exists to remove, on the image we had just stood up to be the
+// more realistic of the two.
+//
+// ⭐ The package NAMES differ too, not just the command, so a generic "install
+// these" wrapper over one list would fail on the other distro — hence a map.
+const PKGS = {
+  apk: {
+    fonts: ["ttf-dejavu", "ttf-liberation", "font-noto", "font-noto-cjk", "ttf-freefont"],
+    xdotool: ["xdotool"],
+  },
+  apt: {
+    fonts: ["fonts-dejavu-core", "fonts-liberation", "fonts-noto-core", "fonts-noto-cjk"],
+    xdotool: ["xdotool"],
+  },
+};
+
+/** Which package manager this image has. Cached — it cannot change under us. */
+let pkgMgr;
+function packageManager() {
+  if (pkgMgr !== undefined) return pkgMgr;
+  for (const m of ["apk", "apt-get"]) {
+    try { execSync(`command -v ${m}`, { stdio: "ignore" }); pkgMgr = m === "apk" ? "apk" : "apt"; return pkgMgr; }
+    catch { /* next */ }
+  }
+  pkgMgr = null;
+  return pkgMgr;
+}
+
+/**
+ * Install packages by role, on whichever distro this is.
+ * ⚠️ Resolves with an ERROR STRING rather than throwing: every caller is a boot
+ * self-heal whose job is to log and carry on, and a throw here would take the
+ * sidecar down over a missing font.
+ */
+function pkgInstall(role) {
+  return new Promise((resolve) => {
+    const mgr = packageManager();
+    if (!mgr) return resolve("no supported package manager (neither apk nor apt-get)");
+    const names = PKGS[mgr][role];
+    if (!names?.length) return resolve(`no ${role} packages defined for ${mgr}`);
+    const cmd = mgr === "apk"
+      ? ["apk", ["add", "--no-cache", ...names]]
+      // ⚠️ DEBIAN_FRONTEND and -y or apt-get waits on a prompt no one can answer
+      // and the 300s timeout kills it, which reads as a network failure.
+      : ["sh", ["-c", `DEBIAN_FRONTEND=noninteractive apt-get update -qq && ` +
+                      `DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ${names.join(" ")}`]];
+    execFile(cmd[0], cmd[1], { timeout: 300_000 }, (err, _o, se) => {
+      resolve(err ? `${mgr}: ${String(se || err.message).trim().slice(0, 300)}` : null);
+    });
+  });
+}
 let fontsReady = null;
 function ensureFonts() {
   if (fontsReady) return fontsReady;
@@ -1140,10 +1198,10 @@ function ensureFonts() {
     execFile("sh", ["-c", probe], (err, out) => {
       const have = parseInt(String(out || "0").trim(), 10) || 0;
       if (!err && have >= 3) return resolve(have);
-      console.warn(`[chromium-host] ${have}/3 desktop font families present — installing a desktop set`);
-      execFile("apk", ["add", "--no-cache", ...FONT_PKGS], { timeout: 300_000 }, (e2, _o, se) => {
+      console.warn(`[chromium-host] ${have}/3 desktop font families present — installing a desktop set (${packageManager() || "no package manager"})`);
+      pkgInstall("fonts").then((e2) => {
         if (e2) {
-          console.error(`[chromium-host] font install FAILED: ${String(se || e2.message).trim()}`);
+          console.error(`[chromium-host] font install FAILED: ${e2}`);
           return resolve(have);
         }
         execFile("sh", ["-c", "fc-cache -f >/dev/null 2>&1; " + probe], (_e3, out3) => {
@@ -1169,10 +1227,10 @@ function ensureXdotool() {
   xdotoolReady = new Promise((resolve) => {
     execFile("sh", ["-c", "command -v xdotool"], (err) => {
       if (!err) return resolve(true);
-      console.warn("[chromium-host] xdotool missing (not in the image) — installing");
-      execFile("apk", ["add", "--no-cache", "xdotool"], { timeout: 120_000 }, (e2, _o, se) => {
+      console.warn(`[chromium-host] xdotool missing (not in the image) — installing (${packageManager() || "no package manager"})`);
+      pkgInstall("xdotool").then((e2) => {
         if (e2) {
-          console.error(`[chromium-host] xdotool install FAILED: ${String(se || e2.message).trim()}`);
+          console.error(`[chromium-host] xdotool install FAILED: ${e2}`);
           return resolve(false);
         }
         console.log("[chromium-host] xdotool installed");
