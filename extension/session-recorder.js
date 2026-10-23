@@ -6,8 +6,21 @@
  * and page lifecycle. All events are streamed to background.js via chrome.runtime.sendMessage.
  */
 
+// ⛔ NEVER RECORD A CAPTCHA PROVIDER'S OWN FRAME. Same reason, same
+// measurement, as the guard at the top of lib/network-interceptor.js
+// (2026-10-23, Cloudflare Turnstile error 300030 on app.alpaca.markets).
+// rrweb's DOM instrumentation is as visible to a challenge as a wrapped fetch.
+const __unibrowseCaptchaFrame = (() => {
+  try {
+    return /(^|\.)challenges\.cloudflare\.com$|(^|\.)hcaptcha\.com$|(^|\.)recaptcha\.net$|(^|\.)turnstile\.cloudflare\.com$/.test(location.hostname)
+      || (/(^|\.)google\.com$/.test(location.hostname) && location.pathname.startsWith('/recaptcha'));
+  } catch (e) { return false; }
+})();
+
 // Guard against double-injection on the same page
-if (window.__unibrowse_recording__) {
+if (__unibrowseCaptchaFrame) {
+  console.log('[SessionRecorder] captcha provider frame — not instrumenting');
+} else if (window.__unibrowse_recording__) {
   console.log('[SessionRecorder] Already active on this page, skipping re-injection');
 } else {
   window.__unibrowse_recording__ = true;

@@ -507,6 +507,15 @@ SEED
     echo "$name: egress via vpn-$vpn_exit at $proxy_url"
   fi
 
+  # ⭐ --force-renderer-accessibility: WITHOUT IT AT-SPI RETURNS THE WINDOW FRAME
+  # AND NO PAGE CONTENT, so ui_eye_ax_tree / ui_eye_press cannot see anything in
+  # the page. Measured 2026-10-22: Ben's own desktop Chrome (pid 1594410) carries
+  # the flag and exposes page content; the slot browsers did not carry it and
+  # exposed none. ⇒ The ONLY way to click a cross-origin captcha widget
+  # (reCAPTCHA v2, Cloudflare Turnstile) is the accessibility tree — those are
+  # OOPIFs and are invisible to CDP, so browser_list_frames cannot reach them and
+  # a coordinate click is barred on :0. A slot launched without this flag is an
+  # automation target that cannot be driven where it matters most.
   echo "$name: launching on $mon $slot half (${w}x${h}+${x}+${y}), profile $dir"
   setsid --fork "$CHROME_BIN" \
     --user-data-dir="$dir" \
@@ -517,6 +526,7 @@ SEED
     --disable-sync \
     --disable-default-apps \
     --disable-features=TranslateUI,DisableLoadExtensionCommandLineSwitch \
+    --force-renderer-accessibility \
     ${proxy_args[@]+"${proxy_args[@]}"} \
     "$url" \
     >>"$LOG_DIR/$name.log" 2>&1 </dev/null

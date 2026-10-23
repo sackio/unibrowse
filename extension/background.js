@@ -37,7 +37,30 @@ const SESSION_AUTO_CAPTURE_VIDEO = false;
 // while lib/network-interceptor.js had already been injected into the page at
 // load. A reactive stop can end a recording; it can never keep the hook out of
 // the page. Only declining to START can.
-const SESSION_AUTO_CAPTURE_EXEMPT_HOSTS = ['fiverr.com'];
+// ⛔ app.alpaca.markets: CLOUDFLARE TURNSTILE DOES NOT MOUNT IN AN ATTACHED,
+// AUTO-CAPTURED TAB. MEASURED 2026-10-23 00:00-00:10 EDT on /signup, three
+// attached tabs across two browsers: zero challenges.cloudflare.com iframes,
+// the widget's own container left EMPTY, cf-turnstile-response length 0, and
+// `[Cloudflare Turnstile] Error: 300030` in the console followed by a flood of
+// "Failed to execute 'postMessage' ... target origin
+// ('https://challenges.cloudflare.com') does not match the recipient window's
+// origin" and "Ignored message from unexpected source for event: food".
+// ⭐ THE CONTROL THAT NAMES THE CAUSE: an UNATTACHED tab in the SAME browser,
+// same profile, same proxy, same minute, renders the widget normally — as does
+// a plain Chrome with no extension at all. So it is not the exit IP and not
+// the extension's presence; it is what ATTACH does to the page.
+// ⛔ MEASURED 00:14: THIS EXEMPTION ALONE DOES NOT RESTORE THE WIDGET, so do
+// not re-run that experiment. With auto-capture correctly skipped — and again
+// after browser_stop_session_recording + a reload — `__ni_installed__` was
+// STILL true in the top frame and the widget still did not mount. The MAIN
+// world is instrumented by an attach-time path that is independent of session
+// recording, and attach also leaves a CDP debugger on the tab, which is
+// separately detectable. ⇒ The exemption is kept because recording this page
+// is pointless, NOT because it fixes Turnstile.
+// ⭐ THE ONLY MEASURED WAY TO GET A TURNSTILE WIDGET ON THIS PAGE IS AN
+// UNATTACHED TAB. Drive it with OS-level input (ui_eye on office's display)
+// or a plain Chrome; attach afterwards if you need the DOM.
+const SESSION_AUTO_CAPTURE_EXEMPT_HOSTS = ['fiverr.com', 'app.alpaca.markets'];
 
 function isAutoCaptureExemptUrl(url) {
   if (!url) return false;
@@ -4781,8 +4804,17 @@ class BackgroundController {
       // falls through to the normal path rather than returning.
       try {
         const t = await chrome.tabs.get(tabId);
-        if (isAutoCaptureExemptUrl(t && t.url)) {
-          console.log(`[Background] Auto-capture: skipping tab ${tabId} — ${new URL(t.url).hostname} is exempt`);
+        // ⛔ pendingUrl FIRST, and it is not a nicety. A tab created by
+        // browser_create_tab is attached while its navigation is still in
+        // flight, so `url` is "" or "about:blank" and the exempt check reads
+        // "not judgeable → record it". MEASURED 2026-10-23 00:12 EDT: with
+        // app.alpaca.markets on the exempt list, auto-capture STILL started,
+        // and the recording's own startUrl was the exempt URL — the check had
+        // run a moment too early. Chrome sets pendingUrl precisely for this
+        // window, so the destination is knowable before the commit.
+        const judgeUrl = (t && (t.pendingUrl || t.url)) || '';
+        if (isAutoCaptureExemptUrl(judgeUrl)) {
+          console.log(`[Background] Auto-capture: skipping tab ${tabId} — ${new URL(judgeUrl).hostname} is exempt`);
           return;
         }
       } catch (e) {

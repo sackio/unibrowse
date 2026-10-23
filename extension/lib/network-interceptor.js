@@ -8,6 +8,30 @@
  * CSP note: extension scripts injected with world:'MAIN' bypass page CSP — no unsafe-inline needed.
  */
 (function () {
+  // ── ⛔ NEVER INSTRUMENT A CAPTCHA PROVIDER'S OWN FRAME ───────────────────
+  // background.js injects this with allFrames:true, so it lands inside the
+  // challenge iframe too. Wrapping fetch/XHR in THAT realm breaks the
+  // challenge: MEASURED 2026-10-23 00:00 EDT on app.alpaca.markets/signup via
+  // vpn-default (exit 5.180.208.36) — with the extension the Turnstile widget
+  // container stayed EMPTY, zero challenges.cloudflare.com iframes,
+  // cf-turnstile-response length 0, console `[Cloudflare Turnstile] Error:
+  // 300030` plus a flood of "Failed to execute 'postMessage' ... target origin
+  // ('https://challenges.cloudflare.com') does not match the recipient
+  // window's origin" and "Ignored message from unexpected source for event:
+  // food". A plain Chrome through the SAME proxy, same second, rendered the
+  // widget normally. One variable: this extension.
+  // ⚠️ The failure is SILENT from the caller's side — the host page just never
+  // gets a token, which reads exactly like an IP being refused by Cloudflare.
+  // That misreading cost the `alpaca` seat an evening of VPN-exit swapping.
+  // ⇒ Capture is never worth breaking the thing the page is waiting on.
+  const _cap = /(^|\.)challenges\.cloudflare\.com$|(^|\.)hcaptcha\.com$|(^|\.)recaptcha\.net$|(^|\.)turnstile\.cloudflare\.com$/;
+  try {
+    if (_cap.test(location.hostname) ||
+        (/(^|\.)google\.com$/.test(location.hostname) && location.pathname.startsWith('/recaptcha'))) {
+      return;
+    }
+  } catch (e) { /* opaque origin: fall through and install */ }
+
   // ── Re-injection guard ──────────────────────────────────────────────────
   // ⛔ THIS USED TO BE `window.__unibrowse_network_interceptor__ = true`, an
   // enumerable global with our product name in it. Any page could read it, or
