@@ -295,3 +295,42 @@ spec:
         resources:
           requests:
             storage: 2Gi
+---
+# ⭐ HOW mcp-server REACHES THIS POD. Created by hand by `cluster` 2026-10-23 and
+# written down here so it is reproducible rather than a cluster-only artifact.
+#
+# ⛔ THE clusterIP IS PINNED BECAUSE IT IS CONFIGURATION ELSEWHERE. mcp-server is
+# given this address in UNIBROWSE_SIDECARS, and container DNS on server4 cannot
+# resolve a cluster Service name — so the IP is the contract. Letting it be
+# reallocated would break the lane with a connection error pointing at the
+# cluster rather than at this file.
+#
+# ⚠️ NOT a NodePort, deliberately: a NodePort would put UNAUTHENTICATED browser
+# control on the LAN. `cluster` raised that and is right — :9020 has no auth of
+# its own because nothing outside the cluster was ever meant to reach it.
+#
+# ⚠️ MEASURED REACHABILITY (`cluster`, 2026-10-23 ~19:45) — the Service is NOT
+# directly usable from inside a docker container on server4:
+#   server4 HOST            -> 10.152.183.194:9020  reachable (HTTP 404)
+#   inside unibrowse-mcp-server -> 10.152.183.194:9020  ENETUNREACH
+#   inside unibrowse-mcp-server -> pod IP 10.1.141.239:9020  reachable
+# Docker-forwarded traffic is not redirected to the Service, and the pod IP
+# changes on every recreate. ⇒ A host-network socat on server4, bound to the
+# docker bridge gateway ONLY, bridges the two without putting :9020 on the LAN
+# and without moving mcp-server to host networking — which would break its
+# compose-DNS names (chromium-host, chromium-host-chrome, mongodb) and the
+# `http://mcp-server:9010` seed base every sidecar browser fetches.
+apiVersion: v1
+kind: Service
+metadata:
+  name: unibrowse-sidecar-0
+  namespace: unibrowse
+spec:
+  type: ClusterIP
+  clusterIP: 10.152.183.194
+  selector:
+    app: unibrowse-sidecar
+  ports:
+    - name: http
+      port: 9020
+      targetPort: 9020
