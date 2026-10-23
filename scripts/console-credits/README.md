@@ -99,6 +99,25 @@ concurrency ceiling is per-extension, one WebSocket and one MV3 worker, so probi
 a seat drives it starves live work. Do not retry in a loop, and do not go borrow `agents`'
 login browser — `claude-login-auto` needs its mint budget for account swaps.
 
+## ⛔⛔ 2026-10-23 — THE OFFICE-CHROME LANE NOW FAILS THE SAME WAY. RE-PROBE BEFORE TRUSTING THE SECTION BELOW.
+
+Measured 07:35, agents2@sack.io, 1Password disabled, two fresh incognito tabs on `ext_018237f9`,
+**two consecutive runs**: `mint NONE 14209ms [0,0,0]` then `NONE 14237ms [0,0,0]`, both ending
+`error: no link-sent`. ⭐ No magic link was ever requested, so **no mail quota was spent** and a
+retry costs nothing but time.
+
+That is the SIDECAR's blocked signature — ~14s, three widgets, zero-length tokens — now appearing
+on the lane the next section calls solved. ⛔ It is NOT 1Password and NOT a debugger fault: the
+login page rendered normally and `browser_evaluate` worked throughout both runs.
+
+⚠️ **One confound I did NOT rule out:** office was under an NFS unlink stall at load 112 during
+both runs (`system` was working it). A mint is browser-side JS against Google, so host load should
+not matter, but I have no clean-host control — do not record this as "the office lane is dead"
+until someone re-probes on a quiet host.
+
+⇒ **Re-probe before opening a 1Password window for a Console read.** A blocked mint costs Ben his
+autofill fleet-wide for nothing, which is exactly what happened here.
+
 ## ⭐ SOLVED 2026-10-22 — the office-Chrome lane works, and 1Password was the whole blocker
 
 All three remaining accounts read on 2026-10-22 on **office desktop Chrome
