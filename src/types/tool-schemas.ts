@@ -2354,6 +2354,22 @@ export const HumanTypeTool = z.object({
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
+export const HumanDragTool = z.object({
+  name: z.literal("browser_human_drag"),
+  description: z.literal(
+    "Drag with the real pointer through the X server: travel to the grab point, press and hold, carry the load, then release. " +
+    "⚠️ A dragged hand is not a moving hand — the carry runs ~1.45x slower than the same reach made free, with tremor damped to ~0.55x, because the arm is loaded. That ratio is the tell a slider or a map pan is scored on. " +
+    "Pass `selector`/`x`,`y` for the grab point and `toSelector`/`toX`,`toY` for the drop. " +
+    "⛔ Requires a chromium-host sidecar profile; there is no display to drive otherwise."
+  ),
+  arguments: HumanTargetSchema.extend({
+    toSelector: z.string().optional().describe("CSS selector of the drop target. Either this or toX/toY."),
+    toX: z.number().optional().describe("Viewport X of the drop point in CSS pixels."),
+    toY: z.number().optional().describe("Viewport Y of the drop point in CSS pixels."),
+    width: z.number().optional().describe("Grab-handle width in px for the Fitts timing of the approach. Derived from the selector's rect when you pass one."),
+  }).merge(TabTargetSchema).merge(MaxTokensSchema),
+});
+
 export const HumanScrollTool = z.object({
   name: z.literal("browser_human_scroll"),
   description: z.literal("Scroll with real wheel events, in the bursts of a few notches a hand produces rather than one smooth sweep. Negative is down, positive is up."),

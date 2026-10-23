@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsup src/http-server.ts src/stdio-server.ts --format esm && shx chmod +x dist/*.js && shx mkdir -p dist/views && shx cp src/views/*.html dist/views/ && shx cp -r src/public dist/public",
+    "build": "bash scripts/check-scope.sh && tsup src/http-server.ts src/stdio-server.ts --format esm && shx chmod +x dist/*.js && shx mkdir -p dist/views && shx cp src/views/*.html dist/views/ && shx cp -r src/public dist/public",
     "prepare": "npm run build",
     "watch": "tsup src/http-server.ts src/stdio-server.ts --format esm --watch",
     "dev": "nodemon",
@@ -30,7 +30,8 @@
     "store:macros": "node tests/store-utility-macros.js",
     "store:advanced-macros": "node tests/store-advanced-macros.js",
     "backup:test": "./scripts/backup-and-test.sh",
-    "test:unit": "node --test --experimental-strip-types 'tests/unit/*.test.*'"
+    "test:unit": "node --test --experimental-strip-types 'tests/unit/*.test.*'",
+    "check:scope": "bash scripts/check-scope.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

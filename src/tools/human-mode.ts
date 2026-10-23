@@ -8,6 +8,7 @@ import {
   HumanClickTool,
   HumanMoveTool,
   HumanTypeTool,
+  HumanDragTool,
   HumanScrollTool,
   HumanKeyTool,
 } from "@/types/tool-schemas";
@@ -121,7 +122,7 @@ const REPLACEMENT: Record<string, string> = {
   browser_select_option: "browser_human_click the select, then browser_human_key with Down/Return",
   browser_press_key: "browser_human_key",
   browser_submit_form: "browser_human_click the submit control, or browser_human_key Return",
-  browser_drag: "browser_human_move (a dragging variant is not built yet — say so rather than falling back)",
+  browser_drag: "browser_human_drag",
   browser_hover: "browser_human_move",
   browser_realistic_mouse_move: "browser_human_move",
   browser_set_clipboard: "type the text with browser_human_type",
@@ -301,7 +302,7 @@ async function pageEval(context: any, params: any, expression: string): Promise<
  * ⛔ The switch is not optional. OS input lands wherever the pointer is; naming
  * a tabTarget steers our measurement, not the mouse.
  */
-async function resolveTarget(context: any, params: any): Promise<{ sx: number; sy: number; width?: number; note?: string }> {
+async function resolveTarget(display: string, context: any, params: any): Promise<{ sx: number; sy: number; width?: number; note?: string }> {
   await context.ensureAttachedFromParams(params);
   try {
     await context.sendSocketMessage("browser_switch_tab", {
@@ -482,7 +483,7 @@ export const humanClick: Tool = {
     try {
       const extensionId = needExtension(params);
       const display = await displayFor(extensionId);
-      const t = await resolveTarget(context, params);
+      const t = await resolveTarget(display, context, params);
       const r = await sendInput(display, {
         action: "click", x: t.sx, y: t.sy, width: t.width, button: (params as any)?.button || 1,
       });
@@ -504,7 +505,7 @@ export const humanMove: Tool = {
     try {
       const extensionId = needExtension(params);
       const display = await displayFor(extensionId);
-      const t = await resolveTarget(context, params);
+      const t = await resolveTarget(display, context, params);
       const r = await sendInput(display, { action: "move", x: t.sx, y: t.sy, width: t.width });
       return jsonResponse({ ...r, display, screen: { x: t.sx, y: t.sy }, note: t.note }, true, max_tokens);
     } catch (error: any) {
@@ -528,7 +529,7 @@ export const humanType: Tool = {
 
       let clicked: any = null;
       if (v.selector) {
-        const t = await resolveTarget(context, params);
+        const t = await resolveTarget(display, context, params);
         clicked = await sendInput(display, { action: "click", x: t.sx, y: t.sy, width: t.width, button: 1 });
       } else {
         // Still raise the tab: typing goes to whatever the X server thinks is
@@ -541,6 +542,45 @@ export const humanType: Tool = {
       return jsonResponse({ ...r, display, focusedBy: clicked ? v.selector : "whatever already had focus", pressedEnter: !!v.pressEnter }, true, max_tokens);
     } catch (error: any) {
       return errorResponse(`browser_human_type failed: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+export const humanDrag: Tool = {
+  schema: {
+    name: HumanDragTool.shape.name.value,
+    description: HumanDragTool.shape.description.value,
+    inputSchema: zodToJsonSchema(HumanDragTool.shape.arguments),
+  },
+  handle: async (context, params) => {
+    const { max_tokens } = params || {};
+    try {
+      const extensionId = needExtension(params);
+      const display = await displayFor(extensionId);
+      const from = await resolveTarget(display, context, params);
+      // ⛔ Resolve the drop point through the same path, so it gets the same
+      // viewport check. A drop point below the fold lands on whatever occupies
+      // that screen position, and xdotool would report success either way.
+      const to = await resolveTarget(display, context, {
+        ...params,
+        selector: (params as any)?.toSelector,
+        x: (params as any)?.toX,
+        y: (params as any)?.toY,
+        width: undefined,
+      });
+      const r = await sendInput(display, {
+        action: "drag",
+        fromX: from.sx, fromY: from.sy,
+        x: to.sx, y: to.sy,
+        width: from.width,
+      });
+      return jsonResponse({
+        ...r, display,
+        screen: { from: { x: from.sx, y: from.sy }, to: { x: to.sx, y: to.sy } },
+        note: [from.note, to.note].filter(Boolean).join(" ") || undefined,
+      }, true, max_tokens);
+    } catch (error: any) {
+      return errorResponse(`browser_human_drag failed: ${error.message}`, false, error, max_tokens);
     }
   },
 };

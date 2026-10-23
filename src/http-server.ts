@@ -342,6 +342,7 @@ const humanModeTools: Tool[] = [
   humanMode.humanClick,
   humanMode.humanMove,
   humanMode.humanType,
+  humanMode.humanDrag,
   humanMode.humanScroll,
   humanMode.humanKey,
 ];

@@ -16,8 +16,9 @@ force the agents to do human like movements"*.
 
 Turn it on for a profile and the scripted input tools stop working for that
 profile. In their place you get `browser_human_click`, `browser_human_move`,
-`browser_human_type`, `browser_human_scroll` and `browser_human_key`, which move
-a real pointer across that profile's X display and press real buttons. The page
+`browser_human_drag`, `browser_human_type`, `browser_human_scroll` and
+`browser_human_key`, which move a real pointer across that profile's X display
+and press real buttons. The page
 sees `isTrusted: true` events arriving after genuine pointer travel, because
 that is what they are.
 
