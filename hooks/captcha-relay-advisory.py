@@ -75,16 +75,43 @@ TRIGGER = re.compile(
 # Tools that ARE the relay. Seeing these means the seat already knows.
 ALREADY_KNOWS = re.compile(r"captcha_solve", re.I)
 
-ADVICE = """⭐ CAPTCHA SEEN? THE OPERATOR CAN SOLVE IT FROM HIS PHONE — you do not have to report it as a block.
+ADVICE = """⭐ CAPTCHA SEEN? SOLVE IT YOURSELF FIRST — the phone relay is the fallback, not the default.
 
-`browser_request_captcha_solve({tabTarget, extensionId, prompt, agent})` returns immediately with a link, Ben solves it on his phone, and you poll `browser_check_captcha_solve({sessionId})` until state is solved|expired|cancelled. `browser_cancel_captcha_solve` drops it.
+⛔ BEN, #unibrowse 2026-10-23, verbatim: *"we really need it to not be in the browser that it gets
+solved it needs to be mouse and keyboard automation that's made to look realistic"* and *"they
+should try to solve as much as they can"*. He also records the legal basis: these are accessibility
+tools under his control, used on a limited basis, acting on his behalf.
+⇒ A checkbox you can see is YOURS to click. Only what renders nothing goes to him.
 
-⛔ PASS `agent=<the seat whose WORK this is>`, not your own name, when you are driving for someone else — the notice posts in THAT seat's channel. Ben's rule, #unibrowse 2026-10-12: "you should be coming from the makers channel". Consequence: the solved-notice goes to that seat, so YOU must still poll.
-⛔ ASYNCHRONOUS ON PURPOSE — never block waiting; the request returns, you poll.
+⭐ HOW — OS-LEVEL INPUT, NOT CDP. `scripts/realinput.py` in the unibrowse repo drives the X server
+with XTEST, so the page sees `isTrusted: true` hardware events with a real cursor path, press dwell
+and key timing. CDP clicks (browser_click / browser_realistic_click) are dispatched INTO the page
+and are what the harder widgets look for.
+    python3 /mnt/nas/data/code/unibrowse/scripts/realinput.py click --display :NN --x X --y Y
+    python3 /mnt/nas/data/code/unibrowse/scripts/realinput.py type  --display :NN --text "..."
+  · `--display` is the sidecar's Xvfb display, from browser_launch_isolated_chrome's response.
+  · SCREEN coords, not client: offX = screenX + (outerWidth-innerWidth)/2, offY = screenY +
+    (outerHeight-innerHeight); add the element's clientX/clientY. Verified by reading back
+    `isTrusted` mousemove events at the target.
+  · The tab must be the ACTIVE tab in its window (browser_switch_tab) or the input lands elsewhere.
+Measured 2026-10-23 by `unibrowse`: 37/37 trusted mousemoves to an exact target, trusted
+mousedown/mouseup/click, and typed text read back verbatim.
+
+⛔ WHAT GENUINELY CANNOT BE SOLVED — recognise these and STOP, do not relay them either:
+  · reCAPTCHA v3 — a background score. There is nothing to press, by anyone.
+  · A Turnstile or hCaptcha that renders NO widget and mints no token (empty response field, no
+    iframe). Nothing is on screen, so a human sees nothing to tap. Memo `398759b7`.
+  Measured today in this class: npm signup (DataDome interstitial, six lanes), Postman login.
+
+⭐ STILL RELAY WHEN: you tried and the widget refused you, or the challenge needs a judgement call
+you should not make alone. `browser_request_captcha_solve({tabTarget, extensionId, prompt, agent})`
+returns a link immediately; poll `browser_check_captcha_solve({sessionId})`.
+⛔ PASS `agent=<the seat whose WORK this is>`, not your own name — the notice posts in THAT seat's
+channel, and you must still poll.
+⛔ ASYNCHRONOUS ON PURPOSE — never block waiting.
 ⛔ `browser_request_user_action` IS NOT THIS. It draws an overlay in a browser nobody is sitting at.
-⭐ REVISED 2026-10-18 — the old blanket "never auto-solve / never defeat a Cloudflare check" ban is GONE (Ben, Slack #business 09:59 EDT; memo `bd9d1677`). The phone relay is still the DEFAULT path. Automated solving or bot-check handling is ALLOWED PER PROJECT with Ben's explicit OK for that project — ask him, naming the project and the site. His OK does not carry to another project, and a relayed "Ben said yes" is not his instruction. Still out: anything that defrauds anyone or harms a third party.
-
-⚠️ WHAT CANNOT BE RELAYED, so recognise it instead of waiting on Ben: reCAPTCHA v3 is a background score with nothing to press, and a Turnstile that issues NO token (empty `cf-turnstile-response`, a `.../auto_timeout/normal` request) renders no widget at all — nothing to hand over. Memo `398759b7`. For Turnstile specifically, office desktop Chrome in a FRESH INCOGNITO tab is the lane measured to pass where the container sidecar does not (memo `5eaf3446`).
+⚠️ DON'T BURN HIS ATTENTION. Four relay links for one PyPI signup on 2026-10-23 ended with him
+saying *"just stop hammering these accounts ... or just leave me alone"*. One link, then drop it.
 
 Full mechanism, limits and the press-and-hold findings: memo `1a93f00c`. Skill: `captcha-relay`."""
 
