@@ -53,10 +53,18 @@
     // bypass list, so this request cannot itself hit the 407 we are trying to
     // answer. A background fetch would race the first proxied navigation.
     const pa = u.searchParams.get("pa");
+    // ⛔ `par=1` REPLACES credentials this profile already holds. Without it the
+    // skip below is a trap for a browser that is being moved to a NEW lease
+    // while running: the server replaces its staged entry, the extension keeps
+    // the OLD password, and every request 407s against the new exit while both
+    // sides report success. A relaunch never hit this because the profile wipe
+    // takes Default/Local Extension Settings with it; staging into a LIVE
+    // browser does not wipe anything, so the caller has to say so.
+    const paReplace = u.searchParams.get("par") === "1";
     if (pa && seededId && httpUrl) {
       try {
         const have = await chrome.storage.local.get(["unibrowse_proxy_auth"]);
-        if (have.unibrowse_proxy_auth?.password) {
+        if (have.unibrowse_proxy_auth?.password && !paReplace) {
           // The nonce is single use, so a seed-page reload must not spend it.
           console.log("[unibrowse-seed] proxy credentials already stored; not re-collecting");
         } else {

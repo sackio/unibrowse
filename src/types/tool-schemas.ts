@@ -2178,6 +2178,56 @@ export const CloseIsolatedChromeTool = z.object({
   }).merge(MaxTokensSchema),
 });
 
+export const StageProxyAuthTool = z.object({
+  name: z.literal("browser_stage_proxy_auth"),
+  description: z.literal(
+    "Hand proxy credentials to a browser that is ALREADY RUNNING, so it can answer a 407 from an " +
+    "authenticated proxy (e.g. a VPN lease). browser_launch_isolated_chrome does this at launch via " +
+    "`proxyAuth`; this is the same handoff for a browser nobody is relaunching — notably host Chrome, " +
+    "which on a deployment with UNIBROWSE_CHROMIUM_HOST set cannot be launched through this server at " +
+    "all. Chrome's --proxy-server flag cannot carry a password, so the extension answering " +
+    "onAuthRequired is the only path; this stages a single-use nonce and makes the extension exchange " +
+    "it over the LAN. The credentials are never put on a URL, a command line, or in a log. " +
+    "⚠️ The browser keeps them in chrome.storage.local, so they SURVIVE a restart of that browser: " +
+    "stage once, then relaunch onto the lease. ⛔ The extension must have been reloaded on a build " +
+    "dated 2026-10-23 or later — `webRequestAuthProvider` is a new manifest permission and an " +
+    "extension running an older manifest cannot answer a 407 no matter what it is told."
+  ),
+  arguments: z.object({
+    extensionId: z
+      .string()
+      .describe("The running browser's extensionId, as browser_list_attached_tabs reports it. The " +
+               "lease is keyed to this, and the seed page adopts it, so passing a DIFFERENT id than " +
+               "the browser already has would rewrite its identity."),
+    proxy: z
+      .string()
+      .describe("The proxy these credentials are for, host:port or http://host:port. ⛔ Never with " +
+               "credentials in it — a spec carrying a password is refused. Recorded with the lease so " +
+               "a later stage for a different exit is distinguishable from a replay of this one."),
+    proxyAuth: z
+      .object({
+        username: z.string().describe("Proxy username from the lease."),
+        password: z.string().describe("Proxy password from the lease."),
+      })
+      .describe("The lease credentials. They go to the extension and nowhere else."),
+    serverBase: z
+      .string()
+      .optional()
+      .describe("http:// base URL of THIS server as the target browser can reach it, e.g. " +
+               "http://192.168.1.199:9010 for a browser on the host. Defaults to the sidecar hint " +
+               "(http://mcp-server:9010), which a host browser CANNOT resolve — pass this for any " +
+               "browser outside the compose network. ⚠️ Whatever you pass must be in that browser's " +
+               "--proxy-bypass-list, or the handoff itself hits the 407 it is meant to answer."),
+    replace: z
+      .boolean()
+      .optional()
+      .describe("Default true. Overwrite credentials the profile already holds. Set false only to " +
+               "leave an existing lease alone — the extension's own default is to skip when it " +
+               "already has a password, which for a live browser being moved to a new lease means " +
+               "silently keeping the old one."),
+  }).merge(MaxTokensSchema),
+});
+
 // ─── Watch — push events out of the browser ──────────────────────────────────
 // See docs/WATCH_DESIGN.md. The predicate runs in the extension where the
 // event already is, so non-matching events never cross the WebSocket.

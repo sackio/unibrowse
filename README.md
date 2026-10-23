@@ -23,7 +23,17 @@
 
 ## Tool Categories
 
-unibrowse provides 79 tools organized into 18 categories:
+unibrowse exposes **123 tools**. ⚠️ The table below groups the main ones and is
+NOT exhaustive — it had drifted to claiming 79 while the server served 122
+(measured 2026-10-23 against the running server, which is the only authority):
+
+```bash
+curl -sS -X POST http://127.0.0.1:9010/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | sed -n 's/^data: //p' | jq '.result.tools | length'
+```
+
 
 | Category | Tools | Description |
 |----------|-------|-------------|

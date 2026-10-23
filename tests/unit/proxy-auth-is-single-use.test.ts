@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { stageProxyAuth, collectProxyAuth, validateProxyAuth } from "../../src/utils/proxy-auth.ts";
+import { stageProxyAuth, collectProxyAuth, validateProxyAuth, proxyAuthCollected } from "../../src/utils/proxy-auth.ts";
 
 const AUTH = { username: "u", password: "p", proxy: "http://10.0.0.1:8888" };
 
@@ -54,4 +54,24 @@ test("a credential that cannot survive a header is refused, not cleaned up", () 
   assert.throws(() => validateProxyAuth({ username: "", password: "p" }, AUTH.proxy),
                 /username is required/);
   assert.deepEqual(validateProxyAuth({ username: "u", password: "p" }, AUTH.proxy), AUTH);
+});
+
+test("collected is observable, and distinguishes 'never staged' from 'not yet fetched'", () => {
+  // ⭐ browser_stage_proxy_auth reports success on this and nothing else: a
+  // staged lease and an opened seed page both succeed whether or not the
+  // browser could reach this server, so without a server-side flag the tool
+  // would report a working lane for a browser that 407s on every request.
+  assert.equal(proxyAuthCollected("ext_never"), null);
+  const nonce = stageProxyAuth("ext_d", AUTH);
+  assert.equal(proxyAuthCollected("ext_d"), false);
+  collectProxyAuth("ext_d", nonce);
+  assert.equal(proxyAuthCollected("ext_d"), true);
+});
+
+test("a failed collect does not look like a successful one", () => {
+  const nonce = stageProxyAuth("ext_e", AUTH);
+  collectProxyAuth("ext_e", "f".repeat(nonce.length));
+  // ⛔ Still false. If a wrong nonce flipped this, the staging tool would wait
+  // out its poll and then report success on somebody else's failed probe.
+  assert.equal(proxyAuthCollected("ext_e"), false);
 });

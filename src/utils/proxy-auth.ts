@@ -90,3 +90,21 @@ export function validateProxyAuth(raw: any, proxy: string | undefined): ProxyAut
   }
   return { username, password, proxy };
 }
+
+/**
+ * Has the extension for `eid` actually fetched its lease?
+ *
+ * ⭐ This is the only SERVER-SIDE proof that the handoff happened. Staging a
+ * lease and navigating a seed page both succeed whether or not the browser
+ * could reach this server, so without it a stage reports success for a browser
+ * that will 407 on every request. `null` = nothing staged for that eid.
+ *
+ * ⚠️ It proves COLLECTION, not that onAuthRequired is armed — the extension
+ * stores the credentials and then arms, and only a real 407 proves the second
+ * half. Do not report an armed handler on the strength of this.
+ */
+export function proxyAuthCollected(eid: string): boolean | null {
+  sweep();
+  const e = BY_EID.get(eid);
+  return e ? e.collected : null;
+}

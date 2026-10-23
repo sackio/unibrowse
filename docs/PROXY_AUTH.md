@@ -42,6 +42,56 @@ browser_launch_isolated_chrome({
 ⛔ **The sidecar is never told the credentials at all.** `POST /launch` carries
 host:port exactly as before.
 
+## A browser nobody is relaunching
+
+⛔ **Host Chrome cannot be launched through this server.** When
+`UNIBROWSE_CHROMIUM_HOST` is set — it is, on office — `browser_launch_isolated_chrome`
+always routes to a sidecar container and the in-process host-spawn branch is
+unreachable. No parameter changes that. So host Chrome is a browser this server
+can *drive* and cannot *start*, and the launch-time handoff above was the only
+way credentials ever reached an extension. That left the whole host lane unable
+to use an authenticated proxy at all.
+
+```js
+browser_stage_proxy_auth({
+  extensionId: "ext_…",                       // must be CONNECTED right now
+  proxy: "http://exit.example:8890",
+  proxyAuth: { username: "...", password: "..." },
+  serverBase: "http://192.168.1.199:9010",    // ⚠️ as THAT browser can reach us
+})
+```
+
+Same three steps, with the seed page opened in a tab instead of handed to a
+spawn — then the tab is closed.
+
+⭐ **Stage once, then relaunch onto the lease.** The credentials live in the
+profile's `chrome.storage.local`, so they survive that browser restarting; the
+restart needs nothing from this server, which is exactly what makes a browser we
+cannot launch workable.
+
+⛔ **`serverBase` defaults to the sidecar hint (`http://mcp-server:9010`), which a
+host browser cannot resolve.** Pass it for anything outside the compose network,
+and pass a host that is in that browser's `--proxy-bypass-list` — otherwise the
+handoff hits the 407 it exists to answer.
+
+⛔ **`par=1` on the seed URL, and why the tool sends it by default.** The seed
+script skips collection when the profile already holds a password, so a nonce
+cannot be spent twice by a page reload. For a LIVE browser being moved to a new
+lease that skip is a trap: the server replaces its staged entry, the extension
+keeps the old password, and every request 407s against the new exit while both
+sides report success. A *relaunch* never hit this only because the profile wipe
+takes `Default/Local Extension Settings` with it.
+
+⚠️ **The tool waits for the server's own `collected` flag** rather than reporting
+success on the navigation. That flag flips in the collect endpoint, so it cannot
+be set by a browser that could not reach us — the failure this call is most
+likely to hit. ⛔ **Collection is still not an armed handler**: the extension
+stores first and arms second, and only a real 407 proves the second half.
+
+⛔ **An extension running a manifest older than 2026-10-23 cannot answer a 407
+however well it is staged** — `webRequestAuthProvider` is a new permission, and
+Chrome only re-reads the manifest on an extension reload.
+
 ## The three refusals, and why each one is there
 
 | | |

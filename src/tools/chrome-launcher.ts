@@ -7,10 +7,10 @@ import { randomUUID } from "crypto";
 // "@/types" path alias, which the bare `node --test` runner cannot resolve.
 import { sweepDeadProfiles } from "../utils/dead-profiles.ts";
 import { parseProxySpec, buildProxyBypassList } from "../utils/proxy-spec.ts";
-import { stageProxyAuth, validateProxyAuth } from "../utils/proxy-auth.ts";
+import { stageProxyAuth, validateProxyAuth, proxyAuthCollected } from "../utils/proxy-auth.ts";
 import { listSidecars, sidecarByName, sidecarFor } from "../utils/sidecars.ts";
 import { fileURLToPath } from "url";
-import { LaunchIsolatedChromeTool, CloseIsolatedChromeTool } from "@/types/tool-schemas";
+import { LaunchIsolatedChromeTool, CloseIsolatedChromeTool, StageProxyAuthTool } from "@/types/tool-schemas";
 import { textResponse, errorResponse, jsonResponse } from "@/utils/response-helpers";
 import type { Tool } from "./tool";
 
@@ -1130,6 +1130,136 @@ export const closeIsolatedChrome: Tool = {
       }, max_tokens);
     } catch (error: any) {
       return errorResponse(`Failed to close isolated Chrome: ${error.message}`, false, error, max_tokens);
+    }
+  },
+};
+
+/**
+ * Give a RUNNING browser its proxy credentials.
+ *
+ * ⛔ WHY A SEPARATE TOOL AND NOT A LAUNCH FLAG. On this deployment
+ * UNIBROWSE_CHROMIUM_HOST is set, so browser_launch_isolated_chrome always
+ * routes to a sidecar container and the in-process host-spawn branch is
+ * unreachable — there is no parameter that changes that. Host Chrome is
+ * therefore a browser this server can drive but cannot launch, and until now
+ * that meant it could never be put behind an authenticated proxy at all:
+ * --proxy-server cannot carry a password and the only thing that can answer
+ * the 407 is the extension. `alpaca` hit exactly this asking for a VPN lease
+ * on pid 825530 (ATC DM, 2026-10-23 17:11).
+ *
+ * ⭐ The credentials survive a restart of the target browser, because the
+ * extension keeps them in that profile's chrome.storage.local. So the sequence
+ * is stage once -> then relaunch onto the lease, in that order, and the
+ * relaunch needs nothing from this server.
+ */
+export const stageProxyAuthTool: Tool = {
+  schema: {
+    name: StageProxyAuthTool.shape.name.value,
+    description: StageProxyAuthTool.shape.description.value,
+    inputSchema: zodToJsonSchema(StageProxyAuthTool.shape.arguments),
+  },
+  handle: async (context: any, params: any) => {
+    const { max_tokens } = params || {};
+    try {
+      const args = StageProxyAuthTool.shape.arguments.parse(params || {});
+
+      // ⛔ Refuse an extensionId this server does not have a live connection
+      // to. Staging would otherwise "succeed" into a map entry nothing can
+      // ever collect, and the caller would go on to relaunch a browser onto a
+      // lease it cannot authenticate against.
+      const known = (context.listExtensions?.() ?? []).map((e: any) => e.extensionId);
+      if (!known.includes(args.extensionId)) {
+        return errorResponse(
+          `No connected extension ${args.extensionId}. Connected: ${known.join(", ") || "(none)"}. ` +
+          `⇒ The credentials have to be delivered THROUGH the extension, so the browser must be up ` +
+          `and registered before you stage; there is no offline form of this.`,
+          false, undefined, max_tokens,
+        );
+      }
+
+      // Rejects a spec carrying credentials — same refusal as a launch, for the
+      // same reason: a proxy URL with a password in it ends up on a command
+      // line, and a command line is world-readable via `ps`.
+      const proxySpec = parseProxySpec(args.proxy);
+      const nonce = stageProxyAuth(args.extensionId, validateProxyAuth(args.proxyAuth, proxySpec));
+
+      const wsHint = process.env.UNIBROWSE_CHROMIUM_SERVER_HINT || "ws://mcp-server:9010/ws";
+      const base = (args.serverBase || wsHint.replace(/^ws/, "http").replace(/\/ws$/, ""))
+        .replace(/\/$/, "");
+
+      // ⛔ NO `ws=` PARAM, deliberately. The seed page rewrites the extension's
+      // server config when it is given one, and this tool's job is credentials
+      // for a browser that is already connected — re-pointing a working
+      // connection as a side effect of handing it a password would be a fault
+      // nobody would look for here. The seed's proxy branch runs before its
+      // `if (!wsUrl) return`, so omitting it costs nothing.
+      const seedUrl = `${base}/__unibrowse_seed?http=${encodeURIComponent(base)}`
+        + `&eid=${encodeURIComponent(args.extensionId)}&pa=${nonce}`
+        + (args.replace === false ? "" : "&par=1");
+
+      const tab: any = await context.sendSocketMessage("browser_create_tab" as any, {
+        url: seedUrl,
+        extensionId: args.extensionId,
+      } as any);
+      const tabId = tab?.tabId ?? null;
+
+      // ⭐ POLL THE SERVER'S OWN RECORD, not the page. The seed page's fetch is
+      // what flips `collected`, so this is the one observation that cannot
+      // succeed while the browser is unable to reach us — which is the failure
+      // this whole call is most likely to hit, since `base` has to be right
+      // AND be in the browser's proxy bypass list.
+      let collected = false;
+      for (let i = 0; i < 30; i++) {
+        if (proxyAuthCollected(args.extensionId) === true) { collected = true; break; }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
+      // ⚠️ Best-effort, and SAID SO rather than swallowed. The extension can
+      // reserve a tab it just created to a stale caller (known bug, fixed only
+      // on builds reloaded after 2026-10-10), which makes this close fail — and
+      // this runs against other seats' browsers, where a seed-page tab left
+      // open is their problem to notice, not ours to hide.
+      let closeError: string | null = null;
+      if (tabId != null) {
+        try {
+          await context.sendSocketMessage("browser_close_tab" as any, {
+            tabTarget: tabId, extensionId: args.extensionId,
+          } as any);
+        } catch (e: any) {
+          closeError = e?.message || String(e);
+        }
+      }
+
+      if (!collected) {
+        return errorResponse(
+          `Staged a lease for ${args.extensionId}, but its extension never collected it within 15s, ` +
+          `so that browser STILL CANNOT answer a 407. Most likely ${base} is not reachable from that ` +
+          `browser (a sidecar hint like http://mcp-server:9010 does not resolve on the host — pass ` +
+          `serverBase), or it is not in the browser's --proxy-bypass-list, or the extension predates ` +
+          `the 2026-10-23 build and has no proxy-auth code to run. The nonce is unspent; fix the ` +
+          `cause and call again.`,
+          false, undefined, max_tokens,
+        );
+      }
+
+      return jsonResponse({
+        staged: true,
+        collected: true,
+        extensionId: args.extensionId,
+        proxy: proxySpec,
+        seedTab: tabId,
+        seedTabClosed: tabId == null ? null : closeError === null,
+        seedTabCloseError: closeError,
+        replaced: args.replace !== false,
+        note:
+          "The extension fetched the credentials and they are now in that profile's " +
+          "chrome.storage.local, so they survive a restart of this browser — relaunch it onto the " +
+          "proxy and the 407 is answered without staging again. ⚠️ COLLECTION IS NOT AN ARMED " +
+          "HANDLER: the extension stores first and arms second, and only a real 407 proves the " +
+          "second half. Load a page through the proxy before reporting this lane working.",
+      }, max_tokens);
+    } catch (error: any) {
+      return errorResponse(`Failed to stage proxy auth: ${error.message}`, false, error, max_tokens);
     }
   },
 };

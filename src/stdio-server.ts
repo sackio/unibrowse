@@ -137,6 +137,7 @@ const systemTools: Tool[] = [
   system.getBrowserInfo,
   chromeLauncher.launchIsolatedChrome,
   chromeLauncher.closeIsolatedChrome,
+  chromeLauncher.stageProxyAuthTool,
 ];
 
 const networkTools: Tool[] = [
