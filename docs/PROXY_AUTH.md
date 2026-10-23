@@ -70,10 +70,20 @@ enumerate which profiles hold a lease by reading the error.
 ⚠️ **Staged credentials expire after 12h** and a relaunch replaces them. An
 uncollected entry is a launch that never came up.
 
-⛔ **Not verified end to end against a live authenticated proxy** as of
-2026-10-23. The nonce logic has unit tests
-(`tests/unit/proxy-auth-is-single-use.test.ts`, 5 cases) and the handler is
-syntax-checked and armed at service-worker start, but no 407 has actually been
-answered here — the fleet's own exits are unauthenticated local ports. The
-`scripts` seat owns the lease mechanism and is the one who can produce a real
-407 to test against.
+✅ **Verified end to end 2026-10-23**, against a real authenticating proxy that
+`scripts` stood up (a shared NordVPN US exit; unauthenticated `curl -x` to it
+returns 407):
+
+| | |
+|---|---|
+| positive | a sidecar profile launched with `proxyAuth` loaded `https://ipinfo.io/ip` and it returned the VPN exit's address, not the house IP — so the 407 was answered |
+| negative | the same launch with a deliberately wrong password produced Chrome's own "site can't be reached" within 10s, i.e. it **failed fast rather than hanging** — which is the property the two-attempt cap exists for |
+
+Also covered by unit tests: `tests/unit/proxy-auth-is-single-use.test.ts`
+(5 cases — single use, wrong nonce and wrong eid, relaunch replacing a lease,
+nonce unguessability, and a credential carrying CR/LF being refused).
+
+⚠️ **Still unexercised:** a proxy that challenges with a scheme other than Basic,
+and a challenge arriving before the seed page has run. The second is unlikely by
+construction — the seed page is the first navigation and its host is in the
+bypass list — but "unlikely by construction" is not "measured".
