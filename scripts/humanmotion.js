@@ -63,7 +63,45 @@ const DEFAULTS = {
   hesitateProb: 0.04,
   hesitateMin: 260.0,
   hesitateMax: 900.0,
+
+  typoProb: 0.018,
+  typoLateProb: 0.35,
+  typoLateMax: 3,
+  noticeMin: 90.0,
+  noticeMax: 420.0,
+  backspaceMin: 55.0,
+  backspaceMax: 145.0,
+  resumeMin: 40.0,
+  resumeMax: 180.0,
+
+  scrollKeyProb: 0.3,
+  scrollOvershootProb: 0.22,
+  scrollOvershootMax: 4,
+  scrollPauseProb: 0.3,
+  scrollPauseMin: 350.0,
+  scrollPauseMax: 1600.0,
 };
+
+// Physically adjacent keys on a US QWERTY board. A typo is a finger landing one
+// key off, so a random letter is the wrong model — it produces mistakes no hand
+// makes. Must stay identical to _NEIGHBOURS in humanmotion.py.
+const NEIGHBOURS = {
+  q: "wa", w: "qeas", e: "wrsd", r: "etdf", t: "ryfg", y: "tugh",
+  u: "yihj", i: "uojk", o: "ipkl", p: "ol",
+  a: "qwsz", s: "awedxz", d: "serfcx", f: "drtgvc", g: "ftyhbv",
+  h: "gyujnb", j: "huikmn", k: "jiolm", l: "kop",
+  z: "asx", x: "zsdc", c: "xdfv", v: "cfgb", b: "vghn",
+  n: "bhjm", m: "njk",
+  1: "2q", 2: "13w", 3: "24e", 4: "35r", 5: "46t", 6: "57y",
+  7: "68u", 8: "79i", 9: "80o", 0: "9p",
+};
+
+function slip(ch, rng) {
+  const near = NEIGHBOURS[ch.toLowerCase()];
+  if (!near) return null;
+  const wrong = near[rng.randint(0, near.length - 1)];
+  return ch !== ch.toLowerCase() ? wrong.toUpperCase() : wrong;
+}
 
 /** mulberry32 — see the Python Rng docstring for why it is not Math.random. */
 class Rng {
@@ -313,6 +351,105 @@ function keyDelays(text, cfg, rng) {
   return out;
 }
 
+/**
+ * A keystroke program: [{op:"key",char,delay} | {op:"backspace",delay}, ...].
+ * ⛔ sensitive=true produces NO typos — a wrong character in a password, a card
+ * number, an amount or a quantity is a real error rather than realism.
+ * Must stay identical to type_program in humanmotion.py.
+ */
+function typeProgram(text, cfg, rng, sensitive = false) {
+  cfg = Object.assign({}, DEFAULTS, cfg || {});
+  rng = rng || new Rng();
+  const base = 60000.0 / (cfg.wpm * 5.0);
+  const ops = [];
+  let prev = "";
+
+  const gap = (ch) => {
+    let d = base * Math.exp(rng.gauss(0.0, cfg.keySigma));
+    if (prev === " " || prev === "\t") d += rng.uniform(cfg.wordPauseMin, cfg.wordPauseMax);
+    if (prev !== "" && ".,!?;:".includes(prev)) d += rng.uniform(cfg.wordPauseMin, cfg.wordPauseMax) * 1.5;
+    if (ch !== ch.toLowerCase() || '!@#$%^&*()_+{}|:"<>?'.includes(ch)) d += rng.uniform(20.0, 70.0);
+    if (rng.random() < cfg.hesitateProb) d += rng.uniform(cfg.hesitateMin, cfg.hesitateMax);
+    return d / 1000.0;
+  };
+
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    const wrong = sensitive ? null : slip(ch, rng);
+    if (wrong !== null && rng.random() < cfg.typoProb) {
+      ops.push({ op: "key", char: wrong, delay: gap(ch) });
+      prev = wrong;
+      let extra = 0;
+      if (rng.random() < cfg.typoLateProb) {
+        extra = rng.randint(1, cfg.typoLateMax);
+        for (let k = 0; k < extra; k++) {
+          if (i + 1 + k >= text.length) { extra = k; break; }
+          const nxt = text[i + 1 + k];
+          ops.push({ op: "key", char: nxt, delay: gap(nxt) });
+          prev = nxt;
+        }
+      }
+      ops.push({ op: "backspace", delay: rng.uniform(cfg.noticeMin, cfg.noticeMax) / 1000.0 });
+      for (let k = 0; k < extra; k++) {
+        ops.push({ op: "backspace", delay: rng.uniform(cfg.backspaceMin, cfg.backspaceMax) / 1000.0 });
+      }
+      ops.push({ op: "key", char: ch, delay: rng.uniform(cfg.resumeMin, cfg.resumeMax) / 1000.0 });
+      prev = ch;
+      i += 1;
+      continue;
+    }
+    ops.push({ op: "key", char: ch, delay: gap(ch) });
+    prev = ch;
+    i += 1;
+  }
+  return ops;
+}
+
+/**
+ * How to deliver a scroll, mixing wheel, arrow keys, pauses and an occasional
+ * overshoot-and-return. Must stay identical to scroll_plan in humanmotion.py.
+ */
+function scrollPlan(notches, cfg, rng) {
+  cfg = Object.assign({}, DEFAULTS, cfg || {});
+  rng = rng || new Rng();
+  if (notches === 0) return [];
+  const sign = notches > 0 ? 1 : -1;
+  const target = Math.abs(notches);
+
+  let overshoot = 0;
+  if (target > 3 && rng.random() < cfg.scrollOvershootProb) {
+    overshoot = rng.randint(1, cfg.scrollOvershootMax);
+  }
+
+  const ops = [];
+  let left = target + overshoot;
+  while (left > 0) {
+    const n = Math.min(left, rng.randint(2, 5));
+    left -= n;
+    if (rng.random() < cfg.scrollKeyProb) {
+      ops.push({ op: "key", key: sign > 0 ? "Up" : "Down",
+                 repeat: n * rng.randint(2, 3), delay: rng.uniform(0.05, 0.16) });
+    } else {
+      ops.push({ op: "wheel", notches: n * sign, delay: rng.uniform(0.04, 0.14) });
+    }
+    if (left > 0 && rng.random() < cfg.scrollPauseProb) {
+      ops.push({ op: "pause", delay: rng.uniform(cfg.scrollPauseMin, cfg.scrollPauseMax) / 1000.0 });
+    }
+  }
+
+  if (overshoot) {
+    ops.push({ op: "pause", delay: rng.uniform(0.12, 0.45) });
+    let back = 0;
+    while (back < overshoot) {
+      const n = Math.min(overshoot - back, rng.randint(1, 3));
+      back += n;
+      ops.push({ op: "wheel", notches: -n * sign, delay: rng.uniform(0.05, 0.15) });
+    }
+  }
+  return ops;
+}
+
 /** [[notchesThisBurst, secondsToWaitAfterIt], ...] */
 function scrollBursts(notches, rng) {
   rng = rng || new Rng();
@@ -429,7 +566,7 @@ function typeRuns(text, opts = {}) {
 
 export {
   Rng, DEFAULTS, path, steps, settle, pressTiming, keyDelays, scrollBursts, measure,
-  moveChain, clickChain, scrollChain, typeRuns,
+  moveChain, clickChain, scrollChain, typeRuns, typeProgram, scrollPlan, slip,
 };
 
 // `node humanmotion.js ...` runs the bench/emit; importing it does not.
@@ -440,6 +577,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const rng = new Rng(parseInt(a[1], 10));
     const st = steps(+a[2], +a[3], +a[4], +a[5], { rng, targetWidth: a[6] ? +a[6] : 20.0 });
     console.log(JSON.stringify(st.map(([x, y, dt]) => [x, y, Math.round(dt * 1e6) / 1e6])));
+    process.exit(0);
+  }
+  if (a[0] === "emit-type") {
+    const ops = typeProgram(a[2], null, new Rng(parseInt(a[1], 10)), a[3] === "sensitive");
+    console.log(JSON.stringify(ops.map((o) => [o.op, o.char || "", Math.round(o.delay * 1e6) / 1e6])));
+    process.exit(0);
+  }
+  if (a[0] === "emit-scroll") {
+    const ops = scrollPlan(parseInt(a[2], 10), null, new Rng(parseInt(a[1], 10)));
+    console.log(JSON.stringify(ops.map((o) => [o.op, o.notches ?? o.repeat ?? 0, o.key || "", Math.round(o.delay * 1e6) / 1e6])));
     process.exit(0);
   }
   const dist = a[0] ? +a[0] : 630.0;

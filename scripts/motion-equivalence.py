@@ -66,8 +66,72 @@ def check_vendored() -> int:
     return 0
 
 
+TYPE_CASES = [
+    (11, "Hartley Iowa, thanks!", False),
+    (3, "a quick brown fox. Jumps!", False),
+    (42, "hello@example.com", False),
+    (7, "P@ssw0rd-1234", True),      # sensitive: must contain no backspace at all
+]
+
+SCROLL_CASES = [(11, -14), (7, 9), (99, -3), (5, 0)]
+
+
+def check_generators() -> int:
+    """The typing program and the scroll plan, which diverge for subtler reasons
+    than the trajectory does.
+
+    ⚠️ Both bugs this caught on the day it was written were Python's `x in s`
+    being TRUE for an empty x: `prev in " \t"` and `prev in ".,!?;:"` both fired
+    on the first character of every string, so Python added a word pause the
+    node port did not. Neither failed anything; they just made one lane type
+    differently from the other.
+    """
+    bad = 0
+    for seed, text, sensitive in TYPE_CASES:
+        args = ["emit-type", str(seed), text] + (["sensitive"] if sensitive else [])
+        py = run(["python3", "-I", "humanmotion.py"] + args)
+        js = run(["node", "humanmotion.js"] + args)
+        label = f"type seed={seed} {text[:24]!r}{' sensitive' if sensitive else ''}"
+        if len(py) != len(js) or any(
+            p[:-1] != j[:-1] or abs(p[-1] - j[-1]) > 1e-9 for p, j in zip(py, js)
+        ):
+            print(f"⛔ {label}: diverged ({len(py)} vs {len(js)} ops)")
+            bad += 1
+            continue
+        if sensitive and any(o[0] == "backspace" for o in py):
+            print(f"⛔ {label}: produced a typo in a SENSITIVE field")
+            bad += 1
+            continue
+        # the program must reconstruct the text exactly
+        buf = []
+        for op, ch, _ in py:
+            if op == "key":
+                buf.append(ch)
+            elif op == "backspace" and buf:
+                buf.pop()
+        if "".join(buf) != text:
+            print(f"⛔ {label}: replaying the program gives {''.join(buf)!r}, not the input")
+            bad += 1
+            continue
+        print(f"✅ {label}: {len(py)} ops identical, text exact")
+
+    for seed, notches in SCROLL_CASES:
+        args = ["emit-scroll", str(seed), str(notches)]
+        py = run(["python3", "-I", "humanmotion.py"] + args)
+        js = run(["node", "humanmotion.js"] + args)
+        label = f"scroll seed={seed} notches={notches}"
+        if len(py) != len(js) or any(
+            p[:-1] != j[:-1] or abs(p[-1] - j[-1]) > 1e-9 for p, j in zip(py, js)
+        ):
+            print(f"⛔ {label}: diverged ({len(py)} vs {len(js)} ops)")
+            bad += 1
+        else:
+            print(f"✅ {label}: {len(py)} ops identical")
+    return bad
+
+
 def main():
-    failures = check_vendored()
+    failures = check_vendored() + check_generators()
     for seed, x0, y0, x1, y1, w in CASES:
         args = [str(v) for v in (seed, x0, y0, x1, y1, w)]
         py = run(["python3", "-I", "humanmotion.py", "emit"] + args)
@@ -95,7 +159,8 @@ def main():
         print(f"\n{failures}/{len(CASES)} cases diverged — the two implementations "
               f"are no longer the same model. Fix before shipping either.")
         return 1
-    print(f"\nAll {len(CASES)} cases identical.")
+    print(f"\nAll checks passed: {len(CASES)} trajectories, {len(TYPE_CASES)} typing programs, "
+          f"{len(SCROLL_CASES)} scroll plans, and the ui-eye copy.")
     return 0
 
 

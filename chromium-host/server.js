@@ -1094,17 +1094,65 @@ async function humanInput(body) {
         return { ok: true, ...(await mouseAt(display)), from };
       }
 
-      case "scroll":
-        await xdotool(display, humanmotion.scrollChain(body.notches ?? -3, opts));
-        return { ok: true, notches: body.notches ?? -3 };
-
-      case "type": {
-        const runs = humanmotion.typeRuns(String(body.text ?? ""), opts);
-        for (const run of runs) {
-          await xdotool(display, run.args);
-          if (run.gapSeconds > 0) await new Promise((r) => setTimeout(r, run.gapSeconds * 1000));
+      // Ben, #unibrowse 2026-10-23: "human-like scrolling which sometimes
+      // involves scrolling with the arrow keys sometimes scroll with the scroll
+      // wheel ... different speeds of scrolling and hesitancy and sometimes
+      // over scrolling and going back". `plan: false` falls back to plain
+      // wheel bursts for a caller that needs an exact amount — an arrow key
+      // scrolls the FOCUSED scroller, which is not always the one under the
+      // pointer.
+      case "scroll": {
+        const notches = body.notches ?? -3;
+        if (body.plan === false) {
+          await xdotool(display, humanmotion.scrollChain(notches, opts));
+          return { ok: true, notches, via: "wheel-only" };
         }
-        return { ok: true, chars: String(body.text ?? "").length, runs: runs.length };
+        const plan = humanmotion.scrollPlan(notches, null, rng);
+        const counts = { wheel: 0, key: 0, pause: 0 };
+        for (const step of plan) {
+          counts[step.op]++;
+          if (step.op === "wheel") {
+            const button = step.notches > 0 ? "4" : "5";
+            const chain = [];
+            for (let i = 0; i < Math.abs(step.notches); i++) {
+              chain.push("click", button, "sleep", rng.uniform(0.012, 0.035).toFixed(3));
+            }
+            await xdotool(display, chain);
+          } else if (step.op === "key") {
+            const chain = [];
+            for (let i = 0; i < step.repeat; i++) {
+              chain.push("key", "--clearmodifiers", step.key,
+                "sleep", rng.uniform(0.03, 0.09).toFixed(3));
+            }
+            await xdotool(display, chain);
+          }
+          await new Promise((r) => setTimeout(r, step.delay * 1000));
+        }
+        return { ok: true, notches, via: "mixed", ...counts };
+      }
+
+      // ⛔ `sensitive: true` types cleanly — no typos. Pass it for a password,
+      // a card number, an amount or a quantity: a corrected typo is a real
+      // wrong character for as long as it exists.
+      case "type": {
+        const text = String(body.text ?? "");
+        const program = humanmotion.typeProgram(text, null, rng, !!body.sensitive);
+        let typos = 0;
+        for (const step of program) {
+          await new Promise((r) => setTimeout(r, step.delay * 1000));
+          if (step.op === "backspace") {
+            typos++;
+            await xdotool(display, ["key", "--clearmodifiers", "BackSpace"]);
+          } else {
+            // ⛔ One xdotool call per character. `type` cannot be chained with
+            // sleeps — it swallows the rest of the argv chain (measured
+            // 2026-10-23, the literal chain text landed in the field) — and the
+            // program's whole point is that the gaps are not uniform.
+            await xdotool(display, ["type", "--clearmodifiers", "--delay", "0", "--", step.char]);
+          }
+        }
+        return { ok: true, chars: text.length, keystrokes: program.length,
+                 corrections: typos, sensitive: !!body.sensitive };
       }
 
       case "key": {

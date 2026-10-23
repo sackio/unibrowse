@@ -142,6 +142,31 @@ class MotionConfig:
     hesitate_min: float = 260.0
     hesitate_max: float = 900.0
 
+    # typos, which Ben asked for explicitly (#unibrowse 2026-10-23): "human
+    # like typing which sometimes involves mistakes that get corrected".
+    # ⚠️ A typo is a REAL wrong character for as long as it exists. Callers pass
+    # sensitive=True for a password, a card number, an amount or a quantity, and
+    # then none are produced — see type_program.
+    typo_prob: float = 0.018          # per character
+    typo_late_prob: float = 0.35      # noticed a few characters later, not at once
+    typo_late_max: int = 3            # how many characters get typed before noticing
+    notice_min: float = 90.0          # pause between making the typo and reacting
+    notice_max: float = 420.0
+    backspace_min: float = 55.0       # gap between repeated backspaces
+    backspace_max: float = 145.0
+    resume_min: float = 40.0          # pause after correcting, before carrying on
+    resume_max: float = 180.0
+
+    # scrolling, same instruction: "sometimes scrolling with the arrow keys
+    # sometimes scroll with the scroll wheel ... different speeds of scrolling
+    # and hesitancy and sometimes over scrolling and going back"
+    scroll_key_prob: float = 0.3      # a run delivered by arrow/page keys
+    scroll_overshoot_prob: float = 0.22
+    scroll_overshoot_max: int = 4     # extra notches past the target
+    scroll_pause_prob: float = 0.3    # stop and read
+    scroll_pause_min: float = 350.0
+    scroll_pause_max: float = 1600.0
+
 
 @dataclass
 class Point:
@@ -359,9 +384,9 @@ def key_delays(text: str, cfg: MotionConfig | None = None, rng=None) -> list[tup
     prev = ""
     for ch in text:
         d = base * math.exp(rng.gauss(0.0, cfg.key_sigma))
-        if prev in " \t":
+        if prev and prev in " \t":      # ⚠️ same trap: "" in " \t" is True
             d += rng.uniform(cfg.word_pause_min, cfg.word_pause_max)
-        if prev in ".,!?;:":
+        if prev and prev in ".,!?;:":   # ⚠️ "" is a substring of everything in Python
             d += rng.uniform(cfg.word_pause_min, cfg.word_pause_max) * 1.5
         if ch.isupper() or ch in '!@#$%^&*()_+{}|:"<>?':
             d += rng.uniform(20.0, 70.0)      # reaching for shift
@@ -370,6 +395,163 @@ def key_delays(text: str, cfg: MotionConfig | None = None, rng=None) -> list[tup
         out.append((ch, d / 1000.0))
         prev = ch
     return out
+
+
+# Physically adjacent keys on a US QWERTY board. A typo is a FINGER landing one
+# key off, so a random letter is the wrong model — it produces mistakes no hand
+# makes and, on a page that scores typing, is worse than typing cleanly.
+_NEIGHBOURS = {
+    "q": "wa", "w": "qeas", "e": "wrsd", "r": "etdf", "t": "ryfg", "y": "tugh",
+    "u": "yihj", "i": "uojk", "o": "ipkl", "p": "ol",
+    "a": "qwsz", "s": "awedxz", "d": "serfcx", "f": "drtgvc", "g": "ftyhbv",
+    "h": "gyujnb", "j": "huikmn", "k": "jiolm", "l": "kop",
+    "z": "asx", "x": "zsdc", "c": "xdfv", "v": "cfgb", "b": "vghn",
+    "n": "bhjm", "m": "njk",
+    "1": "2q", "2": "13w", "3": "24e", "4": "35r", "5": "46t", "6": "57y",
+    "7": "68u", "8": "79i", "9": "80o", "0": "9p",
+}
+
+
+def _slip(ch: str, rng) -> str | None:
+    """The key a finger would hit instead of this one, preserving case."""
+    near = _NEIGHBOURS.get(ch.lower())
+    if not near:
+        return None
+    wrong = near[rng.randint(0, len(near) - 1)]
+    return wrong.upper() if ch.isupper() else wrong
+
+
+def type_program(text: str, cfg: MotionConfig | None = None, rng=None,
+                 sensitive: bool = False) -> list[dict]:
+    """A keystroke program: what to press, and how long to wait before each.
+
+    Richer than `key_delays` because a real person sometimes hits the wrong key
+    and goes back for it. Each op is one of:
+
+        {"op": "key",       "char": "a", "delay": 0.11}
+        {"op": "backspace",              "delay": 0.08}
+
+    ⛔ `sensitive=True` produces NO typos. Ben asked for mistakes
+    (#unibrowse 2026-10-23); a wrong character in a password, a card number, an
+    amount or a quantity is a real-world error rather than realism, so the
+    caller names those fields and they are typed cleanly. He can lift this, but
+    it should be lifted deliberately rather than by forgetting it exists.
+
+    Two correction styles, because people do both: caught immediately, and
+    caught after a few more characters — which costs several backspaces and is
+    the more convincing of the two.
+    """
+    cfg = cfg or MotionConfig()
+    rng = rng or Rng()
+    base = 60000.0 / (cfg.wpm * 5.0)
+    ops: list[dict] = []
+    prev = ""
+
+    def gap(ch: str) -> float:
+        d = base * math.exp(rng.gauss(0.0, cfg.key_sigma))
+        if prev and prev in " \t":      # ⚠️ same trap: "" in " \t" is True
+            d += rng.uniform(cfg.word_pause_min, cfg.word_pause_max)
+        if prev and prev in ".,!?;:":   # ⚠️ "" is a substring of everything in Python
+            d += rng.uniform(cfg.word_pause_min, cfg.word_pause_max) * 1.5
+        if ch.isupper() or ch in '!@#$%^&*()_+{}|:"<>?':
+            d += rng.uniform(20.0, 70.0)
+        if rng.random() < cfg.hesitate_prob:
+            d += rng.uniform(cfg.hesitate_min, cfg.hesitate_max)
+        return d / 1000.0
+
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        wrong = None if sensitive else _slip(ch, rng)
+        if wrong is not None and rng.random() < cfg.typo_prob:
+            ops.append({"op": "key", "char": wrong, "delay": gap(ch)})
+            prev = wrong
+            # how many further characters get typed before the eye catches it
+            extra = 0
+            if rng.random() < cfg.typo_late_prob:
+                extra = rng.randint(1, cfg.typo_late_max)
+                for k in range(extra):
+                    if i + 1 + k >= len(text):
+                        extra = k
+                        break
+                    nxt = text[i + 1 + k]
+                    ops.append({"op": "key", "char": nxt, "delay": gap(nxt)})
+                    prev = nxt
+            ops.append({"op": "backspace",
+                        "delay": rng.uniform(cfg.notice_min, cfg.notice_max) / 1000.0})
+            for _ in range(extra):
+                ops.append({"op": "backspace",
+                            "delay": rng.uniform(cfg.backspace_min, cfg.backspace_max) / 1000.0})
+            ops.append({"op": "key", "char": ch,
+                        "delay": rng.uniform(cfg.resume_min, cfg.resume_max) / 1000.0})
+            prev = ch
+            i += 1
+            continue
+
+        ops.append({"op": "key", "char": ch, "delay": gap(ch)})
+        prev = ch
+        i += 1
+    return ops
+
+
+def scroll_plan(notches: int, cfg: MotionConfig | None = None, rng=None) -> list[dict]:
+    """How to deliver a scroll, mixing the ways a person actually does it.
+
+    Ops are one of:
+
+        {"op": "wheel", "notches": -3, "delay": 0.08}
+        {"op": "key",   "key": "Down", "repeat": 4, "delay": 0.12}
+        {"op": "pause", "delay": 0.9}
+
+    Includes over-scrolling past the target and coming back, and pauses where
+    someone would stop to read. Ben, #unibrowse 2026-10-23: "sometimes scrolling
+    with the arrow keys sometimes scroll with the scroll wheel ... different
+    speeds of scrolling and hesitancy and sometimes over scrolling and going
+    back".
+
+    ⚠️ Keys and the wheel are NOT interchangeable in what they move: an arrow
+    key scrolls the focused scroller, a wheel event scrolls whatever is under
+    the pointer. They are mixed here because a person mixes them, but a caller
+    that needs an exact amount should ask for the wheel only.
+    """
+    cfg = cfg or MotionConfig()
+    rng = rng or Rng()
+    if notches == 0:
+        return []
+    sign = 1 if notches > 0 else -1
+    target = abs(notches)
+
+    # overshoot and come back, the way a hand overruns a flick
+    overshoot = 0
+    if target > 3 and rng.random() < cfg.scroll_overshoot_prob:
+        overshoot = rng.randint(1, cfg.scroll_overshoot_max)
+
+    ops: list[dict] = []
+    left = target + overshoot
+    while left > 0:
+        n = min(left, rng.randint(2, 5))
+        left -= n
+        if rng.random() < cfg.scroll_key_prob:
+            key = "Up" if sign > 0 else "Down"
+            # one key press is a smaller step than one notch, so more of them
+            ops.append({"op": "key", "key": key, "repeat": n * rng.randint(2, 3),
+                        "delay": rng.uniform(0.05, 0.16)})
+        else:
+            ops.append({"op": "wheel", "notches": n * sign,
+                        "delay": rng.uniform(0.04, 0.14)})
+        if left > 0 and rng.random() < cfg.scroll_pause_prob:
+            ops.append({"op": "pause",
+                        "delay": rng.uniform(cfg.scroll_pause_min, cfg.scroll_pause_max) / 1000.0})
+
+    if overshoot:
+        ops.append({"op": "pause", "delay": rng.uniform(0.12, 0.45)})
+        back = 0
+        while back < overshoot:
+            n = min(overshoot - back, rng.randint(1, 3))
+            back += n
+            ops.append({"op": "wheel", "notches": -n * sign,
+                        "delay": rng.uniform(0.05, 0.15)})
+    return ops
 
 
 def scroll_bursts(notches: int, rng=None) -> list[tuple[int, float]]:
@@ -476,6 +658,17 @@ if __name__ == "__main__":
         width = float(sys.argv[7]) if len(sys.argv) > 7 else 20.0
         st = steps(x0, y0, x1, y1, rng=Rng(seed), target_width=width)
         print(json.dumps([[x, y, round(dt, 6)] for x, y, dt in st]))
+        raise SystemExit(0)
+
+    if len(sys.argv) > 1 and sys.argv[1] == "emit-type":
+        ops = type_program(sys.argv[3], rng=Rng(int(sys.argv[2])),
+                           sensitive=len(sys.argv) > 4 and sys.argv[4] == "sensitive")
+        print(json.dumps([[o["op"], o.get("char", ""), round(o["delay"], 6)] for o in ops]))
+        raise SystemExit(0)
+
+    if len(sys.argv) > 1 and sys.argv[1] == "emit-scroll":
+        ops = scroll_plan(int(sys.argv[3]), rng=Rng(int(sys.argv[2])))
+        print(json.dumps([[o["op"], o.get("notches", o.get("repeat", 0)), o.get("key", ""), round(o["delay"], 6)] for o in ops]))
         raise SystemExit(0)
 
     dist = float(sys.argv[1]) if len(sys.argv) > 1 else 630.0
