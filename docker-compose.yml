@@ -166,6 +166,13 @@ services:
       context: ./chromium-host
       dockerfile: Dockerfile
     container_name: unibrowse-chromium-host
+    # ⛔ LOAD-BEARING, not cosmetic. runStartupCleanup in chromium-host/server.js
+    # tells its own stale SingletonLock from another container's LIVE one by the
+    # hostname inside the lock's symlink target. Docker defaults this to the
+    # container id, which changes on every recreate — so without a stable value a
+    # recreated sidecar stops recognising its predecessor's locks and leaves those
+    # profiles unlaunchable until someone deletes them by hand.
+    hostname: chromium-host
     restart: unless-stopped
     init: true
     environment:
@@ -268,6 +275,13 @@ services:
     profiles: ["chromium-host-chrome"]
     image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-15b
     container_name: unibrowse-chromium-host-chrome
+    # ⛔ LOAD-BEARING, not cosmetic. runStartupCleanup in chromium-host/server.js
+    # tells its own stale SingletonLock from another container's LIVE one by the
+    # hostname inside the lock's symlink target. Docker defaults this to the
+    # container id, which changes on every recreate — so without a stable value a
+    # recreated sidecar stops recognising its predecessor's locks and leaves those
+    # profiles unlaunchable until someone deletes them by hand.
+    hostname: chromium-host-chrome
     restart: unless-stopped
     init: true
     environment:

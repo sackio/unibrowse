@@ -18,6 +18,7 @@ import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
+import * as os from "node:os";
 
 const PORT = parseInt(process.env.PORT || "9020", 10);
 const PROFILES_DIR = process.env.PROFILES_DIR || "/app/.chrome-profiles";
@@ -144,15 +145,64 @@ const notifyOwner = (owner, subject, content, priority = "warning") => {
 /* ---------- Startup cleanup -------------------------------------------- */
 // Wipes stale SingletonLock/Socket/Cookie + stale /tmp/.X11-unix sockets
 // from previous incarnations. Run once at boot.
+//
+// ⛔ ONLY OUR OWN LOCKS, AND THAT IS NOT A REFINEMENT — IT IS THE WHOLE POINT
+// NOW THAT TWO SIDECARS SHARE ONE PROFILES DIRECTORY. This swept every profile
+// unconditionally, so bringing up the second sidecar deleted the SingletonLock
+// of all three browsers the first one was RUNNING (measured 2026-10-23 17:21:
+// "startup cleanup: 18 stale lock/socket(s) removed", and apis / ots-xtest /
+// alpacavpn2 were live). Nothing broke visibly, which is the hazard: the lock
+// is the only thing stopping a second chromium opening the same user-data-dir,
+// and two chromiums writing one profile's Cookies and History is corruption,
+// not a conflict anyone gets told about.
+//
+// ⭐ THE DISCRIMINATOR IS IN THE LOCK ITSELF. Chromium writes SingletonLock as
+// a symlink to `<hostname>-<pid>` (measured: `c9cda625ce96-40`), so a lock
+// naming a hostname that is not ours belongs to another container — whose
+// browser may be alive, and whose own boot will clean it. A lock naming US is
+// stale by construction: our pid namespace restarted with us.
+//
+// ⛔ THIS REQUIRES A STABLE `hostname:` PER SIDECAR IN docker-compose.yml.
+// Docker's default hostname is the container id, which changes on every
+// recreate — so without it a recreated sidecar stops recognising its own
+// predecessor's locks and leaves profiles permanently unlaunchable. The compose
+// file sets `hostname: chromium-host` / `chromium-host-chrome` for exactly this
+// reason; do not remove them.
+//
+// ⚠️ SingletonSocket and SingletonCookie carry no hostname, so they follow the
+// lock's verdict rather than being judged on their own. Removing them while
+// leaving a live foreign lock would strip a running browser's IPC path and
+// leave it looking healthy.
 const runStartupCleanup = () => {
   const cleaned = [];
+  const me = os.hostname();
+  const keptForeign = [];
   if (fs.existsSync(PROFILES_DIR)) {
     for (const profile of fs.readdirSync(PROFILES_DIR)) {
+      const lockPath = path.join(PROFILES_DIR, profile, "SingletonLock");
+      let target = null;
+      try { target = fs.readlinkSync(lockPath); } catch { /* absent, or not a symlink */ }
+      if (target) {
+        // `<hostname>-<pid>`; the hostname itself may contain dashes, so split
+        // on the LAST one. A target we cannot parse is treated as foreign —
+        // the conservative direction, since the cost of keeping a stale lock
+        // is one refused launch and the cost of removing a live one is a
+        // corrupted profile.
+        const cut = target.lastIndexOf("-");
+        const host = cut > 0 ? target.slice(0, cut) : null;
+        if (host !== me) {
+          keptForeign.push(`${profile} (${target})`);
+          continue;
+        }
+      }
       for (const lock of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
         const p = path.join(PROFILES_DIR, profile, lock);
         try { fs.lstatSync(p); fs.unlinkSync(p); cleaned.push(p); } catch {}
       }
     }
+  }
+  if (keptForeign.length) {
+    console.log(`[chromium-host] startup cleanup: LEFT ${keptForeign.length} lock(s) held by another container: ${keptForeign.join(", ")}`);
   }
   if (fs.existsSync("/tmp/.X11-unix")) {
     for (const f of fs.readdirSync("/tmp/.X11-unix")) {
