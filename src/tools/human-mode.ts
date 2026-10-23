@@ -263,10 +263,10 @@ async function sendInput(display: string, body: Record<string, any>): Promise<an
 const GEOMETRY_JS = `(() => {
   const w = window;
   return {
-    offX: w.screenX + (w.outerWidth - w.innerWidth) / 2,
-    offY: w.screenY + (w.outerHeight - w.innerHeight),
     innerWidth: w.innerWidth, innerHeight: w.innerHeight,
     devicePixelRatio: w.devicePixelRatio,
+    outerWidth: w.outerWidth, outerHeight: w.outerHeight,
+    screenX: w.screenX, screenY: w.screenY,
   };
 })()`;
 
@@ -353,12 +353,51 @@ async function resolveTarget(context: any, params: any): Promise<{ sx: number; s
   // multiplies by 1 there — it is here so a HiDPI display does not silently
   // land every click at a fraction of the intended position.
   const dpr = geo.devicePixelRatio || 1;
-  return {
-    sx: Math.round(geo.offX + vx * dpr),
-    sy: Math.round(geo.offY + vy * dpr),
-    width,
-    note,
-  };
+  const { offX, offY, basis } = await viewportOrigin(display, geo);
+  const sx = Math.round(offX + vx * dpr);
+  const sy = Math.round(offY + vy * dpr);
+  if (sx < 0 || sy < 0) {
+    throw new Error(
+      `computed a negative screen point (${sx},${sy}) from origin (${offX},${offY}) via ${basis}. ` +
+      `Refusing rather than clicking — xdotool clamps to 0 and reports success, so this would look like it worked.`,
+    );
+  }
+  return { sx, sy, width, note };
+}
+
+/**
+ * Where the viewport's top-left sits on the SCREEN.
+ *
+ * ⛔ ASK THE X SERVER, NOT THE PAGE. Measured 2026-10-23 on a sidecar chromium:
+ * `outerWidth`/`outerHeight` read 0 and `screenX`/`screenY` read 0, so the
+ * documented `screenX + (outerWidth - innerWidth) / 2` gives (-525, -861) for a
+ * 1050x861 viewport. Every click would land off the display, and nothing would
+ * report a failure — xdotool clamps to 0 and exits 0.
+ *
+ * The page's own numbers are used only when the X server cannot answer, and
+ * only when they are self-consistent (a non-zero outer size).
+ */
+async function viewportOrigin(display: string, geo: any): Promise<{ offX: number; offY: number; basis: string }> {
+  try {
+    const win = await sendInput(display, { action: "window" });
+    return {
+      offX: win.x + (win.width - geo.innerWidth) / 2,
+      offY: win.y + (win.height - geo.innerHeight),
+      basis: `X window ${win.windowId} at (${win.x},${win.y}) ${win.width}x${win.height}`,
+    };
+  } catch (e: any) {
+    if (geo.outerWidth > 0 && geo.outerHeight > 0) {
+      return {
+        offX: geo.screenX + (geo.outerWidth - geo.innerWidth) / 2,
+        offY: geo.screenY + (geo.outerHeight - geo.innerHeight),
+        basis: `page geometry (X server unavailable: ${e.message})`,
+      };
+    }
+    throw new Error(
+      `cannot locate the viewport on screen: the X server did not answer (${e.message}) and the page reports ` +
+      `outerWidth/outerHeight of 0, which makes its own offsets meaningless.`,
+    );
+  }
 }
 
 // --------------------------------------------------------------------------- //

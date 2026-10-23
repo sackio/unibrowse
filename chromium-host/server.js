@@ -999,6 +999,32 @@ import { execFile } from "node:child_process";
 
 const XDO_TIMEOUT_MS = 120_000;
 
+// ⛔ xdotool IS NOT IN THE IMAGE, and a container recreate therefore DELETES it.
+// Measured 2026-10-23, the hard way: it had been `apk add`ed into the running
+// container at some point, every OS-level input path silently depended on that,
+// and the first recreate took it out. The image cannot be rebuilt to fix this —
+// its Dockerfile pins a chromium version alpine no longer serves — so the
+// sidecar installs it itself at boot and says so in the log.
+let xdotoolReady = null;
+function ensureXdotool() {
+  if (xdotoolReady) return xdotoolReady;
+  xdotoolReady = new Promise((resolve) => {
+    execFile("sh", ["-c", "command -v xdotool"], (err) => {
+      if (!err) return resolve(true);
+      console.warn("[chromium-host] xdotool missing (not in the image) — installing");
+      execFile("apk", ["add", "--no-cache", "xdotool"], { timeout: 120_000 }, (e2, _o, se) => {
+        if (e2) {
+          console.error(`[chromium-host] xdotool install FAILED: ${String(se || e2.message).trim()}`);
+          return resolve(false);
+        }
+        console.log("[chromium-host] xdotool installed");
+        resolve(true);
+      });
+    });
+  });
+  return xdotoolReady;
+}
+
 const xdotool = (display, args) => new Promise((resolve, reject) => {
   execFile("xdotool", args, { env: { ...process.env, DISPLAY: display }, timeout: XDO_TIMEOUT_MS },
     (err, stdout, stderr) => {
@@ -1018,6 +1044,9 @@ async function humanInput(body) {
   if (!/^:\d{1,3}$/.test(String(display || ""))) {
     return { ok: false, error: `display must look like ":96", got ${JSON.stringify(display)}` };
   }
+  if (!(await ensureXdotool())) {
+    return { ok: false, error: "xdotool is not available in the sidecar and could not be installed — OS-level input is impossible until it is" };
+  }
   const rng = new humanmotion.Rng(body.seed);
   const opts = { rng, targetWidth: body.width, button: body.button };
 
@@ -1025,6 +1054,32 @@ async function humanInput(body) {
     switch (action) {
       case "where":
         return { ok: true, ...(await mouseAt(display)) };
+
+      // ⭐ THE X SERVER IS THE AUTHORITY ON WINDOW POSITION, NOT THE PAGE.
+      // Measured 2026-10-23: a sidecar chromium reports outerWidth/outerHeight
+      // as 0 and screenX/screenY as 0, so the usual
+      // `screenX + (outerWidth-innerWidth)/2` gives a NEGATIVE origin and every
+      // click lands off the display. Nothing errors — xdotool clamps to 0 and
+      // reports success. This returns the real geometry instead.
+      case "window": {
+        // ⛔ NOT `getactivewindow`. Xvfb runs with no window manager, so
+        // _NET_ACTIVE_WINDOW does not exist and xdotool aborts with
+        // "your windowmanager claims not to support _NET_ACTIVE_WINDOW"
+        // (measured 2026-10-23). Search by class instead. One chromium per
+        // display is the sidecar's arrangement, so the first match is the one.
+        const found = (await xdotool(display, ["search", "--onlyvisible", "--class", "chrom"]))
+          .split("\n").map((l) => l.trim()).filter(Boolean);
+        if (!found.length) return { ok: false, error: `no visible chromium window on ${display}` };
+        const out = await xdotool(display, ["getwindowgeometry", "--shell", found[0]]);
+        const d = Object.fromEntries(out.split("\n").filter((l) => l.includes("=")).map((l) => l.split("=")));
+        return {
+          ok: true,
+          windowId: d.WINDOW ? parseInt(d.WINDOW, 10) : null,
+          windowsOnDisplay: found.length,
+          x: parseInt(d.X, 10), y: parseInt(d.Y, 10),
+          width: parseInt(d.WIDTH, 10), height: parseInt(d.HEIGHT, 10),
+        };
+      }
 
       case "move":
       case "hover": {
