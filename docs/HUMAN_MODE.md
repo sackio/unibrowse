@@ -36,7 +36,8 @@ browser_human_mode({ list: true })          // what is on right now
 |---|---|
 | `browser_click`, `browser_type`, `browser_fill_form`, `browser_select_option`, `browser_press_key`, `browser_submit_form`, `browser_drag`, `browser_hover`, `browser_set_clipboard` | the browser acting on itself |
 | `browser_realistic_click`, `browser_realistic_type`, `browser_realistic_mouse_move` | ⛔ **also refused.** "Realistic" there means a bezier path dispatched through CDP Input. It is still the browser typing into itself, which is the thing this exists to stop |
-| `browser_evaluate` / `browser_execute_macro`, **only** when the script manipulates input — `.value =`, `.click()`, `.focus()`, `dispatchEvent`, `execCommand`, `form.submit()`, `setSelectionRange`, prototype patching | reading the DOM is how you find the thing to click, so reading stays |
+| `browser_evaluate`, **only** when the script manipulates input — `.value =`, `.click()`, `.focus()`, `dispatchEvent`, `execCommand`, `form.submit()`, `setSelectionRange`, prototype patching | reading the DOM is how you find the thing to click, so reading stays |
+| `browser_execute_macro` — **outright** | the macro body is fetched from the store at execution time, so the gate can only see the parameters. Checking those would pass a macro whose whole body is `el.value = …` while reporting that it had checked something. Read it with `browser_get_macro` and do the input steps by hand |
 
 Everything else is untouched: navigation, screenshots, snapshots, queries,
 cookies, network logs.

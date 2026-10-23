@@ -172,10 +172,26 @@ export function gate(toolName: string, params: any): GateVerdict {
     };
   }
 
-  if (toolName === "browser_evaluate" || toolName === "browser_execute_macro") {
-    const text = toolName === "browser_evaluate"
-      ? String(params?.expression ?? "")
-      : JSON.stringify(params?.params ?? {});
+  // ⛔ A macro is refused outright, and checking its arguments would have been
+  // worse than not checking at all. The script that runs lives in the macro
+  // STORE and is fetched at execution time, so the only thing a gate here can
+  // see is the parameters — which would have passed a macro whose whole body
+  // is `el.value = ...` while reporting that it had checked something.
+  if (toolName === "browser_execute_macro") {
+    return {
+      allowed: false,
+      message:
+        `⛔ browser_execute_macro is refused: profile ${extensionId} is in HUMAN MODE.\n\n` +
+        `The macro body is fetched from the store at execution time, so nothing here can tell a macro that ` +
+        `navigates and reads from one that fills a form by assigning to .value. Refusing is the only honest ` +
+        `answer; a check on the parameters would pass the second kind while looking like it had checked.\n\n` +
+        `⇒ Read it with browser_get_macro and carry out the input steps with browser_human_click / ` +
+        `browser_human_type. Everything the macro does that is NOT input you can still do directly.`,
+    };
+  }
+
+  if (toolName === "browser_evaluate") {
+    const text = String(params?.expression ?? "");
     const hit = INPUT_MANIPULATION.find((re) => re.test(text));
     if (hit) {
       return {
