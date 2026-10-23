@@ -110,9 +110,25 @@ from the selector's rect). A narrow target is approached more slowly. That is
 Fitts's law, and it is what makes the timing track the target instead of being a
 constant that is itself a signature.
 
-⛔ **No synthetic typos.** `browser_human_type` never mistypes. A "realistic"
-wrong character in a credential, an address or an order quantity is a real-world
-error, and the realism it buys has never been measured.
+⚠️ **Typing mistypes and corrects itself**, at roughly one slip per two
+sentences — an adjacent key, caught either immediately or a few characters later
+and backspaced out. A page that scores keystrokes reads a flawless run as a
+machine. The program is checked by replay in both lanes: whatever it does on the
+way, the field ends up holding exactly the text that was asked for.
+
+⛔ **`sensitive: true` types clean, and you must pass it for a password, a card
+number, an amount, an address or an order quantity.** A corrected typo is a real
+wrong character for as long as it exists: a field read on `input` rather than on
+`change`, a form that validates per keystroke, or a submit that races the
+correction all see the wrong value. ⚠️ `browser_human_type` cannot tell which
+field is which — the default is typos, so the caller owns this.
+
+⚠️ **The numbers above are the MODEL's.** Until `6ec2dd0` the delivered gesture
+was faster than the model it came from — `steps()` dropped the time of samples
+that collapsed onto the same pixel, about 30% of them, so an 864 ms path was
+delivered in ~600 ms, which is WindMouse's number and the exact tell this model
+exists to remove. Delivered now tracks modelled to ~1 ms (865 vs 864, measured).
+⇒ **Time the thing that reaches the X server, not the array you generated.**
 
 ---
 

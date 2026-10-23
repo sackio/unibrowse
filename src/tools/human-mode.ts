@@ -536,7 +536,7 @@ export const humanType: Tool = {
         await resolveTargetTabOnly(context, params);
       }
 
-      const r = await sendInput(display, { action: "type", text: v.text });
+      const r = await sendInput(display, { action: "type", text: v.text, sensitive: !!v.sensitive });
       if (v.pressEnter) await sendInput(display, { action: "key", key: "Return" });
       return jsonResponse({ ...r, display, focusedBy: clicked ? v.selector : "whatever already had focus", pressedEnter: !!v.pressEnter }, true, max_tokens);
     } catch (error: any) {

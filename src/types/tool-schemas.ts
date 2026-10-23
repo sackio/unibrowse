@@ -2343,12 +2343,14 @@ export const HumanTypeTool = z.object({
   description: z.literal(
     "Type into whatever currently has focus, as real X key events, with per-key intervals drawn from a lognormal around ~52wpm plus pauses at word and sentence boundaries. " +
     "⭐ Pass `selector` to human-click the field first, which is usually what you want — typing goes to the focused element and nothing else. " +
-    "⛔ NO SYNTHETIC TYPOS, deliberately: a 'realistic' wrong character in a credential, an address or an order quantity is a real-world error, and the realism it buys is unmeasured."
+    "⚠️ A few characters per paragraph are MISTYPED and then corrected with backspace, because a page that scores typing sees a clean run as a machine. " +
+    "⛔ Pass `sensitive: true` for a password, a card number, an amount, an address or an order quantity: a corrected typo is a real wrong character while it exists, and a field that is read before you finish gets the wrong value."
   ),
   arguments: z.object({
     text: z.string().describe("Text to type"),
     selector: z.string().optional().describe("Optional: human-click this element first to focus it."),
     pressEnter: z.boolean().optional().describe("Press Return after typing (default: false)"),
+    sensitive: z.boolean().optional().describe("⛔ Type clean, with no typos to correct. Use for credentials, card numbers, amounts, addresses and quantities (default: false)"),
   }).merge(TabTargetSchema).merge(MaxTokensSchema),
 });
 
