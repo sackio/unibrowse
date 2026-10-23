@@ -34,6 +34,54 @@ export function listSidecars(): Sidecar[] {
   const b = process.env.UNIBROWSE_CHROMIUM_HOST_CHROME;
   if (a) out.push({ name: "alpine", url: trim(a) });
   if (b) out.push({ name: "chrome", url: trim(b) });
+
+  // ⭐ ADDITIONAL SIDECARS, named by the deployment rather than by this file.
+  // Two hardcoded names could not express a third location at all — a sidecar
+  // running in the barn k8s cluster had no way to be addressed, and the only
+  // workarounds were a code change or re-pointing one of the two env vars.
+  // ⛔ That second one is a trap worth naming: UNIBROWSE_CHROMIUM_HOST_CHROME is
+  // the shared "chrome" slot, so re-pointing it silently moves EVERY seat's
+  // Chrome-155 launches somewhere else.
+  //
+  //   UNIBROWSE_SIDECARS='[{"name":"k8s","url":"http://unibrowse-sidecar.unibrowse:9020"}]'
+  //
+  // ⚠️ Appended, never prepended: the FIRST entry is the default for a launch
+  // that names none, so putting these ahead of the env-var pair would silently
+  // redirect every existing unnamed caller.
+  const extra = process.env.UNIBROWSE_SIDECARS;
+  if (extra) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(extra);
+    } catch (e: any) {
+      // ⛔ Loud, not ignored. A typo here would otherwise present as "that
+      // sidecar is not configured" from somewhere far away, and the operator
+      // would go looking at the cluster instead of at the variable.
+      throw new Error(
+        `UNIBROWSE_SIDECARS is not valid JSON (${e.message}). Expected ` +
+        `[{"name":"k8s","url":"http://host:9020"}].`,
+      );
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error(`UNIBROWSE_SIDECARS must be a JSON array, got ${typeof parsed}.`);
+    }
+    for (const row of parsed) {
+      const name = String((row as any)?.name ?? "").trim();
+      const url = String((row as any)?.url ?? "").trim();
+      if (!name || !url) {
+        throw new Error(`UNIBROWSE_SIDECARS entries need both name and url: ${JSON.stringify(row)}`);
+      }
+      if (!/^https?:\/\//.test(url)) {
+        throw new Error(`UNIBROWSE_SIDECARS url must be http(s): ${JSON.stringify(url)}`);
+      }
+      if (out.some((s) => s.name === name)) {
+        // Shadowing "alpine" or "chrome" would make the same name mean two
+        // different machines depending on which lookup ran.
+        throw new Error(`UNIBROWSE_SIDECARS name ${JSON.stringify(name)} is already taken.`);
+      }
+      out.push({ name, url: trim(url) });
+    }
+  }
   return out;
 }
 
