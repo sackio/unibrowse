@@ -2093,6 +2093,22 @@ export const LaunchIsolatedChromeTool = z.object({
         "WebSocket to the mcp-server, so the server's host is added to the bypass list automatically " +
         "— see proxyBypassList before overriding it."
       ),
+    proxyAuth: z
+      .object({
+        username: z.string().describe("Proxy username from the lease."),
+        password: z.string().describe("Proxy password from the lease."),
+      })
+      .optional()
+      .describe(
+        "Credentials for a proxy that requires authentication, e.g. a VPN lease URL's user:pass. " +
+        "⭐ PASS THEM HERE, NOT IN `proxy` — chrome's --proxy-server flag cannot carry a password and " +
+        "a spec containing one is refused, because a command line is world-readable via `ps`. These " +
+        "never reach the sidecar or any command line: the extension collects them over the LAN using " +
+        "a single-use nonce and answers the 407 itself via chrome.webRequest.onAuthRequired. " +
+        "⚠️ They come to rest in the profile's chrome.storage.local, which already holds its cookies — " +
+        "so a profile directory copied elsewhere carries the lease with it. " +
+        "⛔ Requires a NAMED persistent profile: an ephemeral one has no stable identity to deliver to."
+      ),
     proxyBypassList: z
       .string()
       .optional()

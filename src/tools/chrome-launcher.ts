@@ -7,6 +7,7 @@ import { randomUUID } from "crypto";
 // "@/types" path alias, which the bare `node --test` runner cannot resolve.
 import { sweepDeadProfiles } from "../utils/dead-profiles.ts";
 import { parseProxySpec, buildProxyBypassList } from "../utils/proxy-spec.ts";
+import { stageProxyAuth, validateProxyAuth } from "../utils/proxy-auth.ts";
 import { fileURLToPath } from "url";
 import { LaunchIsolatedChromeTool, CloseIsolatedChromeTool } from "@/types/tool-schemas";
 import { textResponse, errorResponse, jsonResponse } from "@/utils/response-helpers";
@@ -244,8 +245,30 @@ async function launchViaChromiumHost(
   // The id lives at <profileDir>/.unibrowse-identity.json — a sibling of
   // Default/, so the wipe cannot reach it.
   const stableExtId = stableExtensionIdFor(validatedParams.profileName);
+  const proxySpec = (validatedParams as any).proxy
+    ? parseProxySpec((validatedParams as any).proxy)
+    : undefined;
+  // ⛔ A proxy password NEVER goes on this URL. The seed page is a real
+  // navigation: its URL lands in that profile's history, in this server's
+  // access log, and in any Referer the page emits. So the URL carries a
+  // single-use NONCE and the extension exchanges it for the credentials over
+  // the LAN, body-only. See src/utils/proxy-auth.ts.
+  let proxyAuthNonce: string | null = null;
+  if ((validatedParams as any).proxyAuth) {
+    if (!stableExtId) {
+      throw new Error(
+        "proxyAuth needs a stable extension id to deliver to, and this profile has none. " +
+        "⇒ Launch a named persistent profile; an ephemeral one has no identity to key credentials to.",
+      );
+    }
+    proxyAuthNonce = stageProxyAuth(
+      stableExtId,
+      validateProxyAuth((validatedParams as any).proxyAuth, proxySpec),
+    );
+  }
   const seedUrl = `${httpHint}/__unibrowse_seed?ws=${encodeURIComponent(wsHint)}&http=${encodeURIComponent(httpHint)}`
-    + (stableExtId ? `&eid=${encodeURIComponent(stableExtId)}` : "");
+    + (stableExtId ? `&eid=${encodeURIComponent(stableExtId)}` : "")
+    + (proxyAuthNonce ? `&pa=${proxyAuthNonce}` : "");
   const userUrls = validatedParams.url
     ? (Array.isArray(validatedParams.url) ? validatedParams.url : [validatedParams.url])
     : ["chrome://extensions/"];
@@ -277,9 +300,6 @@ async function launchViaChromiumHost(
   // cmd line, no auto-attach) is preserved when autoAttach:false is passed.
   const autoAttach = (validatedParams as any).autoAttach !== false;
   const cmdLineUrls = autoAttach ? [seedUrl] : [seedUrl, ...userUrls];
-  const proxySpec = (validatedParams as any).proxy
-    ? parseProxySpec((validatedParams as any).proxy)
-    : undefined;
   const reqBody = {
     profileName: validatedParams.profileName,
     urls: cmdLineUrls,

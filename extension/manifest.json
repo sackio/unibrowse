@@ -14,6 +14,7 @@
     "webNavigation",
     "offscreen",
     "webRequest",
+    "webRequestAuthProvider",
     "declarativeNetRequest",
     "cookies",
     "history",
@@ -40,8 +41,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://*/__unibrowse_seed*"],
-      "js": ["unibrowse-seed.js"],
+      "matches": [
+        "*://*/__unibrowse_seed*"
+      ],
+      "js": [
+        "unibrowse-seed.js"
+      ],
       "run_at": "document_start",
       "all_frames": false
     }

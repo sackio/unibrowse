@@ -2,6 +2,7 @@
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import crypto from "crypto";
+import { collectProxyAuth } from "./utils/proxy-auth.ts";
 import express from "express";
 import fs from "fs";
 import path from "path";
@@ -594,6 +595,39 @@ async function main() {
     res.end(
       `<!doctype html><meta charset=utf-8><title>unibrowse seed</title><body>seeding…</body>`,
     );
+  });
+
+  // Exchange a single-use nonce for this profile's proxy credentials.
+  //
+  // ⛔ PUBLIC BY NECESSITY AND NARROW BY DESIGN. The extension fetches this
+  // before it has registered, so it cannot be gated on the API key — the whole
+  // point is that it runs at the moment a profile comes up. What guards it is
+  // the nonce: 16 random bytes, single use, compared in constant time, and
+  // issued only to the launch that asked for credentials. An `eid` alone is not
+  // enough, which matters because extension ids are values other seats
+  // legitimately hold and pass around in messages.
+  //
+  // ⛔ The log line names the profile and the outcome, never a value. `eid` is
+  // not a secret so it is safe to print; the nonce is, and is therefore absent.
+  app.get("/__unibrowse_proxy_auth", (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const eid = String((req.query as any)?.eid ?? "");
+    const nonce = String((req.query as any)?.pa ?? "");
+    if (!eid || !nonce) {
+      res.status(400).json({ error: "eid and pa are both required" });
+      return;
+    }
+    const auth = collectProxyAuth(eid, nonce);
+    if (!auth) {
+      // ⚠️ One status for every failure — wrong nonce, already collected, never
+      // staged, expired. Telling them apart would let a caller enumerate which
+      // profiles hold a lease by reading the error.
+      console.log(`[proxy-auth] refused collect for ${eid}`);
+      res.status(404).json({ error: "no credentials staged for this eid, or already collected" });
+      return;
+    }
+    console.log(`[proxy-auth] delivered credentials for ${eid} (proxy ${auth.proxy})`);
+    res.json({ proxy: auth.proxy, username: auth.username, password: auth.password });
   });
 
   // ── Session Recording API ───────────────────────────────────────────────────

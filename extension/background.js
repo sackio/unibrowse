@@ -2104,6 +2104,18 @@ class BackgroundController {
         return true; // async response
       }
 
+      if (message.type === 'PROXY_AUTH_READY') {
+        (async () => {
+          try {
+            const n = await installProxyAuthHandler();
+            sendResponse({ success: true, armed: n });
+          } catch (err) {
+            sendResponse({ success: false, error: err?.message || String(err) });
+          }
+        })();
+        return true; // async response
+      }
+
       if (message.type === 'RECONNECT_WS') {
         (async () => {
           try {
@@ -9537,4 +9549,76 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     controller.state.tabUrl = tab.url;
     controller.state.tabTitle = tab.title;
   }
+});
+
+// ───────────────────────────── proxy authentication ─────────────────────────
+// ⛔ WHY THE EXTENSION HAS TO DO THIS. Chrome's `--proxy-server` takes host:port
+// and nothing else: there is no flag for a proxy password, and putting one in
+// the spec is refused upstream on purpose, because a command line is
+// world-readable via `ps`. chrome.webRequest.onAuthRequired is the only place a
+// 407 can be answered without a human clicking a dialog, and under Xvfb there
+// is no human and no window manager to show one — the request simply hangs.
+//
+// Credentials arrive from the seed page (see unibrowse-seed.js) and live in this
+// profile's chrome.storage.local, which already holds its cookies.
+//
+// ⛔ PROXY CHALLENGES ONLY. `isProxy` false is a SITE asking for credentials —
+// answering those with the proxy's would hand a stranger's login form our VPN
+// lease. Returning {} leaves Chrome's own behaviour untouched.
+//
+// ⛔ AND IT GIVES UP. Chrome re-fires onAuthRequired when the credentials are
+// refused, so an answer-every-time handler with a wrong password loops until
+// the request dies, producing a hang rather than an error. Two attempts per
+// request, then let it fail so the caller sees a 407 and knows why.
+let __proxyAuthArmed = false;
+const __proxyAuthAttempts = new Map();   // requestId -> count
+
+async function installProxyAuthHandler() {
+  const got = await chrome.storage.local.get(["unibrowse_proxy_auth"]);
+  const auth = got.unibrowse_proxy_auth;
+  if (!auth?.username || !auth?.password) return false;
+  if (__proxyAuthArmed) return true;
+  if (!chrome.webRequest?.onAuthRequired) {
+    console.error("[Background] no chrome.webRequest.onAuthRequired — the manifest needs webRequestAuthProvider");
+    return false;
+  }
+
+  chrome.webRequest.onAuthRequired.addListener(
+    (details, callback) => {
+      if (!details.isProxy) {
+        // A site's own 401. Not ours to answer.
+        callback({});
+        return;
+      }
+      const n = (__proxyAuthAttempts.get(details.requestId) || 0) + 1;
+      __proxyAuthAttempts.set(details.requestId, n);
+      if (n > 2) {
+        console.error(`[Background] proxy rejected our credentials twice for ${details.requestId} — giving up rather than looping`);
+        callback({});
+        return;
+      }
+      callback({ authCredentials: { username: auth.username, password: auth.password } });
+    },
+    { urls: ["<all_urls>"] },
+    ["asyncBlocking"],
+  );
+
+  // Attempt counters are per request; without this the map grows for the life
+  // of the service worker.
+  const forget = (d) => { __proxyAuthAttempts.delete(d.requestId); };
+  chrome.webRequest.onCompleted.addListener(forget, { urls: ["<all_urls>"] });
+  chrome.webRequest.onErrorOccurred.addListener(forget, { urls: ["<all_urls>"] });
+
+  __proxyAuthArmed = true;
+  // ⛔ Names the proxy, never the credentials.
+  console.log(`[Background] proxy auth armed for ${auth.proxy || "(proxy)"}`);
+  return true;
+}
+
+// ⚠️ Armed at EVERY service-worker start, not only when the seed page runs. The
+// SW is killed and restarted freely, and a handler registered once in a
+// previous incarnation is gone — the symptom being a browser that worked for
+// ten minutes and then stopped loading anything.
+installProxyAuthHandler().catch((e) => {
+  console.warn(`[Background] proxy auth not armed: ${e?.message || e}`);
 });

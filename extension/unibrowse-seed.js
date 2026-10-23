@@ -44,6 +44,43 @@
       }
     }
 
+    // ── Proxy credentials ────────────────────────────────────────────────
+    // ⛔ The password is NOT on this URL — `pa` is a single-use nonce we
+    // exchange for it, body-only, over the LAN. A password in a URL would land
+    // in this profile's history and in the server's access log.
+    // ⚠️ Fetched from HERE rather than from the background, because this page is
+    // same-origin with mcp-server and the server host is in chrome's proxy
+    // bypass list, so this request cannot itself hit the 407 we are trying to
+    // answer. A background fetch would race the first proxied navigation.
+    const pa = u.searchParams.get("pa");
+    if (pa && seededId && httpUrl) {
+      try {
+        const have = await chrome.storage.local.get(["unibrowse_proxy_auth"]);
+        if (have.unibrowse_proxy_auth?.password) {
+          // The nonce is single use, so a seed-page reload must not spend it.
+          console.log("[unibrowse-seed] proxy credentials already stored; not re-collecting");
+        } else {
+          const r = await fetch(
+            `${httpUrl}/__unibrowse_proxy_auth?eid=${encodeURIComponent(seededId)}&pa=${encodeURIComponent(pa)}`,
+            { cache: "no-store" },
+          );
+          if (!r.ok) throw new Error(`collect returned ${r.status}`);
+          const auth = await r.json();
+          if (!auth?.username || !auth?.password) throw new Error("collect returned no credentials");
+          await chrome.storage.local.set({ unibrowse_proxy_auth: auth });
+          // ⛔ Log the proxy, never the credentials.
+          console.log(`[unibrowse-seed] stored proxy credentials for ${auth.proxy}`);
+          chrome.runtime.sendMessage({ type: "PROXY_AUTH_READY" }, () => {
+            void chrome.runtime.lastError;
+          });
+        }
+      } catch (e) {
+        // ⚠️ Loud: without credentials every proxied request 407s, and the
+        // symptom is a browser that loads nothing while looking healthy.
+        console.error(`[unibrowse-seed] PROXY CREDENTIALS NOT COLLECTED — every proxied request will 407: ${e?.message || e}`);
+      }
+    }
+
     if (!wsUrl) return;
     const existing = await chrome.storage.local.get(["unibrowse_server_config"]);
     if (existing.unibrowse_server_config?.WS_URL) {
