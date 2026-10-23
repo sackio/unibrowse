@@ -1,5 +1,35 @@
 version: '3.8'
 
+# ⛔⛔ THIS FILE ALONE IS WRONG ON SERVER4, AND SERVER4 IS WHERE mcp-server RUNS.
+# Use the override, always, on that host:
+#     docker compose -f docker-compose.yml -f docker-compose.server4.yml up -d
+#
+# Three things in here are office-specific and all three fail on server4:
+#   · mcp-server publishes 192.168.1.199:9010 — an address server4 does not have
+#   · mongodb publishes 127.0.0.1:27018 — phony-mongodb already holds it there
+#   · the network has no subnet, and server4's docker address pools are FULL
+#
+# ⚠️ WHAT THAT COSTS IF YOU FORGET, measured 2026-10-23 17:35: a plain `up -d`
+# computes a different network config-hash, so compose DETACHES the running
+# containers to recreate the network, fails to remove it (active endpoints),
+# and leaves mcp-server stopped and unattachable — "container … is not connected
+# to the network". Every later `up` repeats the detach. The fleet lost :9010 for
+# eight minutes and the fix is not re-running the same command.
+#
+# ⚠️ Recovery: disconnect every endpoint, `docker network rm
+# unibrowse_unibrowse-network`, bring it up with BOTH -f files, then reconnect
+# the two socat forwarders WITH their aliases — compose does not own them, and
+# without the aliases `chromium-host` stops resolving inside the network:
+#     docker network connect --alias chromium-host \
+#       unibrowse_unibrowse-network unibrowse-chfwd-net
+#     docker network connect --alias chromium-host-chrome \
+#       unibrowse_unibrowse-network unibrowse-chfwd-chrome-net
+#
+# ⭐ WHY THE DRIFT WAS INVISIBLE: the containers had been running for months
+# from a config this file no longer described, so nothing disagreed until the
+# first recreate. A running stack is NOT evidence that the compose file would
+# reproduce it.
+
 services:
   mongodb:
     image: mongo:latest
