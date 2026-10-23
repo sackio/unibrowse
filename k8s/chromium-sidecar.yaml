@@ -138,6 +138,17 @@ spec:
       # /v2/unibrowse/chromium-host-chrome/manifests/2026-10-13.
       nodeSelector:
         kubernetes.io/hostname: server3
+      # ⭐ AND A PRIORITY, because the pin alone was not enough. `cluster`,
+      # 2026-10-23 18:53: this pod carried no priorityClassName, so it ran at
+      # priority 0 while every batch pod on server3 is 100 or higher — it lost
+      # every slot that freed and sat Pending behind them indefinitely. The pin
+      # was never the problem and dropping it would not have fixed this.
+      #
+      # ⛔ value 200, preemptionPolicy: Never — front of the queue, evicts
+      # NOTHING. It waits for the next batch pod to exit on its own (an
+      # smbdb-fetch leaves roughly every 45 min) rather than killing one, which
+      # is what keeps a browser's priority from costing somebody their job.
+      priorityClassName: browser-serving
       # Chrome ignores SIGTERM politeness when mid-flush of its cookie jar, and
       # here the profile IS the asset. Give it room to exit cleanly.
       terminationGracePeriodSeconds: 45
