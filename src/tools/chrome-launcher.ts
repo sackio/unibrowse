@@ -8,6 +8,7 @@ import { randomUUID } from "crypto";
 import { sweepDeadProfiles } from "../utils/dead-profiles.ts";
 import { parseProxySpec, buildProxyBypassList } from "../utils/proxy-spec.ts";
 import { stageProxyAuth, validateProxyAuth } from "../utils/proxy-auth.ts";
+import { listSidecars, sidecarByName, sidecarFor } from "../utils/sidecars.ts";
 import { fileURLToPath } from "url";
 import { LaunchIsolatedChromeTool, CloseIsolatedChromeTool } from "@/types/tool-schemas";
 import { textResponse, errorResponse, jsonResponse } from "@/utils/response-helpers";
@@ -731,9 +732,14 @@ export const launchIsolatedChrome: Tool = {
       // lifecycle is bound to chromium-host, not mcp-server). The extension
       // still registers back to the mcp-server's WebSocket the same way,
       // so the post-spawn poll for the new extensionId is unchanged.
-      const chromiumHost = process.env.UNIBROWSE_CHROMIUM_HOST;
-      if (chromiumHost) {
-        return await launchViaChromiumHost(context, params, chromiumHost, max_tokens);
+      // ⭐ Two sidecars can be configured — see src/utils/sidecars.ts for why
+      // they run side by side rather than one replacing the other. `sidecar`
+      // picks; omitting it keeps the first, which is the long-standing
+      // UNIBROWSE_CHROMIUM_HOST, so an existing caller's behaviour is
+      // byte-identical to before this existed.
+      const chosen = sidecarByName((params as any)?.sidecar);
+      if (chosen) {
+        return await launchViaChromiumHost(context, params, chosen.url, max_tokens);
       }
 
       // Lazy startup-time cleanup on first launch after process start.
@@ -1056,15 +1062,29 @@ export const closeIsolatedChrome: Tool = {
       if (!extensionId && !profileName) {
         return errorResponse("Either extensionId or profileName is required.", false, undefined, max_tokens);
       }
-      const hostUrl = process.env.UNIBROWSE_CHROMIUM_HOST;
-      if (!hostUrl) {
+      if (!listSidecars().length) {
         return errorResponse(
           "browser_close_isolated_chrome requires the chromium-host sidecar (UNIBROWSE_CHROMIUM_HOST unset). " +
           "Instances launched in-process are not tracked by the sidecar and cannot be closed this way.",
           false, undefined, max_tokens,
         );
       }
-      const base = hostUrl.replace(/\/$/, "");
+      // ⛔ Ask which sidecar is running it rather than assuming the default.
+      // A close sent to the wrong sidecar finds no match and would report
+      // "nothing to close" about a browser that is very much alive.
+      // ⚠️ By extensionId only — sidecarFor keys on that. With just a
+      // profileName we fall back to the default sidecar, which is the old
+      // behaviour and is correct whenever only one is configured.
+      let base: string;
+      if (extensionId) {
+        try {
+          base = (await sidecarFor(extensionId)).url;
+        } catch (e: any) {
+          return errorResponse(e.message, false, undefined, max_tokens);
+        }
+      } else {
+        base = sidecarByName(undefined)!.url;
+      }
 
       const listResp = await fetch(`${base}/processes`);
       if (!listResp.ok) {

@@ -108,6 +108,12 @@ services:
       # (still supported as fallback during the rollout). Set to e.g.
       # http://chromium-host:9020 after `docker compose --profile chromium-host up`.
       UNIBROWSE_CHROMIUM_HOST: ${UNIBROWSE_CHROMIUM_HOST:-}
+      # The second sidecar, reachable as `sidecar: "chrome"` on a launch. Unset
+      # means only the first exists and `sidecar` is refused with a message
+      # naming what IS configured — rather than silently falling back to the
+      # other image, which would be a different browser than the caller asked
+      # for and would look like it had worked.
+      UNIBROWSE_CHROMIUM_HOST_CHROME: ${UNIBROWSE_CHROMIUM_HOST_CHROME:-}
     depends_on:
       mongodb:
         condition: service_healthy
@@ -230,6 +236,57 @@ services:
   # ⛔ THE PROFILE IS A NAMED VOLUME, NEVER /mnt/nas. Chrome profiles are
   # LevelDB plus SQLite and both corrupt over NFS. Only the screenshot
   # directory is on the NAS, so freelance's existing read path still works.
+
+  # ── The SECOND sidecar: Chrome for Testing 155 ────────────────────────────
+  # ⛔ IT RUNS ALONGSIDE chromium-host, IT DOES NOT REPLACE IT. Ben,
+  # #unibrowse 2026-10-23: "make versions for both".
+  #
+  # Why both, and why this is not a migration waiting to happen:
+  #   · chromium-host pins Chromium 150 and CANNOT be rebuilt — alpine 3.24 no
+  #     longer serves that package. It also has no WebGL without
+  #     --use-angle=gl and no SwiftShader library at all.
+  #   · This image is Chrome for Testing 155.0.8059.79 from the immutable
+  #     chrome-for-testing bucket, which honours --load-extension where branded
+  #     Google Chrome refuses it (measured 2026-10-15: a branded pod starts,
+  #     Xvfb starts, Chrome starts, and NOTHING registers — it looks healthy
+  #     and is undriveable).
+  #   · A chromium version is part of the automation contract. A silent 148→149
+  #     move once cost three weeks of undiagnosable macro failure, and the
+  #     version is also part of the fingerprint an anti-bot gate reads.
+  # ⇒ A launch chooses with `sidecar: "alpine" | "chrome"`. Omitting it keeps
+  #   the old default, so nothing that exists today changes behaviour.
+  #
+  # ⛔ SHARED PROFILES DIR, AND THAT IS A HAZARD TO RESPECT: the same profile
+  # must not be opened in both images. Chrome holds a SingletonLock per
+  # user-data-dir, and a profile written by 155 then opened by 150 is a
+  # downgrade the newer schema does not promise to survive. Pick one sidecar
+  # per profile name and stay there.
+  #
+  # ⚠️ The image is NOT built here — it is pulled from the NAS registry, and
+  # `docker compose build` must never be pointed at it.
+  chromium-host-chrome:
+    profiles: ["chromium-host-chrome"]
+    image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-15b
+    container_name: unibrowse-chromium-host-chrome
+    restart: unless-stopped
+    init: true
+    environment:
+      PORT: 9020
+      PROFILES_DIR: /app/.chrome-profiles
+      EXTENSION_DIR: /app/extension
+    networks:
+      unibrowse-network:
+        aliases:
+          - chromium-host-chrome
+    volumes:
+      - ./chrome-profiles:/app/.chrome-profiles
+      - ./extension:/app/extension:ro
+      # ⭐ The SAME server.js as the alpine sidecar, so a fix lands in both and
+      # cannot drift. Everything image-specific is decided at runtime by what
+      # the image actually has.
+      - ./chromium-host/server.js:/app/server.js:ro
+      - ./scripts/humanmotion.js:/app/humanmotion.js:ro
+
   osdrive:
     profiles: ["osdrive"]
     image: 192.168.1.207:5050/unibrowse/chromium-host-chrome:2026-10-15

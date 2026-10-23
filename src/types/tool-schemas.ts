@@ -2093,6 +2093,18 @@ export const LaunchIsolatedChromeTool = z.object({
         "WebSocket to the mcp-server, so the server's host is added to the bypass list automatically " +
         "— see proxyBypassList before overriding it."
       ),
+    sidecar: z
+      .enum(["alpine", "chrome"])
+      .optional()
+      .describe(
+        "Which chromium-host sidecar to launch in, when more than one is configured. " +
+        "`alpine` is Chromium 150, pinned and unrebuildable (its alpine package is gone) — the long-standing default. " +
+        "`chrome` is Chrome for Testing 155. " +
+        "⚠️ A chromium version is part of the automation contract: a macro recorded against one build can behave " +
+        "differently on another, and the version is also part of the fingerprint an anti-bot gate reads. " +
+        "⛔ DO NOT move an existing profile between them casually — pick one per profile and stay there. " +
+        "Omit it to get the default, which is what every caller got before this existed."
+      ),
     proxyAuth: z
       .object({
         username: z.string().describe("Proxy username from the lease."),

@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { listSidecars } from "../utils/sidecars.ts";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
 import {
@@ -216,36 +217,53 @@ export function gate(toolName: string, params: any): GateVerdict {
 // reaching the sidecar
 // --------------------------------------------------------------------------- //
 
-function hostUrl(): string | null {
-  const u = process.env.UNIBROWSE_CHROMIUM_HOST;
-  return u ? u.replace(/\/$/, "") : null;
-}
+/**
+ * A display, and the sidecar it belongs to.
+ *
+ * ⛔ The pair travels together deliberately. With two sidecars configured, a
+ * display number alone is ambiguous — both can have a `:90` — so sending input
+ * to the right display on the wrong sidecar would drive a DIFFERENT browser and
+ * report success. Resolving them in one place makes that unrepresentable.
+ */
+type Dsp = { display: string; base: string; sidecar: string };
 
 /** extensionId → Xvfb display, read live from the sidecar's own bookkeeping. */
-async function displayFor(extensionId: string): Promise<string> {
-  const base = hostUrl();
-  if (!base) throw new Error("UNIBROWSE_CHROMIUM_HOST is unset — human mode needs the chromium-host sidecar");
-  const resp = await fetch(`${base}/processes`);
-  if (!resp.ok) throw new Error(`chromium-host /processes returned ${resp.status}`);
-  const { processes } = (await resp.json()) as any;
-  const match = (processes || []).find((p: any) => p.extensionId === extensionId && p.alive);
-  if (!match) {
-    const known = (processes || []).map((p: any) => `${p.profileName}=${p.extensionId ?? "-"}`).join(", ");
-    throw new Error(
-      `no live chromium-host process for ${extensionId}. Human input needs that profile's Xvfb display, ` +
-      `so this only works on a sidecar profile, never on office's desktop Chrome. Known: ${known || "(none)"}`,
-    );
+async function displayFor(extensionId: string): Promise<Dsp> {
+  const all = listSidecars();
+  if (!all.length) {
+    throw new Error("UNIBROWSE_CHROMIUM_HOST is unset — human mode needs the chromium-host sidecar");
   }
-  if (!match.display) throw new Error(`profile ${match.profileName} is headless — no display to drive`);
-  return match.display;
+  const seen: string[] = [];
+  for (const sc of all) {
+    let processes: any[] = [];
+    try {
+      const resp = await fetch(`${sc.url}/processes`);
+      if (!resp.ok) { seen.push(`${sc.name}: /processes ${resp.status}`); continue; }
+      processes = ((await resp.json()) as any).processes || [];
+    } catch (e: any) {
+      seen.push(`${sc.name}: ${e.message}`);
+      continue;
+    }
+    const match = processes.find((p: any) => p.extensionId === extensionId && p.alive);
+    if (!match) {
+      seen.push(`${sc.name}: ${processes.map((p: any) => `${p.profileName}=${p.extensionId ?? "-"}`).join(", ") || "(none)"}`);
+      continue;
+    }
+    if (!match.display) throw new Error(`profile ${match.profileName} is headless — no display to drive`);
+    return { display: match.display, base: sc.url, sidecar: sc.name };
+  }
+  throw new Error(
+    `no live chromium-host process for ${extensionId} on any configured sidecar. Human input needs that ` +
+    `profile's Xvfb display, so this only works on a sidecar profile, never on office's desktop Chrome. ` +
+    `Asked ${all.map((s) => s.name).join(", ")} — ${seen.join(" | ")}`,
+  );
 }
 
-async function sendInput(display: string, body: Record<string, any>): Promise<any> {
-  const base = hostUrl()!;
-  const resp = await fetch(`${base}/input`, {
+async function sendInput(d: Dsp, body: Record<string, any>): Promise<any> {
+  const resp = await fetch(`${d.base}/input`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ display, ...body }),
+    body: JSON.stringify({ display: d.display, ...body }),
   });
   const json = (await resp.json()) as any;
   if (!json?.ok) throw new Error(json?.error || `chromium-host /input returned ${resp.status}`);
@@ -302,7 +320,7 @@ async function pageEval(context: any, params: any, expression: string): Promise<
  * ⛔ The switch is not optional. OS input lands wherever the pointer is; naming
  * a tabTarget steers our measurement, not the mouse.
  */
-async function resolveTarget(display: string, context: any, params: any): Promise<{ sx: number; sy: number; width?: number; note?: string }> {
+async function resolveTarget(display: Dsp, context: any, params: any): Promise<{ sx: number; sy: number; width?: number; note?: string }> {
   await context.ensureAttachedFromParams(params);
   try {
     await context.sendSocketMessage("browser_switch_tab", {
@@ -378,7 +396,7 @@ async function resolveTarget(display: string, context: any, params: any): Promis
  * The page's own numbers are used only when the X server cannot answer, and
  * only when they are self-consistent (a non-zero outer size).
  */
-async function viewportOrigin(display: string, geo: any): Promise<{ offX: number; offY: number; basis: string }> {
+async function viewportOrigin(display: Dsp, geo: any): Promise<{ offX: number; offY: number; basis: string }> {
   try {
     const win = await sendInput(display, { action: "window" });
     return {
@@ -487,7 +505,7 @@ export const humanClick: Tool = {
       const r = await sendInput(display, {
         action: "click", x: t.sx, y: t.sy, width: t.width, button: (params as any)?.button || 1,
       });
-      return jsonResponse({ ...r, display, screen: { x: t.sx, y: t.sy }, note: t.note }, true, max_tokens);
+      return jsonResponse({ ...r, display: display.display, sidecar: display.sidecar, screen: { x: t.sx, y: t.sy }, note: t.note }, true, max_tokens);
     } catch (error: any) {
       return errorResponse(`browser_human_click failed: ${error.message}`, false, error, max_tokens);
     }
@@ -507,7 +525,7 @@ export const humanMove: Tool = {
       const display = await displayFor(extensionId);
       const t = await resolveTarget(display, context, params);
       const r = await sendInput(display, { action: "move", x: t.sx, y: t.sy, width: t.width });
-      return jsonResponse({ ...r, display, screen: { x: t.sx, y: t.sy }, note: t.note }, true, max_tokens);
+      return jsonResponse({ ...r, display: display.display, sidecar: display.sidecar, screen: { x: t.sx, y: t.sy }, note: t.note }, true, max_tokens);
     } catch (error: any) {
       return errorResponse(`browser_human_move failed: ${error.message}`, false, error, max_tokens);
     }
@@ -539,7 +557,7 @@ export const humanType: Tool = {
 
       const r = await sendInput(display, { action: "type", text: v.text, sensitive: !!v.sensitive });
       if (v.pressEnter) await sendInput(display, { action: "key", key: "Return" });
-      return jsonResponse({ ...r, display, focusedBy: clicked ? v.selector : "whatever already had focus", pressedEnter: !!v.pressEnter }, true, max_tokens);
+      return jsonResponse({ ...r, display: display.display, sidecar: display.sidecar, focusedBy: clicked ? v.selector : "whatever already had focus", pressedEnter: !!v.pressEnter }, true, max_tokens);
     } catch (error: any) {
       return errorResponse(`browser_human_type failed: ${error.message}`, false, error, max_tokens);
     }
@@ -575,7 +593,7 @@ export const humanDrag: Tool = {
         width: from.width,
       });
       return jsonResponse({
-        ...r, display,
+        ...r, display: display.display, sidecar: display.sidecar,
         screen: { from: { x: from.sx, y: from.sy }, to: { x: to.sx, y: to.sy } },
         note: [from.note, to.note].filter(Boolean).join(" ") || undefined,
       }, true, max_tokens);
@@ -599,7 +617,7 @@ export const humanScroll: Tool = {
       const display = await displayFor(extensionId);
       await resolveTargetTabOnly(context, params);
       const r = await sendInput(display, { action: "scroll", notches: v.notches });
-      return jsonResponse({ ...r, display }, true, max_tokens);
+      return jsonResponse({ ...r, display: display.display, sidecar: display.sidecar }, true, max_tokens);
     } catch (error: any) {
       return errorResponse(`browser_human_scroll failed: ${error.message}`, false, error, max_tokens);
     }
@@ -620,7 +638,7 @@ export const humanKey: Tool = {
       const display = await displayFor(extensionId);
       await resolveTargetTabOnly(context, params);
       const r = await sendInput(display, { action: "key", key: v.key, repeat: v.repeat || 1 });
-      return jsonResponse({ ...r, display }, true, max_tokens);
+      return jsonResponse({ ...r, display: display.display, sidecar: display.sidecar }, true, max_tokens);
     } catch (error: any) {
       return errorResponse(`browser_human_key failed: ${error.message}`, false, error, max_tokens);
     }
