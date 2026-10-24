@@ -24,3 +24,22 @@ test("none configured is null, not a guess", () => {
   assert.deepEqual(listSidecars(), []);
   assert.equal(sidecarByName(undefined), null);
 });
+
+test("a deployment-named sidecar is selectable and does NOT become the default", () => {
+  // ⛔ The second half is the load-bearing one. The first entry is what a launch
+  // that names no sidecar gets, so if UNIBROWSE_SIDECARS were prepended, every
+  // existing unnamed caller would silently move to another machine. Appended.
+  process.env.UNIBROWSE_CHROMIUM_HOST = "http://chromium-host:9020";
+  process.env.UNIBROWSE_CHROMIUM_HOST_CHROME = "http://chromium-host-chrome:9020";
+  process.env.UNIBROWSE_SIDECARS =
+    '[{"name":"k8s","url":"http://10.152.183.194:9020"}]';
+  try {
+    assert.equal(sidecarByName(undefined)?.name, "alpine");
+    assert.equal(sidecarByName("k8s")?.url, "http://10.152.183.194:9020");
+    assert.deepEqual(listSidecars().map((s) => s.name), ["alpine", "chrome", "k8s"]);
+    // and an unknown name still refuses rather than falling back to the default
+    assert.throws(() => sidecarByName("barn"), /not configured/);
+  } finally {
+    delete process.env.UNIBROWSE_SIDECARS;
+  }
+});

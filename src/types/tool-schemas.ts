@@ -2094,12 +2094,21 @@ export const LaunchIsolatedChromeTool = z.object({
         "— see proxyBypassList before overriding it."
       ),
     sidecar: z
-      .enum(["alpine", "chrome"])
+      // ⛔ NOT AN ENUM. Routing has supported deployment-named sidecars since
+      // UNIBROWSE_SIDECARS existed, but this arg hardcoded two names, so the k8s
+      // sidecar was addressable in src/utils/sidecars.ts and UNSELECTABLE from
+      // every call site — configured, reachable, and impossible to ask for.
+      // Validation is not lost: sidecarByName() throws and LISTS what is
+      // configured, which is a better error than a schema rejection because it
+      // names the available targets on the server actually serving the call.
+      .string()
       .optional()
       .describe(
         "Which chromium-host sidecar to launch in, when more than one is configured. " +
         "`alpine` is Chromium 150, pinned and unrebuildable (its alpine package is gone) — the long-standing default. " +
         "`chrome` is Chrome for Testing 155. " +
+        "Further names come from the deployment's UNIBROWSE_SIDECARS, so the set is per-server; " +
+        "pass an unknown one and the error lists what this server has. " +
         "⚠️ A chromium version is part of the automation contract: a macro recorded against one build can behave " +
         "differently on another, and the version is also part of the fingerprint an anti-bot gate reads. " +
         "⛔ DO NOT move an existing profile between them casually — pick one per profile and stay there. " +

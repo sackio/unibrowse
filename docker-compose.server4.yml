@@ -37,6 +37,29 @@ services:
       # mails out would point at a host that is no longer serving :9010.
       # Nothing errors; the message is delivered containing a dead URL.
       UNIBROWSE_PUBLIC_URL: http://192.168.1.168:9010
+      # ⭐ ADDITIONAL SIDECARS BEYOND THE alpine/chrome PAIR. Routing has read this
+      # since 2026-10-23 (src/utils/sidecars.ts) but no caller could SELECT one,
+      # because browser_launch_isolated_chrome's `sidecar` arg was a hardcoded
+      # enum of those two names — so the k8s sidecar was configured, reachable
+      # and impossible to ask for. The enum is now a string; this makes the pod
+      # addressable in fact rather than in principle.
+      #
+      # ⛔ APPENDED, NEVER PREPENDED. listSidecars() returns the env-var pair
+      # first and the FIRST entry is what a launch naming no sidecar gets, so
+      # ordering is load-bearing: prepending would silently move every existing
+      # unnamed caller onto the cluster. Pinned by a unit test.
+      #
+      # ⛔ THE LITERAL ClusterIP, not a DNS name. The pod is on server3's barn
+      # cluster and container DNS on server4 cannot resolve cluster-internal
+      # names; `cluster` created this Service by hand and the address is pinned
+      # in k8s/chromium-sidecar.yaml for exactly this reason.
+      # ⚠️ VERIFIED REACHABLE from inside this container 2026-10-24 07:07 EDT:
+      #   wget -qO- http://10.152.183.194:9020/health -> {"ok":true,"running":1}
+      # ⚠️ It is Chrome for Testing 155, NOT the alpine Chromium 150, and it is
+      # capped `cpu: "1"`. Do not move a profile here expecting more CPU than
+      # office gives it -- it has less. Its value is an INDEPENDENT browser host,
+      # not a faster one.
+      UNIBROWSE_SIDECARS: '[{"name":"k8s","url":"http://10.152.183.194:9020"}]'
     ports: !override
       - "127.0.0.1:9010:9010"
       - "192.168.1.168:9010:9010"  # s4 LAN IP, replaces office's 192.168.1.199
