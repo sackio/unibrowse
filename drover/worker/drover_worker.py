@@ -73,6 +73,61 @@ def start_audio():
     return p
 
 
+def start_proxy_forwarder():
+    """Chrome drops credentials from --proxy-server, and a vpn-proxy lease URL
+    carries a password (skill vpn-proxy). Answering the auth challenge over
+    CDP would mean Fetch.enable, request interception a page can feel. So the
+    worker runs a local forwarder on 127.0.0.1 that adds Proxy-Authorization
+    and relays bytes, and Chrome points at that. Returns Chrome's proxy URL."""
+    import socket, socketserver
+    from urllib.parse import urlsplit
+    up = urlsplit(os.environ["DROVER_PROXY"])
+    if not up.username:
+        return os.environ["DROVER_PROXY"]
+    auth = "Basic " + base64.b64encode(f"{up.username}:{up.password}".encode()).decode()
+
+    def pump(a, b):
+        try:
+            while (d := a.recv(65536)):
+                b.sendall(d)
+        except OSError:
+            pass
+        finally:
+            for s in (a, b):
+                try:
+                    s.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    class H(socketserver.BaseRequestHandler):
+        def handle(self):
+            c = self.request
+            head = b""
+            while b"\r\n\r\n" not in head:
+                d = c.recv(65536)
+                if not d:
+                    return
+                head += d
+            top, rest = head.split(b"\r\n\r\n", 1)
+            lines = top.split(b"\r\n")
+            lines = [lines[0]] + [l for l in lines[1:] if not l.lower().startswith(b"proxy-authorization:")]
+            lines.append(b"Proxy-Authorization: " + auth.encode())
+            u = socket.create_connection((up.hostname, up.port or 3128), timeout=30)
+            u.settimeout(None)
+            u.sendall(b"\r\n".join(lines) + b"\r\n\r\n" + rest)
+            t = threading.Thread(target=pump, args=(u, c), daemon=True)
+            t.start()
+            pump(c, u)
+            t.join()
+
+    class S(socketserver.ThreadingTCPServer):
+        daemon_threads = allow_reuse_address = True
+
+    srv = S(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{srv.server_address[1]}"
+
+
 LANGS = {"US": "en-US", "GB": "en-GB", "CA": "en-CA", "AU": "en-AU", "IE": "en-IE",
          "NL": "nl-NL", "DE": "de-DE", "FR": "fr-FR", "ES": "es-ES", "IT": "it-IT"}
 
@@ -190,7 +245,10 @@ class Browser:
             # "en;q=0.9" (bench, 2026-10-24). Chrome adds the q-values itself.
             coherence = [f"--lang={lang}", f"--accept-lang={lang},{lang.split('-')[0]}"]
         if os.environ.get("DROVER_PROXY"):
-            coherence.append("--proxy-server=" + os.environ["DROVER_PROXY"])
+            coherence.append("--proxy-server=" + start_proxy_forwarder())
+            if os.environ.get("DROVER_PROXY_BYPASS"):
+                # The bench collector lives on the LAN, where an exit cannot reach.
+                coherence.append("--proxy-bypass-list=" + os.environ["DROVER_PROXY_BYPASS"])
         args = [CHROME, f"--user-data-dir={self.profile}", "--remote-debugging-pipe",
                 "--no-first-run", "--no-default-browser-check", "--password-store=basic",
                 "--disable-features=Translate",
