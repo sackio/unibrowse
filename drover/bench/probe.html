@@ -33,6 +33,14 @@
 <div><input id="field" type="text" autocomplete="off" placeholder="type here"></div>
 <p><button id="finish" type="button">Finish</button></p>
 <pre id="out"></pre>
+<!-- Below the fold, so reaching it needs a scroll; a drag pair to carry. -->
+<div style="height:1800px"></div>
+<div><button id="below" type="button">Below</button></div>
+<div style="display:flex;gap:160px;margin:40px 0">
+  <div id="dragA" style="width:80px;height:80px;border:1px solid var(--mut)">A</div>
+  <div id="dropB" style="width:120px;height:120px;border:1px dashed var(--mut)">B</div>
+</div>
+<div style="height:600px"></div>
 <script>
 (() => {
   const R = { v: 1, startedAt: Date.now(), href: location.href };
@@ -105,6 +113,8 @@
   const asyncBits = [];
   if (nav.permissions) asyncBits.push(nav.permissions.query({ name: 'notifications' })
     .then(p => { R.perm.query = p.state; }).catch(() => {}));
+  if (nav.permissions) asyncBits.push(nav.permissions.query({ name: 'geolocation' })
+    .then(p => { R.perm.geolocation = p.state; }).catch(() => {}));
   if (nav.mediaDevices && nav.mediaDevices.enumerateDevices) asyncBits.push(nav.mediaDevices.enumerateDevices()
     .then(ds => { R.media = ds.reduce((a, d) => (a[d.kind] = (a[d.kind] || 0) + 1, a), {}); }).catch(() => {}));
   try { const ac = new (window.AudioContext || window.webkitAudioContext)(); R.audio = { sampleRate: ac.sampleRate, state: ac.state }; ac.close(); }
@@ -115,6 +125,17 @@
   // presses Finish. We record what arrived, not what was intended.
   const I = R.input = { moves: 0, movesTrusted: 0, path: [], clicks: [], keys: 0, keysTrusted: 0, keyGaps: [], typed: '' };
   let lastKey = 0;
+  I.wheel = 0; I.wheelTrusted = 0; I.scrollMaxY = 0;
+  addEventListener('wheel', ev => { I.wheel++; if (ev.isTrusted) I.wheelTrusted++; }, { capture: true, passive: true });
+  addEventListener('scroll', () => { I.scrollMaxY = Math.max(I.scrollMaxY, Math.round(scrollY)); }, { passive: true });
+  // A drag counts only if the button went down on A and came up on B.
+  let downOn = null;
+  addEventListener('mousedown', ev => { downOn = ev.target && ev.target.id; }, true);
+  addEventListener('mouseup', ev => {
+    const b = document.getElementById('dropB').getBoundingClientRect();
+    if (downOn === 'dragA' && ev.clientX >= b.left && ev.clientX <= b.right && ev.clientY >= b.top && ev.clientY <= b.bottom)
+      I.dragged = { trusted: ev.isTrusted };
+  }, true);
   addEventListener('mousemove', ev => {
     I.moves++; if (ev.isTrusted) I.movesTrusted++;
     if (I.path.length < 2000) I.path.push([Math.round(ev.clientX), Math.round(ev.clientY), Math.round(ev.timeStamp)]);

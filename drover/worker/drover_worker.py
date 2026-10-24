@@ -26,7 +26,7 @@ workers. This file is that driver, for one pod.
 
 Stdlib only. Python 3.10+.
 """
-import argparse, base64, json, os, random, shutil, signal, subprocess, sys, tempfile, threading, time
+import argparse, base64, json, math, os, random, shutil, signal, subprocess, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 for p in (os.path.join(HERE, "..", "..", "scripts"), "/opt/drover/scripts"):
@@ -56,6 +56,63 @@ def start_display():
             return xvfb
         time.sleep(0.1)
     raise SystemExit("Xvfb did not come up on " + DISPLAY)
+
+
+def start_audio():
+    """A PulseAudio daemon with a null sink, so the page sees an audio output
+    device. With none, enumerateDevices() returns zero devices, which CreepJS
+    reports as "devices (0)" and no desktop does (bench, 2026-10-24).
+    Off with DROVER_AUDIO=0."""
+    if os.environ.get("DROVER_AUDIO", "1") == "0" or not shutil.which("pulseaudio"):
+        return None
+    p = subprocess.Popen(["pulseaudio", "--daemonize=no", "--exit-idle-time=-1", "--disallow-exit",
+                          "-n", "--load=module-null-sink sink_name=out",
+                          "--load=module-native-protocol-unix"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.5)
+    return p
+
+
+LANGS = {"US": "en-US", "GB": "en-GB", "CA": "en-CA", "AU": "en-AU", "IE": "en-IE",
+         "NL": "nl-NL", "DE": "de-DE", "FR": "fr-FR", "ES": "es-ES", "IT": "it-IT"}
+
+
+def identity():
+    """Make the browser agree with its exit IP, as BrowserScan/pixelscan and
+    CreepJS grade it: timezone, language and geolocation all from wherever the
+    traffic actually leaves. Ben, #unibrowse-v2 2026-10-24: "location to mirror
+    a random location near where our VPN IP exit says it is".
+
+    The lookup goes through DROVER_PROXY when one is set, the same exit Chrome
+    will use, so the answer describes the browser's IP and not the pod's.
+    ⚠️ A failed lookup returns None and the browser keeps the image defaults
+    (America/New_York, en-US); the result records which happened."""
+    import urllib.request
+    proxy = os.environ.get("DROVER_PROXY")
+    opener = urllib.request.build_opener(*([urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else []))
+    try:
+        d = json.load(opener.open("http://ip-api.com/json/?fields=status,query,countryCode,city,lat,lon,timezone", timeout=8))
+    except Exception as e:
+        return {"ok": False, "err": str(e)}
+    if d.get("status") != "success":
+        return {"ok": False, "err": d}
+    # A random point within ~3 km of the exit's city centre, at a wifi-grade
+    # accuracy: a desktop has no GPS, so a 5 m fix would itself be odd.
+    r, a = 3000 * random.random() ** 0.5, random.uniform(0, 6.283)
+    lat = d["lat"] + (r * math.cos(a)) / 111320
+    lon = d["lon"] + (r * math.sin(a)) / (111320 * max(0.2, math.cos(math.radians(d["lat"]))))
+    return {"ok": True, "ip": d["query"], "country": d["countryCode"], "city": d["city"], "tz": d["timezone"],
+            "lang": LANGS.get(d["countryCode"], "en-US"),
+            "geo": {"latitude": round(lat, 6), "longitude": round(lon, 6), "accuracy": random.randint(25, 120)}}
+
+
+def on_screen(x, y):
+    """Clamp a path point to the display. ⛔ A path that bows or overshoots
+    past an edge yields a negative coordinate, and xdotool parses "-3" as an
+    OPTION and prints its usage instead of moving (measured 2026-10-24: the
+    probe died with "-w, --window <windowid>" on one run in three)."""
+    w, h = (int(v) for v in SCREEN.split("x"))
+    return str(min(max(int(x), 0), w - 1)), str(min(max(int(y), 0), h - 1))
 
 
 def xdo(*chain):
@@ -117,9 +174,23 @@ class Pipe:
 
 
 class Browser:
-    def __init__(self):
+    def __init__(self, ident=None, extra=()):
         self.profile = tempfile.mkdtemp(prefix="drover-")
+        self.ident = ident if ident and ident.get("ok") else None
         w, h = SCREEN.split("x")
+        env = {**os.environ, "DISPLAY": DISPLAY}
+        coherence = []
+        if self.ident:
+            # TZ on the PROCESS, not Emulation.setTimezoneOverride: the real
+            # zone, so every API reports it without an override to find.
+            env["TZ"] = self.ident["tz"]
+            lang = self.ident["lang"]
+            # ⛔ Plain tags only. Chrome copies --accept-lang into navigator.languages
+            # verbatim, so "en;q=0.9" here showed up as a language named
+            # "en;q=0.9" (bench, 2026-10-24). Chrome adds the q-values itself.
+            coherence = [f"--lang={lang}", f"--accept-lang={lang},{lang.split('-')[0]}"]
+        if os.environ.get("DROVER_PROXY"):
+            coherence.append("--proxy-server=" + os.environ["DROVER_PROXY"])
         args = [CHROME, f"--user-data-dir={self.profile}", "--remote-debugging-pipe",
                 "--no-first-run", "--no-default-browser-check", "--password-store=basic",
                 "--disable-features=Translate",
@@ -129,7 +200,7 @@ class Browser:
                 # than faking a value, as nodriver does.
                 "--disable-blink-features=AutomationControlled",
                 f"--window-size={w},{h}", "--window-position=0,0",
-                *EXTRA, "about:blank"]
+                *coherence, *EXTRA, *extra, "about:blank"]
         r1, w1 = os.pipe()          # we write -> chrome reads on fd 3
         r2, w2 = os.pipe()          # chrome writes on fd 4 -> we read
         os.set_inheritable(r1, True)
@@ -140,13 +211,19 @@ class Browser:
             os.dup2(w2, 4)
 
         self.proc = subprocess.Popen(args, preexec_fn=wire, pass_fds=(3, 4), stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL, env={**os.environ, "DISPLAY": DISPLAY},
-                                     start_new_session=True)
+                                     stderr=subprocess.DEVNULL, env=env, start_new_session=True)
         os.close(r1)
         os.close(w2)
         self.cdp = Pipe(w1, r2)
         self.session = self._attach()
         self.world = None
+        if self.ident:
+            # Answers navigator.geolocation with a point near the exit. The
+            # permission is left at "prompt", as a fresh desktop profile has it,
+            # unless the job sets DROVER_GEO_GRANT=1.
+            self.send("Emulation.setGeolocationOverride", self.ident["geo"])
+            if os.environ.get("DROVER_GEO_GRANT") == "1":
+                self.cdp.call("Browser.grantPermissions", {"permissions": ["geolocation"]})
 
     def _attach(self):
         for _ in range(100):
@@ -251,12 +328,22 @@ class Hands:
         self.b = b
         self.dx = self.dy = 0
 
+    LISTEN = ("(() => { if (!window.__dmOn) { window.__dmOn = 1; window.__dm = null;"
+              " addEventListener('mousemove', e => { window.__dm = [e.clientX, e.clientY, e.isTrusted]; }, true); }"
+              " return 1; })()")
+
+    def seen(self):
+        """Where the PAGE last saw the pointer, in CSS px. Installed lazily,
+        because a navigation throws the isolated world away."""
+        self.b.eval(self.LISTEN)
+        return self.b.eval("window.__dm")
+
     def calibrate(self):
-        self.b.eval("window.__dm=null; addEventListener('mousemove', e => { window.__dm=[e.clientX,e.clientY,e.isTrusted]; }, true); 1")
+        self.b.eval(self.LISTEN)
         sx, sy = 700 + random.randint(-40, 40), 500 + random.randint(-40, 40)
         self.move_screen(sx, sy)
         time.sleep(0.15)
-        seen = self.b.eval("window.__dm")
+        seen = self.seen()
         if not seen:
             raise RuntimeError("calibration: page saw no pointer movement")
         dpr = self.b.eval("devicePixelRatio") or 1
@@ -271,27 +358,101 @@ class Hands:
         x0, y0 = self.where()
         chain = []
         for px, py, dt in hm.steps(x0, y0, x, y, cfg=CFG, target_width=width or CFG.target_width):
-            chain += ["mousemove", str(px), str(py), "sleep", f"{dt:.3f}"]
+            chain += ["mousemove", *on_screen(px, py), "sleep", f"{dt:.3f}"]
         for px, py, dt in hm.settle(x, y):
-            chain += ["mousemove", str(px), str(py), "sleep", f"{dt:.3f}"]
+            chain += ["mousemove", *on_screen(px, py), "sleep", f"{dt:.3f}"]
         if chain:
             xdo(*chain)
 
     def rect(self, selector):
         r = self.b.eval(f"(() => {{ const e = document.querySelector({json.dumps(selector)}); if (!e) return null;"
-                        f" e.scrollIntoView({{block:'center'}}); const r = e.getBoundingClientRect();"
-                        f" return [r.left, r.top, r.width, r.height, devicePixelRatio]; }})()")
+                        f" const r = e.getBoundingClientRect();"
+                        f" return [r.left, r.top, r.width, r.height, devicePixelRatio, innerHeight]; }})()")
         if not r:
             raise RuntimeError("no element " + selector)
         return r
 
+    def reach(self, selector, tries=12):
+        """Bring an element into view the way a person does: by scrolling.
+        ⛔ Never scrollIntoView(), which is a scripted jump no hand makes.
+        Re-measures after every gesture, because a notch's size in px varies
+        by page and the plan mixes wheel, arrow keys and over-scroll."""
+        for _ in range(tries):
+            left, top, w, h, dpr, vh = self.rect(selector)
+            if top >= vh * 0.12 and top + h <= vh * 0.88:
+                return left, top, w, h, dpr
+            # ~100 CSS px per notch is the starting guess; the loop corrects it
+            want = (top + h / 2 - vh / 2) / 100.0
+            self.scroll(-max(1, round(abs(want))) if want > 0 else max(1, round(abs(want))))
+            time.sleep(random.uniform(0.15, 0.5))
+        raise RuntimeError("could not scroll %s into view" % selector)
+
+    def scroll(self, notches):
+        """humanmotion's scroll plan: wheel bursts, arrow keys, pauses to read,
+        overshoot and back. Positive is up. The wheel scrolls what is under the
+        pointer, so the pointer is parked over the page first if it is off it
+        (memo 2fda44d8)."""
+        x, y = self.where()
+        vw, vh = self.b.eval("[innerWidth, innerHeight]")
+        if not (self.dx < x < self.dx + vw and self.dy < y < self.dy + vh):
+            self.move_screen(round(self.dx + vw * random.uniform(0.35, 0.65)),
+                             round(self.dy + vh * random.uniform(0.35, 0.65)))
+        for op in hm.scroll_plan(notches, CFG):
+            time.sleep(op["delay"])
+            if op["op"] == "wheel":
+                button = "4" if op["notches"] > 0 else "5"
+                chain = []
+                for _ in range(abs(op["notches"])):
+                    chain += ["click", button, "sleep", f"{random.uniform(0.012, 0.035):.3f}"]
+                xdo(*chain)
+            elif op["op"] == "key":
+                chain = []
+                for _ in range(op["repeat"]):
+                    chain += ["key", op["key"], "sleep", f"{random.uniform(0.04, 0.11):.3f}"]
+                xdo(*chain)
+
+    def drag(self, from_selector, to_selector):
+        """Press on one element, carry, release on another: humanmotion's drag
+        model (slower and steadier than a free move, no settle at the drop)."""
+        fl, ft, fw, fh, dpr = self.reach(from_selector)
+        x0 = round(self.dx + (fl + fw * random.uniform(0.35, 0.65)) * dpr)
+        y0 = round(self.dy + (ft + fh * random.uniform(0.35, 0.65)) * dpr)
+        self.move_screen(x0, y0, width=fw * dpr)
+        tl, tt, tw, th, _, _ = self.rect(to_selector)
+        x1 = round(self.dx + (tl + tw * random.uniform(0.4, 0.6)) * dpr)
+        y1 = round(self.dy + (tt + th * random.uniform(0.4, 0.6)) * dpr)
+        plan = hm.drag_steps(x0, y0, x1, y1, CFG, target_width=tw * dpr)
+        chain = ["mousedown", "1", "sleep", f"{plan['grab']:.3f}"]
+        for px, py, dt in plan["steps"]:
+            chain += ["mousemove", *on_screen(px, py), "sleep", f"{dt:.3f}"]
+        chain += ["sleep", f"{plan['hold']:.3f}", "mouseup", "1"]
+        xdo(*chain)
+
     def click(self, selector):
-        left, top, w, h, dpr = self.rect(selector)
-        # Aim off-centre, as a hand does; stay well inside the box.
-        tx = left + w * random.uniform(0.3, 0.7)
+        """Aim, look, correct, press. ⛔ The page-to-screen offset can go stale
+        after calibration (measured 2026-10-24: dx came out -236 on one run in
+        three, and Finish was clicked at x=0). So after every approach the page
+        is asked where it saw the pointer, and a miss gets a short corrective
+        move, the way a hand that lands just off a button nudges onto it. The
+        offset is re-learned from each correction."""
+        left, top, w, h, dpr = self.reach(selector)
+        tx = left + w * random.uniform(0.3, 0.7)          # off-centre, well inside the box
         ty = top + h * random.uniform(0.3, 0.7)
-        x, y = round(self.dx + tx * dpr), round(self.dy + ty * dpr)
-        self.move_screen(x, y, width=w * dpr)
+        self.move_screen(round(self.dx + tx * dpr), round(self.dy + ty * dpr), width=w * dpr)
+        for _ in range(3):
+            time.sleep(0.05)
+            got = self.seen()
+            hit = got and self.b.eval(
+                f"(() => {{ const t = document.querySelector({json.dumps(selector)}), e = document.elementFromPoint({got[0]}, {got[1]});"
+                f" return !!(t && e && (t === e || t.contains(e))); }})()")
+            if hit:
+                break
+            if got:
+                sx, sy = self.where()
+                self.dx, self.dy = sx - got[0] * dpr, sy - got[1] * dpr
+            self.move_screen(round(self.dx + tx * dpr), round(self.dy + ty * dpr), width=w * dpr)
+        else:
+            raise RuntimeError(f"pointer would not land on {selector}")
         pre, dwell = hm.press_timing(CFG)
         xdo("sleep", f"{pre:.3f}", "mousedown", "1", "sleep", f"{dwell:.3f}", "mouseup", "1")
 
@@ -320,15 +481,29 @@ def job_probe(b, url, out):
     hands.click("#field")
     hands.type("Drover probe, typed by hand.")
     time.sleep(random.uniform(0.3, 0.8))
-    hands.click("#finish")
+    hands.click("#below")                        # below the fold: human scroll
+    time.sleep(random.uniform(0.3, 0.8))
+    hands.drag("#dragA", "#dropB")
+    time.sleep(random.uniform(0.3, 0.8))
+    hands.click("#finish")                       # back at the top: scroll up
     raw = None
     for _ in range(40):
         raw = b.eval("document.getElementById('out').textContent")
         if raw:
             break
         time.sleep(0.25)
-    res = json.loads(raw) if raw else {"error": "probe produced no result"}
-    res["driver"] = {"name": "drover", "chrome": CHROME, "calibration": cal,
+    if raw:
+        res = json.loads(raw)
+    else:
+        # Say WHERE it stopped, not just that it did: the pointer, the page
+        # scroll and where Finish actually sits.
+        res = {"error": "probe produced no result",
+               "where": {"pointer": hands.where(), "offset": [hands.dx, hands.dy],
+                         "page": b.eval("[scrollY, innerHeight, (r => [r.left, r.top, r.width, r.height])"
+                                        "(document.getElementById('finish').getBoundingClientRect())]")}}
+        if out:
+            b.shot(os.path.splitext(out)[0] + "-fail.png")
+    res["driver"] = {"name": "drover", "chrome": CHROME, "calibration": cal, "identity": b.ident,
                      **b.rss_mb(), "jobSeconds": round(time.time() - t0, 2)}
     if out:
         with open(out, "w") as f:
@@ -356,7 +531,19 @@ def main():
     ap.add_argument("--shot")
     a = ap.parse_args()
     xvfb = start_display()
-    b = Browser()
+    audio = start_audio()
+    ident = identity() if os.environ.get("DROVER_IDENTITY", "1") != "0" else None
+    extra = []
+    if a.job == "probe":
+        # ⛔ The bench is served over plain http, and an insecure origin hides
+        # navigator.mediaDevices and userAgentData entirely: the first runs
+        # read media=None and brands=null for that reason, not as a tell.
+        # Marking only the probe's own origin secure fixes the measurement and
+        # changes nothing any other site can see.
+        from urllib.parse import urlsplit
+        u = urlsplit(a.url)
+        extra.append(f"--unsafely-treat-insecure-origin-as-secure={u.scheme}://{u.netloc}")
+    b = Browser(ident, extra)
     try:
         if a.job == "probe":
             r = job_probe(b, a.url, a.out)
@@ -371,8 +558,9 @@ def main():
             print(json.dumps(job_visit(b, a.url, a.wait, a.shot)))
     finally:
         b.close()
-        if xvfb:
-            xvfb.terminate()
+        for p in (audio, xvfb):
+            if p:
+                p.terminate()
 
 
 if __name__ == "__main__":

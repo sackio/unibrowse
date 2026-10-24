@@ -13,6 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive TZ=America/New_York
 RUN apt-get update && apt-get install -y --no-install-recommends \
       tzdata ca-certificates curl gnupg \
       xvfb x11-utils xdotool python3 \
+      pulseaudio \
       fonts-liberation fonts-noto-core fonts-noto-color-emoji fonts-dejavu-core \
     && curl -fsSL https://dl.google.com/linux/linux_signing_key.pub -o /usr/share/keyrings/google-chrome.asc \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.asc] https://dl.google.com/linux/chrome/deb/ stable main" \
