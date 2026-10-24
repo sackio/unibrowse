@@ -488,10 +488,17 @@ class Hands:
         ⛔ Never scrollIntoView(), which is a scripted jump no hand makes.
         Re-measures after every gesture, because a notch's size in px varies
         by page and the plan mixes wheel, arrow keys and over-scroll."""
+        last = None
         for _ in range(tries):
             left, top, w, h, dpr, vh = self.rect(selector)
             if top >= vh * 0.12 and top + h <= vh * 0.88:
                 return left, top, w, h, dpr
+            # Near the top or bottom of the page the comfortable band cannot be
+            # reached (measured: a form's first field at y=40 failed 12 tries).
+            # Fully on screen and the scroll no longer moves it: good enough.
+            if top >= 0 and top + h <= vh and last is not None and abs(top - last) < 2:
+                return left, top, w, h, dpr
+            last = top
             # ~100 CSS px per notch is the starting guess; the loop corrects it
             want = (top + h / 2 - vh / 2) / 100.0
             self.scroll(-max(1, round(abs(want))) if want > 0 else max(1, round(abs(want))))
@@ -662,10 +669,141 @@ def job_visit(b, url, wait, shot, interact=False):
     return {"url": url, **page, "interact": interact, "exitIp": (b.ident or {}).get("ip"), **b.rss_mb(), "seconds": round(time.time() - t0, 2)}
 
 
+# Interactive elements, each with a CSS path that needs no attribute written
+# into the page (a data-* marker would be visible to the page's own scripts).
+SNAPSHOT = r"""(() => {
+  const path = e => { const p = []; for (; e && e.nodeType === 1 && e !== document.body; e = e.parentElement) {
+      if (e.id && /^[A-Za-z][\w-]*$/.test(e.id)) { p.unshift('#' + e.id); return p.join(' > '); }
+      let i = 1; for (let s = e.previousElementSibling; s; s = s.previousElementSibling) if (s.tagName === e.tagName) i++;
+      p.unshift(e.tagName.toLowerCase() + ':nth-of-type(' + i + ')'); }
+    return 'body > ' + p.join(' > '); };
+  const label = e => (e.labels && e.labels[0] && e.labels[0].innerText) || e.getAttribute('aria-label') ||
+      e.placeholder || e.innerText || e.value || e.title || e.name || '';
+  const q = 'a[href],button,input:not([type=hidden]),select,textarea,[role=button],[role=checkbox],[contenteditable=true],iframe';
+  return [...document.querySelectorAll(q)].filter(e => { const r = e.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== 'hidden'; }).slice(0, 150).map(e => ({
+    sel: path(e), tag: e.tagName.toLowerCase(), type: e.type || e.getAttribute('role') || undefined,
+    name: e.name || undefined, label: String(label(e)).trim().replace(/\s+/g, ' ').slice(0, 80),
+    value: (e.type === 'password' ? undefined : (e.value || undefined)), checked: e.checked || undefined,
+    src: e.tagName === 'IFRAME' ? e.src.slice(0, 120) : undefined}));
+})()"""
+
+
+def job_serve(b, port, outdir):
+    """A held session for multi-step work (signups, forms): one browser, the
+    same human hands, driven a step at a time over HTTP on 127.0.0.1. POST a
+    JSON {op, ...}; every op answers JSON. GET /shot.png is the last shot.
+
+      navigate {url}    snapshot    text    frames    eval {expr}
+      click {sel}       type {sel?, text, sensitive?}    key {key}
+      select {sel, text}  (a native <select>, by its option's text)
+      scroll {notches}  click_in {sel, fx, fy}  (a point inside a cross-origin
+                        iframe, e.g. a captcha checkbox: fractions of its box)
+      shot              close
+    """
+    import http.server
+    hands = Hands(b)
+    state = {"cal": False, "shot": os.path.join(outdir, "shot.png")}
+
+    def ready():
+        if not state["cal"]:
+            hands.calibrate()
+            state["cal"] = True
+
+    def run(c):
+        op = c.get("op")
+        if op == "navigate":
+            b.navigate(c["url"], settle=c.get("settle", 2.0))
+            state["cal"] = False
+            return {"url": b.eval("location.href"), "title": b.eval("document.title")}
+        if op == "snapshot":
+            return {"url": b.eval("location.href"), "title": b.eval("document.title"), "elements": b.eval(SNAPSHOT)}
+        if op == "text":
+            return {"text": (b.eval("document.body ? document.body.innerText : ''") or "")[:c.get("max", 6000)]}
+        if op == "frames":
+            return {"frames": b.eval("[...document.querySelectorAll('iframe')].map(f => f.src).filter(Boolean)")}
+        if op == "eval":
+            return {"value": b.eval(c["expr"])}
+        if op == "click":
+            ready(); hands.click(c["sel"]); time.sleep(c.get("after", 0.8))
+            return {"url": b.eval("location.href")}
+        if op == "click_in":
+            ready()
+            left, top, w, h, dpr = hands.reach(c["sel"])
+            x, y = left + w * c.get("fx", 0.5), top + h * c.get("fy", 0.5)
+            hands.move_screen(round(hands.dx + x * dpr), round(hands.dy + y * dpr), width=24 * dpr)
+            pre, dwell = hm.press_timing(CFG)
+            xdo("sleep", f"{pre:.3f}", "mousedown", "1", "sleep", f"{dwell:.3f}", "mouseup", "1")
+            return {"ok": True}
+        if op == "type":
+            ready()
+            if c.get("sel"):
+                hands.click(c["sel"])
+            hands.type(c["text"], sensitive=c.get("sensitive", False))
+            return {"ok": True}
+        if op == "select":
+            # ⛔ A native <select> opens a popup on click that swallows the
+            # wheel and every key until it closes (measured: typing into one
+            # picked "Armed Forces Pacific" and froze scrolling). Type-ahead
+            # the option without typos, then Enter closes it.
+            ready(); hands.click(c["sel"]); time.sleep(0.4)
+            hands.type(c["text"], sensitive=True)
+            xdo("key", "--clearmodifiers", "Return"); time.sleep(0.3)
+            got = b.eval(f"(e => e.options[e.selectedIndex] && e.options[e.selectedIndex].text)"
+                         f"(document.querySelector({json.dumps(c['sel'])}))")
+            return {"selected": got}
+        if op == "key":
+            xdo("key", "--clearmodifiers", c["key"]); time.sleep(c.get("after", 0.5))
+            return {"ok": True}
+        if op == "scroll":
+            ready(); hands.scroll(int(c["notches"]))
+            return {"ok": True}
+        if op == "shot":
+            b.shot(state["shot"])
+            return {"shot": "/shot.png"}
+        raise ValueError("unknown op " + str(op))
+
+    lock = threading.Lock()                           # one hand on the mouse at a time
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, body, ctype="application/json"):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/shot.png" and os.path.exists(state["shot"]):
+                return self._send(200, open(state["shot"], "rb").read(), "image/png")
+            self._send(404, b"{}")
+
+        def do_POST(self):
+            c = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            if c.get("op") == "close":
+                self._send(200, b'{"closing": true}')
+                threading.Thread(target=srv.shutdown).start()
+                return
+            with lock:
+                try:
+                    r, code = run(c), 200
+                except Exception as e:
+                    r, code = {"error": f"{type(e).__name__}: {e}"[:300]}, 500
+            self._send(code, json.dumps(r).encode())
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
+    print(json.dumps({"serving": port, "exitIp": (b.ident or {}).get("ip")}), flush=True)
+    srv.serve_forever()
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("job", choices=["probe", "visit"])
-    ap.add_argument("--url", required=True)
+    ap.add_argument("job", choices=["probe", "visit", "serve"])
+    ap.add_argument("--url", default="about:blank")
+    ap.add_argument("--port", type=int, default=8790)
     ap.add_argument("--out")
     ap.add_argument("--wait", type=float, default=15)
     ap.add_argument("--shot")
@@ -695,6 +833,8 @@ def main():
                               "typed": r.get("input", {}).get("typed"), "rssMb": d.get("rssMb"), "pssMb": d.get("pssMb"),
                               "cgroupPeakMb": d.get("cgroupPeakMb"),
                               "jobSeconds": d.get("jobSeconds")}))
+        elif a.job == "serve":
+            job_serve(b, a.port, a.out or tempfile.gettempdir())
         else:
             print(json.dumps(job_visit(b, a.url, a.wait, a.shot, a.interact)))
     finally:

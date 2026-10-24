@@ -1,0 +1,36 @@
+# A held Drover session for multi-step work (signups, forms): one browser,
+# driven a step at a time over HTTP on the pod's 127.0.0.1 (job_serve in
+# drover_worker.py). Reach it with a port-forward, never a Service:
+#
+#   kubectl -n drover create secret generic drover-proxy --from-literal=DROVER_PROXY=<lease URL>
+#   kubectl apply -f drover/k8s/session-pod.yaml
+#   kubectl -n drover port-forward pod/drover-session 8790:8790 &
+#   curl -s localhost:8790 -d '{"op":"navigate","url":"https://example.com"}'
+#
+# The profile is a fresh temp dir and dies with the pod: an account's
+# credentials live with the seat that owns the account, not here.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: drover-session
+  namespace: drover
+spec:
+  restartPolicy: Never
+  priorityClassName: idle-batch
+  nodeSelector: {kubernetes.io/hostname: server7}
+  securityContext:
+    seccompProfile: {type: Unconfined}
+  volumes:
+    - {name: out, emptyDir: {}}
+    - {name: shm, emptyDir: {medium: Memory, sizeLimit: 512Mi}}
+  containers:
+    - name: worker
+      image: 192.168.1.207:5050/drover/worker:2026-10-24g
+      envFrom: [{secretRef: {name: drover-proxy}}]
+      command: ["python3", "/opt/drover/worker/drover_worker.py", "serve", "--port", "8790", "--out", "/out"]
+      volumeMounts:
+        - {name: out, mountPath: /out}
+        - {name: shm, mountPath: /dev/shm}
+      resources:
+        requests: {cpu: "1", memory: 2Gi}
+        limits: {cpu: "1", memory: 2Gi}
