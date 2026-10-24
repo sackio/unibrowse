@@ -275,6 +275,7 @@ class Browser:
         self.cdp = Pipe(w1, r2)
         self.session = self._attach()
         self.world = None
+        self.raise_window()
         if self.ident:
             # Answers navigator.geolocation with a point near the exit. The
             # permission is left at "prompt", as a fresh desktop profile has it,
@@ -292,6 +293,45 @@ class Browser:
             time.sleep(0.1)
         raise RuntimeError("no page target")
 
+    def raise_window(self):
+        """On a real desktop (a window manager, other windows) a new Chrome can
+        open BEHIND whatever is up, and XTEST input then lands on that window
+        instead (laptop1 2026-10-24: under a fullscreen kiosk, calibration saw
+        no movement). Activate our own window. Xvfb has no WM and nothing to
+        be behind, so a failure here is ignored."""
+        for _ in range(30):
+            try:
+                wins = xdo("search", "--onlyvisible", "--class", "google-chrome").split()
+            except RuntimeError:
+                wins = []
+            ours = []
+            for w in wins:
+                try:
+                    if int(xdo("getwindowpid", w)) in self._pids():
+                        ours.append(w)
+                except (RuntimeError, ValueError):
+                    pass
+            if ours:
+                try:
+                    xdo("windowactivate", "--sync", ours[-1])
+                except RuntimeError:
+                    pass
+                return ours[-1]
+            time.sleep(0.2)
+        return None
+
+    def _pids(self):
+        pids, frontier = {self.proc.pid}, [self.proc.pid]
+        while frontier:
+            p = frontier.pop()
+            try:
+                for c in open(f"/proc/{p}/task/{p}/children").read().split():
+                    pids.add(int(c))
+                    frontier.append(int(c))
+            except OSError:
+                pass
+        return pids
+
     def send(self, method, params=None, timeout=30):
         return self.cdp.call(method, params, session=self.session, timeout=timeout)
 
@@ -308,21 +348,30 @@ class Browser:
             time.sleep(0.25)
         time.sleep(settle)
 
-    def eval(self, expr, timeout=30):
+    def eval(self, expr, timeout=30, _retried=False):
         """Evaluate in an ISOLATED world: same DOM, none of the page's globals,
         invisible to the page's own scripts. Never Runtime.enable."""
         if self.world is None:
             frame = self.send("Page.getFrameTree")["frameTree"]["frame"]["id"]
             self.world = self.send("Page.createIsolatedWorld",
                                    {"frameId": frame, "worldName": "d", "grantUniveralAccess": False})["executionContextId"]
-        r = self.send("Runtime.evaluate", {"expression": expr, "contextId": self.world,
-                                           "returnByValue": True, "awaitPromise": True}, timeout=timeout)
+        try:
+            r = self.send("Runtime.evaluate", {"expression": expr, "contextId": self.world,
+                                               "returnByValue": True, "awaitPromise": True}, timeout=timeout)
+        except RuntimeError as e:
+            # A redirect or late navigation throws the world away under us
+            # ("Cannot find context with specified id", 4 of the first 8 panel
+            # errors). Make a fresh world once and try again.
+            if _retried or "context" not in str(e).lower():
+                raise
+            self.world = None
+            return self.eval(expr, timeout, _retried=True)
         if "exceptionDetails" in r:
             raise RuntimeError("eval: " + r["exceptionDetails"].get("text", "exception"))
         return r["result"].get("value")
 
     def shot(self, path):
-        data = self.send("Page.captureScreenshot", {"format": "png"})["data"]
+        data = self.send("Page.captureScreenshot", {"format": "png"}, timeout=60)["data"]
         with open(path, "wb") as f:
             f.write(base64.b64decode(data))
 
@@ -602,7 +651,10 @@ def job_visit(b, url, wait, shot, interact=False):
                   " text: document.body ? document.body.innerText : '',"
                   " frames: [...document.querySelectorAll('iframe')].map(f => f.src).filter(Boolean).slice(0, 20)})") or {}
     if shot:
-        b.shot(shot)
+        try:
+            b.shot(shot)
+        except (TimeoutError, RuntimeError) as e:     # a heavy page must not cost the verdict
+            page["shotError"] = str(e)[:120]
     return {"url": url, **page, "interact": interact, **b.rss_mb(), "seconds": round(time.time() - t0, 2)}
 
 
