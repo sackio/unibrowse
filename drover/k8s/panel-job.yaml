@@ -43,7 +43,7 @@ spec:
           env:
             - {name: DROVER_SHARDS, value: "4"}
           command: ["python3", "/opt/drover/bench/panel.py", "--local", "--sites", "/sites/sites.json",
-                    "--runs", "2", "--wait", "20", "--label", "k8s-vpn-us", "--outroot", "/out"]
+                    "--runs", "2", "--wait", "20", "--jobs", "1", "--label", "k8s-vpn-us", "--outroot", "/out"]
           volumeMounts:
             - {name: sites, mountPath: /sites}
             - {name: out, mountPath: /out}
