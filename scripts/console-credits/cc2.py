@@ -80,6 +80,24 @@ def one(email):
     if not R or not R.get("e"): o["error"]="login card not laid out"; return o
     t0=int(time.time())-5
     click(A,R["e"]); typ(A,email)
+    # ⛔ CHECK THE RESULT OF THE TYPE — it can fail silently and did go unchecked
+    #   until 2026-10-24. browser_realistic_type has NO selector and types into the
+    #   FOCUSED element, so if the coordinate click on the email box misses, the
+    #   address lands nowhere, "Continue with email" stays disabled, and the click
+    #   below is a no-op that reports as "no link-sent" — byte-identical to a
+    #   throttle or a refused attestation. Three runs were scored "mint refused" on
+    #   output that could not distinguish the two.
+    # ⇒ val=="<the email>" and dis==false  ⇒ the submit really was refused.
+    #   val==""/null                        ⇒ OUR click missed; the mint is a red herring.
+    # ⚠️ NON-FATAL ON PURPOSE. ev() raises on an eval failure, and a diagnostic that
+    #   aborts the attempt it exists to diagnose is worse than no diagnostic.
+    try:
+        o["typed"]=ev(A,"(()=>{const e=document.querySelector('input[type=email]');"
+                         "const c=[...document.querySelectorAll('button')]"
+                         ".find(x=>/continue with email/i.test(x.innerText||''));"
+                         "return JSON.stringify({val:e?e.value:null,dis:c?!!c.disabled:null})})()")
+    except Exception as _e:
+        o["typed"]="probe failed: "+str(_e)[:80]
     # ⛔⛔ THE SUBMIT NEEDS AN ATTESTATION TOKEN AT CLICK TIME, AND THIS SCRIPT USED TO
     #   CLICK WITHOUT ONE. Measured 2026-10-20 on the chromium-host sidecar: all three
     #   accounts returned "no link-sent" and the page read "Couldn't verify your browser.
