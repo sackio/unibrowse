@@ -1,0 +1,92 @@
+# How much does the GPU matter on real sites? The same panel as panel-job.yaml
+# (whose default renderer is SwiftShader, the control), with only the WebGL
+# backend changed:
+#
+#   drover-panel-vulkan  ANGLE on the real RTX 3070 (gpu1, claim drover-gpu)
+#   drover-panel-mesa    ANGLE over EGL on Mesa llvmpipe: software, no GPU
+#
+# gpu-test-job.yaml (2026-10-24 12:58) measured rebrowser all green for BOTH,
+# and 🟡 headless/WebGL for SwiftShader; this asks whether the sites care.
+# The egl variant on gpu1 picked llvmpipe, not the NVIDIA driver, so mesa runs
+# on server7 to show it needs no GPU at all.
+#
+# Same prerequisites as panel-job.yaml (ConfigMap drover-sites, Secret
+# drover-proxy). One run per site: 80 visits per variant.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: drover-panel-vulkan
+  namespace: drover
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      priorityClassName: idle-batch
+      nodeSelector: {kubernetes.io/hostname: gpu1}
+      resourceClaims:
+        - {name: gpu, resourceClaimName: drover-gpu}
+      securityContext:
+        seccompProfile: {type: Unconfined}
+      volumes:
+        - {name: sites, configMap: {name: drover-sites}}
+        - {name: out, emptyDir: {}}
+        - {name: shm, emptyDir: {medium: Memory, sizeLimit: 1Gi}}
+      containers:
+        - name: worker
+          image: 192.168.1.207:5050/drover/worker:2026-10-24c
+          envFrom: [{secretRef: {name: drover-proxy}}]
+          env:
+            - {name: DROVER_CHROME_ARGS, value: "--use-angle=vulkan --enable-features=Vulkan --ignore-gpu-blocklist"}
+          # One claim, one pod: two browsers at a time to finish in ~30 min.
+          command: ["python3", "/opt/drover/bench/panel.py", "--local", "--sites", "/sites/sites.json",
+                    "--runs", "1", "--wait", "20", "--jobs", "2", "--label", "k8s-vulkan", "--outroot", "/out"]
+          volumeMounts:
+            - {name: sites, mountPath: /sites}
+            - {name: out, mountPath: /out}
+            - {name: shm, mountPath: /dev/shm}
+          resources:
+            requests: {cpu: "2", memory: 4Gi}
+            limits: {cpu: "2", memory: 4Gi}
+            claims: [{name: gpu}]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: drover-panel-mesa
+  namespace: drover
+spec:
+  completionMode: Indexed
+  completions: 2
+  parallelism: 2
+  backoffLimitPerIndex: 1
+  maxFailedIndexes: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      priorityClassName: idle-batch
+      nodeSelector: {kubernetes.io/hostname: server7}
+      securityContext:
+        seccompProfile: {type: Unconfined}
+      volumes:
+        - {name: sites, configMap: {name: drover-sites}}
+        - {name: out, emptyDir: {}}
+        - {name: shm, emptyDir: {medium: Memory, sizeLimit: 512Mi}}
+      containers:
+        - name: worker
+          image: 192.168.1.207:5050/drover/worker:2026-10-24c
+          envFrom: [{secretRef: {name: drover-proxy}}]
+          env:
+            - {name: DROVER_SHARDS, value: "2"}
+            - {name: DROVER_CHROME_ARGS, value: "--use-gl=angle --use-angle=gl-egl --ignore-gpu-blocklist"}
+          command: ["python3", "/opt/drover/bench/panel.py", "--local", "--sites", "/sites/sites.json",
+                    "--runs", "1", "--wait", "20", "--jobs", "1", "--label", "k8s-mesa", "--outroot", "/out"]
+          volumeMounts:
+            - {name: sites, mountPath: /sites}
+            - {name: out, mountPath: /out}
+            - {name: shm, mountPath: /dev/shm}
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits: {cpu: "1", memory: 2Gi}

@@ -38,9 +38,12 @@ import humanmotion as hm
 CHROME = os.environ.get("DROVER_CHROME", "/usr/bin/google-chrome")
 SCREEN = os.environ.get("DROVER_SCREEN", "1920x1080")
 DISPLAY = os.environ.get("DROVER_DISPLAY", ":99")
-# ⛔ Without these two, WebGL is null under Xvfb and nothing errors
-# (chromium-host/Dockerfile.chrome, measured 2026-10-15).
-EXTRA = os.environ.get("DROVER_CHROME_ARGS", "--use-angle=swiftshader --enable-unsafe-swiftshader").split()
+# ⛔ Without a backend flag, WebGL is null under Xvfb and nothing errors
+# (chromium-host/Dockerfile.chrome, measured 2026-10-15). Mesa llvmpipe over
+# EGL: software, no GPU, and rebrowser reads it all green where SwiftShader is
+# 🟡 headless/WebGL; on the 80-site panel it scored 53/80 vs SwiftShader 50/80,
+# within noise (k8s/panel-variants-job.yaml, 2026-10-24).
+EXTRA = os.environ.get("DROVER_CHROME_ARGS", "--use-gl=angle --use-angle=gl-egl --ignore-gpu-blocklist").split()
 CFG = hm.MotionConfig()
 
 

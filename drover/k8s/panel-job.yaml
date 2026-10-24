@@ -23,7 +23,9 @@ spec:
   completionMode: Indexed
   completions: 4
   parallelism: 4
-  backoffLimit: 0
+  # One OOM must not fail the other shards: retry per index, not per Job.
+  backoffLimitPerIndex: 1
+  maxFailedIndexes: 4
   ttlSecondsAfterFinished: 86400
   template:
     spec:
@@ -49,5 +51,5 @@ spec:
             - {name: out, mountPath: /out}
             - {name: shm, mountPath: /dev/shm}
           resources:
-            requests: {cpu: "1", memory: 1Gi}
-            limits: {cpu: "1", memory: 1Gi}
+            requests: {cpu: "1", memory: 2Gi}
+            limits: {cpu: "1", memory: 2Gi}
