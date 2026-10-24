@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drover probe</title>
+<!--
+  Drover bench probe. Driver-agnostic on purpose: any browser that can be
+  pointed at this page gets scored the same way, so a v1 (unibrowse) sidecar
+  and a Drover worker are compared on identical terms.
+
+  It measures OUR OWN tells: fields we control or break. It is not a block
+  rate. The outcome measure is the live-site panel (panel.json), and the
+  third-party suites (CreepJS, rebrowser bot-detector) are the regression
+  tests. Read collect.py for where results go.
+
+  ⛔ Nothing here spoofs anything. It only reads.
+-->
+<style>
+  :root { --bg:#fff; --fg:#111; --mut:#666; --ok:#1a7f37; --bad:#c62828; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111; --fg:#eee; --mut:#999; } }
+  body { background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, sans-serif; margin:16px; }
+  #target { display:inline-block; margin:24px 0; padding:12px 20px; border:1px solid var(--mut); cursor:pointer; }
+  #field { width:280px; padding:6px; }
+  pre { white-space:pre-wrap; word-break:break-all; font-size:12px; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+</style>
+</head>
+<body>
+<h1>Drover probe</h1>
+<p id="status">collecting…</p>
+<div><button id="target" type="button">Target</button></div>
+<div><input id="field" type="text" autocomplete="off" placeholder="type here"></div>
+<p><button id="finish" type="button">Finish</button></p>
+<pre id="out"></pre>
+<script>
+(() => {
+  const R = { v: 1, startedAt: Date.now(), href: location.href };
+  const q = new URLSearchParams(location.search);
+  R.label = q.get('label') || null;
+
+  // ---- static fingerprint -------------------------------------------------
+  const nav = navigator;
+  R.nav = {
+    webdriver: nav.webdriver,
+    userAgent: nav.userAgent,
+    brands: nav.userAgentData ? nav.userAgentData.brands.map(b => b.brand + '/' + b.version) : null,
+    platform: nav.platform,
+    languages: nav.languages,
+    hardwareConcurrency: nav.hardwareConcurrency,
+    deviceMemory: nav.deviceMemory ?? null,
+    plugins: nav.plugins ? nav.plugins.length : null,
+    mimeTypes: nav.mimeTypes ? nav.mimeTypes.length : null,
+    pdfViewerEnabled: nav.pdfViewerEnabled ?? null,
+    chromeObj: typeof window.chrome,
+    chromeRuntime: !!(window.chrome && window.chrome.runtime),
+  };
+  R.screen = {
+    w: screen.width, h: screen.height, availW: screen.availWidth, availH: screen.availHeight,
+    colorDepth: screen.colorDepth, dpr: devicePixelRatio,
+    outerW: outerWidth, outerH: outerHeight, innerW: innerWidth, innerH: innerHeight,
+    screenX: screenX, screenY: screenY,
+  };
+  R.tz = { name: Intl.DateTimeFormat().resolvedOptions().timeZone, offset: new Date().getTimezoneOffset() };
+
+  // WebGL: a real desktop never returns null here.
+  R.webgl = (() => {
+    try {
+      const c = document.createElement('canvas');
+      const g = c.getContext('webgl2') || c.getContext('webgl');
+      if (!g) return { ok: false };
+      const d = g.getExtension('WEBGL_debug_renderer_info');
+      return { ok: true, v2: !!c.getContext('webgl2'),
+               vendor: d ? g.getParameter(d.UNMASKED_VENDOR_WEBGL) : null,
+               renderer: d ? g.getParameter(d.UNMASKED_RENDERER_WEBGL) : null };
+    } catch (e) { return { ok: false, err: String(e) }; }
+  })();
+
+  // Fonts: width differs from the fallback => installed.
+  R.fonts = (() => {
+    const list = ['Arial','Helvetica','Times New Roman','Courier New','Verdana','Georgia',
+      'Liberation Sans','DejaVu Sans','Noto Sans','Ubuntu','Roboto','Open Sans','Segoe UI','Calibri','Cantarell'];
+    const ctx = document.createElement('canvas').getContext('2d');
+    const s = 'mmmmmmmmmmlli10OQ';
+    const base = {};
+    for (const b of ['monospace','serif','sans-serif']) { ctx.font = '72px ' + b; base[b] = ctx.measureText(s).width; }
+    const found = list.filter(f => ['monospace','serif','sans-serif'].some(b => {
+      ctx.font = `72px "${f}", ${b}`; return ctx.measureText(s).width !== base[b]; }));
+    return { found, count: found.length, of: list.length };
+  })();
+
+  // ---- CDP Runtime.enable leak -------------------------------------------
+  // When a DevTools client has Runtime/Console enabled, console.* arguments
+  // are serialized for it, which reads err.stack. A plain page never does.
+  // This is the leak patchright/rebrowser close; scout survey 2026-10-24.
+  R.cdpLeak = false;
+  try {
+    const e = new Error('probe');
+    Object.defineProperty(e, 'stack', { configurable: true, get() { R.cdpLeak = true; return ''; } });
+    console.debug(e);
+  } catch (_) {}
+
+  // Permissions coherence: a classic headless tell is denied vs prompt.
+  R.perm = { notification: typeof Notification !== 'undefined' ? Notification.permission : null };
+  const asyncBits = [];
+  if (nav.permissions) asyncBits.push(nav.permissions.query({ name: 'notifications' })
+    .then(p => { R.perm.query = p.state; }).catch(() => {}));
+  if (nav.mediaDevices && nav.mediaDevices.enumerateDevices) asyncBits.push(nav.mediaDevices.enumerateDevices()
+    .then(ds => { R.media = ds.reduce((a, d) => (a[d.kind] = (a[d.kind] || 0) + 1, a), {}); }).catch(() => {}));
+  try { const ac = new (window.AudioContext || window.webkitAudioContext)(); R.audio = { sampleRate: ac.sampleRate, state: ac.state }; ac.close(); }
+  catch (e) { R.audio = { err: String(e) }; }
+
+  // ---- input trust and shape ---------------------------------------------
+  // The driver moves to #target, clicks it, then types into #field and
+  // presses Finish. We record what arrived, not what was intended.
+  const I = R.input = { moves: 0, movesTrusted: 0, path: [], clicks: [], keys: 0, keysTrusted: 0, keyGaps: [], typed: '' };
+  let lastKey = 0;
+  addEventListener('mousemove', ev => {
+    I.moves++; if (ev.isTrusted) I.movesTrusted++;
+    if (I.path.length < 2000) I.path.push([Math.round(ev.clientX), Math.round(ev.clientY), Math.round(ev.timeStamp)]);
+  }, true);
+  for (const t of ['mousedown','mouseup','click']) addEventListener(t, ev => {
+    I.clicks.push({ t, trusted: ev.isTrusted, x: Math.round(ev.clientX), y: Math.round(ev.clientY),
+                    on: ev.target && ev.target.id || null, ts: Math.round(ev.timeStamp) });
+  }, true);
+  addEventListener('keydown', ev => {
+    I.keys++; if (ev.isTrusted) I.keysTrusted++;
+    if (lastKey) I.keyGaps.push(Math.round(ev.timeStamp - lastKey)); lastKey = ev.timeStamp;
+  }, true);
+
+  function summarise() {
+    const p = I.path;
+    let dist = 0;
+    for (let i = 1; i < p.length; i++) dist += Math.hypot(p[i][0] - p[i-1][0], p[i][1] - p[i-1][1]);
+    const chord = p.length > 1 ? Math.hypot(p[p.length-1][0] - p[0][0], p[p.length-1][1] - p[0][1]) : 0;
+    I.straightness = dist ? +(chord / dist).toFixed(3) : null;   // 1.0 = ruler-straight
+    const g = I.keyGaps; const m = g.length ? g.reduce((a, b) => a + b, 0) / g.length : 0;
+    I.keyGapMean = g.length ? Math.round(m) : null;
+    I.keyGapSd = g.length ? Math.round(Math.sqrt(g.reduce((a, b) => a + (b - m) ** 2, 0) / g.length)) : null;
+    I.typed = document.getElementById('field').value;
+    delete I.keyGaps;
+    I.path = I.path.length;                                       // count only; the trace is big
+  }
+
+  // ---- report -------------------------------------------------------------
+  async function finish() {
+    await Promise.all(asyncBits);
+    summarise();
+    R.finishedAt = Date.now();
+    // Same-origin collector only: collect.py serves this page and takes the POST.
+    // ⚠️ POST BEFORE publishing to the DOM: a driver that reads #out and closes
+    // the browser at once would otherwise abort the upload (first bench run).
+    try { await fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(R) }); }
+    catch (_) {}
+    window.__droverProbe = R;
+    document.getElementById('out').textContent = JSON.stringify(R, null, 2);
+    const st = document.getElementById('status');
+    st.textContent = R.cdpLeak ? 'done — CDP leak DETECTED' : 'done';
+    st.className = R.cdpLeak ? 'bad' : 'ok';
+  }
+  document.getElementById('finish').addEventListener('click', finish);
+  // A driver that does no input can still read the static half.
+  if (q.get('auto') === '1') setTimeout(finish, 500);
+})();
+</script>
+</body>
+</html>
