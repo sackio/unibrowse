@@ -1,0 +1,39 @@
+# Exit health check: one pod visits the canary sites (results/canary.json,
+# chosen from panel runs as sites that passed every visit from a clean exit,
+# two each for Cloudflare, DataDome and PerimeterX) through the exit in
+# Secret drover-proxy, and prints one JSON line: {"healthy", "exit", ...}.
+#
+#   kubectl -n drover create configmap drover-canary --from-file=canary.json=drover/bench/results/canary.json
+#   drover/k8s/canary-exits.sh 3     # 3 fresh exits, one Job each
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: drover-canary
+  namespace: drover
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      priorityClassName: idle-batch
+      nodeSelector: {kubernetes.io/hostname: server7}
+      securityContext:
+        seccompProfile: {type: Unconfined}
+      volumes:
+        - {name: canary, configMap: {name: drover-canary}}
+        - {name: out, emptyDir: {}}
+        - {name: shm, emptyDir: {medium: Memory, sizeLimit: 512Mi}}
+      containers:
+        - name: worker
+          image: 192.168.1.207:5050/drover/worker:2026-10-24e
+          envFrom: [{secretRef: {name: drover-proxy}}]
+          command: ["python3", "/opt/drover/bench/panel.py", "--local", "--sites", "/canary/canary.json",
+                    "--canary", "/canary/canary.json", "--wait", "20", "--jobs", "1", "--outroot", "/out"]
+          volumeMounts:
+            - {name: canary, mountPath: /canary}
+            - {name: out, mountPath: /out}
+            - {name: shm, mountPath: /dev/shm}
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits: {cpu: "1", memory: 2Gi}

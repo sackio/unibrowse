@@ -76,7 +76,26 @@ def visit(site, a, n):
     return {"site": site["url"], "vendor": site.get("vendor"), "run": n, "verdict": verdict, "why": why,
             "title": (r.get("title") or "")[:100], "textLen": len(r.get("text") or ""),
             "peakMb": r.get("cgroupPeakMb"), "seconds": round(time.time() - t0, 1),
-            "interact": r.get("interact"), "shot": f"shots/{slug}.png"}
+            "interact": r.get("interact"), "exitIp": r.get("exitIp"), "shot": f"shots/{slug}.png"}
+
+
+def canary(a):
+    """A cheap look at the exit before a batch spends tries on it. Reputation
+    lists cannot tell VPN exits apart (they list them all), so ask the sites:
+    a few that pass from a clean exit, one per strict vendor. FILE is a list
+    like sites.json, chosen from panel runs (results/, never committed)."""
+    a.outdir = os.path.join(a.outroot, "canary")
+    sites = json.load(open(a.canary))
+    with cf.ThreadPoolExecutor(min(a.jobs, len(sites))) as ex:
+        rows = list(ex.map(lambda s: visit(s, a, 1), sites))
+    for r in rows:
+        print("ROW " + json.dumps(r), flush=True)
+    refused = [r for r in rows if r["verdict"] in ("blocked", "empty")]
+    exits = sorted({r.get("exitIp") or "?" for r in rows})
+    healthy = len(refused) < a.canary_max
+    print(json.dumps({"healthy": healthy, "exit": exits, "refused": len(refused), "of": len(rows),
+                      "verdicts": {r["vendor"]: r["verdict"] for r in rows}}))
+    return 0 if healthy else 3
 
 
 def main():
@@ -94,7 +113,12 @@ def main():
                     help="i/n: take every n-th cell starting at i (k8s Indexed Job sets the index)")
     ap.add_argument("--shards", type=int, default=int(os.environ.get("DROVER_SHARDS", "1")))
     ap.add_argument("--outroot", default=os.path.join(HERE, "results"))
+    ap.add_argument("--canary", metavar="FILE",
+                    help="exit health check: visit the sites in FILE once each; exit 3 if --canary-max or more are refused")
+    ap.add_argument("--canary-max", type=int, default=2)
     a = ap.parse_args()
+    if a.canary:
+        return canary(a)
     a.outdir = os.path.join(a.outroot, "panel-" + a.label)
     os.makedirs(a.outdir, exist_ok=True)
     sites = json.load(open(a.sites))
@@ -122,15 +146,21 @@ def main():
     for (vendor, _), vs in by_site.items():
         by_vendor[vendor][1] += 1
         by_vendor[vendor][0] += all(v == "passed" for v in vs)
+    # By exit IP: the same browser scored per egress, so a bad exit shows up
+    # as its own row instead of as a worse browser.
+    by_exit = collections.defaultdict(collections.Counter)
+    for r in rows:
+        by_exit[r.get("exitIp") or "?"][r["verdict"]] += 1
     total = sum(p for p, _ in by_vendor.values()), sum(n for _, n in by_vendor.values())
     summary = {"label": a.label, "image": a.image, "proxy": bool(a.proxy_env), "runs": a.runs,
                "passed": total[0], "sites": total[1],
                "byVendor": {v: f"{p}/{n}" for v, (p, n) in sorted(by_vendor.items(), key=lambda x: -x[1][1])},
                "verdicts": dict(collections.Counter(r["verdict"] for r in rows)),
+               "byExit": {ip: dict(c) for ip, c in by_exit.items()},
                "peakMbMax": max((r["peakMb"] or 0) for r in rows)}
     json.dump(summary, open(os.path.join(a.outdir, "summary.json"), "w"), indent=2)
     print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

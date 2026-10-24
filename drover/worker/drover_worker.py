@@ -149,7 +149,7 @@ def identity():
     proxy = os.environ.get("DROVER_PROXY")
     opener = urllib.request.build_opener(*([urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else []))
     try:
-        d = json.load(opener.open("http://ip-api.com/json/?fields=status,query,countryCode,city,lat,lon,timezone", timeout=8))
+        d = json.load(opener.open("http://ip-api.com/json/?fields=status,query,countryCode,city,lat,lon,timezone,isp,proxy,hosting", timeout=8))
     except Exception as e:
         return {"ok": False, "err": str(e)}
     if d.get("status") != "success":
@@ -160,6 +160,7 @@ def identity():
     lat = d["lat"] + (r * math.cos(a)) / 111320
     lon = d["lon"] + (r * math.sin(a)) / (111320 * max(0.2, math.cos(math.radians(d["lat"]))))
     return {"ok": True, "ip": d["query"], "country": d["countryCode"], "city": d["city"], "tz": d["timezone"],
+            "isp": d.get("isp"), "listedProxy": d.get("proxy"), "listedHosting": d.get("hosting"),
             "lang": LANGS.get(d["countryCode"], "en-US"),
             "geo": {"latitude": round(lat, 6), "longitude": round(lon, 6), "accuracy": random.randint(25, 120)}}
 
@@ -658,7 +659,7 @@ def job_visit(b, url, wait, shot, interact=False):
             b.shot(shot)
         except (TimeoutError, RuntimeError) as e:     # a heavy page must not cost the verdict
             page["shotError"] = str(e)[:120]
-    return {"url": url, **page, "interact": interact, **b.rss_mb(), "seconds": round(time.time() - t0, 2)}
+    return {"url": url, **page, "interact": interact, "exitIp": (b.ident or {}).get("ip"), **b.rss_mb(), "seconds": round(time.time() - t0, 2)}
 
 
 def main():
