@@ -537,8 +537,22 @@ class Hands:
                 # arrives (a form 3000 px down a town homepage). Wait for still.
                 time.sleep(0.3)
                 l2, t2, *_ = self.rect(selector)
-                if abs(t2 - top) < 2:
+                if abs(t2 - top) >= 2:
+                    continue
+                # ⛔ On screen is not reachable: a fixed cookie bar or chat
+                # widget along the bottom covered fields at y≈810-825 of 936
+                # (live chunk 2026-10-24: "pointer would not land", page saw
+                # the pointer exactly on target). Ask what is on top first.
+                if self.b.eval(f"(() => {{ const t = document.querySelector({json.dumps(selector)}), r = t.getBoundingClientRect(),"
+                               f" e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);"
+                               f" return !!(e && (e === t || t.contains(e) || (e.control === t))); }})()"):
                     return left, top, w, h, dpr
+                # Covered: bring it to the upper middle, clear of bottom bars.
+                want = (top + h / 2 - vh * 0.4) / 100.0
+                if abs(want) < 0.5:
+                    raise RuntimeError(f"{selector} is covered by another element")
+                self.scroll(-max(1, round(abs(want))) if want > 0 else max(1, round(abs(want))))
+                time.sleep(random.uniform(0.15, 0.5))
                 continue
             # Near the top or bottom of the page the comfortable band cannot be
             # reached (measured: a form's first field at y=40 failed 12 tries).
@@ -615,7 +629,7 @@ class Hands:
                     break
             hit = got and self.b.eval(
                 f"(() => {{ const t = document.querySelector({json.dumps(selector)}), e = document.elementFromPoint({got[0]}, {got[1]});"
-                f" return !!(t && e && (t === e || t.contains(e))); }})()")
+                f" return !!(t && e && (t === e || t.contains(e) || e.control === t)); }})()")
             if hit:
                 break
             vw, vh = self.b.eval("[innerWidth, innerHeight]")
@@ -624,7 +638,8 @@ class Hands:
                 self.dx, self.dy = sx - got[0] * dpr, sy - got[1] * dpr
             self.move_screen(round(self.dx + tx * dpr), round(self.dy + ty * dpr), width=w * dpr)
         else:
-            raise RuntimeError(f"pointer would not land on {selector}")
+            raise RuntimeError(f"pointer would not land on {selector} (aim {tx:.0f},{ty:.0f} offset {self.dx:.0f},{self.dy:.0f}"
+                               f" page saw {got} pointer {self.where()})")
         pre, dwell = hm.press_timing(CFG)
         xdo("sleep", f"{pre:.3f}", "mousedown", "1", "sleep", f"{dwell:.3f}", "mouseup", "1")
 
@@ -769,15 +784,27 @@ def paid_solve(b, url, kind, cfg):
     if r.get("error"):
         return False, "paid solve refused: " + r["error"][:120]
     inj = cfg["INJECT"].replace("__TOKEN__", json.dumps(r["token"])).replace("__FIELD__", json.dumps(r["field"]))
+    fired = 0
     for _ in range(2):                                 # the token is paid for: try the write twice
         try:
-            b.eval_main(inj)
+            res = json.loads(b.eval_main(inj) or "{}")
+            fired += res.get("callbacks") or 0
         except Exception:
             time.sleep(1)
             continue
         time.sleep(1)
-        if b.eval(TOKEN + f"({json.dumps(r['field'])})"):
-            return True, f"paid ${r.get('cost')}"
+        try:
+            if b.eval(TOKEN + f"({json.dumps(r['field'])})"):
+                return True, f"paid ${r.get('cost')}"
+        except Exception:
+            pass
+        if fired:
+            break
+    # ⛔ On INVISIBLE reCAPTCHA the widget's callback IS the site's submit, so a
+    # fired callback followed by an empty field can mean the form already went
+    # (live chunk 2026-10-24: two such rows were first recorded `blocked`).
+    if fired:
+        return None, f"token bought (${r.get('cost')}), widget callback fired ({fired}), field empty after — may have submitted"
     return False, f"token bought (${r.get('cost')}) but it did not land in the page"
 
 
@@ -870,8 +897,17 @@ def job_contact(b, row, cfg, dry=False, shot=None):
                     break
             break
         token = any(b.eval(TOKEN + f"({json.dumps(f)})") for *_, f in WIDGETS)
-        if not token and os.environ.get("DROVER_SOLVER_URL") and kind in ("recaptcha", "turnstile", "captcha"):
+        if not token and not dry and os.environ.get("DROVER_SOLVER_URL") and kind in ("recaptcha", "turnstile", "captcha"):
             token, why = paid_solve(b, row["url"], kind, cfg)
+            if token is None:
+                after = ""
+                try:
+                    after = b.eval(cfg["BODY"]) or ""
+                except Exception:
+                    pass
+                if re.search(cfg["OK_CONTACT"], after, re.I) and not re.search(cfg["FAIL_TEXT"], after, re.I):
+                    return done("submitted", f"{kind}+paid|callback|ok-text")
+                return done("unsure", f"{kind}: {why}")
             if not token:
                 return done("blocked", f"{kind}: {why} — did not submit")
             kind += "+paid"

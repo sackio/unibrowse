@@ -25,7 +25,7 @@ spec:
     - {name: shm, emptyDir: {medium: Memory, sizeLimit: 512Mi}}
   containers:
     - name: worker
-      image: 192.168.1.207:5050/drover/worker:2026-10-24n
+      image: 192.168.1.207:5050/drover/worker:2026-10-24q
       # No Secret means the house IP: only when the operator approves it for that job.
       envFrom: [{secretRef: {name: drover-proxy, optional: true}}]
       command: ["python3", "/opt/drover/worker/drover_worker.py", "serve", "--port", "8790", "--out", "/out"]

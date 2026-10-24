@@ -35,7 +35,7 @@ spec:
         - {name: shm, emptyDir: {medium: Memory, sizeLimit: 512Mi}}
       containers:
         - name: worker
-          image: 192.168.1.207:5050/drover/worker:2026-10-24n
+          image: 192.168.1.207:5050/drover/worker:2026-10-24q
           # drover-solver: DROVER_SOLVER_URL + DROVER_SOLVER_TOKEN for the host's solve broker
           # (outreach/solve_broker.py). Absent, a captcha the hand cannot clear ends the row blocked.
           envFrom: [{secretRef: {name: drover-proxy}}, {secretRef: {name: drover-solver, optional: true}}]
