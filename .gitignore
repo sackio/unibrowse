@@ -82,3 +82,4 @@ fetched/
 
 # Python bytecode from scripts/ (console-credits)
 __pycache__/
+.broker-token

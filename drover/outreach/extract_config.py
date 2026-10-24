@@ -13,7 +13,8 @@ imports the module, whose top level reads keys and a spend ledger.
 import ast, json, sys
 
 SRC = "/mnt/nas/data/code/business/outreach/bin/captcha_solve.py"
-WANT = {"DISCOVER_CONTACT", "SUBMIT_RECT", "BODY", "MSG_TMPL", "SUBJECT", "OK_CONTACT", "FAIL_TEXT"}
+WANT = {"DISCOVER_CONTACT", "SUBMIT_RECT", "BODY", "MSG_TMPL", "SUBJECT", "OK_CONTACT", "FAIL_TEXT",
+        "SITEKEY", "INJECT", "FIELD_PRESENT"}
 
 
 def literal(node):

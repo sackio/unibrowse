@@ -387,6 +387,15 @@ class Browser:
             raise RuntimeError("eval: " + r["exceptionDetails"].get("text", "exception"))
         return r["result"].get("value")
 
+    def eval_main(self, expr, timeout=30):
+        """Evaluate in the PAGE's own world. Only for what must touch the
+        page's globals (a captcha widget's registered callback); everything
+        else stays in the isolated world. Still no Runtime.enable."""
+        r = self.send("Runtime.evaluate", {"expression": expr, "returnByValue": True}, timeout=timeout)
+        if "exceptionDetails" in r:
+            raise RuntimeError("eval_main: " + r["exceptionDetails"].get("text", "exception"))
+        return r["result"].get("value")
+
     def shot(self, path):
         data = self.send("Page.captureScreenshot", {"format": "png"}, timeout=60)["data"]
         with open(path, "wb") as f:
@@ -728,6 +737,50 @@ CAPTCHA_PRESENT = ("!!document.querySelector(\"[data-sitekey],.g-recaptcha,.h-ca
                    "script[src*='recaptcha/api.js'],script[src*='recaptcha/enterprise.js'],script[src*='hcaptcha.com/1/api.js']\")")
 
 
+def paid_solve(b, url, kind, cfg):
+    """Ask the host's solve broker (outreach/solve_broker.py) for a token and
+    write it in with the lane's own INJECT. The broker holds the 2Captcha key,
+    the ONE spend ledger and the cap; a pod never buys anything itself.
+    Returns (token_landed, why)."""
+    import urllib.request
+    k = json.loads(b.eval(cfg["SITEKEY"]) or "{}")
+    if not k.get("key"):
+        return False, "no sitekey on the page"
+    if kind == "turnstile":
+        task = "turnstile"
+    elif b.eval("!!document.querySelector(\"iframe[src*='recaptcha/api2/anchor'][src*='size=invisible'],[data-size=invisible]\")"):
+        task = "recaptcha-invisible"
+    elif b.eval("!!document.querySelector(\"iframe[src*='recaptcha'][src*='anchor']\")"):
+        task = "recaptcha-v2"
+    else:
+        return False, "no reCAPTCHA widget to solve (v3/score) — not bought"
+    field = "cf-turnstile-response" if task == "turnstile" else "g-recaptcha-response"
+    # ⛔ Check the field exists BEFORE buying (the lane paid for turnstile tokens
+    # with nowhere to write them, 2026-10-23).
+    if not json.loads(b.eval(cfg["FIELD_PRESENT"].replace("__FIELD__", field)) or "{}").get("n"):
+        return False, f"no {field} field in the page — not bought"
+    req = urllib.request.Request(os.environ["DROVER_SOLVER_URL"], data=json.dumps(
+        {"url": url, "kind": task, "sitekey": k["key"], "action": k.get("action"), "enterprise": k.get("enterprise")}).encode(),
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + os.environ.get("DROVER_SOLVER_TOKEN", "")})
+    try:
+        r = json.loads(urllib.request.urlopen(req, timeout=240).read())
+    except Exception as e:
+        return False, f"solve broker unreachable: {e}"
+    if r.get("error"):
+        return False, "paid solve refused: " + r["error"][:120]
+    inj = cfg["INJECT"].replace("__TOKEN__", json.dumps(r["token"])).replace("__FIELD__", json.dumps(r["field"]))
+    for _ in range(2):                                 # the token is paid for: try the write twice
+        try:
+            b.eval_main(inj)
+        except Exception:
+            time.sleep(1)
+            continue
+        time.sleep(1)
+        if b.eval(TOKEN + f"({json.dumps(r['field'])})"):
+            return True, f"paid ${r.get('cost')}"
+    return False, f"token bought (${r.get('cost')}) but it did not land in the page"
+
+
 def job_contact(b, row, cfg, dry=False, shot=None):
     """One outreach row: open a town's contact form, fill it by hand, press any
     captcha checkbox, submit, and read the verdict. Field choice, message and
@@ -735,9 +788,10 @@ def job_contact(b, row, cfg, dry=False, shot=None):
     extract_config.py lifts them), so both lanes post the same text and score
     the same way. Statuses match the lane's results file.
 
-    ⛔ NO PAID SOLVING here. A captcha that serves an image challenge, or has
-    no checkbox at all (v3, invisible), ends the row `blocked` before submit;
-    it is never sent without the token the site asked for.
+    ⛔ No captcha is ever bought in the pod. With DROVER_SOLVER_URL set, a
+    widget the hand could not clear goes to the host's solve broker (one
+    ledger, one cap); without it, or when the broker refuses, the row ends
+    `blocked` before submit. A form is never sent without the token it asked for.
     `dry` stops before the submit press: a timing run that sends nothing."""
     import re
     t0 = time.time()
@@ -816,6 +870,11 @@ def job_contact(b, row, cfg, dry=False, shot=None):
                     break
             break
         token = any(b.eval(TOKEN + f"({json.dumps(f)})") for *_, f in WIDGETS)
+        if not token and os.environ.get("DROVER_SOLVER_URL") and kind in ("recaptcha", "turnstile", "captcha"):
+            token, why = paid_solve(b, row["url"], kind, cfg)
+            if not token:
+                return done("blocked", f"{kind}: {why} — did not submit")
+            kind += "+paid"
         if not token:
             served = b.eval("[...document.querySelectorAll(\"iframe[src*='bframe'],iframe[src*='hcaptcha.com'][src*='challenge']\")]"
                             ".some(f => { const r = f.getBoundingClientRect(); return r.top > -1000 && r.height > 100; })")
