@@ -28,6 +28,7 @@ COPY drover/worker/drover_worker.py /opt/drover/worker/drover_worker.py
 # The bench ships in the image so a pod can score itself against a probe it
 # serves on localhost, with no dependency on a collector somewhere else.
 COPY drover/bench/probe.html drover/bench/collect.py drover/bench/panel.py /opt/drover/bench/
+COPY drover/outreach/lane.py /opt/drover/outreach/lane.py
 USER drover
 WORKDIR /home/drover
 ENTRYPOINT ["python3", "/opt/drover/worker/drover_worker.py"]

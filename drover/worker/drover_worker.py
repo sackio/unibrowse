@@ -465,10 +465,18 @@ class Hands:
 
     def calibrate(self):
         self.b.eval(self.LISTEN)
-        sx, sy = 700 + random.randint(-40, 40), 500 + random.randint(-40, 40)
-        self.move_screen(sx, sy)
-        time.sleep(0.15)
-        seen = self.seen()
+        # ⛔ A point over a cross-origin iframe (an embedded form, a map)
+        # delivers its mousemoves to the frame, not the top page, so one point
+        # can read "no movement" on a page that works (measured on a town
+        # contact page, 2026-10-24). Try a few spread-out points.
+        seen = None
+        for sx, sy in [(700, 500), (300, 250), (1300, 300), (500, 800), (1500, 750)]:
+            sx, sy = sx + random.randint(-40, 40), sy + random.randint(-40, 40)
+            self.move_screen(sx, sy)
+            time.sleep(0.15)
+            seen = self.seen()
+            if seen and abs(self.where()[0] - sx) < 3:
+                break
         if not seen:
             raise RuntimeError("calibration: page saw no pointer movement")
         dpr = self.b.eval("devicePixelRatio") or 1
@@ -480,6 +488,15 @@ class Hands:
         return int(d["X"]), int(d["Y"])
 
     def move_screen(self, x, y, width=None):
+        # ⛔ Forget the page's last sighting first. A stale one (the pointer
+        # left the page, or sits over a cross-origin frame) reads as "the page
+        # saw it there", and re-learning the offset from it walked the pointer
+        # into the screen corner on a town contact form (2026-10-24).
+        try:
+            self.b.eval(self.LISTEN)
+            self.b.eval("window.__dm = null")
+        except RuntimeError:
+            pass
         x0, y0 = self.where()
         chain = []
         for px, py, dt in hm.steps(x0, y0, x, y, cfg=CFG, target_width=width or CFG.target_width):
@@ -506,7 +523,14 @@ class Hands:
         for _ in range(tries):
             left, top, w, h, dpr, vh = self.rect(selector)
             if top >= vh * 0.12 and top + h <= vh * 0.88:
-                return left, top, w, h, dpr
+                # Smooth scrolling keeps moving the page after the last wheel
+                # notch: a box measured mid-glide is gone by the time the hand
+                # arrives (a form 3000 px down a town homepage). Wait for still.
+                time.sleep(0.3)
+                l2, t2, *_ = self.rect(selector)
+                if abs(t2 - top) < 2:
+                    return left, top, w, h, dpr
+                continue
             # Near the top or bottom of the page the comfortable band cannot be
             # reached (measured: a form's first field at y=40 failed 12 tries).
             # Fully on screen and the scroll no longer moves it: good enough.
@@ -572,14 +596,21 @@ class Hands:
         ty = top + h * random.uniform(0.3, 0.7)
         self.move_screen(round(self.dx + tx * dpr), round(self.dy + ty * dpr), width=w * dpr)
         for _ in range(3):
-            time.sleep(0.05)
-            got = self.seen()
+            # A busy page (scripts still running on a fresh load) delivers the
+            # mousemove late: 50 ms read null on every try in a new pod. Wait
+            # for the sighting, up to a second, before judging the aim.
+            for _ in range(12):
+                time.sleep(0.08)
+                got = self.seen()
+                if got:
+                    break
             hit = got and self.b.eval(
                 f"(() => {{ const t = document.querySelector({json.dumps(selector)}), e = document.elementFromPoint({got[0]}, {got[1]});"
                 f" return !!(t && e && (t === e || t.contains(e))); }})()")
             if hit:
                 break
-            if got:
+            vw, vh = self.b.eval("[innerWidth, innerHeight]")
+            if got and 2 < got[0] < vw - 2 and 2 < got[1] < vh - 2:   # a fresh sighting, not an edge
                 sx, sy = self.where()
                 self.dx, self.dy = sx - got[0] * dpr, sy - got[1] * dpr
             self.move_screen(round(self.dx + tx * dpr), round(self.dy + ty * dpr), width=w * dpr)
@@ -681,6 +712,149 @@ def job_visit(b, url, wait, shot, interact=False):
         except (TimeoutError, RuntimeError) as e:     # a heavy page must not cost the verdict
             page["shotError"] = str(e)[:120]
     return {"url": url, **page, "interact": interact, "exitIp": (b.ident or {}).get("ip"), **b.rss_mb(), "seconds": round(time.time() - t0, 2)}
+
+
+# Captcha widgets a hand can press, by the frame they render in, with where
+# the checkbox sits inside it (fractions of the frame's box), and the field a
+# solved widget writes its token into.
+WIDGETS = [
+    ("recaptcha", "iframe[src*='recaptcha/api2/anchor'],iframe[src*='recaptcha/enterprise/anchor']", 0.10, 0.5, "g-recaptcha-response"),
+    ("hcaptcha", "iframe[src*='hcaptcha.com'][src*='frame=checkbox']", 0.10, 0.5, "h-captcha-response"),
+    ("turnstile", "iframe[src*='challenges.cloudflare.com']", 0.10, 0.5, "cf-turnstile-response"),
+]
+TOKEN = ("(n => [...document.querySelectorAll(`textarea[name=\"${n}\"],input[name=\"${n}\"]`)]"
+         ".some(e => e.value.length > 20))")
+CAPTCHA_PRESENT = ("!!document.querySelector(\"[data-sitekey],.g-recaptcha,.h-captcha,.cf-turnstile,"
+                   "script[src*='recaptcha/api.js'],script[src*='recaptcha/enterprise.js'],script[src*='hcaptcha.com/1/api.js']\")")
+
+
+def job_contact(b, row, cfg, dry=False, shot=None):
+    """One outreach row: open a town's contact form, fill it by hand, press any
+    captcha checkbox, submit, and read the verdict. Field choice, message and
+    the success/refusal patterns are the v1 lane's own (outreach/
+    extract_config.py lifts them), so both lanes post the same text and score
+    the same way. Statuses match the lane's results file.
+
+    ⛔ NO PAID SOLVING here. A captcha that serves an image challenge, or has
+    no checkbox at all (v3, invisible), ends the row `blocked` before submit;
+    it is never sent without the token the site asked for.
+    `dry` stops before the submit press: a timing run that sends nothing."""
+    import re
+    t0 = time.time()
+    ok_rx, fail_rx = re.compile(cfg["OK_CONTACT"], re.I), re.compile(cfg["FAIL_TEXT"], re.I)
+
+    def done(status, note):
+        if shot:
+            try:
+                b.shot(shot)
+            except (TimeoutError, RuntimeError):
+                pass
+        return {"key": row["key"], "address": row["address"], "status": status, "note": note[:300],
+                "exitIp": (b.ident or {}).get("ip"), "seconds": round(time.time() - t0, 1)}
+
+    try:
+        b.navigate(row["url"], settle=2.0)
+    except Exception as e:
+        return done("error", f"navigate: {e}")
+    # Forms render late (JS builders, consent walls): ask again for ~20 s.
+    found = {}
+    for _ in range(10):
+        try:
+            found = json.loads(b.eval(cfg["DISCOVER_CONTACT"]) or "{}")
+        except Exception as e:
+            found = {"ok": False, "why": f"discover failed: {e}"}
+        if found.get("ok"):
+            break
+        time.sleep(2)
+    if not found.get("ok"):
+        return done("noform", found.get("why", "no form"))
+    town = row.get("town") or row["address"].split("@")[0]
+    values = {"email": row["address"], "first": row["first"], "last": row["last"],
+              "full": (row["first"] + " " + row["last"]).strip(), "subject": cfg["SUBJECT"],
+              "message": cfg["MSG_TMPL"].replace("{address}", row["address"]).replace("{town}", town)}
+    hands = Hands(b)
+    try:
+        hands.calibrate()
+        for k in ("first", "last", "full", "email", "subject", "message"):
+            if k != "email" and k != "message" and not found["fields"].get(k):
+                continue
+            sel = f"[data-ub-f='{k}']"
+            hands.click(sel)
+            hands.type(values[k])
+            # The last keystroke can still be in flight when typing returns
+            # (measured: "Stor" for "Store"). Give the page a moment to catch up.
+            for _ in range(10):
+                got = b.eval(f"(e => e && e.value)(document.querySelector({json.dumps(sel)}))")
+                if got == values[k]:
+                    break
+                time.sleep(0.15)
+            if got != values[k]:
+                return done("error", f"field {k} reads back {str(got)[:60]!r}")
+            time.sleep(random.uniform(0.3, 1.0))
+        for i in range(len(found.get("boxes") or [])):
+            hands.click(f"[data-ub-f='box{i}']")
+            time.sleep(random.uniform(0.2, 0.6))
+    except RuntimeError as e:
+        return done("blocked", f"form field unreachable — {e}")
+    kind = "none"
+    if b.eval(CAPTCHA_PRESENT):
+        kind = "captcha"
+        for name, sel, fx, fy, field in WIDGETS:
+            if not b.eval(f"!!document.querySelector({json.dumps(sel)})"):
+                continue
+            kind = name
+            try:
+                left, top, w, h, dpr = hands.reach(sel)
+            except RuntimeError as e:
+                return done("blocked", f"{name}: widget unreachable — {e}")
+            hands.move_screen(round(hands.dx + (left + w * fx) * dpr), round(hands.dy + (top + h * fy) * dpr), width=24 * dpr)
+            pre, dwell = hm.press_timing(CFG)
+            xdo("sleep", f"{pre:.3f}", "mousedown", "1", "sleep", f"{dwell:.3f}", "mouseup", "1")
+            for _ in range(8):
+                time.sleep(1)
+                if b.eval(TOKEN + f"({json.dumps(field)})"):
+                    break
+            break
+        token = any(b.eval(TOKEN + f"({json.dumps(f)})") for *_, f in WIDGETS)
+        if not token:
+            served = b.eval("[...document.querySelectorAll(\"iframe[src*='bframe'],iframe[src*='hcaptcha.com'][src*='challenge']\")]"
+                            ".some(f => { const r = f.getBoundingClientRect(); return r.top > -1000 && r.height > 100; })")
+            return done("blocked", f"{kind}: " + ("challenge served — did not submit" if served
+                                                  else "no token and nothing solved — did not submit"))
+    if dry:
+        return done("dry", f"{kind}: filled, not sent")
+    before = b.eval(cfg["BODY"]) or ""
+    url0 = b.eval("location.href")
+    sub = json.loads(b.eval(cfg["SUBMIT_RECT"]) or "{}")
+    if not sub.get("ok"):
+        return done("blocked", f"{kind}: no submit control found")
+    try:
+        hands.click("[data-ub-f='submit']")
+    except RuntimeError as e:
+        return done("blocked", f"{kind}: submit control unreachable — {e}")
+    # ⛔ From here the town may have the message. Anything that goes wrong is
+    # `unsure`, never `error`: the lane sweeps `error` rows again, and a re-run
+    # of a row that did send is a second message to a stranger. The marker on
+    # stderr tells lane.py the same if this process dies past this point.
+    print("PRESSED", file=sys.stderr, flush=True)
+    try:
+        time.sleep(5)
+        try:
+            after, url1 = b.eval(cfg["BODY"]) or "", b.eval("location.href")
+        except Exception:
+            time.sleep(3)
+            after, url1 = b.eval(cfg["BODY"]) or "", b.eval("location.href")
+    except Exception as e:
+        return done("unsure", f"{kind}: submit pressed, page unreadable after — {e}")
+    s = sub.get("label", "")
+    bad = fail_rx.search(after)
+    if bad and not fail_rx.search(before):              # only a NEW refusal counts
+        return done("blocked", f"{kind}|{s}|rejected: {bad.group(0)!r}")
+    if ok_rx.search(after) and not ok_rx.search(before):
+        return done("submitted", f"{kind}|{s}|ok-text")
+    if url1 != url0 or after != before:
+        return done("submitted", f"{kind}|{s}|page-changed")
+    return done("blocked", f"{kind}|{s}|no confirmation")
 
 
 # Interactive elements, each with a CSS path that needs no attribute written
@@ -822,7 +996,10 @@ def job_serve(b, port, outdir):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("job", choices=["probe", "visit", "serve"])
+    ap.add_argument("job", choices=["probe", "visit", "serve", "contact"])
+    ap.add_argument("--row", help="contact: the queue row as JSON {url,address,first,last,key,town}")
+    ap.add_argument("--config", help="contact: outreach/contact-config.json")
+    ap.add_argument("--dry", action="store_true", help="contact: fill but do not submit")
     ap.add_argument("--url", default="about:blank")
     ap.add_argument("--port", type=int, default=8790)
     ap.add_argument("--out")
@@ -854,6 +1031,8 @@ def main():
                               "typed": r.get("input", {}).get("typed"), "rssMb": d.get("rssMb"), "pssMb": d.get("pssMb"),
                               "cgroupPeakMb": d.get("cgroupPeakMb"),
                               "jobSeconds": d.get("jobSeconds")}))
+        elif a.job == "contact":
+            print(json.dumps(job_contact(b, json.loads(a.row), json.load(open(a.config)), a.dry, a.shot)))
         elif a.job == "serve":
             job_serve(b, a.port, a.out or tempfile.gettempdir())
         else:

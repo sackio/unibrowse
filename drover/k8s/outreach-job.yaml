@@ -1,0 +1,49 @@
+# The outreach contact-form lane on Drover (outreach/lane.py). Each pod takes
+# its shard of the rows in ConfigMap drover-outreach and gives each row a fresh
+# browser through the exit in Secret drover-proxy.
+#
+#   lane.py pick --queue … --results … --limit 20 > /tmp/rows.tsv
+#   kubectl -n drover create configmap drover-outreach \
+#     --from-file=rows.tsv=/tmp/rows.tsv --from-file=contact-config.json=<extract_config.py output>
+#   kubectl apply -f drover/k8s/outreach-job.yaml
+#   kubectl -n drover logs -l job-name=drover-outreach --tail=-1 | lane.py harvest --results …
+#
+# ⛔ backoffLimitPerIndex 0: a retried pod would re-run, and re-SEND, rows it
+# already submitted. A failed shard's unprinted rows stay unrun and are picked
+# again next time, because harvest records only what a pod reported.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: drover-outreach
+  namespace: drover
+spec:
+  completionMode: Indexed
+  completions: 4
+  parallelism: 4
+  backoffLimitPerIndex: 0
+  maxFailedIndexes: 4
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      priorityClassName: idle-batch
+      nodeSelector: {kubernetes.io/hostname: server7}
+      securityContext:
+        seccompProfile: {type: Unconfined}
+      volumes:
+        - {name: lane, configMap: {name: drover-outreach}}
+        - {name: shm, emptyDir: {medium: Memory, sizeLimit: 512Mi}}
+      containers:
+        - name: worker
+          image: 192.168.1.207:5050/drover/worker:2026-10-24m
+          envFrom: [{secretRef: {name: drover-proxy}}]
+          env:
+            - {name: DROVER_SHARDS, value: "4"}
+            - {name: DRY, value: ""}
+          command: ["sh", "-c", "exec python3 /opt/drover/outreach/lane.py run --rows /lane/rows.tsv --config /lane/contact-config.json ${DRY:+--dry}"]
+          volumeMounts:
+            - {name: lane, mountPath: /lane}
+            - {name: shm, mountPath: /dev/shm}
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits: {cpu: "1", memory: 2Gi}
