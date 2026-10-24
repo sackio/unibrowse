@@ -569,15 +569,41 @@ def job_probe(b, url, out):
     return res
 
 
-def job_visit(b, url, wait, shot):
-    """Load a third-party page (CreepJS, bot-detector, a live site), let it
-    settle, and return its visible text, plus a screenshot if asked."""
+def job_visit(b, url, wait, shot, interact=False):
+    """Load a third-party page (a detection suite or a live site), let it
+    settle, and report what a classifier needs: final URL, title, visible
+    text, iframe sources (DataDome and PerimeterX challenge in iframes), and a
+    screenshot if asked.
+
+    `interact` behaves like a person who has just landed: the pointer wanders
+    a little and the page is scrolled down and partly back, all as XTEST
+    input. Behavioural sensors (PerimeterX, Akamai) score exactly this
+    window, so a load with no input at all is its own tell."""
     t0 = time.time()
-    b.navigate(url, settle=wait)
-    text = b.eval("document.body ? document.body.innerText : ''")
+    b.navigate(url, settle=min(wait, 4.0))
+    if interact:
+        hands = Hands(b)
+        try:
+            hands.calibrate()
+            vw, vh = b.eval("[innerWidth, innerHeight]")
+            for _ in range(random.randint(2, 4)):
+                hands.move_screen(round(hands.dx + vw * random.uniform(0.15, 0.85)),
+                                  round(hands.dy + vh * random.uniform(0.2, 0.8)))
+                time.sleep(random.uniform(0.3, 1.1))
+            hands.scroll(-random.randint(3, 8))
+            time.sleep(random.uniform(0.8, 2.0))
+            hands.scroll(random.randint(1, 3))
+        except Exception as e:                      # a challenge page may have no body to move over
+            interact = f"failed: {e}"
+    rest = wait - (time.time() - t0)
+    if rest > 0:
+        time.sleep(rest)
+    page = b.eval("({url: location.href, title: document.title,"
+                  " text: document.body ? document.body.innerText : '',"
+                  " frames: [...document.querySelectorAll('iframe')].map(f => f.src).filter(Boolean).slice(0, 20)})") or {}
     if shot:
         b.shot(shot)
-    return {"url": url, "text": text, **b.rss_mb(), "seconds": round(time.time() - t0, 2)}
+    return {"url": url, **page, "interact": interact, **b.rss_mb(), "seconds": round(time.time() - t0, 2)}
 
 
 def main():
@@ -587,6 +613,7 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--wait", type=float, default=15)
     ap.add_argument("--shot")
+    ap.add_argument("--interact", action="store_true")
     a = ap.parse_args()
     xvfb = start_display()
     audio = start_audio()
@@ -613,7 +640,7 @@ def main():
                               "cgroupPeakMb": d.get("cgroupPeakMb"),
                               "jobSeconds": d.get("jobSeconds")}))
         else:
-            print(json.dumps(job_visit(b, a.url, a.wait, a.shot)))
+            print(json.dumps(job_visit(b, a.url, a.wait, a.shot, a.interact)))
     finally:
         b.close()
         for p in (audio, xvfb):
