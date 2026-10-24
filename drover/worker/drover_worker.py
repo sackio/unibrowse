@@ -740,6 +740,13 @@ def job_serve(b, port, outdir):
             if c.get("sel"):
                 hands.click(c["sel"])
             hands.type(c["text"], sensitive=c.get("sensitive", False))
+            # ⚠️ A space went missing once on a live form ("KatamaCreek") and
+            # did not reproduce in 4 tries on a bare input. Read back what the
+            # field holds so the caller can see it rather than submit it.
+            # Never echoed for a sensitive field.
+            if c.get("sel") and not c.get("sensitive"):
+                got = b.eval(f"(e => e && 'value' in e ? e.value : null)(document.querySelector({json.dumps(c['sel'])}))")
+                return {"ok": got is None or c["text"] in got, "value": got}
             return {"ok": True}
         if op == "select":
             # ⛔ A native <select> opens a popup on click that swallows the
