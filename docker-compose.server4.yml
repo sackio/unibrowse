@@ -59,7 +59,20 @@ services:
       # capped `cpu: "1"`. Do not move a profile here expecting more CPU than
       # office gives it -- it has less. Its value is an INDEPENDENT browser host,
       # not a faster one.
-      UNIBROWSE_SIDECARS: '[{"name":"k8s","url":"http://10.152.183.194:9020"}]'
+      #
+      # ⛔ serverHint IS NOT OPTIONAL FOR THIS ONE, and omitting it is a silent
+      # failure, not an error. mcp-server puts the hint in the
+      # /__unibrowse_seed URL it hands the sidecar, and that seed page is the
+      # ONLY way a fresh browser learns where its server is. The default hint
+      # is `ws://mcp-server:9010/ws` -- a compose service name that resolves on
+      # this host's docker network and NOWHERE in a k8s pod. Without the line
+      # below, a pod browser starts, loads the extension, finds no config,
+      # falls back to ws://localhost:9010/ws inside the pod, and never
+      # registers: alive, healthy-looking, undriveable.
+      # ⚠️ THE LAN ADDRESS, not .168: this is office's :9010, which
+      # `unibrowse-fwd` forwards here. `cluster` measured a WebSocket upgrade
+      # from inside the pod to it returning 101 on 2026-10-24.
+      UNIBROWSE_SIDECARS: '[{"name":"k8s","url":"http://10.152.183.194:9020","serverHint":"ws://192.168.1.199:9010/ws"}]'
     ports: !override
       - "127.0.0.1:9010:9010"
       - "192.168.1.168:9010:9010"  # s4 LAN IP, replaces office's 192.168.1.199

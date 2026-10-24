@@ -43,3 +43,35 @@ test("a deployment-named sidecar is selectable and does NOT become the default",
     delete process.env.UNIBROWSE_SIDECARS;
   }
 });
+
+test("a sidecar off mcp-server's network carries its own serverHint", () => {
+  // ⛔ WHY THIS IS A TEST AND NOT A COMMENT. The hint ends up in the
+  // /__unibrowse_seed URL handed to the sidecar, and a browser that cannot
+  // fetch that page does not fail -- it comes up, loads the extension, and
+  // silently never registers. There is no error anywhere to notice, so the
+  // only place this can be caught is here.
+  process.env.UNIBROWSE_CHROMIUM_HOST = "http://chromium-host:9020";
+  delete process.env.UNIBROWSE_CHROMIUM_HOST_CHROME;
+  process.env.UNIBROWSE_SIDECARS =
+    '[{"name":"k8s","url":"http://10.152.183.194:9020","serverHint":"ws://192.168.1.199:9010/ws"}]';
+  try {
+    assert.equal(sidecarByName("k8s")?.serverHint, "ws://192.168.1.199:9010/ws");
+    // the on-network sidecars stay undefined, i.e. they keep the global default
+    assert.equal(sidecarByName("alpine")?.serverHint, undefined);
+  } finally {
+    delete process.env.UNIBROWSE_SIDECARS;
+  }
+});
+
+test("a malformed serverHint REFUSES rather than launching a blind browser", () => {
+  process.env.UNIBROWSE_CHROMIUM_HOST = "http://chromium-host:9020";
+  // an http:// url is the likely typo, and swapping ws->http on it yields
+  // something that is not the seed base at all
+  process.env.UNIBROWSE_SIDECARS =
+    '[{"name":"k8s","url":"http://10.152.183.194:9020","serverHint":"http://192.168.1.199:9010"}]';
+  try {
+    assert.throws(() => listSidecars(), /serverHint must be a ws/);
+  } finally {
+    delete process.env.UNIBROWSE_SIDECARS;
+  }
+});

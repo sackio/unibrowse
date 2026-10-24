@@ -8,7 +8,7 @@ import { randomUUID } from "crypto";
 import { sweepDeadProfiles } from "../utils/dead-profiles.ts";
 import { parseProxySpec, buildProxyBypassList } from "../utils/proxy-spec.ts";
 import { stageProxyAuth, validateProxyAuth, proxyAuthCollected } from "../utils/proxy-auth.ts";
-import { listSidecars, sidecarByName, sidecarFor } from "../utils/sidecars.ts";
+import { listSidecars, sidecarByName, sidecarFor, type Sidecar } from "../utils/sidecars.ts";
 import { profileNameForExtensionId } from "../utils/profile-identity.ts";
 import { fileURLToPath } from "url";
 import { LaunchIsolatedChromeTool, CloseIsolatedChromeTool, StageProxyAuthTool } from "@/types/tool-schemas";
@@ -211,9 +211,13 @@ const selfHealProfile = (profileDir: string) => {
 async function launchViaChromiumHost(
   context: any,
   params: any,
-  hostUrl: string,
+  sidecar: Sidecar,
   max_tokens: number | undefined,
 ): Promise<any> {
+  // ⚠️ The whole Sidecar, not just its url: where a browser dials back to is
+  // per-sidecar (see Sidecar.serverHint), and threading one more scalar is how
+  // the next per-sidecar field gets forgotten.
+  const hostUrl = sidecar.url;
   const validatedParams = LaunchIsolatedChromeTool.shape.arguments.parse(params);
   const preLaunchExtensionIds = new Set(
     context.listExtensions?.().map((e: any) => e.extensionId) ?? [],
@@ -227,7 +231,13 @@ async function launchViaChromiumHost(
   // sidecar chromium would default to localhost:9010 (its own container,
   // not the mcp-server). The HTTP route at /__unibrowse_seed is served by
   // the same mcp-server we want the extension to connect to.
-  const wsHint = process.env.UNIBROWSE_CHROMIUM_SERVER_HINT
+  // ⛔ PER-SIDECAR FIRST. The fallbacks are a compose service name, which is
+  // correct for a sidecar on mcp-server's own docker network and meaningless
+  // anywhere else — a sidecar off that network MUST carry its own serverHint or
+  // its browsers come up unable to find this server. Full mechanism, and the
+  // 2026-10-24 measurement, on Sidecar.serverHint in src/utils/sidecars.ts.
+  const wsHint = sidecar.serverHint
+    || process.env.UNIBROWSE_CHROMIUM_SERVER_HINT
     || "ws://mcp-server:9010/ws";
   const httpHint = wsHint.replace(/^ws/, "http").replace(/\/ws$/, "");
   // Carry a STABLE per-profile extensionId through the seed. Relaunching a
@@ -760,7 +770,7 @@ export const launchIsolatedChrome: Tool = {
       // byte-identical to before this existed.
       const chosen = sidecarByName((params as any)?.sidecar);
       if (chosen) {
-        return await launchViaChromiumHost(context, params, chosen.url, max_tokens);
+        return await launchViaChromiumHost(context, params, chosen, max_tokens);
       }
 
       // Lazy startup-time cleanup on first launch after process start.
