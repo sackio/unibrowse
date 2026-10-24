@@ -19,7 +19,9 @@ workers. This file is that driver, for one pod.
   · Input is XTEST through xdotool on the local display, with motion from
     scripts/humanmotion.py: the same model v1's realinput.py uses.
   · The profile is a fresh temp dir per run and is deleted afterwards. A worker
-    keeps nothing, so losing a node loses nothing.
+    keeps nothing, so losing a node loses nothing. The exception is
+    DROVER_PROFILE: a directory kept across runs, for an account that must stay
+    logged in (one account, one profile, one browser at a time).
 
   drover_worker.py probe --url http://host:8765/probe.html?label=x [--out f.json]
   drover_worker.py visit --url https://… --wait 20 [--shot f.png]
@@ -234,7 +236,18 @@ class Pipe:
 
 class Browser:
     def __init__(self, ident=None, extra=()):
-        self.profile = tempfile.mkdtemp(prefix="drover-")
+        self.keep = os.environ.get("DROVER_PROFILE")
+        if self.keep:
+            os.makedirs(self.keep, exist_ok=True)
+            # ⛔ Chrome's own lock, left by a killed pod, makes the next launch
+            # refuse the profile. Safe to clear only because one account's
+            # profile is driven by one browser at a time.
+            for lock in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+                try:
+                    os.unlink(os.path.join(self.keep, lock))
+                except FileNotFoundError:
+                    pass
+        self.profile = self.keep or tempfile.mkdtemp(prefix="drover-")
         self.ident = ident if ident and ident.get("ok") else None
         w, h = SCREEN.split("x")
         env = {**os.environ, "DISPLAY": DISPLAY}
@@ -425,7 +438,8 @@ class Browser:
             self.proc.wait(5)
         except subprocess.TimeoutExpired:
             os.killpg(self.proc.pid, signal.SIGKILL)   # its own session: kills only this browser
-        shutil.rmtree(self.profile, ignore_errors=True)
+        if not self.keep:
+            shutil.rmtree(self.profile, ignore_errors=True)
 
 
 # ------------------------------------------------------------------ input ---
