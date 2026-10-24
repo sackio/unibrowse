@@ -9,6 +9,7 @@ import { sweepDeadProfiles } from "../utils/dead-profiles.ts";
 import { parseProxySpec, buildProxyBypassList } from "../utils/proxy-spec.ts";
 import { stageProxyAuth, validateProxyAuth, proxyAuthCollected } from "../utils/proxy-auth.ts";
 import { listSidecars, sidecarByName, sidecarFor } from "../utils/sidecars.ts";
+import { profileNameForExtensionId } from "../utils/profile-identity.ts";
 import { fileURLToPath } from "url";
 import { LaunchIsolatedChromeTool, CloseIsolatedChromeTool, StageProxyAuthTool } from "@/types/tool-schemas";
 import { textResponse, errorResponse, jsonResponse } from "@/utils/response-helpers";
@@ -1091,9 +1092,35 @@ export const closeIsolatedChrome: Tool = {
         return errorResponse(`chromium-host /processes returned ${listResp.status}`, false, undefined, max_tokens);
       }
       const { processes } = (await listResp.json()) as any;
-      const match = (processes || []).find((p: any) =>
+      let match = (processes || []).find((p: any) =>
         (extensionId && p.extensionId === extensionId) ||
         (profileName && p.profileName === profileName));
+      // ⛔ FALL BACK TO THE PROFILE NAME — THE THIRD PLACE THIS WAS NEEDED, and
+      // the one that was missed. sidecarFor and displayFor both learned it on
+      // 2026-10-23; displayFor's own comment says the close path "has to" match
+      // this way, and the close path did not. A sidecar learns a pid's
+      // extensionId only when mcp-server POSTs /processes/<pid>/extension, which
+      // happens only if the extension registers while the launch call is still
+      // waiting — so a browser that registers late keeps `extensionId: null` for
+      // the rest of its life and this lookup can never find it.
+      //
+      // MEASURED 2026-10-23 21:0x, on the very run that was testing a different
+      // fix: profile `fieldscroll-…` came up with extensionId null, the close
+      // was refused with "No tracked isolated chromium matches extensionId=…"
+      // while listing that same profile as tracked, and the Chrome plus its Xvfb
+      // display :94 leaked until they were reaped by pid.
+      //
+      // ⚠️ Fallback only, and only onto a process with NO extensionId of its own:
+      // one reporting a different id is a different browser that happens to
+      // share a profile name, and killing it would be a worse failure than the
+      // one being fixed.
+      if (!match && extensionId) {
+        const byProfile = profileNameForExtensionId(extensionId);
+        if (byProfile) {
+          match = (processes || []).find(
+            (p: any) => p.profileName === byProfile && !p.extensionId);
+        }
+      }
       if (!match) {
         return errorResponse(
           `No tracked isolated chromium matches ${extensionId ? `extensionId=${extensionId}` : `profileName=${profileName}`}. ` +
