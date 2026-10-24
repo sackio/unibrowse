@@ -1,0 +1,80 @@
+# Drover on barn's shared GPU: pilot Job. Ben approved one RTX 3070 on gpu1
+# for Drover (#models 2026-10-24 12:18, via `models`); `models` owns the
+# ResourceClaim `drover-gpu` in this namespace and every pod that names it
+# shares the card.
+#
+# The Job runs the bench probe and the rebrowser detector under three WebGL
+# paths and prints one summary line each, so the winner is read from the logs:
+#   swiftshader  control, the CPU-only path that detectors flag
+#   egl          ANGLE on the NVIDIA driver through EGL
+#   vulkan       ANGLE on the NVIDIA Vulkan driver
+#
+# Sizing per `cluster` (DM 2026-10-24): idle-batch priority (never evicts
+# anyone, evictable by anything), request == limit, sized on measured peak
+# (455-522 MB on live sites, office docker), and leave the node's reserve alone.
+# ⛔ seccomp Unconfined keeps Chrome's own sandbox working; --no-sandbox would
+# remove it (same choice as v1's docker-compose).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: drover
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: drover-gpu-test
+  namespace: drover
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      priorityClassName: idle-batch
+      nodeSelector: {kubernetes.io/hostname: gpu1}
+      resourceClaims:
+        - name: gpu
+          resourceClaimName: drover-gpu
+      securityContext:
+        seccompProfile: {type: Unconfined}
+      containers:
+        - name: worker
+          image: 192.168.1.207:5050/drover/worker:2026-10-24c
+          env:
+            - {name: NVIDIA_DRIVER_CAPABILITIES, value: "graphics,utility"}
+            - {name: DROVER_IDENTITY, value: "0"}
+          command: ["sh", "-c"]
+          args:
+            - |
+              run() {
+                DROVER_CHROME_ARGS="$2" timeout 200 python3 /opt/drover/worker/drover_worker.py probe \
+                  --url "http://127.0.0.1:8765/probe.html?label=gpu1-$1" --out /tmp/$1.json >/dev/null 2>/tmp/$1.err
+                DROVER_CHROME_ARGS="$2" timeout 200 python3 /opt/drover/worker/drover_worker.py visit \
+                  --url https://bot-detector.rebrowser.net/ --wait 20 >/tmp/$1-rb.json 2>>/tmp/$1.err
+                python3 - "$1" <<'PY'
+              import json, re, sys
+              n = sys.argv[1]
+              try:
+                  d = json.load(open(f"/tmp/{n}.json"))
+                  w, drv = d.get("webgl"), d.get("driver", {})
+              except Exception as e:
+                  w, drv = {"err": str(e)}, {}
+              try:
+                  t = json.load(open(f"/tmp/{n}-rb.json"))["text"]
+                  flags = re.findall(r"(?:🔴|🟡) (\w+)", t) or "all green"
+              except Exception as e:
+                  flags = "visit failed: " + open(f"/tmp/{n}.err").read()[-200:]
+              print("RESULT", n, json.dumps({"webgl": w, "rebrowser": flags,
+                    "peakMb": drv.get("cgroupPeakMb"), "jobSeconds": drv.get("jobSeconds")}), flush=True)
+              PY
+              }
+              # The probe is served from inside the pod: no office dependency.
+              python3 /opt/drover/bench/collect.py --port 8765 --dir /tmp/bench & sleep 1
+              nvidia-smi -L 2>&1 | head -2 || true
+              run swiftshader "--use-angle=swiftshader --enable-unsafe-swiftshader"
+              run egl "--use-gl=angle --use-angle=gl-egl --ignore-gpu-blocklist"
+              run vulkan "--use-angle=vulkan --enable-features=Vulkan --ignore-gpu-blocklist"
+          resources:
+            requests: {cpu: "1", memory: 1Gi}
+            limits: {cpu: "1", memory: 1Gi}
+            claims: [{name: gpu}]

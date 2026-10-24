@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive TZ=America/New_York
 RUN apt-get update && apt-get install -y --no-install-recommends \
       tzdata ca-certificates curl gnupg \
       xvfb x11-utils xdotool python3 \
-      pulseaudio \
+      pulseaudio libegl1 libvulkan1 \
       fonts-liberation fonts-noto-core fonts-noto-color-emoji fonts-dejavu-core \
     && curl -fsSL https://dl.google.com/linux/linux_signing_key.pub -o /usr/share/keyrings/google-chrome.asc \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.asc] https://dl.google.com/linux/chrome/deb/ stable main" \
@@ -25,6 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -m -u 1000 drover
 COPY scripts/humanmotion.py /opt/drover/scripts/humanmotion.py
 COPY drover/worker/drover_worker.py /opt/drover/worker/drover_worker.py
+# The bench ships in the image so a pod can score itself against a probe it
+# serves on localhost, with no dependency on a collector somewhere else.
+COPY drover/bench/probe.html drover/bench/collect.py drover/bench/panel.py /opt/drover/bench/
 USER drover
 WORKDIR /home/drover
 ENTRYPOINT ["python3", "/opt/drover/worker/drover_worker.py"]

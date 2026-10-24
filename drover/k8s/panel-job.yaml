@@ -1,0 +1,53 @@
+# Drover outcome panel as a k8s swarm: an Indexed Job, each pod one browser at
+# a time over its own shard of the site list (panel.py --local; the pod index
+# picks the shard). Results come back as "ROW {...}" lines in the pod logs.
+#
+#   kubectl -n drover create configmap drover-sites --from-file=sites.json=drover/bench/results/sites.json
+#   kubectl -n drover create secret generic drover-proxy --from-literal=DROVER_PROXY=<vpn-proxy lease URL>
+#   kubectl apply -f drover/k8s/panel-job.yaml
+#   kubectl -n drover logs -l job-name=drover-panel --prefix | grep '^.*ROW '
+#
+# ⛔ The site list is Browser Use's and they ask it not be published in
+# plaintext: it lives in a ConfigMap inside the cluster, never in the image or
+# the repo.
+# Sizing (`cluster`, DM 2026-10-24): idle-batch, request == limit, sized on the
+# measured live-site peak (455-522 MB cgroup), leave each node's 20% reserve.
+# server7 was the only untainted node with room under that rule (free-capacity
+# 2026-10-24 12:31); workers are pinned there for this run only.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: drover-panel
+  namespace: drover
+spec:
+  completionMode: Indexed
+  completions: 4
+  parallelism: 4
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      priorityClassName: idle-batch
+      nodeSelector: {kubernetes.io/hostname: server7}
+      securityContext:
+        seccompProfile: {type: Unconfined}
+      volumes:
+        - {name: sites, configMap: {name: drover-sites}}
+        - {name: out, emptyDir: {}}
+        - {name: shm, emptyDir: {medium: Memory, sizeLimit: 512Mi}}
+      containers:
+        - name: worker
+          image: 192.168.1.207:5050/drover/worker:2026-10-24c
+          envFrom: [{secretRef: {name: drover-proxy}}]
+          env:
+            - {name: DROVER_SHARDS, value: "4"}
+          command: ["python3", "/opt/drover/bench/panel.py", "--local", "--sites", "/sites/sites.json",
+                    "--runs", "2", "--wait", "20", "--label", "k8s-vpn-us", "--outroot", "/out"]
+          volumeMounts:
+            - {name: sites, mountPath: /sites}
+            - {name: out, mountPath: /out}
+            - {name: shm, mountPath: /dev/shm}
+          resources:
+            requests: {cpu: "1", memory: 1Gi}
+            limits: {cpu: "1", memory: 1Gi}

@@ -53,12 +53,17 @@ def visit(site, a, n):
     out = os.path.join(a.outdir, "shots")
     os.makedirs(out, exist_ok=True)
     slug = re.sub(r"[^a-z0-9]+", "-", site["url"].lower())[8:60] + f"-{n}"
-    cmd = ["docker", "run", "--rm", "--user", "1000:1000", "--shm-size=1g",
-           "--security-opt", "seccomp=unconfined", "-v", f"{out}:/out"]
-    if a.proxy_env:
-        cmd += ["--env-file", a.proxy_env]
-    cmd += [a.image, "visit", "--url", site["url"], "--wait", str(a.wait), "--interact",
-            "--shot", f"/out/{slug}.png"]
+    if a.local:
+        # Inside a worker pod: run the worker directly, one browser at a time.
+        cmd = ["python3", a.worker, "visit", "--url", site["url"], "--wait", str(a.wait), "--interact",
+               "--shot", os.path.join(out, slug + ".png")]
+    else:
+        cmd = ["docker", "run", "--rm", "--user", "1000:1000", "--shm-size=1g",
+               "--security-opt", "seccomp=unconfined", "-v", f"{out}:/out"]
+        if a.proxy_env:
+            cmd += ["--env-file", a.proxy_env]
+        cmd += [a.image, "visit", "--url", site["url"], "--wait", str(a.wait), "--interact",
+                "--shot", f"/out/{slug}.png"]
     t0 = time.time()
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=a.wait + 150)
@@ -83,11 +88,21 @@ def main():
     ap.add_argument("--image", default="drover-worker:dev")
     ap.add_argument("--proxy-env")
     ap.add_argument("--label", default=time.strftime("%Y%m%d-%H%M"))
+    ap.add_argument("--local", action="store_true", help="run the worker in-process (inside a worker pod)")
+    ap.add_argument("--worker", default="/opt/drover/worker/drover_worker.py")
+    ap.add_argument("--shard", default=os.environ.get("JOB_COMPLETION_INDEX"),
+                    help="i/n: take every n-th cell starting at i (k8s Indexed Job sets the index)")
+    ap.add_argument("--shards", type=int, default=int(os.environ.get("DROVER_SHARDS", "1")))
+    ap.add_argument("--outroot", default=os.path.join(HERE, "results"))
     a = ap.parse_args()
-    a.outdir = os.path.join(HERE, "results", "panel-" + a.label)
+    a.outdir = os.path.join(a.outroot, "panel-" + a.label)
     os.makedirs(a.outdir, exist_ok=True)
     sites = json.load(open(a.sites))
     cells = [(s, n) for s in sites for n in range(1, a.runs + 1)]
+    if a.shard is not None and a.shards > 1:
+        # Shard BEFORE shuffling, by a fixed order, so the pods split the set
+        # exactly with no overlap; each pod then shuffles its own share.
+        cells = cells[int(a.shard)::a.shards]
     random.shuffle(cells)
     log = open(os.path.join(a.outdir, "runs.jsonl"), "a")
     rows = []
@@ -96,6 +111,8 @@ def main():
             rows.append(row)
             log.write(json.dumps(row) + "\n")
             log.flush()
+            if a.local:
+                print("ROW " + json.dumps(row), flush=True)   # pod logs are the result channel
             print(f"{row['verdict']:8} {row['vendor'] or '-':14} {row['site'][:50]:50} {row['why'][:50]}", flush=True)
     # Summary by vendor. A site counts as passed only if EVERY run passed.
     by_site = collections.defaultdict(list)
