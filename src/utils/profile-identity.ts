@@ -17,15 +17,39 @@
  */
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 
-/** Candidate roots, in the order the server should prefer them. */
-const ROOTS = [
-  "/app/.chrome-profiles",
-  path.resolve(__dirname, "..", "..", ".chrome-profiles"),
-];
+/**
+ * Candidate roots, in the order the server should prefer them.
+ *
+ * ⛔ COMPUTED LAZILY, AND NOT FROM `__dirname`. The build emits ESM (tsup
+ * --format esm, and /app/package.json is "type": "module"), where `__dirname`
+ * does not exist. A `const` at module scope referencing it threw
+ * `ReferenceError: __dirname is not defined in ES module scope` on IMPORT, so
+ * mcp-server crash-looped on startup — it took the whole server down, not just
+ * this feature, because the error fires before anything can catch it.
+ * ⇒ Derive the directory from import.meta.url, inside a function, and tolerate
+ * failure: a path we cannot compute must degrade to "no registry", never throw.
+ */
+function roots(): string[] {
+  let here: string;
+  try {
+    here = path.dirname(fileURLToPath(import.meta.url));
+  } catch {
+    here = process.cwd();
+  }
+  return [
+    "/app/.chrome-profiles",
+    path.resolve(here, "..", "..", ".chrome-profiles"),
+  ];
+}
 
 export function profilesRoot(): string | null {
-  return ROOTS.find((r) => fs.existsSync(r)) ?? null;
+  try {
+    return roots().find((r) => fs.existsSync(r)) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function identitiesDir(): string | null {
