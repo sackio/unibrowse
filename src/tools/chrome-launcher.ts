@@ -423,14 +423,34 @@ async function launchViaChromiumHost(
         break;
       }
     }
-    const newcomers = current.filter((e: any) => !preLaunchExtensionIds.has(e.extensionId));
-    if (newcomers.length > 0 && Date.now() - startedAt > 3_000) {
-      // Pick the most-recently-registered newcomer (max registeredAt) rather
-      // than the last in iteration order — guarantees the actual freshly-
-      // spawned chromium wins over a coincidental concurrent reconnect.
-      newcomers.sort((a: any, b: any) => (b.registeredAt ?? 0) - (a.registeredAt ?? 0));
-      spawnedExtensionId = newcomers[0].extensionId;
-      break;
+    // ⛔⛔ ONLY WHEN WE DO NOT KNOW OUR OWN ID. A "newcomer" is any extension that
+    // was not connected when THIS launch began, and that includes SOMEBODY
+    // ELSE'S BROWSER registering while we wait. The sort below was written to
+    // beat "a coincidental concurrent reconnect" and cannot: picking the most
+    // recent newcomer picks the other browser just as confidently.
+    //
+    // MEASURED 2026-10-23 21:16, reproduced deliberately after `alpaca` reported
+    // it: the captcha lane relaunches its profile on every VPN rotation, one of
+    // those registrations landed inside a brand-new profile's launch window, and
+    // that launch returned the LANE's extensionId. mcp-server then POSTed the id
+    // onto OUR pid (below), so the sidecar listed TWO live browsers under one
+    // extensionId and every call addressed to it reached whichever answered
+    // first. That is how alpaca's VPN lane egressed on the house IP with
+    // correct code, and how a run of 30s "WebSocket response timeout" errors
+    // appeared as an mcp-server capacity problem.
+    //
+    // ⇒ When `stableExtId` is known it is the ONLY id that can be ours — it was
+    //   seeded into this browser's own bootstrap URL. Timing out and reporting
+    //   `registered: false` with `expectedExtensionId` is strictly better than
+    //   adopting a stranger: the caller can retry, and nothing it does in the
+    //   meantime lands in another seat's browser.
+    if (!stableExtId) {
+      const newcomers = current.filter((e: any) => !preLaunchExtensionIds.has(e.extensionId));
+      if (newcomers.length > 0 && Date.now() - startedAt > 3_000) {
+        newcomers.sort((a: any, b: any) => (b.registeredAt ?? 0) - (a.registeredAt ?? 0));
+        spawnedExtensionId = newcomers[0].extensionId;
+        break;
+      }
     }
     await new Promise((r) => setTimeout(r, 200));
   }
