@@ -14,7 +14,7 @@ O=/mnt/nas/data/code/business/outreach
 Q=$O/captcha-svc-ordered.tsv; R=$O/captcha-svc-results-ord.tsv
 K="kubectl --kubeconfig=/mnt/nas/data/code/server_admin/k8s-credentials/clusters/barn-cluster.yaml -n drover"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; umask 077
-python3 "$HERE/lane.py" pick --queue "$Q" --results "$R" --limit "$N" > "$W/rows.tsv" || exit 1
+python3 "$HERE/lane.py" pick --queue "$Q" --results "$R" --limit "$N" ${RETRY:+--retry} > "$W/rows.tsv" || exit 1
 [ "$(wc -l < "$W/rows.tsv")" -le 1 ] && { echo "nothing to run"; exit 0; }
 python3 "$HERE/extract_config.py" > "$W/config.json" || exit 1
 ssh -p 4999 ben@192.168.1.42 'LEASE_HOLDER=thread-unibrowse-2 vpn-proxy lease us 90' > "$W/url" 2> "$W/err" || { echo "no lease"; cat "$W/err" | tail -1; exit 1; }

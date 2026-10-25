@@ -35,9 +35,29 @@ def done_keys(results):
         return set()
 
 
+def retryable(results):
+    """Drover rows that stopped before the submit press, run once only: a
+    `blocked` note without the `kind|button|outcome` a press writes, or an
+    `error` (pre-press by construction, see run()). v1 rows (notes not
+    starting "drover ") are never retried: some bought a token whose callback
+    may have sent. Ben, ask unibrowse/a4o, 2026-10-25."""
+    try:
+        rows = read_tsv(results)
+    except FileNotFoundError:
+        return set()
+    seen = {}
+    for r in rows:
+        seen.setdefault(r["key"], []).append(r)
+    return {k for k, rs in seen.items() if len(rs) == 1 and rs[0]["note"].startswith("drover ")
+            and (rs[0]["status"] == "error" or (rs[0]["status"] == "blocked" and "|" not in rs[0]["note"]))}
+
+
 def pick(a):
     done = done_keys(a.results)
     rows = [r for r in read_tsv(a.queue) if r["key"] not in done]
+    if a.retry:
+        again = retryable(a.results)
+        rows = [r for r in read_tsv(a.queue) if r["key"] in again]
     if a.keys:
         want = set(a.keys.split(","))
         rows = [r for r in read_tsv(a.queue) if r["key"] in want]   # explicit keys: the caller's call
@@ -77,7 +97,7 @@ def run(a):
 
 
 def harvest(a):
-    done = done_keys(a.results)
+    done = done_keys(a.results) - retryable(a.results)
     new = []
     for line in sys.stdin:
         line = line.split("ROW ", 1)[-1] if "ROW " in line else ""
@@ -100,6 +120,7 @@ def main():
     sp = ap.add_subparsers(dest="cmd", required=True)
     p = sp.add_parser("pick"); p.add_argument("--queue", required=True); p.add_argument("--results", required=True)
     p.add_argument("--limit", type=int); p.add_argument("--keys", help="comma-separated keys, ignoring results (dry timing runs)")
+    p.add_argument("--retry", action="store_true", help="the once-only retry set (see retryable)")
     p = sp.add_parser("run"); p.add_argument("--rows", required=True); p.add_argument("--config", required=True)
     p.add_argument("--dry", action="store_true"); p.add_argument("--row-wall", type=int, default=420)
     p.add_argument("--worker", default="/opt/drover/worker/drover_worker.py")
