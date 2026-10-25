@@ -675,8 +675,25 @@ def css_path(b, sel, text, nth=0):
         return re.test(t.replace(/\\s+/g,' ').trim());
       })[nth];
       if(!hit) return null;
+      // Which field the match came from, and a short label. A button can match
+      // on aria-label while its textContent is empty, so "it matched" alone
+      // does not say the right control was found -- and the control in
+      // question may be a submit.
+      const txt=(hit.innerText||'').replace(/\\s+/g,' ').trim();
+      const via = txt && re.test(txt) ? 'innerText'
+                : (hit.value && re.test(hit.value)) ? 'value' : 'aria-label';
+      // ⛔ DO NOT ANCHOR ON A GENERATED ID. Measured on the Console login page:
+      // the path anchored on "#_R_qdmkqav5tpfllpl4plb_", a React id that
+      // changes per render, and between the eval that resolved it and the next
+      // eval that used it the id had already churned -- so the selector
+      // silently matched something else and the read came back "". A click
+      // would have aimed at whatever that was. Framework ids are rejected by
+      // shape; a hand-written one is still worth anchoring on because it
+      // survives sibling reordering.
+      const generated=id=>/^[_:]|^(radix|headlessui|mui|react-aria)-|^[A-Za-z]?_R_/.test(id)
+                          || id.length>24;
       const part=e=>{
-        if(e.id && document.querySelectorAll('#'+CSS.escape(e.id)).length===1)
+        if(e.id && !generated(e.id) && document.querySelectorAll('#'+CSS.escape(e.id)).length===1)
           return '#'+CSS.escape(e.id);
         const p=e.parentElement;
         if(!p) return e.tagName.toLowerCase();
@@ -688,9 +705,17 @@ def css_path(b, sel, text, nth=0):
         const s=part(e); out.unshift(s);
         if(s.startsWith('#')) break;
       }
-      return out.join(' > ');
+      return JSON.stringify({path: out.join(' > '), via: via, tag: hit.tagName,
+        label: (hit.getAttribute('aria-label')||txt||hit.value||'').slice(0,60),
+        type: hit.getAttribute('type')||null, disabled: !!hit.disabled});
     })()""" % (json.dumps(sel), json.dumps(text), nth)
-    return b.eval(js)
+    # ⚠️ The path is valid only for THIS page state. It can anchor on a
+    # framework-generated id -- measured on the Console login page:
+    # "#_R_qdmkqav5tpfllpl4plb_ > button:nth-child(1)", a React id that changes
+    # per render. So resolve immediately before acting and never cache one
+    # across a navigation.
+    raw = b.eval(js)
+    return json.loads(raw) if raw else None
 
 
 def job_probe(b, url, out):
@@ -882,9 +907,10 @@ def job_session(b, url, steps, out, shot):
         button -- CSS cannot express it, and v1 found these with an innerText
         regex for the same reason."""
         if not st.get("text"):
-            return st["sel"]
-        return css_path(b, st.get("sel", "button,a,input,[role=button]"),
-                        st["text"], int(st.get("nth", 0)))
+            return st["sel"], None
+        m = css_path(b, st.get("sel", "button,a,input,[role=button]"),
+                     st["text"], int(st.get("nth", 0)))
+        return (m["path"] if m else None), m
 
     def note(i, st, status, extra=None):
         row = {"i": i, "do": st.get("do"), "status": status}
@@ -904,7 +930,7 @@ def job_session(b, url, steps, out, shot):
                 b.navigate(st["url"])
                 note(i, st, "ok", {"url": st["url"]})
             elif do == "click":
-                sel = target(st)
+                sel, m = target(st)
                 if sel is None:
                     note(i, st, "no-match", {"text": st.get("text")})
                     break
@@ -919,7 +945,7 @@ def job_session(b, url, steps, out, shot):
                 # warned the outreach lane about a false negative that does not
                 # exist. The absence of an exception IS the success signal.
                 h.click(sel)
-                note(i, st, "ok", {"path": sel})
+                note(i, st, "ok", {"path": sel, "matched": m})
             elif do == "type":
                 # ⛔ A credential passed on the command line is world-readable
                 # through `ps` for every user on the box, which is why
@@ -941,7 +967,7 @@ def job_session(b, url, steps, out, shot):
                 # ⚠️ textContent, never innerText: innerText needs layout and
                 # reads 0 on a fully rendered page in a headless window
                 # (measured 2026-10-25), which looks exactly like a blank page.
-                sel = target(st) if st.get("text") else st.get("sel", "body")
+                sel = target(st)[0] if st.get("text") else st.get("sel", "body")
                 v = None if sel is None else b.eval(
                     "(()=>{const e=document.querySelector(%s);"
                     "return e?e.textContent.replace(/\\s+/g,' ').trim():null})()"
@@ -953,7 +979,7 @@ def job_session(b, url, steps, out, shot):
                 # Asserts the page is where the previous step should have put
                 # it. `value` checks a field actually holds what we typed --
                 # the check whose absence hid a truncated address for a day.
-                sel = target(st) if st.get("text") else st["sel"]
+                sel, m = target(st) if st.get("text") else (st["sel"], None)
                 got = None if sel is None else b.eval(
                     "(()=>{const e=document.querySelector(%s);if(!e)return null;"
                     "return e.value!==undefined&&e.value!==null?e.value:"
@@ -969,8 +995,18 @@ def job_session(b, url, steps, out, shot):
                     ok = bool(got) and want in got
                 else:
                     ok = got == want
-                if not note(i, st, "ok" if ok else "failed",
-                            {"got": (got[:120] if isinstance(got, str) else got)}):
+                # ⚠️ REPORT WHAT MATCHED, not just what it said. A text-matched
+                # control can resolve correctly and still read textContent ""
+                # -- the match may have come from value or aria-label while the
+                # label lives in a child node -- and an `expect` with no
+                # `value` then passes on an empty string, which looks like it
+                # verified something and did not. The path is the evidence, and
+                # for a submit button it is the thing worth seeing BEFORE a run
+                # that presses it.
+                extra = {"got": (got[:120] if isinstance(got, str) else got)}
+                if st.get("text"):
+                    extra["path"], extra["matched"] = sel, m
+                if not note(i, st, "ok" if ok else "failed", extra):
                     break
             elif do == "waitfor":
                 # ⛔ A FIXED SLEEP IS THE WRONG TOOL ON THESE PAGES. claude.ai
@@ -1013,7 +1049,7 @@ def job_session(b, url, steps, out, shot):
                 # outright), so treat `focus` as useful for firing a page's
                 # focus handlers, NOT as a substitute for clicking before you
                 # type.
-                sel = target(st)
+                sel, m = target(st)
                 if sel is None:
                     note(i, st, "no-match", {"text": st.get("text")})
                     break

@@ -88,6 +88,16 @@ def run_session(profile, steps, timeout=420):
         # carry `session`, so the mount is now a no-op against a matching tag
         # and exists only to pick up repo edits made since the last build.
         # DROVER_NO_MOUNT=1 turns it off.
+        # ⛔ FORWARD ONLY THE VARS THE STEPS NAME, AND BY NAME ONLY. docker run
+        # does not inherit the host environment, so a step with {"env": "X"}
+        # reports missing-field in the container while X is plainly set on the
+        # host -- measured, and it reads like a bug in the step. `-e NAME` with
+        # no =value takes the value from the host env without it ever appearing
+        # in the command line, which `ps` shows to every user on the box.
+        for st in steps:
+            for key in ("env", "env_value"):
+                if st.get(key):
+                    cmd += ["-e", st[key]]
         worker = pathlib.Path(__file__).resolve().parent.parent / "worker" / "drover_worker.py"
         if os.environ.get("DROVER_NO_MOUNT") != "1" and worker.is_file():
             cmd += ["-v", f"{worker}:/opt/drover/worker/drover_worker.py:ro"]
