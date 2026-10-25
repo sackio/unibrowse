@@ -28,7 +28,7 @@ workers. This file is that driver, for one pod.
 
 Stdlib only. Python 3.10+.
 """
-import argparse, base64, json, math, os, random, shutil, signal, subprocess, sys, tempfile, threading, time
+import argparse, base64, json, math, os, pathlib, random, shutil, signal, subprocess, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 for p in (os.path.join(HERE, "..", "..", "scripts"), "/opt/drover/scripts"):
@@ -1003,6 +1003,123 @@ SNAPSHOT = r"""(() => {
 })()"""
 
 
+def job_session(b, url, steps, out, shot):
+    """Drive a PERSISTENT profile through a declared sequence of steps.
+
+    Ben, #unibrowse 2026-10-25: "work with drover to get many of our automated
+    stuff on there, alpaca, Claude etc". Those automations are the opposite
+    shape to the outreach swarm -- one account, one browser, serially, and the
+    whole value is the session that SURVIVES the run. Every other job in this
+    file throws its profile away on purpose.
+
+    ⛔ REFUSES WITHOUT DROVER_PROFILE. A session job on a temp profile logs in,
+    does the work, and then deletes the login. That reads as success and is the
+    expensive failure: these accounts rate-limit the login itself, so a lost
+    session costs a real attempt, not just a retry. Mint-and-lose is worse than
+    not running.
+
+    Steps are DATA, so porting an automation is a JSON file rather than an edit
+    here -- which also leaves job_contact's shared Hands/reach path untouched.
+
+      [{"do": "nav",    "url": "https://platform.claude.com/login"},
+       {"do": "click",  "sel": "input[type=email]"},
+       {"do": "type",   "env": "DROVER_LOGIN_EMAIL"},
+       {"do": "expect", "sel": "input[type=email]", "value": "a@b.c"},
+       {"do": "read",   "sel": "body", "as": "page"}]
+
+    ⭐ `expect` is the step that matters and the reason this is not just a
+    macro runner. v1's Console login clicked a button and never checked that
+    the click landed; it came back to an unchanged page with no error, and the
+    run was scored as a site refusal for three days (measured 2026-10-25). A
+    step that asserts what it just did turns that into a named failure.
+    """
+    if not b.keep:
+        raise SystemExit("session: refusing to run without DROVER_PROFILE -- "
+                         "a login driven into a temp profile is discarded on exit")
+    h = Hands(b)
+    h.calibrate()
+    log, reads = [], {}
+
+    def note(i, st, status, extra=None):
+        row = {"i": i, "do": st.get("do"), "status": status}
+        if st.get("sel"):
+            row["sel"] = st["sel"]
+        if extra:
+            row.update(extra)
+        log.append(row)
+        return status == "ok"
+
+    if url and url != "about:blank":
+        b.navigate(url)
+    for i, st in enumerate(steps):
+        do = st.get("do")
+        try:
+            if do == "nav":
+                b.navigate(st["url"])
+                note(i, st, "ok", {"url": st["url"]})
+            elif do == "click":
+                note(i, st, "ok" if h.click(st["sel"]) else "unreachable")
+            elif do == "type":
+                # ⛔ A credential passed on the command line is world-readable
+                # through `ps` for every user on the box, which is why
+                # realinput.py grew --text-stdin. Here the value comes from the
+                # environment and never enters argv, the steps file, or the log.
+                secret = bool(st.get("env")) or bool(st.get("sensitive"))
+                text = os.environ[st["env"]] if st.get("env") else st["text"]
+                h.type(text, sensitive=secret)
+                note(i, st, "ok", {"chars": len(text), "value": "***" if secret else text})
+            elif do == "read":
+                # ⚠️ textContent, never innerText: innerText needs layout and
+                # reads 0 on a fully rendered page in a headless window
+                # (measured 2026-10-25), which looks exactly like a blank page.
+                v = b.eval("(()=>{const e=document.querySelector(%s);"
+                           "return e?e.textContent.replace(/\\s+/g,' ').trim():null})()"
+                           % json.dumps(st.get("sel", "body")))
+                reads[st.get("as", "read%d" % i)] = v
+                note(i, st, "ok" if v is not None else "missing",
+                     {"chars": len(v) if v else 0})
+            elif do == "expect":
+                # Asserts the page is where the previous step should have put
+                # it. `value` checks a field actually holds what we typed --
+                # the check whose absence hid a truncated address for a day.
+                got = b.eval("(()=>{const e=document.querySelector(%s);if(!e)return null;"
+                             "return e.value!==undefined&&e.value!==null?e.value:"
+                             "e.textContent.replace(/\\s+/g,' ').trim()})()"
+                             % json.dumps(st["sel"]))
+                want = st.get("value")
+                if want is None:
+                    ok = got is not None
+                elif st.get("contains"):
+                    ok = bool(got) and want in got
+                else:
+                    ok = got == want
+                if not note(i, st, "ok" if ok else "failed",
+                            {"got": (got[:120] if isinstance(got, str) else got)}):
+                    break
+            elif do == "wait":
+                time.sleep(float(st.get("seconds", 1)))
+                note(i, st, "ok")
+            elif do == "shot":
+                b.shot(st["path"])
+                note(i, st, "ok")
+            else:
+                note(i, st, "unknown-step")
+                break
+        except KeyError as e:
+            note(i, st, "missing-field", {"field": str(e)})
+            break
+        except Exception as e:
+            note(i, st, "error", {"error": str(e)[:160]})
+            break
+    if shot:
+        b.shot(shot)
+    r = {"profile": b.keep, "steps": log, "reads": reads,
+         "ok": bool(log) and all(x["status"] == "ok" for x in log)}
+    if out:
+        pathlib.Path(out).write_text(json.dumps(r, indent=1))
+    return r
+
+
 def job_serve(b, port, outdir):
     """A held session for multi-step work (signups, forms): one browser, the
     same human hands, driven a step at a time over HTTP on 127.0.0.1. POST a
@@ -1122,7 +1239,8 @@ def job_serve(b, port, outdir):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("job", choices=["probe", "visit", "serve", "contact"])
+    ap.add_argument("job", choices=["probe", "visit", "serve", "contact", "session"])
+    ap.add_argument("--steps", help="session: JSON file of steps, or inline JSON array")
     ap.add_argument("--row", help="contact: the queue row as JSON {url,address,first,last,key,town}")
     ap.add_argument("--config", help="contact: outreach/contact-config.json")
     ap.add_argument("--dry", action="store_true", help="contact: fill but do not submit")
@@ -1146,6 +1264,12 @@ def main():
         from urllib.parse import urlsplit
         u = urlsplit(a.url)
         extra.append(f"--unsafely-treat-insecure-origin-as-secure={u.scheme}://{u.netloc}")
+    # ⛔ Refuse BEFORE launching a browser. The in-job guard catches direct
+    # callers, but reaching it costs a Chrome start and, on a login flow, the
+    # caller has usually already fetched a single-use code by then.
+    if a.job == "session" and not os.environ.get("DROVER_PROFILE"):
+        raise SystemExit("session: refusing to run without DROVER_PROFILE -- "
+                         "a login driven into a temp profile is discarded on exit")
     b = Browser(ident, extra)
     try:
         if a.job == "probe":
@@ -1159,6 +1283,11 @@ def main():
                               "jobSeconds": d.get("jobSeconds")}))
         elif a.job == "contact":
             print(json.dumps(job_contact(b, json.loads(a.row), json.load(open(a.config)), a.dry, a.shot)))
+        elif a.job == "session":
+            raw = a.steps or "[]"
+            if os.path.exists(raw):
+                raw = open(raw).read()
+            print(json.dumps(job_session(b, a.url, json.loads(raw), a.out, a.shot)))
         elif a.job == "serve":
             job_serve(b, a.port, a.out or tempfile.gettempdir())
         else:
