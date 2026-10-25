@@ -1037,7 +1037,37 @@ def job_session(b, url, steps, out, shot):
         raise SystemExit("session: refusing to run without DROVER_PROFILE -- "
                          "a login driven into a temp profile is discarded on exit")
     h = Hands(b)
-    h.calibrate()
+    # ⛔ X INPUT FOCUS, NOT JUST WINDOW ACTIVATION. xdotool type delivers to
+    # whichever window holds X input focus. Under Xvfb there is no window
+    # manager to grant it, windowactivate quietly fails (raise_window ignores
+    # that by design), and the keystrokes land on the root window. Measured
+    # 2026-10-25: focus and type both reported ok on every step and the field
+    # stayed empty -- the silent success `expect` exists to catch.
+    win = b.raise_window()
+    if win:
+        try:
+            xdo("windowfocus", "--sync", win)
+        except RuntimeError:
+            pass
+    # ⛔ AND PARK THE POINTER INSIDE THE WINDOW. With no WM, X keeps the default
+    # PointerRoot focus, so keystrokes are delivered to the window UNDER THE
+    # POINTER rather than to whatever holds a focus a WM would have granted.
+    # The outreach lane only types successfully because calibrate() walks the
+    # pointer across the page first, as a side effect nothing names. A flow
+    # that focuses a field and types -- no pointer aiming anywhere -- leaves it
+    # wherever Chrome started it and every keystroke is swallowed, with
+    # xdotool reporting success. Measured 2026-10-25: focus ok, type ok, field
+    # empty. Screen centre is inside a maximised window on any geometry, and
+    # needs none of the dx/dy calibration that aiming does.
+    try:
+        sw, sh = (int(v) for v in SCREEN.split("x")[:2])
+        xdo("mousemove", str(sw // 2), str(sh // 2))
+    except (RuntimeError, ValueError):
+        pass
+    # Pointer calibration is for AIMING only, and it can fail outright on a
+    # page that swallows mousemoves. A flow that only focuses and types must
+    # not die for that, so it runs on the first click step instead of up front.
+    calibrated = [False]
     log, reads = [], {}
 
     def note(i, st, status, extra=None):
@@ -1058,14 +1088,25 @@ def job_session(b, url, steps, out, shot):
                 b.navigate(st["url"])
                 note(i, st, "ok", {"url": st["url"]})
             elif do == "click":
+                if not calibrated[0]:
+                    h.calibrate()
+                    calibrated[0] = True
                 note(i, st, "ok" if h.click(st["sel"]) else "unreachable")
             elif do == "type":
                 # ⛔ A credential passed on the command line is world-readable
                 # through `ps` for every user on the box, which is why
                 # realinput.py grew --text-stdin. Here the value comes from the
                 # environment and never enters argv, the steps file, or the log.
-                secret = bool(st.get("env")) or bool(st.get("sensitive"))
-                text = os.environ[st["env"]] if st.get("env") else st["text"]
+                # `from` takes the value a previous read/await stored. A code
+                # that arrived mid-run is single-use by nature, so it is
+                # sensitive whether or not the caller says so.
+                secret = bool(st.get("env")) or bool(st.get("from")) or bool(st.get("sensitive"))
+                if st.get("env"):
+                    text = os.environ[st["env"]]
+                elif st.get("from"):
+                    text = reads[st["from"]]
+                else:
+                    text = st["text"]
                 h.type(text, sensitive=secret)
                 note(i, st, "ok", {"chars": len(text), "value": "***" if secret else text})
             elif do == "read":
@@ -1096,6 +1137,60 @@ def job_session(b, url, steps, out, shot):
                 if not note(i, st, "ok" if ok else "failed",
                             {"got": (got[:120] if isinstance(got, str) else got)}):
                     break
+            elif do == "focus":
+                # ⭐ A LOGIN FORM DOES NOT NEED A POINTER. `click` aims XTEST at
+                # a screen coordinate and refuses when calibration says the
+                # point is off-window -- correct, but it makes filling a field
+                # depend on window geometry that varies by host (measured
+                # 2026-10-25 under docker on office: dx came back negative and
+                # scaled with the probe point, i.e. a devicePixelRatio
+                # mismatch, so every click refused while the same image clicks
+                # fine in a pod).
+                # focus + type keeps what actually matters: the KEYSTROKES are
+                # still XTEST, still isTrusted, still humanmotion-timed. Only
+                # the caret placement is scripted, and it is verified below
+                # rather than assumed.
+                # ⚠️ MEASURED LIMIT, 2026-10-25: focus alone did NOT make
+                # typing land under Xvfb. activeElement was the field, the
+                # pointer was parked inside the window, xdotool reported
+                # success, and the field stayed empty. The same page typed
+                # fine once a click had moved the pointer ONTO the field. With
+                # no WM there is no _NET_ACTIVE_WINDOW (getactivewindow errors
+                # outright), so treat `focus` as useful for firing a page's
+                # focus handlers, NOT as a substitute for clicking before you
+                # type.
+                ok = b.eval("(()=>{const e=document.querySelector(%s);if(!e)return false;"
+                            "e.focus();return document.activeElement===e})()"
+                            % json.dumps(st["sel"]))
+                if not note(i, st, "ok" if ok else "not-focused"):
+                    break
+            elif do == "await":
+                # ⛔ WHY THIS EXISTS AND WHY IT IS NOT TWO RUNS. A magic-link
+                # login needs a value that arrives by EMAIL, mid-flow. Splitting
+                # it into two session invocations loses the attempt: the code is
+                # issued against the sign-in the browser already started, and
+                # v1's own note records that it "has to be typed back into the
+                # very tab that asked for it". So the browser stays up and waits
+                # here while the orchestrator drops the value in a file.
+                # ⚠️ The value is a single-use credential. Only its length is
+                # logged, never the value, and it is typed via {"from": ...}
+                # which forces the sensitive path.
+                path, dl = st["path"], time.time() + float(st.get("seconds", 300))
+                val = None
+                while time.time() < dl:
+                    try:
+                        t = open(path).read().strip()
+                        if t:
+                            val = t
+                            break
+                    except FileNotFoundError:
+                        pass
+                    time.sleep(float(st.get("poll", 2)))
+                if val is None:
+                    note(i, st, "timeout", {"path": path})
+                    break
+                reads[st.get("as", "await%d" % i)] = val
+                note(i, st, "ok", {"chars": len(val)})
             elif do == "wait":
                 time.sleep(float(st.get("seconds", 1)))
                 note(i, st, "ok")
