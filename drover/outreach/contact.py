@@ -224,10 +224,10 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
                 continue
             kind = name
             try:
-                left, top, w, h, dpr = hands.reach(sel)
+                left, top, bw, bh, dpr = hands.reach(sel)
             except RuntimeError as e:
                 return done("blocked", f"{name}: widget unreachable — {e}")
-            hands.move_screen(round(hands.dx + (left + w * fx) * dpr), round(hands.dy + (top + h * fy) * dpr), width=24 * dpr)
+            hands.move_screen(round(hands.dx + (left + bw * fx) * dpr), round(hands.dy + (top + bh * fy) * dpr), width=24 * dpr)
             pre, dwell = w.hm.press_timing(w.CFG)
             w.xdo("sleep", f"{pre:.3f}", "mousedown", "1", "sleep", f"{dwell:.3f}", "mouseup", "1")
             for _ in range(8):
