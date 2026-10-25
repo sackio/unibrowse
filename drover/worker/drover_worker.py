@@ -655,6 +655,44 @@ class Hands:
 
 
 # ------------------------------------------------------------------- jobs ---
+def css_path(b, sel, text, nth=0):
+    """The CSS path of the element matching `sel` whose text matches `text`.
+
+    ⛔ WHY A PATH AND NOT A MARKER. The obvious way to hand Hands a text-matched
+    element is to tag it -- el.setAttribute('data-drover','1') -- and aim at the
+    attribute. That writes a unique attribute into the live DOM of a login page,
+    which the page can read; this file goes to some lengths not to be noticeable
+    (no Runtime.enable, isolated worlds), and a bespoke attribute would undo that
+    for the sake of a selector. Computing nth-child indices mutates nothing.
+
+    Returns None when nothing matches, so the caller reports a named miss
+    instead of aiming at the whole document.
+    """
+    js = """(()=>{
+      const sel=%s, re=new RegExp(%s,'i'), nth=%d;
+      const hit=[...document.querySelectorAll(sel)].filter(e=>{
+        const t=(e.innerText||e.value||e.getAttribute('aria-label')||'');
+        return re.test(t.replace(/\\s+/g,' ').trim());
+      })[nth];
+      if(!hit) return null;
+      const part=e=>{
+        if(e.id && document.querySelectorAll('#'+CSS.escape(e.id)).length===1)
+          return '#'+CSS.escape(e.id);
+        const p=e.parentElement;
+        if(!p) return e.tagName.toLowerCase();
+        const i=[...p.children].indexOf(e)+1;
+        return e.tagName.toLowerCase()+':nth-child('+i+')';
+      };
+      const out=[];
+      for(let e=hit; e && e.nodeType===1; e=e.parentElement){
+        const s=part(e); out.unshift(s);
+        if(s.startsWith('#')) break;
+      }
+      return out.join(' > ');
+    })()""" % (json.dumps(sel), json.dumps(text), nth)
+    return b.eval(js)
+
+
 def job_probe(b, url, out):
     """The bench probe: human-click Target, human-type into the field, press
     Finish, then read the probe's own JSON back from the DOM."""
@@ -1070,6 +1108,16 @@ def job_session(b, url, steps, out, shot):
     calibrated = [False]
     log, reads = [], {}
 
+    def target(st):
+        """The selector a step acts on. `text` narrows `sel` to the element
+        whose visible text matches, which is how a real page names its submit
+        button -- CSS cannot express it, and v1 found these with an innerText
+        regex for the same reason."""
+        if not st.get("text"):
+            return st["sel"]
+        return css_path(b, st.get("sel", "button,a,input,[role=button]"),
+                        st["text"], int(st.get("nth", 0)))
+
     def note(i, st, status, extra=None):
         row = {"i": i, "do": st.get("do"), "status": status}
         if st.get("sel"):
@@ -1088,10 +1136,22 @@ def job_session(b, url, steps, out, shot):
                 b.navigate(st["url"])
                 note(i, st, "ok", {"url": st["url"]})
             elif do == "click":
+                sel = target(st)
+                if sel is None:
+                    note(i, st, "no-match", {"text": st.get("text")})
+                    break
                 if not calibrated[0]:
                     h.calibrate()
                     calibrated[0] = True
-                note(i, st, "ok" if h.click(st["sel"]) else "unreachable")
+                # ⛔ Hands.click RETURNS NONE ON SUCCESS -- it has no return
+                # statement -- and RAISES on a genuine miss. Testing its return
+                # value therefore labels every successful click a failure. I
+                # shipped exactly that in 47351c4, read the resulting
+                # "unreachable" on three landed clicks as a bug in Hands, and
+                # warned the outreach lane about a false negative that does not
+                # exist. The absence of an exception IS the success signal.
+                h.click(sel)
+                note(i, st, "ok", {"path": sel})
             elif do == "type":
                 # ⛔ A credential passed on the command line is world-readable
                 # through `ps` for every user on the box, which is why
@@ -1113,9 +1173,11 @@ def job_session(b, url, steps, out, shot):
                 # ⚠️ textContent, never innerText: innerText needs layout and
                 # reads 0 on a fully rendered page in a headless window
                 # (measured 2026-10-25), which looks exactly like a blank page.
-                v = b.eval("(()=>{const e=document.querySelector(%s);"
-                           "return e?e.textContent.replace(/\\s+/g,' ').trim():null})()"
-                           % json.dumps(st.get("sel", "body")))
+                sel = target(st) if st.get("text") else st.get("sel", "body")
+                v = None if sel is None else b.eval(
+                    "(()=>{const e=document.querySelector(%s);"
+                    "return e?e.textContent.replace(/\\s+/g,' ').trim():null})()"
+                    % json.dumps(sel))
                 reads[st.get("as", "read%d" % i)] = v
                 note(i, st, "ok" if v is not None else "missing",
                      {"chars": len(v) if v else 0})
@@ -1123,10 +1185,12 @@ def job_session(b, url, steps, out, shot):
                 # Asserts the page is where the previous step should have put
                 # it. `value` checks a field actually holds what we typed --
                 # the check whose absence hid a truncated address for a day.
-                got = b.eval("(()=>{const e=document.querySelector(%s);if(!e)return null;"
-                             "return e.value!==undefined&&e.value!==null?e.value:"
-                             "e.textContent.replace(/\\s+/g,' ').trim()})()"
-                             % json.dumps(st["sel"]))
+                sel = target(st) if st.get("text") else st["sel"]
+                got = None if sel is None else b.eval(
+                    "(()=>{const e=document.querySelector(%s);if(!e)return null;"
+                    "return e.value!==undefined&&e.value!==null?e.value:"
+                    "e.textContent.replace(/\\s+/g,' ').trim()})()"
+                    % json.dumps(sel))
                 want = st.get("value")
                 if want is None:
                     ok = got is not None
@@ -1159,9 +1223,13 @@ def job_session(b, url, steps, out, shot):
                 # outright), so treat `focus` as useful for firing a page's
                 # focus handlers, NOT as a substitute for clicking before you
                 # type.
+                sel = target(st)
+                if sel is None:
+                    note(i, st, "no-match", {"text": st.get("text")})
+                    break
                 ok = b.eval("(()=>{const e=document.querySelector(%s);if(!e)return false;"
                             "e.focus();return document.activeElement===e})()"
-                            % json.dumps(st["sel"]))
+                            % json.dumps(sel))
                 if not note(i, st, "ok" if ok else "not-focused"):
                     break
             elif do == "await":
