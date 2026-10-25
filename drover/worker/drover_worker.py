@@ -401,6 +401,29 @@ class Browser:
         with open(path, "wb") as f:
             f.write(base64.b64decode(data))
 
+    def cookies(self):
+        """Every cookie the browser holds, httpOnly ones included.
+
+        ⭐ WHY THIS EXISTS. A session kept in a profile is only useful to the
+        rest of the fleet if its token can be handed over: claude-usage's sweep
+        authenticates with a `sessionKey` cookie and its only browser step
+        today is a full magic-link login to re-mint one. With a kept profile
+        that becomes a READ, and a login is needed once rather than per run.
+
+        ⛔ A cookie VALUE is a credential -- a profile's cookie store is a
+        credential store. Nothing here returns it to a step log; the `cookie`
+        step writes it straight to a file with mode 600 and records the name
+        and length only.
+
+        Storage.getCookies is browser-wide and needs no domain enabled;
+        Network.getAllCookies is the page-level fallback for a Chrome that
+        refuses it on a session.
+        """
+        try:
+            return self.send("Storage.getCookies")["cookies"]
+        except RuntimeError:
+            return self.send("Network.getAllCookies")["cookies"]
+
     def rss_mb(self):
         """Memory of the whole Chrome tree, the number replica counts are sized
         on, so it is measured rather than assumed.
@@ -1248,6 +1271,35 @@ def job_session(b, url, steps, out, shot):
                 note(i, st, "ok", {"value": (v if isinstance(v, (int, float, bool)) else
                                              str(v)[:300] if v is not None else None),
                                    "wrote": st.get("write")})
+            elif do == "cookie":
+                # ⛔ VALUE STRAIGHT TO DISK, NEVER THROUGH THE LOG. The step
+                # row carries the name, whether it was found, and the length.
+                # A sessionKey in a step row would be a credential written into
+                # a result file by the thing built to hand it over safely.
+                want, dom = st["name"], st.get("domain")
+                hit = [c for c in b.cookies()
+                       if c.get("name") == want and (not dom or dom in (c.get("domain") or ""))]
+                if not hit:
+                    # NAMES are not credentials, and "no such cookie" is
+                    # useless without them: it cannot distinguish a wrong name
+                    # from a profile with no session from a CDP call that
+                    # returned nothing at all.
+                    seen = sorted({(c.get("domain") or "") + " " + (c.get("name") or "")
+                                   for c in b.cookies()})
+                    note(i, st, "no-cookie", {"name": want, "domain": dom,
+                                              "present": seen[:40], "total": len(seen)})
+                    break
+                val = hit[0].get("value") or ""
+                dest = pathlib.Path(st["write"])
+                # Mode BEFORE content: a file created 644 and chmod'd after is
+                # world-readable for the moment in between, and that moment is
+                # on a host other agents share.
+                dest.touch(mode=0o600, exist_ok=True)
+                os.chmod(dest, 0o600)
+                dest.write_text(val)
+                note(i, st, "ok", {"name": want, "chars": len(val), "wrote": str(dest),
+                                   "httpOnly": hit[0].get("httpOnly"),
+                                   "expires": hit[0].get("expires")})
             elif do == "wait":
                 time.sleep(float(st.get("seconds", 1)))
                 note(i, st, "ok")
@@ -1449,8 +1501,25 @@ def main():
             print(json.dumps(load_contact().job_contact(b, json.loads(a.row), json.load(open(a.config)), sys.modules[__name__], a.dry, a.shot)))
         elif a.job == "session":
             raw = a.steps or "[]"
-            if os.path.exists(raw):
+            # ⛔ A PATH THAT IS NOT THERE IS A MOUNT FAULT, NOT INLINE JSON.
+            # `--steps` accepts a file or a literal array, so a path missing
+            # inside the container fell through to json.loads("/steps/...")
+            # and died with "Expecting value: line 1 column 1". Measured
+            # 2026-10-25: on server4 the docker daemon has a PRIVATE /tmp, so
+            # a bind mount of a /tmp directory shows the directory and NONE of
+            # its files -- the mount silently delivers nothing. Another seat
+            # read the resulting error as "the kept profile only works where
+            # the browser is", which is not a thing: every container launches
+            # its own Chrome. Name the fault instead.
+            if raw.startswith("/") or raw.endswith(".json"):
+                if not os.path.exists(raw):
+                    raise SystemExit("session: --steps %s does not exist IN THE CONTAINER. "
+                                     "Its directory is probably bind-mounted but empty -- a "
+                                     "docker daemon with a private /tmp does exactly that. "
+                                     "Put the steps file somewhere the daemon can see." % raw)
                 raw = open(raw).read()
+                if not raw.strip():
+                    raise SystemExit("session: --steps %s is empty in the container" % raw)
             print(json.dumps(job_session(b, a.url, json.loads(raw), a.out, a.shot)))
         elif a.job == "serve":
             job_serve(b, a.port, a.out or tempfile.gettempdir())

@@ -227,7 +227,10 @@ def fetch_code(email_addr, link, share, out):
     disposable browser never becomes a logged-in session, and the kept profile
     never has to be abandoned mid-flow.
     """
-    tmp = tempfile.mkdtemp(prefix="drover-redeem-")
+    # Beside the share dir, not inside it: the share dir is mounted into the
+    # waiting container, and a disposable profile that has just consumed a
+    # magic link should not be readable from there.
+    tmp = tempfile.mkdtemp(prefix="drover-redeem-", dir=pathlib.Path(share).parent)
     try:
         r = run_session(tmp, [
             {"do": "nav", "url": link},
@@ -251,7 +254,7 @@ def orchestrate_login(profile, email_addr, jsonout=None):
     # A floor one minute back: a link minted while we were reading the clock is
     # still this run's link, and a floor of exactly now can miss it.
     floor = time.time() - 60
-    share = pathlib.Path(tempfile.mkdtemp(prefix="drover-login-"))
+    share = pathlib.Path(tempfile.mkdtemp(prefix="drover-login-", dir=rundir(profile)))
     # ⚠️ The shots must OUTLIVE the share dir, which is deleted in the finally
     # because it holds the code. Keeping them is the whole record of a page
     # that costs a single-use link to see.
@@ -329,6 +332,27 @@ class proc_output:
         self.stdout, self.stderr = proc.communicate(timeout=timeout)
 
 
+def rundir(profile):
+    """Where this flow puts the directories it bind-mounts.
+
+    ⛔ NOT /tmp. Measured 2026-10-25: server4's docker daemon has a PRIVATE
+    /tmp, so `-v /tmp/x:/steps` mounts a directory the container sees as EMPTY
+    -- no error, no warning, just no files. The worker then read the path as
+    inline JSON and died with "Expecting value: line 1 column 1", and that was
+    read elsewhere as "the kept profile only works where the browser is".
+    It is not host affinity; it is a mount the daemon cannot see.
+
+    Beside the profile is the right place anyway: the share directory briefly
+    holds a single-use code, the profile directory is already mode 700, and
+    both belong to one account.
+    """
+    d = pathlib.Path(os.environ.get("DROVER_RUNDIR")
+                     or (str(pathlib.Path(profile).resolve()) + ".run"))
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(d, 0o700)
+    return str(d)
+
+
 def run_session(profile, steps, timeout=420, share=None, out=None, background=False):
     """Run one `session` container. `share` is mounted rw at /share -- the
     orchestrator drops the emailed code there mid-run -- and `out` rw at /out
@@ -336,7 +360,7 @@ def run_session(profile, steps, timeout=420, share=None, out=None, background=Fa
     the caller to clean up, because an orchestrated login has to do host work
     (read mail, open the link elsewhere) WHILE the browser holds its tab.
     """
-    td = tempfile.mkdtemp(prefix="drover-steps-")
+    td = tempfile.mkdtemp(prefix="drover-steps-", dir=rundir(profile))
     try:
         pathlib.Path(td, "steps.json").write_text(json.dumps(steps))
         cmd = [
