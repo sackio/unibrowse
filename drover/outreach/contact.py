@@ -83,12 +83,14 @@ def paid_solve(b, url, kind, cfg):
     # (live chunk 2026-10-24: two such rows were first recorded `blocked`).
     if fired:
         return None, f"token bought (${r.get('cost')}), widget callback fired ({fired}), field empty after — may have submitted"
+    if any("no answer" in x for x in seen):
+        # The write hung, so it may have run: a callback that submits and then
+        # alerts or navigates never answers (retry 2026-10-25: 15 of 32 rows).
+        # Unsure, never blocked, so nothing re-runs it into a second message.
+        return None, f"token bought (${r.get('cost')}), write hung [{' '.join(seen)}] — may have submitted"
     return False, f"token bought (${r.get('cost')}) but it did not land in the page [{' '.join(seen)}]"
 
 
-# Marks the button that dismisses a visible cookie/consent layer (data-ub-cc)
-# and returns true, or false when no such layer is up. A layer is a fixed or
-# sticky box whose text talks about cookies or consent. Refusing beats accepting.
 # The open reCAPTCHA challenge popup, as [left, top, w, h, innerWidth,
 # innerHeight, dpr], or null once it is closed (its container goes hidden).
 CHALLENGE_RECT = r"""(() => {
@@ -102,6 +104,9 @@ CHALLENGE_RECT = r"""(() => {
   return [r.left, r.top, r.width, r.height, innerWidth, innerHeight, devicePixelRatio];
 })()"""
 
+# Marks the button that dismisses a visible cookie/consent layer (data-ub-cc)
+# and returns true, or false when no such layer is up. A layer is a fixed or
+# sticky box whose text talks about cookies or consent. Refusing beats accepting.
 DISMISS_CONSENT = r"""(() => {
   document.querySelectorAll('[data-ub-cc]').forEach(e => e.removeAttribute('data-ub-cc'));
   const shown = e => { const r = e.getBoundingClientRect(), s = getComputedStyle(e);

@@ -49,7 +49,8 @@ def retryable(results):
     for r in rows:
         seen.setdefault(r["key"], []).append(r)
     return {k for k, rs in seen.items() if len(rs) == 1 and rs[0]["note"].startswith("drover ")
-            and (rs[0]["status"] == "error" or (rs[0]["status"] == "blocked" and "|" not in rs[0]["note"]))}
+            and (rs[0]["status"] == "error" or (rs[0]["status"] == "blocked" and "|" not in rs[0]["note"]
+                                                  and "x:Runtime.evaluate gave no answer" not in rs[0]["note"]))}
 
 
 def pick(a):
