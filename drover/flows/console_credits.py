@@ -53,7 +53,9 @@ CREDIT = re.compile(r"(credit|grant|balance|expires)[^.]{0,120}", re.I)
 LOGIN_DRY = [
     {"do": "nav", "url": "https://platform.claude.com/login"},
     # Cold profile: this page can render nothing for ~60s. Poll, do not sleep.
-    {"do": "waitfor", "sel": "input[type=email]", "seconds": 90},
+    # `still`: the field existing is not the field having stopped moving. This
+    # page shifted it ~44px after it appeared, and the click landed below it.
+    {"do": "waitfor", "sel": "input[type=email]", "seconds": 90, "still": True},
     {"do": "click", "sel": "input[type=email]"},
     {"do": "type", "env": "DROVER_LOGIN_EMAIL"},
     # The check v1 never made: that the address actually landed in the field.

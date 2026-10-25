@@ -451,6 +451,79 @@ class Browser:
             shutil.rmtree(self.profile, ignore_errors=True)
 
 
+# --------------------------------------------------------------- locators ---
+# A LOCATOR is either a CSS selector string, or a dict naming an element by the
+# text a person reads on it: {"sel": "button", "text": "continue with email"}.
+#
+# ⛔ IT IS NOT A PATH, AND THAT IS THE POINT. Resolving a text match to a CSS
+# path in one eval and acting on it in the next is RACY on a React page.
+# Measured on the Console login page, 2026-10-25: three identical runs gave a
+# correct root-anchored path, a no-match, and a read of "" from a path whose own
+# resolution had just seen "Continue with email". The DOM re-renders between
+# evals and nth-child indices move under the selector; Hands.click alone spends
+# three evals on one press (reach, hit test, press), so no path survives it.
+# A locator carries the QUESTION rather than an answer, so every eval resolves
+# it against the DOM it is actually looking at -- resolve-and-act is atomic
+# within each eval by construction, and a stale index cannot be aimed at.
+#
+# ⛔ AND IT MUTATES NOTHING. The obvious way to hand Hands a text-matched
+# element is to tag it -- el.setAttribute('data-drover','1') -- and aim at the
+# attribute, which is stable across renders. That writes a unique attribute
+# into the live DOM of a login page, where the page can read it; this file goes
+# to some lengths not to be noticeable (no Runtime.enable, isolated worlds) and
+# a bespoke attribute would undo that for the sake of a selector.
+FIND_JS = """(spec=>{
+  const list=[...document.querySelectorAll(spec.sel||'*')], n=spec.nth||0;
+  if(!spec.text) return list[n]||null;
+  // ⚠️ textContent is the fallback, not the other way round: innerText needs
+  // layout and reads empty in a headless window (measured 2026-10-25). A
+  // control can also carry its label only in `value` or aria-label.
+  const re=new RegExp(spec.text,'i');
+  const txt=e=>((e.innerText||e.textContent||'')+' '+(e.value||'')+' '
+                +(e.getAttribute('aria-label')||'')).replace(/\\s+/g,' ').trim();
+  return list.filter(e=>re.test(txt(e)))[n]||null;
+})"""
+
+
+def el(loc):
+    """The JS expression for the element a locator names, resolved in place."""
+    if isinstance(loc, dict):
+        return "(%s)(%s)" % (FIND_JS, json.dumps(loc))
+    return "document.querySelector(%s)" % json.dumps(loc)
+
+
+def locname(loc):
+    """A locator in words, for an error a person reads."""
+    if isinstance(loc, dict):
+        return "%s matching %r" % (loc.get("sel", "*"), loc.get("text"))
+    return loc
+
+
+def describe(b, loc, seconds=0, poll=0.4):
+    """What a locator resolves to RIGHT NOW -- tag, label, where the text
+    matched, whether it is disabled -- or None if nothing does.
+
+    Reporting only: the step that acts resolves the locator again itself, so
+    this cannot hand it a stale answer.
+
+    `seconds` polls, because "nothing matches" and "the render has not landed
+    yet" are the same answer read at two different moments, and one of the three
+    Console runs above failed only that way.
+    """
+    js = ("(()=>{const e=%s;if(!e)return null;"
+          "const t=(e.innerText||e.textContent||'').replace(/\\s+/g,' ').trim();"
+          "return JSON.stringify({tag:e.tagName,"
+          "label:(t||e.value||e.getAttribute('aria-label')||'').slice(0,60),"
+          "via:t?'text':(e.value?'value':'aria-label'),"
+          "type:e.getAttribute('type')||null,disabled:!!e.disabled})})()" % el(loc))
+    dl = time.time() + float(seconds)
+    while True:
+        raw = b.eval(js)
+        if raw or time.time() >= dl:
+            return json.loads(raw) if raw else None
+        time.sleep(poll)
+
+
 # ------------------------------------------------------------------ input ---
 class Hands:
     """Human-shaped XTEST input. Coordinates are page CSS px; the offset from
@@ -516,11 +589,14 @@ class Hands:
             xdo(*chain)
 
     def rect(self, selector):
-        r = self.b.eval(f"(() => {{ const e = document.querySelector({json.dumps(selector)}); if (!e) return null;"
+        # `selector` is a LOCATOR (see above): a CSS string, or a dict naming
+        # the element by its text. Either way it is re-resolved by every eval
+        # that touches it, so nothing here can aim at a path that has moved.
+        r = self.b.eval(f"(() => {{ const e = {el(selector)}; if (!e) return null;"
                         f" const r = e.getBoundingClientRect();"
                         f" return [r.left, r.top, r.width, r.height, devicePixelRatio, innerHeight]; }})()")
         if not r:
-            raise RuntimeError("no element " + selector)
+            raise RuntimeError("no element " + locname(selector))
         return r
 
     def reach(self, selector, tries=12):
@@ -543,14 +619,14 @@ class Hands:
                 # widget along the bottom covered fields at y≈810-825 of 936
                 # (live chunk 2026-10-24: "pointer would not land", page saw
                 # the pointer exactly on target). Ask what is on top first.
-                if self.b.eval(f"(() => {{ const t = document.querySelector({json.dumps(selector)}), r = t.getBoundingClientRect(),"
+                if self.b.eval(f"(() => {{ const t = {el(selector)}; if (!t) return false; const r = t.getBoundingClientRect(),"
                                f" e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);"
                                f" return !!(e && (e === t || t.contains(e) || (e.control === t))); }})()"):
                     return left, top, w, h, dpr
                 # Covered: bring it to the upper middle, clear of bottom bars.
                 want = (top + h / 2 - vh * 0.4) / 100.0
                 if abs(want) < 0.5:
-                    raise RuntimeError(f"{selector} is covered by another element")
+                    raise RuntimeError(f"{locname(selector)} is covered by another element")
                 self.scroll(-max(1, round(abs(want))) if want > 0 else max(1, round(abs(want))))
                 time.sleep(random.uniform(0.15, 0.5))
                 continue
@@ -564,7 +640,7 @@ class Hands:
             want = (top + h / 2 - vh / 2) / 100.0
             self.scroll(-max(1, round(abs(want))) if want > 0 else max(1, round(abs(want))))
             time.sleep(random.uniform(0.15, 0.5))
-        raise RuntimeError("could not scroll %s into view" % selector)
+        raise RuntimeError("could not scroll %s into view" % locname(selector))
 
     def scroll(self, notches):
         """humanmotion's scroll plan: wheel bursts, arrow keys, pauses to read,
@@ -614,21 +690,52 @@ class Hands:
         is asked where it saw the pointer, and a miss gets a short corrective
         move, the way a hand that lands just off a button nudges onto it. The
         offset is re-learned from each correction."""
-        left, top, w, h, dpr = self.reach(selector)
-        tx = left + w * random.uniform(0.3, 0.7)          # off-centre, well inside the box
-        ty = top + h * random.uniform(0.3, 0.7)
-        self.move_screen(round(self.dx + tx * dpr), round(self.dy + ty * dpr), width=w * dpr)
-        for _ in range(3):
+        box = self.reach(selector)
+        tx = ty = None
+        got = None
+        for attempt in range(3):
+            # ⛔ RE-MEASURE THE BOX, DO NOT REUSE THE ONE REACH RETURNED. A
+            # hydrating page moves its own controls: measured on the Console
+            # login page 2026-10-25, the email field was at clientY 469-509
+            # when reach() measured it and the pointer landed at clientY 535
+            # with a *correct* offset (re-learned from that very sighting as
+            # 0,143) -- the field had moved ~44px while the hand was
+            # travelling, and clientY does not move with scrolling, so that was
+            # a layout shift, not a scroll. Aiming at a remembered box is
+            # aiming at where a control used to be.
+            if attempt:
+                box = self.reach(selector)
+            left, top, w, h, dpr = box
+            # ⛔ A RETRY MUST MOVE, OR IT CANNOT TELL ITSELF ANYTHING. The aim
+            # point used to be computed ONCE, so a failed attempt re-issued the
+            # same coordinates -- and xdotool moving the pointer to where it
+            # already is generates NO mousemove, so the page had nothing to
+            # report and `seen()` returned None again. The first attempt can
+            # legitimately race a hydrating page's blocked renderer; attempts
+            # two and three were then guaranteed to fail for a different and
+            # invisible reason. Measured on the Console login page 2026-10-25:
+            # two runs failed with "page saw None" while the pointer was ON the
+            # field (aim 1007,497, pointer 1008,641, offset 1,144 -- correct),
+            # and one re-learned dx as 89 from a bogus edge sighting.
+            # So: a fresh point inside the box every attempt, and on a retry a
+            # step away first, which is also what a hand that missed does.
+            tx, ty = (left + w * random.uniform(0.3, 0.7),      # off-centre, well inside
+                      top + h * random.uniform(0.3, 0.7))
+            if attempt:
+                self.move_screen(round(self.dx + tx * dpr) - random.randint(40, 70),
+                                 round(self.dy + ty * dpr) - random.randint(25, 50))
+            self.move_screen(round(self.dx + tx * dpr), round(self.dy + ty * dpr), width=w * dpr)
             # A busy page (scripts still running on a fresh load) delivers the
-            # mousemove late: 50 ms read null on every try in a new pod. Wait
-            # for the sighting, up to a second, before judging the aim.
-            for _ in range(12):
+            # mousemove late: 50 ms read null on every try in a new pod, and
+            # platform.claude.com blocks its renderer for longer than that
+            # while it hydrates. Wait for the sighting before judging the aim.
+            for _ in range(20):
                 time.sleep(0.08)
                 got = self.seen()
                 if got:
                     break
             hit = got and self.b.eval(
-                f"(() => {{ const t = document.querySelector({json.dumps(selector)}), e = document.elementFromPoint({got[0]}, {got[1]});"
+                f"(() => {{ const t = {el(selector)}, e = document.elementFromPoint({got[0]}, {got[1]});"
                 f" return !!(t && e && (t === e || t.contains(e) || e.control === t)); }})()")
             if hit:
                 break
@@ -636,9 +743,8 @@ class Hands:
             if got and 2 < got[0] < vw - 2 and 2 < got[1] < vh - 2:   # a fresh sighting, not an edge
                 sx, sy = self.where()
                 self.dx, self.dy = sx - got[0] * dpr, sy - got[1] * dpr
-            self.move_screen(round(self.dx + tx * dpr), round(self.dy + ty * dpr), width=w * dpr)
         else:
-            raise RuntimeError(f"pointer would not land on {selector} (aim {tx:.0f},{ty:.0f} offset {self.dx:.0f},{self.dy:.0f}"
+            raise RuntimeError(f"pointer would not land on {locname(selector)} (aim {tx:.0f},{ty:.0f} offset {self.dx:.0f},{self.dy:.0f}"
                                f" page saw {got} pointer {self.where()})")
         pre, dwell = hm.press_timing(CFG)
         xdo("sleep", f"{pre:.3f}", "mousedown", "1", "sleep", f"{dwell:.3f}", "mouseup", "1")
@@ -655,69 +761,6 @@ class Hands:
 
 
 # ------------------------------------------------------------------- jobs ---
-def css_path(b, sel, text, nth=0):
-    """The CSS path of the element matching `sel` whose text matches `text`.
-
-    ⛔ WHY A PATH AND NOT A MARKER. The obvious way to hand Hands a text-matched
-    element is to tag it -- el.setAttribute('data-drover','1') -- and aim at the
-    attribute. That writes a unique attribute into the live DOM of a login page,
-    which the page can read; this file goes to some lengths not to be noticeable
-    (no Runtime.enable, isolated worlds), and a bespoke attribute would undo that
-    for the sake of a selector. Computing nth-child indices mutates nothing.
-
-    Returns None when nothing matches, so the caller reports a named miss
-    instead of aiming at the whole document.
-    """
-    js = """(()=>{
-      const sel=%s, re=new RegExp(%s,'i'), nth=%d;
-      const hit=[...document.querySelectorAll(sel)].filter(e=>{
-        const t=(e.innerText||e.value||e.getAttribute('aria-label')||'');
-        return re.test(t.replace(/\\s+/g,' ').trim());
-      })[nth];
-      if(!hit) return null;
-      // Which field the match came from, and a short label. A button can match
-      // on aria-label while its textContent is empty, so "it matched" alone
-      // does not say the right control was found -- and the control in
-      // question may be a submit.
-      const txt=(hit.innerText||'').replace(/\\s+/g,' ').trim();
-      const via = txt && re.test(txt) ? 'innerText'
-                : (hit.value && re.test(hit.value)) ? 'value' : 'aria-label';
-      // ⛔ DO NOT ANCHOR ON A GENERATED ID. Measured on the Console login page:
-      // the path anchored on "#_R_qdmkqav5tpfllpl4plb_", a React id that
-      // changes per render, and between the eval that resolved it and the next
-      // eval that used it the id had already churned -- so the selector
-      // silently matched something else and the read came back "". A click
-      // would have aimed at whatever that was. Framework ids are rejected by
-      // shape; a hand-written one is still worth anchoring on because it
-      // survives sibling reordering.
-      const generated=id=>/^[_:]|^(radix|headlessui|mui|react-aria)-|^[A-Za-z]?_R_/.test(id)
-                          || id.length>24;
-      const part=e=>{
-        if(e.id && !generated(e.id) && document.querySelectorAll('#'+CSS.escape(e.id)).length===1)
-          return '#'+CSS.escape(e.id);
-        const p=e.parentElement;
-        if(!p) return e.tagName.toLowerCase();
-        const i=[...p.children].indexOf(e)+1;
-        return e.tagName.toLowerCase()+':nth-child('+i+')';
-      };
-      const out=[];
-      for(let e=hit; e && e.nodeType===1; e=e.parentElement){
-        const s=part(e); out.unshift(s);
-        if(s.startsWith('#')) break;
-      }
-      return JSON.stringify({path: out.join(' > '), via: via, tag: hit.tagName,
-        label: (hit.getAttribute('aria-label')||txt||hit.value||'').slice(0,60),
-        type: hit.getAttribute('type')||null, disabled: !!hit.disabled});
-    })()""" % (json.dumps(sel), json.dumps(text), nth)
-    # ⚠️ The path is valid only for THIS page state. It can anchor on a
-    # framework-generated id -- measured on the Console login page:
-    # "#_R_qdmkqav5tpfllpl4plb_ > button:nth-child(1)", a React id that changes
-    # per render. So resolve immediately before acting and never cache one
-    # across a navigation.
-    raw = b.eval(js)
-    return json.loads(raw) if raw else None
-
-
 def job_probe(b, url, out):
     """The bench probe: human-click Target, human-type into the field, press
     Finish, then read the probe's own JSON back from the DOM."""
@@ -902,15 +945,24 @@ def job_session(b, url, steps, out, shot):
     log, reads = [], {}
 
     def target(st):
-        """The selector a step acts on. `text` narrows `sel` to the element
-        whose visible text matches, which is how a real page names its submit
-        button -- CSS cannot express it, and v1 found these with an innerText
-        regex for the same reason."""
+        """The LOCATOR a step acts on, and what it resolves to right now.
+
+        `text` narrows `sel` to the element whose visible text matches, which
+        is how a real page names its submit button -- CSS cannot express it,
+        and v1 found these with an innerText regex for the same reason.
+
+        ⛔ It returns the question, never a resolved path: see FIND_JS above for
+        the three Console runs that measured why. The detail is for the log and
+        for the no-match report only -- the step that acts re-resolves the
+        locator itself. Resolution is POLLED, because "nothing matches" and
+        "the render has not landed yet" are the same answer read at two
+        different moments, and one of those three runs failed only that way.
+        """
         if not st.get("text"):
             return st["sel"], None
-        m = css_path(b, st.get("sel", "button,a,input,[role=button]"),
-                     st["text"], int(st.get("nth", 0)))
-        return (m["path"] if m else None), m
+        loc = {"sel": st.get("sel", "button,a,input,[role=button]"),
+               "text": st["text"], "nth": int(st.get("nth", 0))}
+        return loc, describe(b, loc, seconds=float(st.get("resolveSeconds", 10)))
 
     def note(i, st, status, extra=None):
         row = {"i": i, "do": st.get("do"), "status": status}
@@ -930,8 +982,8 @@ def job_session(b, url, steps, out, shot):
                 b.navigate(st["url"])
                 note(i, st, "ok", {"url": st["url"]})
             elif do == "click":
-                sel, m = target(st)
-                if sel is None:
+                loc, m = target(st)
+                if st.get("text") and m is None:
                     note(i, st, "no-match", {"text": st.get("text")})
                     break
                 if not calibrated[0]:
@@ -944,8 +996,8 @@ def job_session(b, url, steps, out, shot):
                 # "unreachable" on three landed clicks as a bug in Hands, and
                 # warned the outreach lane about a false negative that does not
                 # exist. The absence of an exception IS the success signal.
-                h.click(sel)
-                note(i, st, "ok", {"path": sel, "matched": m})
+                h.click(loc)
+                note(i, st, "ok", {"matched": m} if m else None)
             elif do == "type":
                 # ⛔ A credential passed on the command line is world-readable
                 # through `ps` for every user on the box, which is why
@@ -967,11 +1019,10 @@ def job_session(b, url, steps, out, shot):
                 # ⚠️ textContent, never innerText: innerText needs layout and
                 # reads 0 on a fully rendered page in a headless window
                 # (measured 2026-10-25), which looks exactly like a blank page.
-                sel = target(st)[0] if st.get("text") else st.get("sel", "body")
-                v = None if sel is None else b.eval(
-                    "(()=>{const e=document.querySelector(%s);"
-                    "return e?e.textContent.replace(/\\s+/g,' ').trim():null})()"
-                    % json.dumps(sel))
+                loc = target(st)[0] if st.get("text") else st.get("sel", "body")
+                v = b.eval("(()=>{const e=%s;"
+                           "return e?e.textContent.replace(/\\s+/g,' ').trim():null})()"
+                           % el(loc))
                 reads[st.get("as", "read%d" % i)] = v
                 note(i, st, "ok" if v is not None else "missing",
                      {"chars": len(v) if v else 0})
@@ -979,33 +1030,60 @@ def job_session(b, url, steps, out, shot):
                 # Asserts the page is where the previous step should have put
                 # it. `value` checks a field actually holds what we typed --
                 # the check whose absence hid a truncated address for a day.
-                sel, m = target(st) if st.get("text") else (st["sel"], None)
-                got = None if sel is None else b.eval(
-                    "(()=>{const e=document.querySelector(%s);if(!e)return null;"
-                    "return e.value!==undefined&&e.value!==null?e.value:"
-                    "e.textContent.replace(/\\s+/g,' ').trim()})()"
-                    % json.dumps(sel))
+                loc, m = target(st) if st.get("text") else (st["sel"], None)
+                # ⚠️ `value` ONLY FOR A CONTROL THAT HAS ONE. Every <button>
+                # carries value="" as a DOM property, so preferring value
+                # wherever it is defined read the submit button as "" --
+                # measured 2026-10-25, three runs out of three, AFTER the
+                # locator change had made the resolution itself deterministic.
+                # I had attributed that empty read to the path race; it was
+                # this. An `expect` with no `value` then passes on "", which
+                # looks like a verified page and verified nothing.
+                js = ("(()=>{const e=%s;if(!e)return null;"
+                      "return /^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName)"
+                      "?e.value:e.textContent.replace(/\\s+/g,' ').trim()})()"
+                      % el(loc))
                 # env_value keeps the expected value out of the steps file for
                 # the same reason `type` takes env: an address or secret in a
                 # file on disk is a copy nobody tracks.
                 want = os.environ[st["env_value"]] if st.get("env_value") else st.get("value")
-                if want is None:
-                    ok = got is not None
-                elif st.get("contains"):
-                    ok = bool(got) and want in got
-                else:
-                    ok = got == want
+
+                def holds(v):
+                    if want is None:
+                        return v is not None
+                    if st.get("contains"):
+                        return bool(v) and want in v
+                    return v == want
+
+                # ⛔ POLL, DO NOT SAMPLE ONCE. xdotool returns when it has SENT
+                # the keystrokes, not when the page has processed them, so a
+                # read taken straight after `type` can see n-1 characters:
+                # measured 2026-10-25, "agents2@sack.i" for a 15-character
+                # address, one run in four. v1's probe made exactly this
+                # mistake and its "agents2@sac" was read as a site refusal for
+                # three days -- a one-shot assertion here would have
+                # reproduced that bug inside the thing built to catch it.
+                # ⚠️ The deadline is what keeps this an assertion: a value that
+                # is genuinely wrong still fails, it just takes `seconds` to
+                # say so.
+                dl = time.time() + float(st.get("seconds", 8))
+                while True:
+                    got = b.eval(js)
+                    ok = holds(got)
+                    if ok or time.time() >= dl:
+                        break
+                    time.sleep(float(st.get("poll", 0.4)))
                 # ⚠️ REPORT WHAT MATCHED, not just what it said. A text-matched
                 # control can resolve correctly and still read textContent ""
-                # -- the match may have come from value or aria-label while the
-                # label lives in a child node -- and an `expect` with no
-                # `value` then passes on an empty string, which looks like it
-                # verified something and did not. The path is the evidence, and
-                # for a submit button it is the thing worth seeing BEFORE a run
+                # -- the match may have come from value or aria-label -- and an
+                # `expect` with no `value` then passes on an empty string,
+                # which looks like it verified something and did not. The
+                # resolved tag, label and `disabled` are the evidence, and for
+                # a submit button they are the thing worth seeing BEFORE a run
                 # that presses it.
                 extra = {"got": (got[:120] if isinstance(got, str) else got)}
                 if st.get("text"):
-                    extra["path"], extra["matched"] = sel, m
+                    extra["matched"] = m
                 if not note(i, st, "ok" if ok else "failed", extra):
                     break
             elif do == "waitfor":
@@ -1016,16 +1094,45 @@ def job_session(b, url, steps, out, shot):
                 # 122s. A `wait` long enough to be safe is wasted on every
                 # fast load, and one short enough to be quick fails as a
                 # selector miss further down. Poll for the element instead.
-                sel, dl = st.get("sel"), time.time() + float(st.get("seconds", 60))
-                found, waited = False, 0.0
+                # A locator, so a flow can wait for the control a person
+                # reads ("the Continue button") and not only for a CSS shape.
+                loc = ({"sel": st.get("sel", "button,a,input,[role=button]"),
+                        "text": st["text"], "nth": int(st.get("nth", 0))}
+                       if st.get("text") else st.get("sel"))
+                t0 = time.time()
+                dl = t0 + float(st.get("seconds", 60))
+                found, still = False, None
                 while time.time() < dl:
-                    if b.eval("!!document.querySelector(%s)" % json.dumps(sel)):
+                    if b.eval("!!(%s)" % el(loc)):
                         found = True
                         break
                     time.sleep(float(st.get("poll", 1)))
-                    waited = time.time() - (dl - float(st.get("seconds", 60)))
+                # ⛔ "IT EXISTS" IS NOT "IT HAS STOPPED MOVING", and the
+                # difference broke the click twice. `still` waits for the box
+                # to hold position: on the Console login page the input existed
+                # at waitedSec 0.0 and the page then shifted it ~44px while the
+                # hand was travelling, so the press landed below the field.
+                # Cheap insurance -- two rects, 300ms apart -- and it only
+                # costs the pages that are actually still settling.
+                found_at = time.time()
+                if found and st.get("still"):
+                    prev = None
+                    while time.time() < dl:
+                        r = b.eval("(()=>{const e=%s;if(!e)return null;const r="
+                                   "e.getBoundingClientRect();return [r.left,r.top]})()"
+                                   % el(loc))
+                        if prev and r and abs(r[0] - prev[0]) < 2 and abs(r[1] - prev[1]) < 2:
+                            break
+                        prev = r
+                        time.sleep(0.3)
+                    still = round(time.time() - found_at, 1)
+                # Two numbers, because they are two different facts: how long
+                # the control took to appear, and how long it then went on
+                # moving. Measured on the Console login page, the second is
+                # 7-11s while the first can be 0.3s -- which is exactly the
+                # window the earlier clicks were pressing into.
                 if not note(i, st, "ok" if found else "timeout",
-                            {"waitedSec": round(waited, 1)}):
+                            {"waitedSec": round(found_at - t0, 1), "stillSec": still}):
                     break
             elif do == "focus":
                 # ⭐ A LOGIN FORM DOES NOT NEED A POINTER. `click` aims XTEST at
@@ -1049,13 +1156,13 @@ def job_session(b, url, steps, out, shot):
                 # outright), so treat `focus` as useful for firing a page's
                 # focus handlers, NOT as a substitute for clicking before you
                 # type.
-                sel, m = target(st)
-                if sel is None:
+                loc, m = target(st)
+                if st.get("text") and m is None:
                     note(i, st, "no-match", {"text": st.get("text")})
                     break
-                ok = b.eval("(()=>{const e=document.querySelector(%s);if(!e)return false;"
+                ok = b.eval("(()=>{const e=%s;if(!e)return false;"
                             "e.focus();return document.activeElement===e})()"
-                            % json.dumps(sel))
+                            % el(loc))
                 if not note(i, st, "ok" if ok else "not-focused"):
                     break
             elif do == "await":
@@ -1085,6 +1192,20 @@ def job_session(b, url, steps, out, shot):
                     break
                 reads[st.get("as", "await%d" % i)] = val
                 note(i, st, "ok", {"chars": len(val)})
+            elif do == "eval":
+                # ⛔ READ ONLY, AND THAT IS A RULE ABOUT THIS STEP, NOT A
+                # LIMITATION OF IT. Scripted input is exactly what this worker
+                # exists not to produce: clicks and keystrokes go through
+                # Hands (XTEST, isTrusted, humanmotion-timed). An eval that
+                # sets a value or calls .click() would look like success and
+                # hand the site the one signal the rest of this file spends
+                # real effort not to emit.
+                # It exists because diagnosing a failed click took three runs
+                # of adding temporary code to this file: "what is actually
+                # under that point" is a question a flow should be able to ask.
+                reads[st.get("as", "eval%d" % i)] = v = b.eval(st["js"])
+                note(i, st, "ok", {"value": (v if isinstance(v, (int, float, bool)) else
+                                             str(v)[:300] if v is not None else None)})
             elif do == "wait":
                 time.sleep(float(st.get("seconds", 1)))
                 note(i, st, "ok")
