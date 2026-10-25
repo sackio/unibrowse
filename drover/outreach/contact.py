@@ -45,7 +45,8 @@ def paid_solve(b, url, kind, cfg):
     if not json.loads(b.eval(cfg["FIELD_PRESENT"].replace("__FIELD__", field)) or "{}").get("n"):
         return False, f"no {field} field in the page — not bought"
     req = urllib.request.Request(os.environ["DROVER_SOLVER_URL"], data=json.dumps(
-        {"url": url, "kind": task, "sitekey": k["key"], "action": k.get("action"), "enterprise": k.get("enterprise")}).encode(),
+        {"url": url, "kind": task, "sitekey": k["key"], "action": k.get("action"), "enterprise": k.get("enterprise"),
+         "proxy": os.environ.get("DROVER_PROXY") if os.environ.get("DROVER_PROXY", "").startswith("socks5") else None}).encode(),
         headers={"Content-Type": "application/json", "Authorization": "Bearer " + os.environ.get("DROVER_SOLVER_TOKEN", "")})
     try:
         r = json.loads(urllib.request.urlopen(req, timeout=240).read())

@@ -14,11 +14,19 @@ O=/mnt/nas/data/code/business/outreach
 Q=$O/captcha-svc-ordered.tsv; R=$O/captcha-svc-results-ord.tsv
 K="kubectl --kubeconfig=/mnt/nas/data/code/server_admin/k8s-credentials/clusters/barn-cluster.yaml -n drover"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; umask 077
-python3 "$HERE/lane.py" pick --queue "$Q" --results "$R" --limit "$N" ${RETRY:+--retry} > "$W/rows.tsv" || exit 1
+python3 "$HERE/lane.py" pick --queue "$Q" --results "$R" --limit "$N" ${RETRY:+--retry} ${KEYS:+--keys "$KEYS"} > "$W/rows.tsv" || exit 1
 [ "$(wc -l < "$W/rows.tsv")" -le 1 ] && { echo "nothing to run"; exit 0; }
 python3 "$HERE/extract_config.py" > "$W/config.json" || exit 1
-ssh -p 4999 ben@192.168.1.42 'LEASE_HOLDER=thread-unibrowse-2 vpn-proxy lease us 90' > "$W/url" 2> "$W/err" || { echo "no lease"; cat "$W/err" | tail -1; exit 1; }
-LID=$(grep -oE 'vpn-proxy: lease [0-9a-f]{8}' "$W/err" | grep -oE '[0-9a-f]{8}$' | tail -1)
+LID=
+if [ -n "${NORD:-}" ]; then
+  # NORD=<host>: a Nord SOCKS5 server (e.g. new-york.us.socks.nordhold.net), the
+  # one kind of exit 2Captcha can reach too, so the token is solved from the
+  # browser's own exit (Ben, ask unibrowse/a4s). Service creds from the vpn .env.
+  ( set -a; . /mnt/nas/data/code/scripts/vpn/.env; python3 -c 'import os,sys,urllib.parse as u;q=lambda k:u.quote(os.environ[k],safe="");print(f"socks5://{q("NORDVPN_OPENVPN_USER")}:{q("NORDVPN_OPENVPN_PASSWORD")}@{sys.argv[1]}:1080")' "$NORD" ) > "$W/url" || exit 1
+else
+  ssh -p 4999 ben@192.168.1.42 'LEASE_HOLDER=thread-unibrowse-2 vpn-proxy lease us 90' > "$W/url" 2> "$W/err" || { echo "no lease"; cat "$W/err" | tail -1; exit 1; }
+  LID=$(grep -oE 'vpn-proxy: lease [0-9a-f]{8}' "$W/err" | grep -oE '[0-9a-f]{8}$' | tail -1)
+fi
 $K delete job drover-outreach --ignore-not-found --wait=true >/dev/null
 $K delete configmap drover-outreach --ignore-not-found >/dev/null
 $K delete secret drover-proxy --ignore-not-found >/dev/null
@@ -29,7 +37,7 @@ sed -e "s#completions: 4#completions: $SHARDS#; s#parallelism: 4#parallelism: $S
 t0=$(date +%s)
 until $K get job drover-outreach -o jsonpath='{.status.conditions[*].type}' | grep -qE 'Complete|Failed'; do sleep 20; done
 $K logs -l job-name=drover-outreach --tail=-1 --max-log-requests=20 > "$W/logs"
-python3 "$HERE/lane.py" harvest --results "$R" < "$W/logs"
+python3 "$HERE/lane.py" harvest --results "$R" ${KEYS:+--keys "$KEYS"} < "$W/logs"
 grep '^ROW ' "$W/logs" | cut -c5- | python3 -c '
 import sys, json, collections
 rs = [json.loads(l) for l in sys.stdin]

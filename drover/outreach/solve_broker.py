@@ -69,6 +69,14 @@ def solve(c):
                 task["pageAction"] = c["action"]
         if kind.startswith("recaptcha") and c.get("enterprise"):
             task["isEnterprise"] = True
+        if c.get("proxy"):
+            # Solve from the browser's own exit, so the site sees one IP for
+            # the token and the post (Ben, ask unibrowse/a4s). Needs a proxy
+            # 2Captcha can reach from the internet: a Nord SOCKS5 server.
+            from urllib.parse import urlsplit
+            p = urlsplit(c["proxy"])
+            task.update(type=task["type"].replace("Proxyless", ""), proxyType=p.scheme.replace("socks5h", "socks5"),
+                        proxyAddress=p.hostname, proxyPort=p.port, proxyLogin=p.username, proxyPassword=p.password)
         made = api("createTask", {"clientKey": KEY, "task": task})
         if made.get("errorId"):
             raise ValueError(f"createTask: {made.get('errorCode')} {made.get('errorDescription', '')}")
@@ -80,7 +88,7 @@ def solve(c):
             if got.get("status") == "ready":
                 cost = float(got.get("cost") or 0)
                 with LEDGER.open("a") as fh:      # a ledger we cannot write raises: no spending blind
-                    fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')}\t{cost:.5f}\t{TASKS[kind]}\t{c['url']}\n")
+                    fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')}\t{cost:.5f}\t{task['type']}\t{c['url']}\n")
                 sol = got.get("solution") or {}
                 tok = sol.get("gRecaptchaResponse") or sol.get("token")
                 if not tok:

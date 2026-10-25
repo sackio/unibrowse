@@ -60,7 +60,7 @@ def pick(a):
         again = retryable(a.results)
         rows = [r for r in read_tsv(a.queue) if r["key"] in again]
     if a.keys:
-        want = set(a.keys.split(","))
+        want = set(open(a.keys[1:]).read().split() if a.keys.startswith("@") else a.keys.split(","))
         rows = [r for r in read_tsv(a.queue) if r["key"] in want]   # explicit keys: the caller's call
     rows = rows[: a.limit] if a.limit else rows
     w = csv.DictWriter(sys.stdout, COLS, delimiter="\t", extrasaction="ignore", lineterminator="\n")
@@ -99,6 +99,8 @@ def run(a):
 
 def harvest(a):
     done = done_keys(a.results) - retryable(a.results)
+    if a.keys:                                         # a re-run the operator asked for by key (Ben, ask unibrowse/a4s)
+        done -= set(open(a.keys[1:]).read().split() if a.keys.startswith("@") else a.keys.split(","))
     new = []
     for line in sys.stdin:
         line = line.split("ROW ", 1)[-1] if "ROW " in line else ""
@@ -126,6 +128,7 @@ def main():
     p.add_argument("--dry", action="store_true"); p.add_argument("--row-wall", type=int, default=420)
     p.add_argument("--worker", default="/opt/drover/worker/drover_worker.py")
     p = sp.add_parser("harvest"); p.add_argument("--results", required=True)
+    p.add_argument("--keys", help="keys (comma-separated or @file) the results file may take once more")
     a = ap.parse_args()
     {"pick": pick, "run": run, "harvest": harvest}[a.cmd](a)
 
