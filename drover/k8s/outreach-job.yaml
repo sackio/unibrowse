@@ -27,7 +27,6 @@ spec:
     spec:
       restartPolicy: Never
       priorityClassName: idle-batch
-      nodeSelector: {kubernetes.io/hostname: server7}
       securityContext:
         seccompProfile: {type: Unconfined}
       volumes:
