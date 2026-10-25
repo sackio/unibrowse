@@ -211,10 +211,17 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
                 if re.search(cfg["OK_CONTACT"], after, re.I) and not re.search(cfg["FAIL_TEXT"], after, re.I):
                     return done("submitted", f"{kind}+paid|callback|ok-text")
                 return done("unsure", f"{kind}: {why}")
-            if not token:
+            if not token and why.startswith("no reCAPTCHA widget to solve"):
+                # Score-only reCAPTCHA (v3): nothing to press or buy; the page
+                # mints its own token when the form submits. Send it by hand and
+                # let the page's reply score the row (live 2026-10-25: 17 of 32
+                # rows were refused here without a press).
+                kind += "+v3"
+            elif not token:
                 return done("blocked", f"{kind}: {why} — did not submit")
-            kind += "+paid"
-        if not token:
+            else:
+                kind += "+paid"
+        if not token and not kind.endswith("+v3"):
             served = b.eval("[...document.querySelectorAll(\"iframe[src*='bframe'],iframe[src*='hcaptcha.com'][src*='challenge']\")]"
                             ".some(f => { const r = f.getBoundingClientRect(); return r.top > -1000 && r.height > 100; })")
             return done("blocked", f"{kind}: " + ("challenge served — did not submit" if served
