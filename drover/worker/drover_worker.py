@@ -85,11 +85,36 @@ def start_proxy_forwarder():
     worker runs a local forwarder on 127.0.0.1 that adds Proxy-Authorization
     and relays bytes, and Chrome points at that. Returns Chrome's proxy URL."""
     import socket, socketserver
-    from urllib.parse import urlsplit
+    from urllib.parse import urlsplit, unquote
+    if _FWD:
+        return _FWD[0]
     up = urlsplit(os.environ["DROVER_PROXY"])
     if not up.username:
         return os.environ["DROVER_PROXY"]
     auth = "Basic " + base64.b64encode(f"{up.username}:{up.password}".encode()).decode()
+    socks = up.scheme.startswith("socks5")
+
+    def socks_open(host, port):
+        """A SOCKS5 tunnel with username/password auth (RFC 1928/1929), which
+        Chrome cannot do itself. Used for a Nord SOCKS5 server, the one kind of
+        exit 2Captcha can also reach (Ben, ask unibrowse/a4s)."""
+        u = socket.create_connection((up.hostname, up.port or 1080), timeout=30)
+        u.sendall(b"\x05\x01\x02")
+        if u.recv(2) != b"\x05\x02":
+            raise OSError("socks: no user/pass method")
+        user, pw = unquote(up.username).encode(), unquote(up.password).encode()
+        u.sendall(b"\x01" + bytes([len(user)]) + user + bytes([len(pw)]) + pw)
+        if u.recv(2)[1:] != b"\x00":
+            raise OSError("socks: auth refused")
+        h = host.encode()
+        u.sendall(b"\x05\x01\x00\x03" + bytes([len(h)]) + h + port.to_bytes(2, "big"))
+        rep = u.recv(4)
+        if len(rep) < 2 or rep[1] != 0:
+            raise OSError(f"socks: connect refused {rep[1:2].hex()}")
+        u.recv({1: 4, 4: 16}.get(rep[3], 0) or u.recv(1)[0])
+        u.recv(2)
+        u.settimeout(None)
+        return u
 
     def pump(a, b):
         try:
@@ -116,10 +141,28 @@ def start_proxy_forwarder():
             top, rest = head.split(b"\r\n\r\n", 1)
             lines = top.split(b"\r\n")
             lines = [lines[0]] + [l for l in lines[1:] if not l.lower().startswith(b"proxy-authorization:")]
-            lines.append(b"Proxy-Authorization: " + auth.encode())
-            u = socket.create_connection((up.hostname, up.port or 3128), timeout=30)
-            u.settimeout(None)
-            u.sendall(b"\r\n".join(lines) + b"\r\n\r\n" + rest)
+            if socks:
+                method, target, ver = lines[0].split(b" ", 2)
+                try:
+                    if method == b"CONNECT":
+                        host, port = target.decode().rsplit(":", 1)
+                        u = socks_open(host, int(port))
+                        c.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                        if rest:
+                            u.sendall(rest)
+                    else:                              # plain http: absolute URI -> origin form
+                        t = urlsplit(target.decode())
+                        u = socks_open(t.hostname, t.port or 80)
+                        lines[0] = b" ".join([method, ((t.path or "/") + (f"?{t.query}" if t.query else "")).encode(), ver])
+                        u.sendall(b"\r\n".join(lines) + b"\r\n\r\n" + rest)
+                except OSError:
+                    c.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                    return
+            else:
+                lines.append(b"Proxy-Authorization: " + auth.encode())
+                u = socket.create_connection((up.hostname, up.port or 3128), timeout=30)
+                u.settimeout(None)
+                u.sendall(b"\r\n".join(lines) + b"\r\n\r\n" + rest)
             t = threading.Thread(target=pump, args=(u, c), daemon=True)
             t.start()
             pump(c, u)
@@ -130,7 +173,11 @@ def start_proxy_forwarder():
 
     srv = S(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return f"http://127.0.0.1:{srv.server_address[1]}"
+    _FWD.append(f"http://127.0.0.1:{srv.server_address[1]}")
+    return _FWD[0]
+
+
+_FWD = []                                              # the one forwarder per process
 
 
 LANGS = {"US": "en-US", "GB": "en-GB", "CA": "en-CA", "AU": "en-AU", "IE": "en-IE",
@@ -149,6 +196,8 @@ def identity():
     (America/New_York, en-US); the result records which happened."""
     import urllib.request
     proxy = os.environ.get("DROVER_PROXY")
+    if proxy and proxy.startswith("socks5"):           # urllib speaks no SOCKS; go through the forwarder
+        proxy = start_proxy_forwarder()
     opener = urllib.request.build_opener(*([urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else []))
     try:
         d = json.load(opener.open("http://ip-api.com/json/?fields=status,query,countryCode,city,lat,lon,timezone,isp,proxy,hosting", timeout=8))
@@ -1341,6 +1390,41 @@ def job_session(b, url, steps, out, shot):
                                    "chars": len(val), "wrote": str(dest),
                                    "httpOnly": hit[0].get("httpOnly"),
                                    "expires": hit[0].get("expires")})
+            elif do == "setcookies":
+                # ⛔ VALUES NEVER THROUGH THE LOG, SAME RULE AS `cookie`. The
+                # cookies come from a file (`from`, a 600 file in the mounted
+                # share dir the orchestrator writes and deletes), so no token
+                # is ever in steps.json, in argv, or in a result row -- only
+                # the NAMES set are reported.
+                # ⭐ WHY A STEP. Transplanting a kept session (Amazon, eBay,
+                # DoorDash) from a browser that is already logged in is how a
+                # profile gets warm without re-entering a password or a 2FA
+                # code. Storage.setCookies is browser-wide and carries httpOnly
+                # cookies (at-main/x-main/session-token), which document.cookie
+                # and an eval cannot set -- which is the whole reason a read of
+                # the auth cookie is useless without this to put it back.
+                src = pathlib.Path(st["from"])
+                cks = json.loads(src.read_text())
+                _ss = {"lax": "Lax", "strict": "Strict", "none": "None",
+                       "no_restriction": "None"}
+                params = []
+                for c in cks:
+                    p = {"name": c["name"], "value": c["value"],
+                         "domain": c.get("domain"), "path": c.get("path") or "/"}
+                    if c.get("secure") is not None:
+                        p["secure"] = c["secure"]
+                    if c.get("httpOnly") is not None:
+                        p["httpOnly"] = c["httpOnly"]
+                    ss = (c.get("sameSite") or "").lower()
+                    if ss in _ss:
+                        p["sameSite"] = _ss[ss]
+                    exp = c.get("expires") or c.get("expirationDate")
+                    if exp and exp > 0:
+                        p["expires"] = exp
+                    params.append(p)
+                b.send("Storage.setCookies", {"cookies": params})
+                note(i, st, "ok", {"set": len(params),
+                                   "names": sorted({c["name"] for c in cks})})
             elif do == "wait":
                 time.sleep(float(st.get("seconds", 1)))
                 note(i, st, "ok")
