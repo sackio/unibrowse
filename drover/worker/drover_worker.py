@@ -574,19 +574,47 @@ class Hands:
         # delivers its mousemoves to the frame, not the top page, so one point
         # can read "no movement" on a page that works (measured on a town
         # contact page, 2026-10-24). Try a few spread-out points.
+        # ⛔ A SINGLE SIGHTING CANNOT BE TRUSTED, AND THIS USED TO BELIEVE ONE.
+        # move_screen clears the page's last sighting before it moves, but a
+        # renderer that is busy delivers the PREVIOUS move's mousemove after
+        # that clear -- so the page reports where the pointer WAS and this
+        # attributes it to where the pointer now IS. The offset then comes out
+        # wrong by the distance between two probe points. Measured on
+        # claude.ai/login 2026-10-25, which blocks its renderer for ~14s while
+        # it hydrates: dx=356 dy=617 where the truth is 0,143, and the next
+        # click was aimed off-screen and clamped to the screen edge. The run
+        # before and after it were both fine, which is what a race looks like.
+        # ⇒ Learn the offset from one point, then PREDICT a second point and
+        # check the page agrees. Two points that agree cannot both be a stale
+        # delivery of the other.
+        dpr = self.b.eval("devicePixelRatio") or 1
+        pts = [(700, 500), (300, 250), (1300, 300), (500, 800), (1500, 750), (900, 400)]
         seen = None
-        for sx, sy in [(700, 500), (300, 250), (1300, 300), (500, 800), (1500, 750)]:
+        for i, (sx, sy) in enumerate(pts):
             sx, sy = sx + random.randint(-40, 40), sy + random.randint(-40, 40)
             self.move_screen(sx, sy)
             time.sleep(0.15)
             seen = self.seen()
-            if seen and abs(self.where()[0] - sx) < 3:
-                break
+            if not (seen and abs(self.where()[0] - sx) < 3):
+                continue
+            dx, dy = sx - seen[0] * dpr, sy - seen[1] * dpr
+            vx, vy = pts[(i + 1) % len(pts)]
+            vx, vy = vx + random.randint(-40, 40), vy + random.randint(-40, 40)
+            self.move_screen(vx, vy)
+            time.sleep(0.2)
+            check = self.seen()
+            if not check:
+                continue
+            # Where the page SHOULD have seen the pointer if dx,dy are right.
+            if abs(check[0] * dpr + dx - vx) < 4 and abs(check[1] * dpr + dy - vy) < 4:
+                self.dx, self.dy = dx, dy
+                return {"dx": dx, "dy": dy, "trusted": bool(seen[2] and check[2]),
+                        "confirmedAt": [vx, vy]}
         if not seen:
             raise RuntimeError("calibration: page saw no pointer movement")
-        dpr = self.b.eval("devicePixelRatio") or 1
-        self.dx, self.dy = sx - seen[0] * dpr, sy - seen[1] * dpr
-        return {"dx": self.dx, "dy": self.dy, "trusted": seen[2]}
+        raise RuntimeError("calibration: no two points agreed on the offset "
+                           "(last sighting %s, pointer %s) -- the page is probably "
+                           "still blocking its renderer" % (seen, self.where()))
 
     def where(self):
         d = dict(l.split("=", 1) for l in xdo("getmouselocation", "--shell").splitlines() if "=" in l)
