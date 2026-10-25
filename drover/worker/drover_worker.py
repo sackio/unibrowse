@@ -808,6 +808,29 @@ def paid_solve(b, url, kind, cfg):
     return False, f"token bought (${r.get('cost')}) but it did not land in the page"
 
 
+# Marks the button that dismisses a visible cookie/consent layer (data-ub-cc)
+# and returns true, or false when no such layer is up. A layer is a fixed or
+# sticky box whose text talks about cookies or consent. Refusing beats accepting.
+DISMISS_CONSENT = r"""(() => {
+  document.querySelectorAll('[data-ub-cc]').forEach(e => e.removeAttribute('data-ub-cc'));
+  const shown = e => { const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && +s.opacity !== 0; };
+  const layer = e => { for (let p = e; p && p !== document.body; p = p.parentElement) {
+      const pos = getComputedStyle(p).position;
+      if ((pos === 'fixed' || pos === 'sticky') && /cookie|consent|gdpr|privacy/i.test(p.innerText || '')) return true; }
+    return false; };
+  const btns = [...document.querySelectorAll('button, a[role=button], [role=button], input[type=button], input[type=submit]')]
+    .filter(e => shown(e) && layer(e));
+  const label = e => (e.innerText || e.value || e.getAttribute('aria-label') || '').trim();
+  for (const re of [/^(reject|decline|deny)( all)?\b|necessary only|only (necessary|essential)|essential only/i,
+                    /^(accept|allow|agree|ok|okay|got it|i understand|understood|i agree)\b/i, /^(close|dismiss|×|x)$/i]) {
+    const b = btns.find(e => re.test(label(e)));
+    if (b) { b.setAttribute('data-ub-cc', '1'); return true; }
+  }
+  return false;
+})()"""
+
+
 def job_contact(b, row, cfg, dry=False, shot=None):
     """One outreach row: open a town's contact form, fill it by hand, press any
     captcha checkbox, submit, and read the verdict. Field choice, message and
@@ -856,6 +879,14 @@ def job_contact(b, row, cfg, dry=False, shot=None):
     hands = Hands(b)
     try:
         hands.calibrate()
+        # A cookie modal can cover the form and lock the page's scroll (live
+        # 2026-10-25, ghentmn.gov: CookieConsent's #cc-main over every field,
+        # "could not scroll into view"). Dismiss it by hand, refusing first.
+        for _ in range(2):
+            if not b.eval(DISMISS_CONSENT):
+                break
+            hands.click("[data-ub-cc]")
+            time.sleep(random.uniform(0.6, 1.2))
         for k in ("first", "last", "full", "email", "subject", "message"):
             if k != "email" and k != "message" and not found["fields"].get(k):
                 continue
