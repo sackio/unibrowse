@@ -22,7 +22,7 @@ session yet", which is the expected state before the first login.
 include SPENT amounts and reading them as a balance once caused a 6x
 overstatement (recorded against v1).
 """
-import argparse, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, urllib.request
+import argparse, datetime, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, urllib.request
 
 BILLING = "https://platform.claude.com/settings/billing"
 
@@ -48,6 +48,119 @@ STEPS = [
 SIGNED_OUT = re.compile(r"continue with (google|email)|sign in to"
                         r"|click the link sent to|verification code", re.I)
 CREDIT = re.compile(r"(credit|grant|balance|expires)[^.]{0,120}", re.I)
+
+# ⚠️ CREDIT ABOVE IS A BLURB, NOT A FIGURE: `[^.]` stops at the decimal point,
+# so a $198.72 balance comes back from it as "$198". Fine for a human reading
+# the row, useless for deciding anything, and these two exist for the deciding.
+# Both measured against the live page 2026-10-25:
+#   "Remaining balance Applies to Expires on Date granted $198.72 of $200.00"
+#   "Oct 17, 2026 API credit (Max 20x) Expiring Nov 20, 2026 $200.00"
+BALANCE = re.compile(r"Remaining balance.{0,200}?\$([\d,]+\.\d{2}) of \$([\d,]+\.\d{2})", re.S)
+EXPIRING = re.compile(r"Expiring ([A-Z][a-z]{2} \d{1,2}, \d{4})")
+# ⛔ NOT `BROKER`: that name is already taken further down by the reprobe
+# guard's /inbound URL, and the later binding wins at import. The alert
+# then posts to the wrong path and 404s -- silently, since nothing but the
+# alert itself was ever going to notice.
+POST_URL = os.environ.get("DROVER_POST_URL", "http://192.168.1.168:3030/messages")
+
+
+def figures(page):
+    """(remaining, granted, soonest expiry) from the billing page, any None if
+    the page did not say. ⚠️ The SOONEST expiry, not the last one: the invoice
+    history lists expired grants too, and the number that matters is when the
+    credit now being spent runs out."""
+    m = BALANCE.search(page)
+    bal = (float(m.group(1).replace(",", "")), float(m.group(2).replace(",", ""))) if m else (None, None)
+    dates = []
+    for e in EXPIRING.finditer(page):
+        try:
+            dates.append(datetime.datetime.strptime(e.group(1), "%b %d, %Y").date())
+        except ValueError:
+            pass
+    return bal[0], bal[1], (min(dates) if dates else None)
+
+
+def post(to, subject, content):
+    body = json.dumps({"from": "unibrowse", "to": to, "kind": "dm",
+                       "priority": "info", "subject": subject,
+                       "content": content}).encode()
+    req = urllib.request.Request(POST_URL, data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return r.status
+
+
+def watch(state_path, to, page, signed_in, floor, days):
+    """Run daily from cron and say NOTHING unless a person has to act.
+
+    ⛔ A daily "balance moved by three cents" is how a cron teaches someone to
+    ignore it, so routine movement is recorded and not spoken. Four things are
+    worth a message, and each is rate-limited by state rather than by luck:
+    · the session died -- but only on the SECOND consecutive run, because one
+      bad run is a slow page or a docker hiccup, and a genuinely dead session
+      is still dead tomorrow. The cost of waiting a day is nothing; the cost of
+      crying wolf is that the real one is ignored.
+    · the page stopped yielding a figure, same two-in-a-row rule: that means
+      the layout moved, which is a code problem, not a credit problem.
+    · the balance crossed below `floor` -- ONCE per crossing, re-armed if it
+      goes back above.
+    · the grant expires within `days` -- once per expiry date.
+    """
+    st = {}
+    sp = pathlib.Path(state_path).expanduser()
+    if sp.exists():
+        try:
+            st = json.loads(sp.read_text())
+        except Exception:
+            st = {}
+    new = {"at": datetime.datetime.now().isoformat(timespec="seconds"),
+           "signed_in": bool(signed_in)}
+    say = []
+
+    if not signed_in:
+        new["badRuns"] = int(st.get("badRuns") or 0) + 1
+        if new["badRuns"] == 2:
+            say.append("Console profile agents2 has no session — two runs in a row. "
+                       "The balance read is blind until it is logged in again: "
+                       "console_credits.py --login --submit")
+    else:
+        rem, granted, exp = figures(page)
+        new.update({"remaining": rem, "granted": granted,
+                    "expires": exp.isoformat() if exp else None})
+        if rem is None:
+            new["badRuns"] = int(st.get("badRuns") or 0) + 1
+            if new["badRuns"] == 2:
+                say.append("Console billing page no longer yields a balance — two runs "
+                           "in a row. The page layout moved; the read needs fixing.")
+        else:
+            new["badRuns"] = 0
+            if rem < floor:
+                if not st.get("warnedFloor"):
+                    say.append("Console credit for agents2 is down to $%.2f of $%.2f."
+                               % (rem, granted or 0))
+                new["warnedFloor"] = True
+            if exp:
+                left = (exp - datetime.date.today()).days
+                new["daysLeft"] = left
+                if left <= days and st.get("warnedExpiry") != exp.isoformat():
+                    say.append("Console credit for agents2 expires %s — %d days. "
+                               "$%.2f of $%.2f unspent."
+                               % (exp.isoformat(), left, rem, granted or 0))
+                    new["warnedExpiry"] = exp.isoformat()
+                elif st.get("warnedExpiry") == exp.isoformat():
+                    new["warnedExpiry"] = st["warnedExpiry"]
+    # ⛔ State is written whether or not anything was said, and BEFORE the post:
+    # a broker that is down must not cause the same alert to fire again tomorrow
+    # as though it were new.
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(json.dumps(new, indent=1))
+    if say and to:
+        try:
+            post(to, "Claude Console credit", "\n".join(say))
+        except Exception as e:
+            print(json.dumps({"watch": "post-failed", "error": str(e)[:160]}))
+    return new, say
+
 
 
 # ── login ───────────────────────────────────────────────────────────────────
@@ -190,6 +303,13 @@ def main():
                     help="drive the login page; stops before the submit unless --submit")
     ap.add_argument("--submit", action="store_true",
                     help="⛔ sends a REAL single-use magic link to the mailbox")
+    ap.add_argument("--watch", action="store_true",
+                    help="cron mode: record the reading and speak only when it matters")
+    ap.add_argument("--state", default="~/.local/state/drover/console-credits.json",
+                    help="⚠️ host-local: the cron runs on one host, so does its memory")
+    ap.add_argument("--notify", default="slack:U0NGEHS2J")
+    ap.add_argument("--floor", type=float, default=25.0)
+    ap.add_argument("--days", type=int, default=14)
     a = ap.parse_args()
     prof = pathlib.Path(a.profile).resolve()
     # The container runs as uid 1000, so a profile it cannot write makes Chrome
@@ -230,12 +350,16 @@ def main():
     # and the first run corrected it.
     if "/login" in url or "/magic-link" in url or SIGNED_OUT.search(page[:4000]):
         out["signed_in"] = False
+        if a.watch:
+            out["watch"], out["said"] = watch(a.state, a.notify, page, False, a.floor, a.days)
         print(json.dumps(out))
         if a.json:
             pathlib.Path(a.json).write_text(json.dumps({**out, "result": r}, indent=1))
         sys.exit(3)
     out["signed_in"] = True
     out["grants"] = " | ".join(m.group(0).strip() for m in CREDIT.finditer(page))[:700]
+    if a.watch:
+        out["watch"], out["said"] = watch(a.state, a.notify, page, True, a.floor, a.days)
     print(json.dumps(out))
     if a.json:
         pathlib.Path(a.json).write_text(json.dumps({**out, "result": r}, indent=1))

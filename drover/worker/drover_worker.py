@@ -28,7 +28,7 @@ workers. This file is that driver, for one pod.
 
 Stdlib only. Python 3.10+.
 """
-import argparse, base64, json, math, os, pathlib, random, shutil, signal, subprocess, sys, tempfile, threading, time
+import argparse, base64, json, math, os, pathlib, random, re, shutil, signal, subprocess, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 for p in (os.path.join(HERE, "..", "..", "scripts"), "/opt/drover/scripts"):
@@ -1304,9 +1304,18 @@ def job_session(b, url, steps, out, shot):
                 # row carries the name, whether it was found, and the length.
                 # A sessionKey in a step row would be a credential written into
                 # a result file by the thing built to hand it over safely.
-                want, dom = st["name"], st.get("domain")
+                # ⭐ `match` (a regex on the name) rather than `name`, because
+                # some apps put identifiers IN the cookie name: Alpaca's are
+                # CognitoIdentityServiceProvider.<clientId>.<sub>.accessToken,
+                # so an exact name would hardcode one user's sub into a flow
+                # and silently miss on every other account.
+                want, dom, pat = st.get("name"), st.get("domain"), st.get("match")
+                if not want and not pat:
+                    raise KeyError("name or match")
+                rx = re.compile(pat) if pat else None
                 hit = [c for c in b.cookies()
-                       if c.get("name") == want and (not dom or dom in (c.get("domain") or ""))]
+                       if (c.get("name") == want if want else rx.search(c.get("name") or ""))
+                       and (not dom or dom in (c.get("domain") or ""))]
                 if not hit:
                     # NAMES are not credentials, and "no such cookie" is
                     # useless without them: it cannot distinguish a wrong name
@@ -1314,7 +1323,7 @@ def job_session(b, url, steps, out, shot):
                     # returned nothing at all.
                     seen = sorted({(c.get("domain") or "") + " " + (c.get("name") or "")
                                    for c in b.cookies()})
-                    note(i, st, "no-cookie", {"name": want, "domain": dom,
+                    note(i, st, "no-cookie", {"name": want, "match": pat, "domain": dom,
                                               "present": seen[:40], "total": len(seen)})
                     break
                 val = hit[0].get("value") or ""
@@ -1325,7 +1334,11 @@ def job_session(b, url, steps, out, shot):
                 dest.touch(mode=0o600, exist_ok=True)
                 os.chmod(dest, 0o600)
                 dest.write_text(val)
-                note(i, st, "ok", {"name": want, "chars": len(val), "wrote": str(dest),
+                # The name REPORTED is the one that matched, not the one
+                # asked for: with `match` those differ, and the matched name is
+                # the fact worth having.
+                note(i, st, "ok", {"name": hit[0].get("name"), "matches": len(hit),
+                                   "chars": len(val), "wrote": str(dest),
                                    "httpOnly": hit[0].get("httpOnly"),
                                    "expires": hit[0].get("expires")})
             elif do == "wait":
