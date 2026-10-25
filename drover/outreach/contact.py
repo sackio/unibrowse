@@ -89,6 +89,19 @@ def paid_solve(b, url, kind, cfg):
 # Marks the button that dismisses a visible cookie/consent layer (data-ub-cc)
 # and returns true, or false when no such layer is up. A layer is a fixed or
 # sticky box whose text talks about cookies or consent. Refusing beats accepting.
+# The open reCAPTCHA challenge popup, as [left, top, w, h, innerWidth,
+# innerHeight, dpr], or null once it is closed (its container goes hidden).
+CHALLENGE_RECT = r"""(() => {
+  const f = [...document.querySelectorAll("iframe[src*='recaptcha'][src*='bframe']")].find(f => {
+    const r = f.getBoundingClientRect();
+    return r.height > 100 && r.bottom > 0 && r.top < innerHeight && getComputedStyle(f).visibility !== "hidden"
+      && (!f.offsetParent || getComputedStyle(f.offsetParent).visibility !== "hidden");
+  });
+  if (!f) return null;
+  const r = f.getBoundingClientRect();
+  return [r.left, r.top, r.width, r.height, innerWidth, innerHeight, devicePixelRatio];
+})()"""
+
 DISMISS_CONSENT = r"""(() => {
   document.querySelectorAll('[data-ub-cc]').forEach(e => e.removeAttribute('data-ub-cc'));
   const shown = e => { const r = e.getBoundingClientRect(), s = getComputedStyle(e);
@@ -265,9 +278,22 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
                 kind += "+paid"
                 # The challenge popup a pressed checkbox opened can still sit over
                 # the form after the bought token lands (live 2026-10-25: five rows
-                # "submit ... covered"). A person closes it with Escape.
-                w.xdo("key", "Escape")
-                time.sleep(random.uniform(0.6, 1.2))
+                # "submit ... covered"). Escape does not close it (chunk y: ten
+                # rows still covered); a person clicks the page beside it, which
+                # lands on reCAPTCHA's full-page backdrop and dismisses it.
+                for _ in range(2):
+                    r = b.eval(CHALLENGE_RECT)
+                    if not r:
+                        break
+                    left, top, cw, ch, vw, vh, dpr = r
+                    x = random.uniform(20, left - 20) if left > 80 else random.uniform(left + cw + 20, vw - 20)
+                    y = random.uniform(vh * 0.3, vh * 0.7)
+                    hands.move_screen(round(hands.dx + x * dpr), round(hands.dy + y * dpr))
+                    time.sleep(random.uniform(0.1, 0.3))
+                    w.xdo("click", "1")
+                    time.sleep(random.uniform(0.6, 1.2))
+                else:
+                    w.xdo("key", "Escape")
         if not token and not kind.endswith("+v3"):
             served = b.eval("[...document.querySelectorAll(\"iframe[src*='bframe'],iframe[src*='hcaptcha.com'][src*='challenge']\")]"
                             ".some(f => { const r = f.getBoundingClientRect(); return r.top > -1000 && r.height > 100; })")
