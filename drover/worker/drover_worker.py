@@ -822,12 +822,14 @@ def paid_solve(b, url, kind, cfg):
     if r.get("error"):
         return False, "paid solve refused: " + r["error"][:120]
     inj = cfg["INJECT"].replace("__TOKEN__", json.dumps(r["token"])).replace("__FIELD__", json.dumps(r["field"]))
-    fired = 0
+    fired, seen = 0, []                                # seen: what each write attempt reported, for the note
     for _ in range(2):                                 # the token is paid for: try the write twice
         try:
             res = json.loads(b.eval_main(inj) or "{}")
             fired += res.get("callbacks") or 0
-        except Exception:
+            seen.append(f"w{res.get('fields')}/{res.get('after')}")
+        except Exception as e:
+            seen.append("x:" + str(e)[:60])
             time.sleep(1)
             continue
         time.sleep(1)
@@ -843,7 +845,7 @@ def paid_solve(b, url, kind, cfg):
     # (live chunk 2026-10-24: two such rows were first recorded `blocked`).
     if fired:
         return None, f"token bought (${r.get('cost')}), widget callback fired ({fired}), field empty after — may have submitted"
-    return False, f"token bought (${r.get('cost')}) but it did not land in the page"
+    return False, f"token bought (${r.get('cost')}) but it did not land in the page [{' '.join(seen)}]"
 
 
 # Marks the button that dismisses a visible cookie/consent layer (data-ub-cc)
