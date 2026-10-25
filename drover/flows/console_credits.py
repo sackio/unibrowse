@@ -24,7 +24,7 @@ overstatement (recorded against v1).
 """
 import argparse, json, os, pathlib, re, subprocess, sys, tempfile
 
-IMAGE = os.environ.get("DROVER_IMAGE", "192.168.1.168:32000/drover/worker:2026-10-25r")
+IMAGE = os.environ.get("DROVER_IMAGE", "192.168.1.168:32000/drover/worker:2026-10-25s")
 BILLING = "https://platform.claude.com/settings/billing"
 
 # Steps are data (see job_session). textContent, not innerText: v1 read the
@@ -61,7 +61,10 @@ def run_session(profile, steps, timeout=420):
         # failure. Retagging instead would be the wrong fix: the outreach lane
         # pins its own tag in k8s/outreach-job.yaml and its owner asked to be
         # told before it moves, so building a new image under it is not mine to
-        # do quietly. Set DROVER_NO_MOUNT=1 once a tag carries this worker.
+        # do quietly. 2026-10-25s was built from HEAD by that owner and does
+        # carry `session`, so the mount is now a no-op against a matching tag
+        # and exists only to pick up repo edits made since the last build.
+        # DROVER_NO_MOUNT=1 turns it off.
         worker = pathlib.Path(__file__).resolve().parent.parent / "worker" / "drover_worker.py"
         if os.environ.get("DROVER_NO_MOUNT") != "1" and worker.is_file():
             cmd += ["-v", f"{worker}:/opt/drover/worker/drover_worker.py:ro"]
