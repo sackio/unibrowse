@@ -1310,9 +1310,22 @@ def job_session(b, url, steps, out, shot):
                 note(i, st, "unknown-step")
                 break
         except KeyError as e:
+            if st.get("optional"):
+                note(i, st, "skipped", {"field": str(e)})
+                continue
             note(i, st, "missing-field", {"field": str(e)})
             break
         except Exception as e:
+            # ⭐ `optional` exists for the controls that are there or not there
+            # depending on the profile: a cookie banner, a "you were signed
+            # out" notice, a survey. On a disposable profile the banner is
+            # always present and on a kept one never, and a flow that halts on
+            # its absence is a flow that only works the first time. ⛔ Never
+            # put it on a step whose failure MATTERS -- an optional assertion
+            # is not an assertion.
+            if st.get("optional"):
+                note(i, st, "skipped", {"error": str(e)[:120]})
+                continue
             note(i, st, "error", {"error": str(e)[:160]})
             break
     if shot:
