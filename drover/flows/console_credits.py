@@ -24,7 +24,7 @@ overstatement (recorded against v1).
 """
 import argparse, json, os, pathlib, re, subprocess, sys, tempfile
 
-IMAGE = os.environ.get("DROVER_IMAGE", "192.168.1.168:32000/drover/worker:2026-10-25s")
+IMAGE = os.environ.get("DROVER_IMAGE", "192.168.1.168:32000/drover/worker:2026-10-25u")
 BILLING = "https://platform.claude.com/settings/billing"
 
 # Steps are data (see job_session). textContent, not innerText: v1 read the
@@ -41,6 +41,29 @@ STEPS = [
 # billing page is still "Loading" for several seconds after it renders.
 SIGNED_OUT = re.compile(r"continue with (google|email)|sign in to", re.I)
 CREDIT = re.compile(r"(credit|grant|balance|expires)[^.]{0,120}", re.I)
+
+
+# ── login ───────────────────────────────────────────────────────────────────
+# ⛔ EVERYTHING UP TO THE SUBMIT IS FREE; THE SUBMIT IS NOT. Filling the field
+# costs nothing and can be re-run all day. Pressing "Continue with email" asks
+# Anthropic to send a real single-use link to a real mailbox, and hammering
+# that address is what deferred this job originally. So the submit needs an
+# explicit --submit; without it this stops one step short, having proved the
+# page, the selectors and the typed value.
+LOGIN_DRY = [
+    {"do": "nav", "url": "https://platform.claude.com/login"},
+    # Cold profile: this page can render nothing for ~60s. Poll, do not sleep.
+    {"do": "waitfor", "sel": "input[type=email]", "seconds": 90},
+    {"do": "click", "sel": "input[type=email]"},
+    {"do": "type", "env": "DROVER_LOGIN_EMAIL"},
+    # The check v1 never made: that the address actually landed in the field.
+    # Its probe read "agents2@sac" -- 11 of 15 characters -- because it sampled
+    # straight after typing; here the assertion is the step, not a side note.
+    {"do": "expect", "sel": "input[type=email]", "env_value": "DROVER_LOGIN_EMAIL"},
+    # Resolve the submit button WITHOUT pressing it: proves the text match
+    # finds it, so a later --submit is not also testing the selector.
+    {"do": "expect", "sel": "button", "text": "continue with email"},
+]
 
 
 def run_session(profile, steps, timeout=420):
@@ -81,11 +104,27 @@ def main():
     ap.add_argument("--profile", required=True,
                     help="a directory kept across runs; one account, one profile")
     ap.add_argument("--json", help="write the full result here")
+    ap.add_argument("--login", action="store_true",
+                    help="drive the login page; stops before the submit unless --submit")
+    ap.add_argument("--submit", action="store_true",
+                    help="⛔ sends a REAL single-use magic link to the mailbox")
     a = ap.parse_args()
     prof = pathlib.Path(a.profile).resolve()
     # The container runs as uid 1000, so a profile it cannot write makes Chrome
     # fail in a way that looks like the seccomp fault above.
     prof.mkdir(parents=True, exist_ok=True)
+    if a.login:
+        if not os.environ.get("DROVER_LOGIN_EMAIL"):
+            raise SystemExit("--login needs DROVER_LOGIN_EMAIL in the environment "
+                             "(never on the command line: ps is world-readable)")
+        if a.submit:
+            raise SystemExit("--submit is not implemented yet: redeeming the link needs a "
+                             "second tab in this browser, which job_session does not drive. "
+                             "Refusing rather than sending a link nothing can redeem.")
+        r = run_session(str(prof), LOGIN_DRY)
+        print(json.dumps({"profile": str(prof), "dry": True, "url": r.get("url"),
+                          "steps": r.get("steps"), "ok": r.get("ok")}))
+        sys.exit(0 if r.get("ok") else 1)
     r = run_session(str(prof), STEPS)
     page = (r.get("reads") or {}).get("page") or ""
     url = r.get("url") or ""

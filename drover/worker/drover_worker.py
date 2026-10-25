@@ -959,7 +959,10 @@ def job_session(b, url, steps, out, shot):
                     "return e.value!==undefined&&e.value!==null?e.value:"
                     "e.textContent.replace(/\\s+/g,' ').trim()})()"
                     % json.dumps(sel))
-                want = st.get("value")
+                # env_value keeps the expected value out of the steps file for
+                # the same reason `type` takes env: an address or secret in a
+                # file on disk is a copy nobody tracks.
+                want = os.environ[st["env_value"]] if st.get("env_value") else st.get("value")
                 if want is None:
                     ok = got is not None
                 elif st.get("contains"):
