@@ -6,7 +6,7 @@ Owned by the outreach lane; the worker (drover/worker/*) is unibrowse's. This
 file is loaded by path from the worker, which passes itself in as `w` for the
 hand (w.Hands), the X input (w.xdo) and the motion model (w.CFG, w.hm).
 """
-import json, os, random, sys, time
+import json, os, random, re, sys, time
 
 # Captcha widgets a hand can press, by the frame they render in, with where
 # the checkbox sits inside it (fractions of the frame's box), and the field a
@@ -103,6 +103,42 @@ DISMISS_CONSENT = r"""(() => {
 })()"""
 
 
+NEAR_TARGET = r"""((sel, x, y) => {
+  const t = document.querySelector(sel), e = document.elementFromPoint(x, y);
+  if (!t || !e) return false;
+  return e === t || t.contains(e) || e.contains(t) || e.control === t
+      || (e.parentElement && e.parentElement === t.parentElement);
+})"""
+
+
+def click_field(b, hands, w, sel):
+    """Hands.click, plus one guarded second chance. The click's own hit test can
+    refuse a hand that is on the field: live 2026-10-25 the page saw the pointer
+    exactly at the aim and the test still failed (a floating label or wrapper on
+    top). So when it refuses, press only if what lies under the aim is the field,
+    its label, a wrapper or a sibling, and keep the row only if the field then
+    has focus: the page's own word that the press reached it."""
+    try:
+        hands.click(sel)
+        return
+    except RuntimeError as e:
+        m = re.search(r"aim (\d+),(\d+)", str(e))
+        if "pointer would not land" not in str(e) or not m:
+            raise
+        x, y = int(m.group(1)), int(m.group(2))
+        px, py = hands.where()                          # the press lands where the hand IS
+        if abs(px - (hands.dx + x)) > 3 or abs(py - (hands.dy + y)) > 3:
+            raise
+        if not b.eval(NEAR_TARGET + f"({json.dumps(sel)}, {x}, {y})"):
+            raise
+        pre, dwell = w.hm.press_timing(w.CFG)
+        w.xdo("sleep", f"{pre:.3f}", "mousedown", "1", "sleep", f"{dwell:.3f}", "mouseup", "1")
+        time.sleep(0.3)
+        if not b.eval(f"(t => !!t && (document.activeElement === t || t.contains(document.activeElement)))"
+                      f"(document.querySelector({json.dumps(sel)}))"):
+            raise
+
+
 def job_contact(b, row, cfg, w, dry=False, shot=None):
     """One outreach row: open a town's contact form, fill it by hand, press any
     captcha checkbox, submit, and read the verdict. Field choice, message and
@@ -163,7 +199,7 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
             if k != "email" and k != "message" and not found["fields"].get(k):
                 continue
             sel = f"[data-ub-f='{k}']"
-            hands.click(sel)
+            click_field(b, hands, w, sel)
             hands.type(values[k])
             # The last keystroke can still be in flight when typing returns
             # (measured: "Stor" for "Store"). Give the page a moment to catch up.
