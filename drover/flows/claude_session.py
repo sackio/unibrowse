@@ -13,8 +13,14 @@ rather than per re-mint.
 fleet's account-swap path -- other seats read its `isActive` contract -- and
 Ben put it LAST in the porting order for exactly that reason. This flow is
 additive: something `claude-login-auto` could call, not a replacement for it.
-⛔ The cookie file is written ONLY with --cookie-out, so no run changes what the
-sweep reads by accident. Without it you get a length and an expiry.
+⛔ The cookie file is written ONLY with --cookie-out, and ONLY after the session
+is identified as the right account by asking claude.ai/api/organizations whose
+it is -- the same owner probe claude-login-auto runs, and for the same reason:
+a cookie read can pick up a different profile than the one that signed in, and
+an unidentified cookie is exactly what once attributed one account's usage to
+another. It FAILS CLOSED: curl_cffi missing, API unreachable, or an org list
+that does not name the account -> nothing is written and the previous cookie is
+kept. Without --cookie-out you get a length and an expiry.
 
 ⛔ AND IT WILL NOT MINT A SESSION THAT ALREADY WORKS. The skill's own rule, and
 it is a good one: "Do not open a browser because a number looks surprising.
@@ -42,6 +48,42 @@ HOME = "https://claude.ai/new"
 LOGIN = "https://claude.ai/login"
 USAGE_JSON = "/tmp/claude-usage-latest.json"
 PROFILES = "/mnt/nas/data/.secrets/drover-profiles"
+
+# ⛔ THE SAME MAP claude-login-auto KEEPS, and it must stay in step with it: the
+# org-owner check below matches the account's address against the session's org
+# names, exactly as that script does. ⚠️ agents and agents2 share the sack.io
+# catch-all, so the DOMAIN does not distinguish them -- only the full address
+# in the org name does, which is why the check is `MAIL in name`, not a domain.
+EMAIL = {"ben": "ben@sack.io", "admin": "admin@laurasack.com",
+         "pushbuild": "bsack@pushbuild.com", "agents": "agents@sack.io",
+         "agents2": "agents2@sack.io", "agents3": "agents3@sack.io"}
+
+
+def cookie_owner(key):
+    """Whose session this sessionKey is, asked of the API -- the ONE check that
+    settles it. ⛔ Mirrors claude-login-auto's owner probe byte for byte on
+    purpose: that script learned the hard way (2026-08-11) that a cookie read
+    can pick up a DIFFERENT profile than the one the browser verified, so a
+    run that signed in correctly still wrote the wrong account's cookie. A
+    verification that shares neither the subject (this cookie value) nor the
+    failure mode (wrong owner) of the write proves nothing about it.
+
+    Returns the pipe-joined org names, or a sentinel: NOCURLCFFI / APIFAIL /
+    NOORGS / "" -- every one of which is a REFUSAL, not a licence. 'I could not
+    check' is not 'it is fine'.
+    """
+    try:
+        from curl_cffi import requests as creq
+    except Exception:
+        return "NOCURLCFFI"
+    try:
+        r = creq.get("https://claude.ai/api/organizations",
+                     cookies={"sessionKey": key}, impersonate="chrome", timeout=30)
+        orgs = r.json()
+    except Exception:
+        return "APIFAIL"
+    names = [(o.get("name") or "") for o in (orgs if isinstance(orgs, list) else [])]
+    return "|".join(names) if names else "NOORGS"
 
 # ⚠️ claude.ai renders NOTHING for a long time on a cold profile: readyState
 # stays "interactive" with an empty body for up to ~60s (measured 2026-10-22).
@@ -213,22 +255,39 @@ def main():
                "steps": r.get("steps")}
         if a.cookie_out and cookie.exists() and signed:
             dest = pathlib.Path(a.cookie_out).expanduser()
-            # ⛔ Mode before content, and keep the one it replaces: a cookie
+            key = cookie.read_text().strip()
+            want = EMAIL.get(a.account)
+            # ⛔⛔ IDENTIFY THE COOKIE BEFORE WRITING IT -- this is the whole
+            # safety property, and it is what this flow USED to skip. A cookie
             # written for the WRONG ACCOUNT is the known expensive failure here
             # (2026-08-11: a ben cookie landed in agents.cookie and the sweep
-            # reported ben's quota as agents' for a day). Keeping .prev is what
-            # makes that recoverable.
+            # reported ben's quota as agents' for a day, nearly driving a
+            # needless host swap). The owner probe shares the subject and the
+            # failure mode of the write; nothing else does.
+            who = cookie_owner(key) if want else "NO-EMAIL-FOR-ACCOUNT"
+            out["ownerProbe"] = who
+            ok_owner = bool(want) and want in who
+            out["identityChecked"] = ok_owner
+            if not ok_owner:
+                # ⛔ FAIL CLOSED and say WHICH check refused. A sentinel means
+                # "could not check" (still a refusal); a real org list that
+                # does not contain the address means the cookie is someone
+                # else's. Either way nothing is written, and the previous
+                # cookie -- working until proven otherwise -- is left alone.
+                out["cookieRefused"] = (
+                    "owner probe '%s' does not confirm %s; refusing to write %s"
+                    % (who, want or a.account, dest))
+                print(json.dumps(out))
+                if a.json:
+                    pathlib.Path(a.json).write_text(json.dumps({**out, "result": r}, indent=1))
+                sys.exit(2)
+            # Mode before content, and keep the one it replaces recoverable.
             if dest.exists():
                 shutil.copy2(dest, str(dest) + ".prev")
             dest.touch(mode=0o600, exist_ok=True)
             os.chmod(dest, 0o600)
-            dest.write_text(cookie.read_text())
+            dest.write_text(key)
             out["wrote"] = str(dest)
-            # ⚠️ I cannot verify WHICH account this cookie belongs to from
-            # here. claude-login-auto checks that before writing, and this flow
-            # deliberately does not pretend to: the account name comes from the
-            # profile it was read out of, which is only as right as the profile.
-            out["identityChecked"] = False
         print(json.dumps(out))
         if a.json:
             pathlib.Path(a.json).write_text(json.dumps({**out, "result": r}, indent=1))
