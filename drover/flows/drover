@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""drover -- the front door to the kept Drover profiles.
+
+Any seat may run this. It is the one safe way to pick a kept profile and drive
+it: it holds the Chrome lock so two browsers never open one profile at once, it
+reserves the profile for your seat so the keepwarm cron and other seats step
+aside, and it can route the run through a US VPN exit when a site should not see
+the house IP.
+
+  drover profiles                       what exists, who holds it, is it warm
+  drover reserve  <name> <seat> [--ttl M] [--steal]
+  drover release  <name> [--seat S] [--steal]
+  drover whoami   <seat>                what this seat is holding
+  drover run      <name> --steps F.json --seat S [--egress house|us-vpn] [--timeout S]
+  drover open     <name> --seat S [--url U] [--egress ...]   nav + screenshot, eyeball it
+  drover warm     <name> [--alert]      run the keepwarm check now
+
+WHICH ENGINE. Use Drover (this) for a kept, logged-in, unattended session --
+Amazon, eBay, DoorDash, Google, GitHub, Bing, and business outreach. Use the
+unibrowse MCP (browser_* tools) for interactive research and for anything on a
+browser Ben himself sits in. Rule of thumb: logged-in + unattended -> drover;
+exploratory + attended -> unibrowse.
+
+⛔ SECRETS. Profiles live under /mnt/nas/data/.secrets (mode 700). Cookie and
+credential VALUES never pass through this tool's argv, stdout, or an agent
+context -- a login is transplanted server-to-server (see transplant.py), and
+what you see here is names, states and screenshot paths.
+"""
+import argparse, json, os, subprocess, sys, time
+from urllib.parse import urlsplit, urlunsplit
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import _drover            # noqa: E402
+import _lock              # noqa: E402
+
+REGISTRY = os.path.join(HERE, "profiles.json")
+VPN_PROXY = "/mnt/nas/data/code/scripts/vpn-proxy"
+# A leased exit publishes on 127.0.0.1 AND on the docker0 gateway (the vpn dir's
+# VPN_EXTRA_BIND=172.17.0.1). A container cannot reach the host's loopback, so
+# the proxy URL handed to the worker must name the gateway, not 127.0.0.1.
+DOCKER_GW = os.environ.get("DROVER_DOCKER_GW", "172.17.0.1")
+
+
+def registry():
+    try:
+        with open(REGISTRY) as fh:
+            return {k: v for k, v in json.load(fh).items() if not k.startswith("_")}
+    except (OSError, ValueError):
+        return {}
+
+
+def known_profiles():
+    """Everything the registry lists, plus any kept profile dir on disk that it
+    does not -- so a profile created outside the catalog still shows up."""
+    reg = registry()
+    out = dict(reg)
+    try:
+        for e in sorted(os.listdir(_lock.PROFILES_DIR)):
+            p = os.path.join(_lock.PROFILES_DIR, e)
+            if (os.path.isdir(p) and not e.startswith((".", "_"))
+                    and not e.endswith((".run", "-shots")) and e not in out):
+                out[e] = {"kind": "other", "site": "(uncatalogued)", "egress": "house"}
+    except OSError:
+        pass
+    return out
+
+
+def require(name):
+    path = _lock.profile_path(name)
+    if not os.path.isdir(path):
+        raise SystemExit("⛔ no profile %r at %s. `drover profiles` lists them." % (name, path))
+    return path
+
+
+# ---- VPN egress ---------------------------------------------------------
+
+def lease_us_exit(seat, minutes):
+    """Lease a US exit via vpn-proxy and return a proxy URL a CONTAINER can use.
+
+    vpn-proxy already does the balancing we care about: it reuses a live lease,
+    rotates with VPN_FRESH=1, and skips an IP that sites have been blocking. We
+    just name ourselves as the holder and translate loopback -> docker gateway.
+    """
+    env = {**os.environ, "LEASE_HOLDER": seat}
+    r = subprocess.run([VPN_PROXY, "lease", "us", str(minutes)],
+                       capture_output=True, text=True, timeout=180, env=env)
+    if r.returncode != 0:
+        raise SystemExit("⛔ vpn-proxy lease failed: %s" % (r.stderr.strip()[-300:] or r.stdout.strip()[-300:]))
+    url = next((l.strip() for l in reversed(r.stdout.splitlines()) if "://" in l), None)
+    if not url:
+        raise SystemExit("⛔ vpn-proxy printed no proxy URL:\n%s" % r.stdout.strip()[-300:])
+    u = urlsplit(url)
+    host = u.hostname or ""
+    if host in ("127.0.0.1", "localhost", "::1"):
+        creds = (("%s:%s@" % (u.username, u.password)) if u.username else "")
+        netloc = "%s%s:%s" % (creds, DOCKER_GW, u.port)
+        url = urlunsplit((u.scheme, netloc, u.path, u.query, u.fragment))
+    return url
+
+
+# ---- commands -----------------------------------------------------------
+
+def cmd_profiles(args):
+    profs = known_profiles()
+    if args.json:
+        rows = {}
+        for name, meta in profs.items():
+            rec = _lock.reservation(name)
+            rows[name] = {**meta, "reserved_by": (rec or {}).get("seat"), "warm": warm_state(name)}
+        print(json.dumps(rows, indent=2))
+        return
+    print("%-20s %-10s %-26s %-8s %-14s %s" % ("PROFILE", "KIND", "SITE", "EGRESS", "RESERVED", "WARM"))
+    for name, meta in profs.items():
+        rec = _lock.reservation(name)
+        who = (rec or {}).get("seat") or "-"
+        print("%-20s %-10s %-26s %-8s %-14s %s" % (
+            name, meta.get("kind", "?"), (meta.get("site") or "")[:26],
+            meta.get("egress", "house"), who, warm_state(name)))
+
+
+def warm_state(name):
+    """Best-effort: the last line the keepwarm cron wrote for this profile.
+    Absence means 'never run here', not 'logged out' -- say which."""
+    log = "/tmp/drover-%s-warm.log" % _lock.profile_name(name)
+    try:
+        with open(log) as fh:
+            lines = [l for l in fh if l.strip()]
+        if not lines:
+            return "(log empty)"
+        last = lines[-1].strip()
+        age = int((time.time() - os.path.getmtime(log)) / 3600)
+        tag = "ok" if "warm ok" in last else ("LOGGED OUT" if "LOGGED OUT" in last else "?")
+        return "%s (%dh ago)" % (tag, age)
+    except OSError:
+        return "(no warm log)"
+
+
+def cmd_reserve(args):
+    require(args.name)
+    ok, msg = _lock.reserve(args.name, args.seat, ttl_min=args.ttl, steal=args.steal)
+    print(("" if ok else "⛔ ") + msg)
+    sys.exit(0 if ok else 1)
+
+
+def cmd_release(args):
+    ok, msg = _lock.release(args.name, seat=args.seat, steal=args.steal)
+    print(("" if ok else "⛔ ") + msg)
+    sys.exit(0 if ok else 1)
+
+
+def cmd_whoami(args):
+    held = [n for n in known_profiles() if (_lock.reservation(n) or {}).get("seat") == args.seat]
+    print("%s holds: %s" % (args.seat, ", ".join(held) if held else "(nothing)"))
+
+
+def _drive(path, name, steps, seat, egress, timeout):
+    """Reserve for the run (refreshing if the seat already holds it), route the
+    egress, run the container (which takes the Chrome lock itself), print the
+    step statuses and any reads, then release a reservation we took for the run.
+    """
+    if _lock.reserved_by_other(name, seat):
+        rec = _lock.reservation(name)
+        raise SystemExit("⛔ %s is reserved by %s -- not yours. `drover release %s --steal` "
+                         "only if abandoned." % (name, rec.get("seat"), name))
+    pre = _lock.reservation(name)
+    held_before = bool(pre) and pre.get("seat") == seat
+    ttl = max(int(timeout / 60) + 2, 5)
+    ok, msg = _lock.reserve(name, seat, ttl_min=ttl, steal=False)
+    if not ok:
+        raise SystemExit("⛔ " + msg)
+    # Mount a shots dir so a step writing /out/<x>.png lands beside the profile.
+    out = path + "-shots"
+    os.makedirs(out, exist_ok=True)
+    try:
+        os.chmod(out, 0o777)
+    except OSError:
+        pass
+    proxy_set = False
+    try:
+        if egress == "us-vpn":
+            os.environ["DROVER_PROXY"] = lease_us_exit(seat, ttl + 5)
+            proxy_set = True
+            print("egress: US VPN exit (via vpn-proxy)")
+        else:
+            os.environ.pop("DROVER_PROXY", None)
+            print("egress: house IP")
+        r = _drover.run_session(path, steps, timeout=timeout, out=out)
+        for s in r.get("steps", []):
+            print(" ", s.get("i"), s.get("do"), s.get("status"),
+                  {k: v for k, v in s.items() if k in ("matched", "text", "sel", "error")})
+        reads = r.get("reads") or {}
+        for k, v in reads.items():
+            print("READ[%s]: %s" % (k, (v if isinstance(v, str) else json.dumps(v))[:600]))
+        if r.get("egress"):
+            print("EGRESS:", json.dumps(r["egress"]))
+        return r
+    finally:
+        if proxy_set:
+            os.environ.pop("DROVER_PROXY", None)
+        if not held_before:
+            _lock.release(name, seat=seat)
+
+
+def cmd_run(args):
+    path = require(args.name)
+    try:
+        with open(args.steps) as fh:
+            steps = json.load(fh)
+    except (OSError, ValueError) as e:
+        raise SystemExit("⛔ could not read --steps %s: %s" % (args.steps, e))
+    if not isinstance(steps, list):
+        raise SystemExit("⛔ --steps must be a JSON array of step objects.")
+    _drive(path, args.name, steps, args.seat, args.egress, args.timeout)
+
+
+def cmd_open(args):
+    path = require(args.name)
+    url = args.url or (registry().get(args.name) or {}).get("url")
+    if not url:
+        raise SystemExit("⛔ %s has no url in the registry; pass --url." % args.name)
+    out = path + "-shots"
+    os.makedirs(out, exist_ok=True)
+    try:
+        os.chmod(out, 0o777)
+    except OSError:
+        pass
+    steps = [
+        {"do": "nav", "url": url},
+        {"do": "wait", "seconds": 6},
+        {"do": "eval", "js": "JSON.stringify({title:document.title,"
+                             "snippet:(document.body.innerText||'').replace(/\\s+/g,' ').slice(0,400)})",
+         "as": "state"},
+        {"do": "shot", "path": "/out/%s_open.png" % _lock.profile_name(args.name)},
+    ]
+    _drive(path, args.name, steps, args.seat, args.egress, args.timeout)
+    print("SHOT:", os.path.join(out, "%s_open.png" % _lock.profile_name(args.name)))
+
+
+def cmd_warm(args):
+    meta = registry().get(args.name)
+    if not meta or not meta.get("url"):
+        raise SystemExit("⛔ %s is not a `standing` profile with a url/expect in the registry; "
+                         "`drover warm` is for the kept warm logins." % args.name)
+    cmd = [sys.executable, os.path.join(HERE, "keepwarm.py"),
+           "--profile", _lock.profile_path(args.name),
+           "--url", meta["url"], "--expect", meta["expect"], "--label", args.name]
+    if args.alert:
+        cmd.append("--alert")
+    sys.exit(subprocess.call(cmd))
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="drover", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("profiles", help="list kept profiles, holders, warm state")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_profiles)
+
+    p = sub.add_parser("reserve", help="claim a profile for a seat")
+    p.add_argument("name"); p.add_argument("seat")
+    p.add_argument("--ttl", type=int, default=_lock.DEFAULT_TTL_MIN, help="minutes (default 30)")
+    p.add_argument("--steal", action="store_true"); p.set_defaults(fn=cmd_reserve)
+
+    p = sub.add_parser("release", help="drop a reservation")
+    p.add_argument("name"); p.add_argument("--seat")
+    p.add_argument("--steal", action="store_true"); p.set_defaults(fn=cmd_release)
+
+    p = sub.add_parser("whoami", help="what a seat is holding")
+    p.add_argument("seat"); p.set_defaults(fn=cmd_whoami)
+
+    for verb, fn, helptext in (("run", cmd_run, "drive a steps file"),
+                               ("open", cmd_open, "nav + screenshot to eyeball state")):
+        p = sub.add_parser(verb, help=helptext)
+        p.add_argument("name"); p.add_argument("--seat", required=True)
+        if verb == "run":
+            p.add_argument("--steps", required=True, help="JSON file: array of step objects")
+        else:
+            p.add_argument("--url", help="override the registry url")
+        p.add_argument("--egress", choices=["house", "us-vpn"], default="house")
+        p.add_argument("--timeout", type=int, default=420)
+        p.set_defaults(fn=fn)
+
+    p = sub.add_parser("warm", help="run the keepwarm check for a standing profile")
+    p.add_argument("name"); p.add_argument("--alert", action="store_true")
+    p.set_defaults(fn=cmd_warm)
+
+    args = ap.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

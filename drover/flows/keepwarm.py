@@ -20,6 +20,7 @@ import argparse, json, os, pathlib, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _drover
+import _lock
 
 
 def _post(text, url="http://192.168.1.168:3030/messages"):
@@ -42,6 +43,15 @@ def main():
     args = ap.parse_args()
 
     prof = os.path.expanduser(args.profile)
+    # ⛔ Step aside if a seat is actively using this profile. The warm cron and a
+    # shopping/grocery seat both drive the same kept profiles; two Chromes on one
+    # profile corrupt it. The Chrome lock is the hard backstop, but a reserved
+    # profile is being kept warm by the seat using it anyway, so a skipped cycle
+    # costs nothing and a lock-contention error is noise.
+    if _lock.reserved_by_other(prof, "keepwarm"):
+        rec = _lock.reservation(prof) or {}
+        print("%s warm: SKIPPED -- reserved by %s" % (args.label, rec.get("seat")))
+        sys.exit(0)
     out = prof + "-shots"
     pathlib.Path(out).mkdir(parents=True, exist_ok=True)
     os.chmod(out, 0o777)

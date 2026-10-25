@@ -1,0 +1,11 @@
+{
+  "_note": "The catalog of kept Drover profiles. `kind:standing` = a warm logged-in session kept alive by the keepwarm cron (url+expect are what proves it is still signed in; they must match the cron entry). `kind:service` = a kept login lane driven by its own flow (console credits, claude.ai). `egress:house` = the office house IP (no VPN); `egress:us-vpn` = lease a US exit via vpn-proxy. Edit here to add a profile to `drover profiles`/`drover warm`.",
+  "amazon":   {"kind": "standing", "site": "Amazon",            "url": "https://www.amazon.com/",                 "expect": "Account for|Hello,\\s+\\w",          "egress": "house"},
+  "ebay":     {"kind": "standing", "site": "eBay",              "url": "https://www.ebay.com/",                   "expect": "Hi\\s+[A-Z]\\w",                     "egress": "house"},
+  "doordash": {"kind": "standing", "site": "DoorDash",          "url": "https://www.doordash.com/home",           "expect": "Welcome,\\s+[A-Z]|Reedy Meadow",     "egress": "house"},
+  "github":   {"kind": "standing", "site": "GitHub",            "url": "https://github.com/settings/profile",     "expect": "sackio|Ben Sack",                    "egress": "house"},
+  "google":   {"kind": "standing", "site": "Google",            "url": "https://myaccount.google.com/",           "expect": "ben@sack.io|Ben Sack",               "egress": "house"},
+  "bing":     {"kind": "standing", "site": "Bing / Microsoft",  "url": "https://account.microsoft.com/",          "expect": "Microsoft account",                  "egress": "house"},
+  "agents2":           {"kind": "service", "site": "Claude Console (platform.claude.com)", "egress": "house"},
+  "claudeai-agents2":  {"kind": "service", "site": "claude.ai",                            "egress": "house"}
+}

@@ -14,6 +14,9 @@ policy and belongs to the lane that owns the consequence.
 """
 import json, os, pathlib, re, shutil, subprocess, sys, tempfile, time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _lock  # the per-profile Chrome lock: no two containers on one profile at once
+
 IMAGE = os.environ.get("DROVER_IMAGE", "192.168.1.168:32000/drover/worker:2026-10-25u")
 
 # magiclink.py lives with v1 and is host-local to office: it shells out to
@@ -102,6 +105,12 @@ def orchestrate_login(profile, email_addr, steps, kind="console", guard=None):
     why = guard() if guard else None
     if why:
         raise SystemExit("refusing to submit: " + why)
+    # Hold the Chrome lock for the whole login: the background browser keeps the
+    # kept profile open, and nothing else may open it meanwhile. Acquired here,
+    # not via run_session -- a flock cannot outlive the function that takes it,
+    # and run_session hands back a Popen that outlives its own call.
+    _login_lock = _lock.chrome_lock(str(profile))
+    _login_lock.__enter__()
     # A floor one minute back: a link minted while we were reading the clock is
     # still this run's link, and a floor of exactly now can miss it.
     floor = time.time() - 60
@@ -173,6 +182,7 @@ def orchestrate_login(profile, email_addr, steps, kind="console", guard=None):
         shutil.rmtree(share, ignore_errors=True)
         if td:
             shutil.rmtree(td, ignore_errors=True)
+        _login_lock.__exit__(None, None, None)
 
 
 class proc_output:
@@ -247,14 +257,24 @@ def run_session(profile, steps, timeout=420, share=None, out=None, background=Fa
             for key in ("env", "env_value"):
                 if st.get(key):
                     cmd += ["-e", st[key]]
+        # Egress: the worker reads DROVER_PROXY (and _BYPASS) to route Chrome
+        # through a VPN exit. `-e NAME` with no =value takes it from the host
+        # env, so the proxy URL (which carries a password) never hits argv.
+        for v in ("DROVER_PROXY", "DROVER_PROXY_BYPASS"):
+            if os.environ.get(v):
+                cmd += ["-e", v]
         worker = pathlib.Path(__file__).resolve().parent.parent / "worker" / "drover_worker.py"
         if os.environ.get("DROVER_NO_MOUNT") != "1" and worker.is_file():
             cmd += ["-v", f"{worker}:/opt/drover/worker/drover_worker.py:ro"]
         cmd += [IMAGE, "session", "--steps", "/steps/steps.json"]
         if background:
+            # The caller (orchestrate_login) holds the Chrome lock around the
+            # whole background lifetime itself -- a flock cannot outlive this
+            # function, so it cannot be taken here for a proc we return.
             return subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True), td
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        with _lock.chrome_lock(profile):
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     finally:
         if not background:
             shutil.rmtree(td, ignore_errors=True)
