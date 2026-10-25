@@ -1276,7 +1276,15 @@ def job_session(b, url, steps, out, shot):
             break
     if shot:
         b.shot(shot)
-    r = {"profile": b.keep, "steps": log, "reads": reads,
+    # The landing URL, because "did this page sign me out" is answered by where
+    # the app PUT us, not by matching words in the body: a signed-in page can
+    # contain "sign in" in a menu, and a wrong read there triggers a login,
+    # which is the one expensive thing a kept profile exists to avoid.
+    try:
+        final = b.eval("location.href")
+    except Exception:
+        final = None
+    r = {"profile": b.keep, "url": final, "steps": log, "reads": reads,
          "ok": bool(log) and all(x["status"] == "ok" for x in log)}
     if out:
         pathlib.Path(out).write_text(json.dumps(r, indent=1))
