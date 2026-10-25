@@ -136,6 +136,56 @@ NEAR_TARGET = r"""((sel, x, y) => {
 })"""
 
 
+# Signup mode (cfg MODE=signup): a site's own newsletter form, never a contact,
+# login, account, search or checkout form (Ben, #business-outreach 2026-10-25
+# 19:08; business-3's brief: no contact forms, no accounts, nothing but an
+# email typed). Picks the email input whose form looks like a list signup, marks
+# it, any name fields and consent boxes beside it, and the submit control INSIDE
+# that form: a page-wide "Sign up" button is usually an account signup.
+DISCOVER_SIGNUP = r"""(() => {
+  const vis = e => { const r = e.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== 'hidden' && !e.disabled; };
+  const mark = (e, k) => { e.setAttribute('data-ub-f', k); return e; };
+  document.querySelectorAll('[data-ub-f]').forEach(e => e.removeAttribute('data-ub-f'));
+  const NEWS = /subscribe|newsletter|list-manage|klaviyo|ctct|convertkit|mailerlite|sendinblue|brevo|mailchimp|omnisend|sign ?up|join|updates|email list|mailing list|stay in (touch|the loop)|inbox/i;
+  const BAD = /log ?in|sign ?in|password|register|create (an )?account|checkout|search|comment|contact us|get a quote|request a quote|message/i;
+  const SUB = "button[type=submit],input[type=submit],input[type=image],button:not([type]),button[type=button],[role=button],a[class*=button i],a[class*=btn i]";
+  const scopeOf = em => em.closest('form') || em.closest('*:has(button),*:has(input[type=submit]),*:has([role=button])') || null;
+  const cands = [];
+  for (const em of document.querySelectorAll("input[type=email],input[name*=mail i],input[id*=mail i],input[placeholder*=mail i]")) {
+    if (!vis(em) || /search/i.test(em.type + em.name + em.id)) continue;
+    const sc = scopeOf(em);
+    if (!sc || sc === document.body || sc === document.documentElement) continue;
+    if (sc.querySelector('textarea, input[type=password], input[type=search], select[name*=country i][required]')) continue;
+    const others = [...sc.querySelectorAll("input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button]):not([type=image])")]
+      .filter(e => vis(e) && e !== em && !/first|last|name/i.test(e.name + e.id + (e.placeholder || '')));
+    if (others.some(e => e.required || e.type === 'tel')) continue;      // asks for more than an email and a name
+    const blob = (sc.getAttribute('action') || '') + ' ' + (sc.className || '') + ' ' + (sc.id || '') + ' ' + (sc.innerText || '').slice(0, 600);
+    if (BAD.test(blob) && !NEWS.test(blob)) continue;
+    const btn = [...sc.querySelectorAll(SUB)].filter(vis)
+      .sort((a, b) => /subscribe|sign ?up|join|submit|go|send|→|›|»/i.test(b.innerText || b.value || b.getAttribute('aria-label') || '') -
+                      /subscribe|sign ?up|join|submit|go|send|→|›|»/i.test(a.innerText || a.value || a.getAttribute('aria-label') || ''))[0];
+    if (!btn) continue;
+    cands.push({em, sc, btn, news: NEWS.test(blob), extra: others.length});
+  }
+  const pick = cands.find(c => c.news) || cands.find(c => c.extra === 0);
+  if (!pick) return JSON.stringify({ok: false, why: cands.length ? 'only non-newsletter email forms' : 'no-signup-form'});
+  const {em, sc, btn} = pick;
+  mark(em, 'email'); mark(btn, 'submit');
+  const used = new Set([em]);
+  const put = (sel, k) => { for (const e of sc.querySelectorAll(sel))
+      if (vis(e) && !used.has(e)) { used.add(e); return mark(e, k) } return null };
+  const fst = put("input[name*=first i],input[id*=first i],input[name=FNAME],input[placeholder*=first i]", 'first');
+  const lst = put("input[name*=last i],input[id*=last i],input[name=LNAME],input[placeholder*=last i]", 'last');
+  const nm = (!fst && !lst) ? put("input[type=text][name*=name i]:not([name*=user i]):not([name*=company i]),input[type=text][placeholder*=name i]", 'full') : null;
+  const boxes = [];
+  for (const b of sc.querySelectorAll("input[type=checkbox]"))
+    if (vis(b) && !b.checked && !/sms|text|phone/i.test((b.name || '') + (b.id || ''))) { mark(b, 'box' + boxes.length); boxes.push(1); }
+  return JSON.stringify({ok: true, fields: {email: true, first: !!fst, last: !!lst, full: !!nm}, boxes,
+    label: (btn.innerText || btn.value || btn.getAttribute('aria-label') || '').trim().slice(0, 30)});
+})()"""
+
+
 def click_field(b, hands, w, sel):
     """Hands.click, plus one guarded second chance. The click's own hit test can
     refuse a hand that is on the field: live 2026-10-25 the page saw the pointer
@@ -178,7 +228,8 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
     `dry` stops before the submit press: a timing run that sends nothing."""
     import re
     t0 = time.time()
-    ok_rx, fail_rx = re.compile(cfg["OK_CONTACT"], re.I), re.compile(cfg["FAIL_TEXT"], re.I)
+    signup = cfg.get("MODE") == "signup"
+    ok_rx, fail_rx = re.compile(cfg["OK"] if signup else cfg["OK_CONTACT"], re.I), re.compile(cfg["FAIL_TEXT"], re.I)
 
     def done(status, note):
         if shot:
@@ -197,7 +248,7 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
     found = {}
     for _ in range(10):
         try:
-            found = json.loads(b.eval(cfg["DISCOVER_CONTACT"]) or "{}")
+            found = json.loads(b.eval(DISCOVER_SIGNUP if signup else cfg["DISCOVER_CONTACT"]) or "{}")
         except Exception as e:
             found = {"ok": False, "why": f"discover failed: {e}"}
         if found.get("ok"):
@@ -220,7 +271,7 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
                 break
             hands.click("[data-ub-cc]")
             time.sleep(random.uniform(0.6, 1.2))
-        for k in ("first", "last", "full", "email", "subject", "message"):
+        for k in ("first", "last", "full", "email") if signup else ("first", "last", "full", "email", "subject", "message"):
             if k != "email" and k != "message" and not found["fields"].get(k):
                 continue
             sel = f"[data-ub-f='{k}']"
@@ -261,6 +312,10 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
                     break
             break
         token = any(b.eval(TOKEN + f"({json.dumps(f)})") for *_, f in WIDGETS)
+        if signup and not token and kind == "captcha":
+            # Score-only reCAPTCHA (v3): no widget, nothing to press or buy;
+            # the page mints its own token on submit. Signups never buy one.
+            kind += "+v3"
         if not token and not dry and os.environ.get("DROVER_SOLVER_URL") and kind in ("recaptcha", "turnstile", "captcha"):
             token, why = paid_solve(b, row["url"], kind, cfg)
             if token is None:
@@ -309,7 +364,8 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
         return done("dry", f"{kind}: filled, not sent")
     before = b.eval(cfg["BODY"]) or ""
     url0 = b.eval("location.href")
-    sub = json.loads(b.eval(cfg["SUBMIT_RECT"]) or "{}")
+    # Signup discovery already marked the button inside the signup form itself.
+    sub = {"ok": True, "label": found.get("label", "")} if signup else json.loads(b.eval(cfg["SUBMIT_RECT"]) or "{}")
     if not sub.get("ok"):
         return done("blocked", f"{kind}: no submit control found")
     try:
