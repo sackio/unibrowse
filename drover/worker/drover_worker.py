@@ -969,6 +969,25 @@ def job_session(b, url, steps, out, shot):
                 if not note(i, st, "ok" if ok else "failed",
                             {"got": (got[:120] if isinstance(got, str) else got)}):
                     break
+            elif do == "waitfor":
+                # ⛔ A FIXED SLEEP IS THE WRONG TOOL ON THESE PAGES. claude.ai
+                # and platform.claude.com render NOTHING for a long time on a
+                # cold profile -- readyState stays "interactive" with an empty
+                # body for up to ~60s, and app.thimble.com's bundle measured
+                # 122s. A `wait` long enough to be safe is wasted on every
+                # fast load, and one short enough to be quick fails as a
+                # selector miss further down. Poll for the element instead.
+                sel, dl = st.get("sel"), time.time() + float(st.get("seconds", 60))
+                found, waited = False, 0.0
+                while time.time() < dl:
+                    if b.eval("!!document.querySelector(%s)" % json.dumps(sel)):
+                        found = True
+                        break
+                    time.sleep(float(st.get("poll", 1)))
+                    waited = time.time() - (dl - float(st.get("seconds", 60)))
+                if not note(i, st, "ok" if found else "timeout",
+                            {"waitedSec": round(waited, 1)}):
+                    break
             elif do == "focus":
                 # ⭐ A LOGIN FORM DOES NOT NEED A POINTER. `click` aims XTEST at
                 # a screen coordinate and refuses when calibration says the
