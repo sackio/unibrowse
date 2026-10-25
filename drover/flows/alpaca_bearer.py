@@ -26,8 +26,8 @@ whoever runs it to remember.
 
   ALPACA_LOGIN_EMAIL=agents239@sack.io alpaca_bearer.py --json out.json
 
-Exit 0 = signed in and storage reported · 2 = inside a blackout window ·
-3 = the login did not complete (the step log says where) · 1 = other.
+Exit 0 = the samples were taken · 2 = inside a blackout window ·
+3 = the run stopped before the last sample (the step log says where) · 1 = other.
 """
 import argparse, datetime, json, os, pathlib, shutil, subprocess, sys, tempfile
 
@@ -77,23 +77,55 @@ STEPS = [
     {"do": "click", "sel": "button", "text": "continue"},
     # ⛔ NO ASSERTION ON THE POST-LOGIN WORDING. This page has never been
     # measured from here, and a guessed string would halt a run that worked.
-    # The storage report below is the evidence; the shot is the record.
-    {"do": "wait", "seconds": 12},
-    {"do": "eval", "as": "where", "js": "JSON.stringify({url:location.href,"
-     "title:document.title,"
-     "frames:[...document.querySelectorAll('iframe')].map(f=>f.src).filter(Boolean).slice(0,8)})"},
-    # ⛔ NAMES, LENGTHS AND SHAPE ONLY. `jwt` means the value starts with the
-    # base64 of '{"alg' -- enough to say "a token lives here" without ever
-    # moving the token.
-    {"do": "eval", "as": "storage", "js":
-     "JSON.stringify(['localStorage','sessionStorage'].map(which=>{"
-     "const s=window[which];const out=[];"
-     "try{for(let i=0;i<s.length;i++){const k=s.key(i),v=s.getItem(k)||'';"
-     "out.push([which,k,v.length,v.slice(0,3)==='eyJ'])}}catch(e){out.push([which,'ERR',0,false])}"
-     "return out}).flat())"},
-    {"do": "shot", "path": "/out/after-login.png"},
-    {"do": "read", "sel": "body", "as": "page"},
+    # The storage samples below are the evidence; the shots are the record.
 ]
+
+WHERE_JS = ("JSON.stringify({url:location.href,title:document.title,"
+            "chars:(document.body?document.body.innerText.length:0),"
+            "frames:[...document.querySelectorAll('iframe')].map(f=>f.src)"
+            ".filter(Boolean).slice(0,8)})")
+
+# ⛔ NAMES, LENGTHS AND SHAPE ONLY. `jwt` means the value starts with the
+# base64 of '{"alg' -- enough to say "a token lives here" without ever moving
+# the token.
+STORAGE_JS = ("JSON.stringify(['localStorage','sessionStorage'].map(which=>{"
+              "const s=window[which];const out=[];"
+              "try{for(let i=0;i<s.length;i++){const k=s.key(i),v=s.getItem(k)||'';"
+              "out.push([which,k,v.length,v.slice(0,3)==='eyJ'])}}"
+              "catch(e){out.push([which,'ERR',0,false])}"
+              "return out}).flat())")
+
+# ⛔ THE FIRST RUN READ STORAGE 12 SECONDS AFTER THE CLICK AND FOUND NO COGNITO
+# KEY -- on a page that was still a SPINNER. The screenshot is the proof: the
+# login POST had landed (we were off /account/login, at app.alpaca.markets/)
+# and the app had not booted, so "no bearer in storage" was a reading of a page
+# that had no storage yet. That is the third time today a green run meant
+# nothing, and reporting it to `alpaca` would have told them to stop looking.
+# ⇒ SAMPLE ON A CLOCK rather than assert a wording nobody has measured. "A key
+# appears by 70s but not at 25s" is a different instruction to them than "no
+# key exists", and only sampling can tell those apart.
+SAMPLE_AT = (25, 70, 110)
+
+
+def sample(n):
+    return [{"do": "eval", "as": "where%d" % n, "js": WHERE_JS},
+            {"do": "eval", "as": "storage%d" % n, "js": STORAGE_JS}]
+
+
+STEPS += ([{"do": "wait", "seconds": 25}] + sample(1)
+          + [{"do": "wait", "seconds": 45}] + sample(2)
+          + [{"do": "shot", "path": "/out/after-login.png"}]
+          + [{"do": "wait", "seconds": 40}] + sample(3)
+          + [{"do": "shot", "path": "/out/settled.png"},
+             {"do": "read", "sel": "body", "as": "page"},
+             # ⭐ THE OTHER HALF OF THE QUESTION, AND IT COSTS ONE STEP. If the
+             # session is not in storage it is in a cookie, and the worker's
+             # `cookie` step answers that for free: asked for a name that
+             # cannot exist, it reports every domain+name pair it DID find --
+             # names only, no values. ⚠️ It fails by design, so it goes LAST
+             # and the verdict does not consult `ok`.
+             {"do": "cookie", "name": "__drover_probe_no_such_cookie__",
+              "write": "/out/none"}])
 
 
 def blackout(now):
@@ -166,16 +198,21 @@ def main():
         # reported a directory that did not exist.
         shots = str(root / ("alpaca-shots-" + work.name.split("-")[-1]))
         shutil.copytree(out, shots, dirs_exist_ok=True)
-        res = {"steps": r.get("steps"), "ok": r.get("ok"), "url": r.get("url"),
-               "where": reads.get("where"), "storage": reads.get("storage"),
-               "shots": shots,
+        rows = r.get("steps") or []
+        cookie_row = next((x for x in rows if x.get("do") == "cookie"), None)
+        res = {"steps": rows, "url": r.get("url"), "shots": shots,
+               "samples": [{"atSec": t, "where": reads.get("where%d" % n),
+                            "storage": reads.get("storage%d" % n)}
+                           for n, t in enumerate(SAMPLE_AT, 1)],
+               "cookieNames": (cookie_row or {}).get("present"),
+               "cookieTotal": (cookie_row or {}).get("total"),
                # The page text is NOT reported: a dashboard body can contain
                # account numbers. Only its size, as evidence it rendered.
                "pageChars": len(reads.get("page") or "")}
         print(json.dumps(res, indent=1))
         if a.json:
             pathlib.Path(a.json).write_text(json.dumps(res, indent=1))
-        sys.exit(0 if r.get("ok") else 3)
+        sys.exit(0 if reads.get("storage%d" % len(SAMPLE_AT)) else 3)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
