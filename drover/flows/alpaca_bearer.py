@@ -160,8 +160,12 @@ def main():
                              % (p.stderr.strip()[-400:] or "no stderr"))
         r = json.loads(line[-1])
         reads = r.get("reads") or {}
-        shots = str(out) + "-kept"
-        shutil.copytree(out, shots, dirs_exist_ok=True)   # the work dir is about to go
+        # ⛔ OUTSIDE the work dir, which the finally deletes -- the first
+        # version copied them to out + "-kept", a path INSIDE work, so the
+        # "kept" screenshots were removed with everything else and the field
+        # reported a directory that did not exist.
+        shots = str(root / ("alpaca-shots-" + work.name.split("-")[-1]))
+        shutil.copytree(out, shots, dirs_exist_ok=True)
         res = {"steps": r.get("steps"), "ok": r.get("ok"), "url": r.get("url"),
                "where": reads.get("where"), "storage": reads.get("storage"),
                "shots": shots,

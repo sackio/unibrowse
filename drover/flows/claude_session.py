@@ -172,8 +172,11 @@ def main():
                 sys.exit(2)
             share = pathlib.Path(rundir(prof))
             r, redeem = orchestrate_login(prof, email, login_steps("/share"), kind="ai")
-            page = (r.get("reads") or {}).get("after") or ""
-            signed = bool(page) and not SIGNED_OUT.search(page[:4000])
+            # Same authority as the read path: the login's own last step is a
+            # `cookie` read, and a session that did not produce a sessionKey is
+            # not a session however the page reads.
+            cookie = pathlib.Path(share, "sessionKey")
+            signed = cookie.exists() and len(cookie.read_text()) > 0
             print(json.dumps({"account": a.account, "submitted": True,
                               "steps": r.get("steps"), "ok": r.get("ok"),
                               "signed_in": signed, "redeemChars": len(redeem)}))
@@ -191,11 +194,22 @@ def main():
     try:
         r = run_session(str(prof), read_steps("/share"), share=str(share))
         page = (r.get("reads") or {}).get("page") or ""
-        signed = bool(page) and not SIGNED_OUT.search(page[:4000])
+        url = r.get("url") or ""
         cookie = share / "sessionKey"
-        out = {"account": a.account, "profile": str(prof), "url": r.get("url"),
-               "chars": len(page), "signed_in": signed,
-               "cookieChars": len(cookie.read_text()) if cookie.exists() else 0,
+        chars = len(cookie.read_text()) if cookie.exists() else 0
+        # ⛔ THE COOKIE IS THE AUTHORITY, NOT THE WORDS ON THE PAGE. A body
+        # regex said signed_in: true on claude.ai/login?from=logout&reauth=1
+        # with no sessionKey at all -- the login page opens with marketing nav
+        # ("Meet Claude", "Platform", "Solutions"), so the login phrases are
+        # nowhere near the first 4000 characters. That is the same mistake the
+        # Console lane made, and here there is no excuse for it: the cookie IS
+        # the thing this flow exists to export, so its presence is the
+        # definition of a usable session, and /login in the landing URL is a
+        # second, independent check.
+        signed = chars > 0 and "/login" not in url
+        out = {"account": a.account, "profile": str(prof), "url": url,
+               "chars": len(page), "signed_in": signed, "cookieChars": chars,
+               "bodyLooksSignedOut": bool(SIGNED_OUT.search(page[:4000])),
                "steps": r.get("steps")}
         if a.cookie_out and cookie.exists() and signed:
             dest = pathlib.Path(a.cookie_out).expanduser()
