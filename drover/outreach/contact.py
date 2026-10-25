@@ -54,6 +54,12 @@ def paid_solve(b, url, kind, cfg):
     if r.get("error"):
         return False, "paid solve refused: " + r["error"][:120]
     inj = cfg["INJECT"].replace("__TOKEN__", json.dumps(r["token"])).replace("__FIELD__", json.dumps(r["field"]))
+    # An open alert() freezes every evaluate in the page (live 2026-10-25: two
+    # tokens bought, both writes "gave no answer in 30s"). Close one if it is up.
+    try:
+        b.send("Page.handleJavaScriptDialog", {"accept": True}, timeout=5)
+    except Exception:
+        pass
     fired, seen = 0, []                                # seen: what each write attempt reported, for the note
     for _ in range(2):                                 # the token is paid for: try the write twice
         try:
@@ -257,6 +263,11 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
                 return done("blocked", f"{kind}: {why} — did not submit")
             else:
                 kind += "+paid"
+                # The challenge popup a pressed checkbox opened can still sit over
+                # the form after the bought token lands (live 2026-10-25: five rows
+                # "submit ... covered"). A person closes it with Escape.
+                w.xdo("key", "Escape")
+                time.sleep(random.uniform(0.6, 1.2))
         if not token and not kind.endswith("+v3"):
             served = b.eval("[...document.querySelectorAll(\"iframe[src*='bframe'],iframe[src*='hcaptcha.com'][src*='challenge']\")]"
                             ".some(f => { const r = f.getBoundingClientRect(); return r.top > -1000 && r.height > 100; })")
