@@ -138,11 +138,18 @@ def login_steps():
         # here", with a "Verify email address" button. The email field is gone
         # by now, so a bare `input` is the code box -- and the override window
         # is there for the run where it is not.
+        # ⚠️ The code box is not in the DOM the moment the page says "link
+        # sent": measured 2026-10-25, this eval reported FOUR buttons and ZERO
+        # inputs, so choose_field could not decide and the default carried the
+        # run. A few seconds later the input existed (the waitfor below matched
+        # at 0.0s). The wait is here so the orchestrator gets real data.
+        {"do": "wait", "seconds": 6},
         {"do": "eval", "as": "controls",
          "js": "JSON.stringify([...document.querySelectorAll('input,button')].map("
                "e=>[e.tagName,e.type||null,e.getAttribute('inputmode'),"
                "e.getAttribute('maxlength'),e.getAttribute('aria-label'),"
-               "(e.textContent||'').replace(/\\s+/g,' ').trim().slice(0,40)]))"},
+               "(e.textContent||'').replace(/\\s+/g,' ').trim().slice(0,40)]))",
+         "write": "/share/controls.json"},
         {"do": "await", "path": "/share/field.txt", "as": "field",
          "seconds": 90, "default": "input[inputmode=numeric], input[maxlength='6'], input"},
         {"do": "waitfor", "sel": {"from": "field"}, "seconds": 60, "still": True},
@@ -171,6 +178,42 @@ def login_steps():
         {"do": "read", "sel": "body", "as": "billing"},
         {"do": "shot", "path": "/out/billing.png"},
     ]
+
+
+def choose_field(share, seconds=60):
+    """Pick the code box from the controls the page reported, and tell the
+    waiting flow which it is.
+
+    ⭐ THIS IS WHY `eval` CAN WRITE. The alternative was a human reading a
+    screenshot inside the await's window, which is not a mechanism -- it is a
+    person being lucky. The page reports its own inputs, the selector is
+    derived from their attributes, and the run no longer depends on anyone
+    watching.
+    """
+    f = pathlib.Path(share, "controls.json")
+    dl = time.time() + seconds
+    while time.time() < dl and not f.exists():
+        time.sleep(1)
+    if not f.exists():
+        return None, "the page never reported its controls"
+    try:
+        controls = json.loads(f.read_text())
+    except Exception as e:
+        return None, "controls unreadable: %s" % e
+    # [tag, type, inputmode, maxlength, aria-label, text]
+    inputs = [c for c in controls if c[0] == "INPUT"]
+    for attr, idx, css in (("inputmode", 2, "input[inputmode=%r]"),
+                           ("maxlength", 3, "input[maxlength=%r]")):
+        for c in inputs:
+            if c[idx]:
+                sel = (css % c[idx]).replace("'", '"')
+                pathlib.Path(share, "field.txt").write_text(sel)
+                return sel, None
+    if len(inputs) == 1:
+        sel = "input[type=%s]" % inputs[0][1] if inputs[0][1] else "input"
+        pathlib.Path(share, "field.txt").write_text(sel)
+        return sel, None
+    return None, "no single code box among %d inputs: %s" % (len(inputs), inputs[:6])
 
 
 def fetch_code(email_addr, link, share, out):
@@ -221,6 +264,14 @@ def orchestrate_login(profile, email_addr, jsonout=None):
         proc, td = run_session(str(profile), login_steps(), share=str(share),
                                out=str(out), background=True)
         print("submitted; waiting for the link (floor %.0f)" % floor, flush=True)
+        # Before the mail: the page reports its own inputs within ~20s and the
+        # await that consumes this answer opens before a link normally arrives.
+        # ⚠️ Not fatal if it cannot decide -- the flow carries a default and is
+        # already waiting on it. But say which one is in play, because "it
+        # worked" and "it worked on the default" are different facts about a
+        # page this file has only seen once.
+        sel, why = choose_field(share)
+        print("code field: %s" % (sel or "default (%s)" % why), flush=True)
         link = None
         deadline = time.time() + 300
         while time.time() < deadline and proc.poll() is None:

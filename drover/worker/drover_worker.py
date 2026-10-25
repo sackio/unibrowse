@@ -1237,8 +1237,17 @@ def job_session(b, url, steps, out, shot):
                 # of adding temporary code to this file: "what is actually
                 # under that point" is a question a flow should be able to ask.
                 reads[st.get("as", "eval%d" % i)] = v = b.eval(st["js"])
+                # ⭐ `write` sends the value OUT to the orchestrator mid-run,
+                # the same way `await` brings one in. That closes the loop: a
+                # flow can report what it is looking at and be told what to do
+                # about it, instead of a human reading a screenshot inside a
+                # 90-second window. ⛔ Never write a credential this way -- the
+                # share directory is a file on disk.
+                if st.get("write"):
+                    pathlib.Path(st["write"]).write_text("" if v is None else str(v))
                 note(i, st, "ok", {"value": (v if isinstance(v, (int, float, bool)) else
-                                             str(v)[:300] if v is not None else None)})
+                                             str(v)[:300] if v is not None else None),
+                                   "wrote": st.get("write")})
             elif do == "wait":
                 time.sleep(float(st.get("seconds", 1)))
                 note(i, st, "ok")
