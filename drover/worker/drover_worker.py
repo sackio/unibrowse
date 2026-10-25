@@ -1056,7 +1056,18 @@ def job_session(b, url, steps, out, shot):
                 # env_value keeps the expected value out of the steps file for
                 # the same reason `type` takes env: an address or secret in a
                 # file on disk is a copy nobody tracks.
-                want = os.environ[st["env_value"]] if st.get("env_value") else st.get("value")
+                # `from_value` asserts a field holds a value that arrived
+                # mid-run -- the emailed code. ⛔ IT IS SENSITIVE BY NATURE, so
+                # the comparison happens here and the value never reaches the
+                # log: a 6-digit code printed into a step row is a credential
+                # written to disk by the thing built to avoid that.
+                secret = bool(st.get("from_value")) or bool(st.get("sensitive"))
+                if st.get("from_value"):
+                    want = reads[st["from_value"]]
+                elif st.get("env_value"):
+                    want = os.environ[st["env_value"]]
+                else:
+                    want = st.get("value")
 
                 def holds(v):
                     if want is None:
@@ -1091,7 +1102,9 @@ def job_session(b, url, steps, out, shot):
                 # resolved tag, label and `disabled` are the evidence, and for
                 # a submit button they are the thing worth seeing BEFORE a run
                 # that presses it.
-                extra = {"got": (got[:120] if isinstance(got, str) else got)}
+                extra = ({"gotChars": len(got) if isinstance(got, str) else None,
+                          "got": "***"} if secret else
+                         {"got": (got[:120] if isinstance(got, str) else got)})
                 if st.get("text"):
                     extra["matched"] = m
                 if not note(i, st, "ok" if ok else "failed", extra):
@@ -1251,8 +1264,12 @@ def job_session(b, url, steps, out, shot):
         final = b.eval("location.href")
     except Exception:
         final = None
+    # "default" is an await that fell back to its declared default, which is a
+    # planned outcome, not a fault -- counting it as one made a fully
+    # successful login report ok:false and cost a real attempt's worth of
+    # confusion. Only a status that stopped the run is a failure.
     r = {"profile": b.keep, "url": final, "steps": log, "reads": reads,
-         "ok": bool(log) and all(x["status"] == "ok" for x in log)}
+         "ok": bool(log) and all(x["status"] in ("ok", "default") for x in log)}
     if out:
         pathlib.Path(out).write_text(json.dumps(r, indent=1))
     return r

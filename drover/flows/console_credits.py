@@ -39,7 +39,15 @@ STEPS = [
 # A signed-out Console shows its login card. Matching on what the LOGIN page
 # says is more reliable than guessing what the billing page says, because the
 # billing page is still "Loading" for several seconds after it renders.
-SIGNED_OUT = re.compile(r"continue with (google|email)|sign in to", re.I)
+# ⚠️ "NOT THE LOGIN CARD" IS NOT "SIGNED IN", and reading it that way reported
+# a failed login as a success. After a submit the app shows a THIRD page -- "To
+# continue, click the link sent to <address>" -- which contains none of the
+# login card's phrases, so the first version of this pattern called it signed
+# in while the profile had no session at all (measured 2026-10-25; the billing
+# read then came back exit 3). Every signed-out state the app has shown us is
+# listed here, and the billing read remains the authority.
+SIGNED_OUT = re.compile(r"continue with (google|email)|sign in to"
+                        r"|click the link sent to|verification code", re.I)
 CREDIT = re.compile(r"(credit|grant|balance|expires)[^.]{0,120}", re.I)
 
 
@@ -116,17 +124,27 @@ def login_steps():
         {"do": "expect", "sel": "input[type=email]", "env_value": "DROVER_LOGIN_EMAIL"},
         {"do": "expect", "sel": "button", "text": "continue with email"},
         {"do": "click", "sel": "button", "text": "continue with email"},
-        # ⛔ NO ASSERTION ON THE POST-SUBMIT WORDING. The obvious step here is
-        # expect body contains "link sent" -- and a guessed string would halt
-        # the run on a page that worked, after the link had already been sent,
-        # losing the attempt to a typo in this file. THE MAILBOX IS THE PROOF
-        # THE POST HAPPENED, and the orchestrator is already watching it. The
-        # page is read and photographed for the record instead.
-        {"do": "wait", "seconds": 8},
+        # ⚠️ NOW MEASURED, so it is asserted. The first live submit read the
+        # page 8s after the press and found the login card UNCHANGED -- the
+        # transition is slower than that, and the steps that followed ran on a
+        # page that was still moving. This wording is what the app actually
+        # shows (2026-10-25): "To continue, click the link sent to <address>".
+        {"do": "expect", "sel": "body", "contains": True,
+         "value": "click the link sent to", "seconds": 90},
         {"do": "read", "sel": "body", "as": "posted"},
         {"do": "shot", "path": "/out/after-submit.png"},
+        # The same page offers the cross-device path in its own words: "If the
+        # link shows a verification code instead of signing you in, enter it
+        # here", with a "Verify email address" button. The email field is gone
+        # by now, so a bare `input` is the code box -- and the override window
+        # is there for the run where it is not.
+        {"do": "eval", "as": "controls",
+         "js": "JSON.stringify([...document.querySelectorAll('input,button')].map("
+               "e=>[e.tagName,e.type||null,e.getAttribute('inputmode'),"
+               "e.getAttribute('maxlength'),e.getAttribute('aria-label'),"
+               "(e.textContent||'').replace(/\\s+/g,' ').trim().slice(0,40)]))"},
         {"do": "await", "path": "/share/field.txt", "as": "field",
-         "seconds": 60, "default": "input[inputmode=numeric], input[type=text], input"},
+         "seconds": 90, "default": "input[inputmode=numeric], input[maxlength='6'], input"},
         {"do": "waitfor", "sel": {"from": "field"}, "seconds": 60, "still": True},
         {"do": "click", "sel": {"from": "field"}},
         # ⚠️ The code is a single-use credential. `from` forces the sensitive
@@ -134,9 +152,24 @@ def login_steps():
         # deleted by the orchestrator in a finally.
         {"do": "await", "path": "/share/code.txt", "as": "code", "seconds": 600},
         {"do": "type", "from": "code"},
-        {"do": "wait", "seconds": 8},
+        # The check that caught a truncated email address, applied where it
+        # matters more: a mistyped digit burns the link and the attempt.
+        {"do": "expect", "sel": {"from": "field"}, "from_value": "code", "seconds": 15},
+        # ⛔ THE CODE WAS NEVER SUBMITTED on the first live run: six digits were
+        # typed and nothing pressed the button, so every step said ok and the
+        # profile ended with no session. Typing is not submitting.
+        {"do": "expect", "sel": "button", "text": "verify email"},
+        {"do": "click", "sel": "button", "text": "verify email"},
+        {"do": "wait", "seconds": 10},
         {"do": "read", "sel": "body", "as": "after"},
         {"do": "shot", "path": "/out/after-code.png"},
+        # ⭐ THE ASSERTION THAT MATTERS: an authenticated page, not the absence
+        # of login words. A regex over the login flow's own page said "signed
+        # in" when the profile had no session.
+        {"do": "nav", "url": BILLING},
+        {"do": "wait", "seconds": 8},
+        {"do": "read", "sel": "body", "as": "billing"},
+        {"do": "shot", "path": "/out/billing.png"},
     ]
 
 
@@ -176,8 +209,11 @@ def orchestrate_login(profile, email_addr, jsonout=None):
     # still this run's link, and a floor of exactly now can miss it.
     floor = time.time() - 60
     share = pathlib.Path(tempfile.mkdtemp(prefix="drover-login-"))
-    out = share / "out"
-    out.mkdir()
+    # ⚠️ The shots must OUTLIVE the share dir, which is deleted in the finally
+    # because it holds the code. Keeping them is the whole record of a page
+    # that costs a single-use link to see.
+    out = pathlib.Path(os.environ.get("DROVER_LOGIN_SHOTS") or (str(share) + "-shots"))
+    out.mkdir(parents=True, exist_ok=True)
     for d in (share, out):
         d.chmod(0o777)        # the container runs as uid 1000 and must write /share
     proc = td = None
@@ -195,9 +231,24 @@ def orchestrate_login(profile, email_addr, jsonout=None):
                 link = g.stdout.strip()
                 break
         if not link:
-            raise SystemExit("no magic link arrived within 300s "
-                             "(run: %s ...); the submit may have been refused -- "
-                             "see %s" % (MAGICLINK, out))
+            # ⛔ DRAIN THE CONTAINER BEFORE BLAMING THE MAILBOX. If a step
+            # failed, the browser is already gone and its step log is the
+            # answer -- "no link arrived" would be true and useless, and the
+            # log would be discarded with the process. Two different failures
+            # must not read the same.
+            if proc.poll() is not None:
+                try:
+                    r = result_of(proc_output(proc, timeout=30))
+                    raise SystemExit("the session ended before a link arrived: %s"
+                                     % json.dumps(r.get("steps")))
+                except SystemExit:
+                    raise
+                except Exception as e:
+                    raise SystemExit("the session ended before a link arrived and "
+                                     "its output could not be read: %s" % e)
+            raise SystemExit("no magic link arrived within 300s while the browser was "
+                             "still waiting; the submit may have been refused -- "
+                             "shots are in %s" % out)
         # ⛔ The link itself is a single-use credential: its LENGTH is reported,
         # never the URL, and it is not written to the json output.
         print("link found (%d chars); opening it in a disposable browser" % len(link), flush=True)
@@ -311,8 +362,10 @@ def main():
                              "(never on the command line: ps is world-readable)")
         if a.submit:
             r, redeem = orchestrate_login(prof, os.environ["DROVER_LOGIN_EMAIL"], a.json)
-            page = (r.get("reads") or {}).get("after") or ""
-            signed = not SIGNED_OUT.search(page[:4000])
+            # The billing page is the authority; `after` only says what the
+            # login flow claimed.
+            page = (r.get("reads") or {}).get("billing") or ""
+            signed = bool(page) and not SIGNED_OUT.search(page[:4000])
             out = {"profile": str(prof), "submitted": True, "url": r.get("url"),
                    "steps": r.get("steps"), "ok": r.get("ok"), "signed_in": signed,
                    "redeemChars": len(redeem)}
