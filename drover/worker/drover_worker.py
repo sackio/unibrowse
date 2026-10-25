@@ -958,9 +958,19 @@ def job_session(b, url, steps, out, shot):
         "the render has not landed yet" are the same answer read at two
         different moments, and one of those three runs failed only that way.
         """
+        # ⭐ `sel` may be {"from": "<name>"}, taking the selector from a
+        # previous read or await. A flow cannot always know its next selector
+        # when it starts: the page after a login submit has never been measured
+        # here, and measuring it REQUIRES the submit. So the orchestrator drops
+        # the selector in a file mid-run, the way it already drops the emailed
+        # code, instead of this file shipping a guess that gets one attempt
+        # against a login that rate-limits attempts.
+        sel = st.get("sel")
+        if isinstance(sel, dict) and sel.get("from"):
+            sel = reads[sel["from"]]
         if not st.get("text"):
-            return st["sel"], None
-        loc = {"sel": st.get("sel", "button,a,input,[role=button]"),
+            return sel, None
+        loc = {"sel": sel or "button,a,input,[role=button]",
                "text": st["text"], "nth": int(st.get("nth", 0))}
         return loc, describe(b, loc, seconds=float(st.get("resolveSeconds", 10)))
 
@@ -1019,7 +1029,7 @@ def job_session(b, url, steps, out, shot):
                 # ⚠️ textContent, never innerText: innerText needs layout and
                 # reads 0 on a fully rendered page in a headless window
                 # (measured 2026-10-25), which looks exactly like a blank page.
-                loc = target(st)[0] if st.get("text") else st.get("sel", "body")
+                loc = target(st)[0] if (st.get("sel") or st.get("text")) else "body"
                 v = b.eval("(()=>{const e=%s;"
                            "return e?e.textContent.replace(/\\s+/g,' ').trim():null})()"
                            % el(loc))
@@ -1030,7 +1040,7 @@ def job_session(b, url, steps, out, shot):
                 # Asserts the page is where the previous step should have put
                 # it. `value` checks a field actually holds what we typed --
                 # the check whose absence hid a truncated address for a day.
-                loc, m = target(st) if st.get("text") else (st["sel"], None)
+                loc, m = target(st)
                 # ⚠️ `value` ONLY FOR A CONTROL THAT HAS ONE. Every <button>
                 # carries value="" as a DOM property, so preferring value
                 # wherever it is defined read the submit button as "" --
@@ -1096,9 +1106,7 @@ def job_session(b, url, steps, out, shot):
                 # selector miss further down. Poll for the element instead.
                 # A locator, so a flow can wait for the control a person
                 # reads ("the Continue button") and not only for a CSS shape.
-                loc = ({"sel": st.get("sel", "button,a,input,[role=button]"),
-                        "text": st["text"], "nth": int(st.get("nth", 0))}
-                       if st.get("text") else st.get("sel"))
+                loc = target(st)[0]
                 t0 = time.time()
                 dl = t0 + float(st.get("seconds", 60))
                 found, still = False, None
@@ -1187,6 +1195,18 @@ def job_session(b, url, steps, out, shot):
                     except FileNotFoundError:
                         pass
                     time.sleep(float(st.get("poll", 2)))
+                if val is None and st.get("default") is not None:
+                    # ⭐ A DEFAULT TURNS THE WAIT INTO AN OVERRIDE WINDOW rather
+                    # than a dependency. The post-submit page is unmeasured, so
+                    # the flow carries its best guess at the next selector and
+                    # gives the orchestrator a window to replace it from what it
+                    # can see (a screenshot lands while this waits). Without
+                    # this, a login attempt that cost a real single-use link
+                    # would be thrown away because nobody was watching.
+                    val = st["default"]
+                    reads[st.get("as", "await%d" % i)] = val
+                    note(i, st, "default", {"chars": len(val)})
+                    continue
                 if val is None:
                     note(i, st, "timeout", {"path": path})
                     break
