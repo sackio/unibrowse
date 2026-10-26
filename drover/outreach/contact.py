@@ -572,4 +572,23 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
         return done("submitted", f"{kind}|{s}|ok-text")
     if url1 != url0 or after != before:
         return done("submitted", f"{kind}|{s}|page-changed")
+    # cfg["BODY"] is document.body.innerText, which carries NO input VALUES, so a
+    # form that submits over AJAX and then clears or replaces its fields leaves
+    # after == before even though it sent -- the "no confirmation" bucket that
+    # deflated the pass rate (85 rows, Ben #unibrowse 2026-10-26). Ask the form
+    # itself, the signal the v1 engine's own notes name (f=0 ⇒ gone ⇒ submitted):
+    # the field we filled is gone, or no longer holds what we typed ⇒ it sent.
+    # Still holding our text ⇒ the press did nothing, genuinely blocked. This only
+    # reclassifies a terminal row (no "|"-less note ⇒ never swept, never re-sent),
+    # so a wrong call cannot cost a second message to a town.
+    try:
+        st = b.eval("(s => { const e = document.querySelector(s);"
+                    " return e ? ('v:' + (e.value || '')) : 'gone'; })("
+                    + json.dumps("[data-ub-f='email']") + ")") or ""
+    except Exception:
+        st = "v:" + values["email"]
+    if st == "gone":
+        return done("submitted", f"{kind}|{s}|form-gone")
+    if not st.startswith("v:" + values["email"]):
+        return done("submitted", f"{kind}|{s}|fields-cleared")
     return done("blocked", f"{kind}|{s}|no confirmation")
