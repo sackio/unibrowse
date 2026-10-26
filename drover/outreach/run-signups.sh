@@ -18,7 +18,7 @@ L=$O/drover-signups-lane.tsv; DONE=$O/drover-signups-done.tsv
 K="kubectl --kubeconfig=/mnt/nas/data/code/server_admin/k8s-credentials/clusters/barn-cluster.yaml -n drover"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 [ -f "$L" ] || printf 'key\taddress\tstatus\tnote\n' > "$L"
-[ -f "$DONE" ] || printf 'date\tbrand\tdomain\taddress\tresult\n' > "$DONE"
+[ -f "$DONE" ] || printf 'datetime\tbrand\tdomain\taddress\tresult\n' > "$DONE"
 # The queue in lane.py's row shape; key = brand|domain|address.
 python3 - "$O/drover-signups.tsv" > "$W/queue.tsv" <<'EOF'
 import csv, sys
@@ -73,7 +73,7 @@ for l in open(sys.argv[1]):
     r = json.loads(l)
     brand, domain, addr = r["key"].split("|")
     res = r["status"] if r["status"] in ("submitted", "noform") else "blocked"
-    print("\t".join([time.strftime("%Y-%m-%d"), brand, domain, addr, res]))
+    print("\t".join([time.strftime("%Y-%m-%d %H:%M"), brand, domain, addr, res]))
 EOF
 fi
 python3 -c '
