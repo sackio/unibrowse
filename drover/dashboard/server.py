@@ -22,7 +22,7 @@ Sources (all live on office, where the dispatcher and kubectl already run):
   business/outreach/data/drover-signups*.tsv                    (signup lane done/total)
   /mnt/nas/data/.secrets/drover-profiles/*                      (warmed login freshness)
 """
-import json, os, re, subprocess, threading, time
+import json, os, re, subprocess, threading, time, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -36,6 +36,12 @@ OUTREACH = os.environ.get("DROVER_OUTREACH_DIR", "/mnt/nas/data/code/business/ou
 PROFILES = os.environ.get("DROVER_PROFILES_DIR", "/mnt/nas/data/.secrets/drover-profiles")
 PORT = int(os.environ.get("DROVER_DASH_PORT", "8792"))
 REFRESH = int(os.environ.get("DROVER_DASH_REFRESH", "10"))
+# Notify Ben to top up 2Captcha at this spend (Ben, Slack #unibrowse 2026-10-26:
+# "notify me at $4.50 and I will top up"). Fires once via a sentinel file.
+ATC = os.environ.get("ATC_URL", "http://192.168.1.168:3030")
+NOTIFY_TO = os.environ.get("DROVER_DASH_NOTIFY", "slack:U0NGEHS2J")
+SPEND_NOTIFY_AT = float(os.environ.get("DROVER_DASH_SPEND_NOTIFY", "4.50"))
+_SPEND_SENTINEL = os.path.join(HERE, ".spend-notified")
 
 _snap = {"meta": {"collected_at": 0, "ok": False, "note": "starting"}}
 _snap_lock = threading.Lock()
@@ -279,11 +285,58 @@ def collect_logins():
     return out
 
 
+BRAND_LABEL = {"ots": "Our Town Store", "pb": "pushbuild", "jf": "Trip at Hand", "ink": "ink"}
+
+
+def collect_lanes():
+    """Each outreach lane broken down by task, per project. Signups is split by
+    brand (the project); contact-forms is one project (Our Town Store)."""
+    out = {"ok": False, "lanes": [], "error": None}
+    full = _rows(os.path.join(OUTREACH, "data", "drover-signups.tsv"))
+    done = _rows(os.path.join(OUTREACH, "data", "drover-signups-done.tsv"))
+    if full is not None:
+        out["ok"] = True
+        fbody = full[1:] if full and full[0][:1] == ["brand"] else full
+        totals = {}
+        for r in fbody:
+            if r:
+                totals[r[0]] = totals.get(r[0], 0) + 1
+        dbody = (done[1:] if done and done[0][:1] == ["date"] else done) or []
+        outcomes = {}
+        for r in dbody:
+            if len(r) >= 5:
+                outcomes.setdefault(r[1], {})
+                outcomes[r[1]][r[4]] = outcomes[r[1]].get(r[4], 0) + 1
+        for b in sorted(totals, key=lambda x: -totals[x]):
+            oc = outcomes.get(b, {})
+            dn = sum(oc.values())
+            out["lanes"].append({"lane": "signups", "job": "drover-signups", "mode": "house IP",
+                                 "project": BRAND_LABEL.get(b, b), "total": totals[b], "done": dn,
+                                 "remaining": max(0, totals[b] - dn), "by_status": oc})
+    q = _rows(os.path.join(OUTREACH, "captcha-svc-ordered.tsv"))
+    res = _rows(os.path.join(OUTREACH, "captcha-svc-results-ord.tsv"))
+    if res is not None:
+        out["ok"] = True
+        rbody = res[1:] if res and res[0][:1] == ["key"] else res
+        oc = {}
+        for r in rbody:
+            if len(r) >= 3:
+                oc[r[2]] = oc.get(r[2], 0) + 1
+        qn = max(0, len(q) - 1) if q else None
+        dn = sum(oc.values())
+        out["lanes"].append({"lane": "contact-form", "job": "drover-outreach", "mode": "VPN",
+                             "project": "Our Town Store", "total": qn, "done": dn,
+                             "remaining": (max(0, qn - dn) if qn is not None else None), "by_status": oc})
+    if not out["lanes"] and not out["ok"]:
+        out["error"] = "no lane data readable"
+    return out
+
+
 def collect():
     t0 = time.time()
     snap = {"k8s": collect_k8s(), "captcha": collect_captcha(),
             "outreach": collect_outreach(), "signups": collect_signups(),
-            "logins": collect_logins()}
+            "logins": collect_logins(), "lanes": collect_lanes()}
     snap["meta"] = {
         "collected_at": int(t0),
         "duration_ms": int((time.time() - t0) * 1000),
@@ -291,6 +344,30 @@ def collect():
         "ns": NS, "refresh": REFRESH,
     }
     return snap
+
+
+def _maybe_notify_spend(snap):
+    """Once, when 2Captcha all-time spend crosses the notify threshold, DM Ben to
+    top up (a sentinel file makes it fire once)."""
+    cap = snap.get("captcha") or {}
+    if not cap.get("ok"):
+        return
+    if cap.get("cost", 0) < SPEND_NOTIFY_AT or os.path.exists(_SPEND_SENTINEL):
+        return
+    body = ("⚠️ drover 2Captcha spend is $%.2f (notify set at $%.2f, hard cap $5.00). "
+            "Top up the 2Captcha account when you can; past $5 reCAPTCHA rows come back blocked "
+            "and I'll need SOLVE_BUDGET raised + the solve-broker restarted to spend the top-up. "
+            "— drover-dashboard" % (cap["cost"], SPEND_NOTIFY_AT))
+    data = json.dumps({"to": NOTIFY_TO, "from": "unibrowse", "content": body,
+                       "subject": "2Captcha budget"}).encode()
+    try:
+        req = urllib.request.Request(ATC + "/messages", data=data, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=15).read()
+        with open(_SPEND_SENTINEL, "w") as f:
+            f.write("%d %.4f\n" % (int(time.time()), cap["cost"]))
+    except Exception:
+        pass        # retry next tick; the sentinel is only written on success
 
 
 def loop():
@@ -302,6 +379,10 @@ def loop():
             s = {"meta": {"collected_at": int(time.time()), "ok": False, "note": "collect error: %s" % e}}
         with _snap_lock:
             _snap = s
+        try:
+            _maybe_notify_spend(s)
+        except Exception:
+            pass
         time.sleep(REFRESH)
 
 

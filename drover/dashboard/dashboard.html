@@ -130,6 +130,34 @@ function render(s){
   cards.appendChild(card('Warm logins', (lg.profiles||[]).length+'', inUse?(inUse+' in use now'):'none active'));
   app.appendChild(cards);
 
+  // ── Lanes by task (per project) ──
+  const lanes=(s.lanes&&s.lanes.lanes)||[];
+  if(lanes.length){
+    app.appendChild(el('h2',null,'Outreach lanes — by task, per project'));
+    const lp=panel();
+    const runningJobs=new Set((k.jobs||[]).filter(j=>j.status==='Running').map(j=>j.name));
+    const COL={submitted:'var(--good)',blocked:'var(--warn)',error:'var(--crit)',unsure:'var(--serious)',noform:'var(--muted)',captcha:'var(--warn)'};
+    const KNOWN=['submitted','blocked','error','unsure','noform'];
+    tableInto(lp,[{label:'Lane'},{label:'Project'},{label:'Egress'},{label:'State'},{label:'Done / total',num:1},{label:'Remaining',num:1},{label:'Outcomes'}],lanes,L=>{
+      const tr=el('tr');
+      tr.appendChild(el('td',null,L.lane));
+      tr.appendChild(el('td',null,L.project));
+      tr.appendChild(el('td',null,L.mode));
+      const td=el('td'); if(runningJobs.has(L.job))stat(td,'good','running'); else if(L.remaining===0)stat(td,'','done'); else stat(td,'','idle'); tr.appendChild(td);
+      tr.appendChild(el('td','num', L.done+(L.total!=null?(' / '+L.total):'')));
+      tr.appendChild(el('td','num', L.remaining!=null?String(L.remaining):'—'));
+      const oc=L.by_status||{}; const tdc=el('td');
+      const bar=el('div','bar'); bar.style.width='200px'; bar.style.marginTop='0';
+      KNOWN.forEach(st=>{const n=oc[st]||0; if(!n)return; const sp=el('span'); sp.style.flex=n; sp.style.background=COL[st]||'var(--muted)'; sp.title=st+': '+n; bar.appendChild(sp);});
+      Object.keys(oc).forEach(st=>{if(KNOWN.includes(st))return; const sp=el('span'); sp.style.flex=oc[st]; sp.style.background=COL[st]||'var(--muted)'; sp.title=st+': '+oc[st]; bar.appendChild(sp);});
+      if(Object.keys(oc).length)tdc.appendChild(bar);
+      const parts=Object.entries(oc).sort((a,b)=>b[1]-a[1]).map(([k,v])=>k+' '+v).join(' · ');
+      tdc.appendChild(el('div','sub',parts||'—')); tr.appendChild(tdc);
+      return tr;
+    });
+    app.appendChild(lp);
+  }
+
   // ── Jobs ──
   app.appendChild(el('h2',null,'Kubernetes jobs'));
   if(k.error){ const p=panel(); p.appendChild(el('div','err','k8s: '+k.error)); app.appendChild(p); }
