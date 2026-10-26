@@ -130,6 +130,48 @@ DISMISS_CONSENT = r"""(() => {
 })()"""
 
 
+# Hide whatever newsletter-signup popup is covering an already-found field, so
+# the fill can reach it. A popup (Klaviyo, Shopify forms-embed, Poptin, LTK,
+# Justuno ...) fires a few seconds AFTER DISCOVER_SIGNUP, so the field is found
+# uncovered and then covered when reach() goes to fill it -- ~14% of signup
+# blocks, measured 2026-10-26 (memo eaf5c323). Given the target selector, this
+# peels off up to 6 stacked overlays: each pass asks elementFromPoint what sits
+# on the field's centre, climbs to that coverer's outermost positioned ancestor
+# that does NOT contain the target (the popup/backdrop root), and hides it. A
+# shadow-DOM popup (Shopify forms-embed, Klaviyo) surfaces here as its own host
+# element, so hiding that host removes the whole popup without piercing the
+# shadow root -- which a light-DOM close-button search could never do. Finally
+# it releases any scroll lock the popup set on the page. Returns a comma list of
+# what it hid (for the log), or "" if the field's centre was already clear.
+DISMISS_OVERLAY = r"""((sel) => {
+  const t = document.querySelector(sel);
+  if (!t) return "";
+  const positioned = x => { const p = getComputedStyle(x).position;
+    return p === 'fixed' || p === 'absolute' || p === 'sticky'; };
+  const desc = el => { const c = (typeof el.className === 'string' && el.className.trim())
+      ? '.' + el.className.trim().split(/\s+/).slice(0, 3).join('.') : '';
+    return (el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + c).slice(0, 80); };
+  const hidden = [];
+  for (let i = 0; i < 6; i++) {
+    const r = t.getBoundingClientRect();
+    const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    if (!e || e === t || t.contains(e) || e.contains(t) || e.control === t) break;
+    let root = e;
+    for (let p = e; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
+      if (p.contains(t)) break;                 // never hide an ancestor of the target
+      if (positioned(p)) root = p;
+    }
+    if (root === document.body || root === document.documentElement || root.contains(t)) break;
+    root.style.setProperty('display', 'none', 'important');
+    hidden.push(desc(root));
+  }
+  for (const el of [document.documentElement, document.body]) {
+    el.style.overflow = ''; el.style.position = '';
+    el.classList.remove('no-scroll', 'modal-open', 'overflow-hidden', 'ReactModal__Body--open'); }
+  return hidden.join(', ');
+})"""
+
+
 NEAR_TARGET = r"""((sel, x, y) => {
   const t = document.querySelector(sel), e = document.elementFromPoint(x, y);
   if (!t || !e) return false;
@@ -284,7 +326,19 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
             if k != "email" and k != "message" and not found["fields"].get(k):
                 continue
             sel = f"[data-ub-f='{k}']"
-            click_field(b, hands, w, sel)
+            try:
+                click_field(b, hands, w, sel)
+            except RuntimeError as e:
+                # A newsletter popup landed on the footer form after discovery;
+                # hide it and try once more (memo eaf5c323). Only for a
+                # reach/landing failure -- anything else is a real error.
+                if "covered by" not in str(e) and "pointer would not land" not in str(e):
+                    raise
+                hid = b.eval(DISMISS_OVERLAY + f"({json.dumps(sel)})")
+                if not hid:
+                    raise
+                time.sleep(random.uniform(0.4, 0.9))
+                click_field(b, hands, w, sel)
             hands.type(values[k])
             # The last keystroke can still be in flight when typing returns
             # (measured: "Stor" for "Store"). Give the page a moment to catch up.

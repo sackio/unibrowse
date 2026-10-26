@@ -3,8 +3,11 @@
 # run "on a small footprint" (#unibrowse-v2 2026-10-24).
 #
 # Build from the repo root (needs scripts/humanmotion.py):
-#   docker build -f drover/worker/Dockerfile -t 192.168.1.207:5050/drover/worker:<tag> .
-# ⛔ Push to 192.168.1.207:5050, not .168:32000 (`cluster`, 2026-10-24).
+#   docker build -f drover/worker/Dockerfile -t 192.168.1.168:32000/drover/worker:<tag> .
+#   docker push 192.168.1.168:32000/drover/worker:<tag>
+# ⛔ Push to 192.168.1.168:32000 — it is the working primary mirror and what the
+# barn nodes pull from. 192.168.1.207:5050 is UNREACHABLE from office (times out),
+# despite an older `cluster` note (memos 12982f08, e92b6645; corrected 2026-10-26).
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive TZ=America/New_York
