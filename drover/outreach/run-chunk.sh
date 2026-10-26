@@ -32,7 +32,11 @@ $K delete configmap drover-outreach --ignore-not-found >/dev/null
 $K delete secret drover-proxy --ignore-not-found >/dev/null
 $K create configmap drover-outreach --from-file=rows.tsv="$W/rows.tsv" --from-file=contact-config.json="$W/config.json" >/dev/null
 $K create secret generic drover-proxy --from-literal=DROVER_PROXY="$(cat "$W/url")" >/dev/null; rm -f "$W/url"
-sed -e "s#completions: 4#completions: $SHARDS#; s#parallelism: 4#parallelism: $SHARDS#; s#maxFailedIndexes: 4#maxFailedIndexes: $SHARDS#; s#DROVER_SHARDS, value: \"4\"#DROVER_SHARDS, value: \"$SHARDS\"#" \
+# ⛔ DRY MUST reach the pods. The Job template hardcodes {name: DRY, value: ""}
+# (live), so without this substitution a caller's DRY=1 is dropped and the run
+# SENDS -- it only looked safe on 2026-10-25 because the test rows were
+# unsolvable v3. Sub DRY="1" into the Job env when the caller set it.
+sed -e "s#completions: 4#completions: $SHARDS#; s#parallelism: 4#parallelism: $SHARDS#; s#maxFailedIndexes: 4#maxFailedIndexes: $SHARDS#; s#DROVER_SHARDS, value: \"4\"#DROVER_SHARDS, value: \"$SHARDS\"#; s#name: DRY, value: \"\"#name: DRY, value: \"${DRY:+1}\"#" \
   "$HERE/../k8s/outreach-job.yaml" | $K apply -f - >/dev/null
 t0=$(date +%s)
 until $K get job drover-outreach -o jsonpath='{.status.conditions[*].type}' | grep -qE 'Complete|Failed'; do sleep 20; done
