@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Drover — live</title>
+<style>
+  :root{
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19; --surface-2:#232321;
+    --ink:#f0efec; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --base:#383835; --ring:rgba(255,255,255,0.10);
+    --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b; --blue:#3987e5;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--plane); color:var(--ink); font-family:var(--sans);
+    font-size:14px; line-height:1.45; -webkit-font-smoothing:antialiased;
+    padding:0 16px 48px; max-width:1180px; margin:0 auto;
+  }
+  a{color:var(--blue)}
+  header{
+    position:sticky; top:0; z-index:5; background:var(--plane);
+    padding:14px 0 10px; border-bottom:1px solid var(--ring);
+    display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+  }
+  header h1{font-size:17px; font-weight:650; margin:0; letter-spacing:.2px}
+  header h1 .dot{display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--good); margin-right:7px; vertical-align:middle}
+  .meta{color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; margin-left:auto; text-align:right}
+  .meta .stale{color:var(--crit)}
+  h2{font-size:12px; font-weight:600; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); margin:26px 0 10px}
+  .cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px}
+  .card{background:var(--surface); border:1px solid var(--ring); border-radius:10px; padding:12px 14px}
+  .card .k{color:var(--muted); font-size:11px; letter-spacing:.04em; text-transform:uppercase}
+  .card .v{font-size:26px; font-weight:650; margin-top:3px; font-variant-numeric:tabular-nums}
+  .card .v small{font-size:14px; color:var(--ink-2); font-weight:500}
+  .card .sub{color:var(--ink-2); font-size:12px; margin-top:2px; font-variant-numeric:tabular-nums}
+  .panel{background:var(--surface); border:1px solid var(--ring); border-radius:10px; overflow:hidden}
+  table{width:100%; border-collapse:collapse; font-size:13px}
+  th,td{text-align:left; padding:7px 10px; border-bottom:1px solid var(--grid); white-space:nowrap}
+  th{color:var(--muted); font-weight:600; font-size:11px; letter-spacing:.04em; text-transform:uppercase; position:sticky; top:0; background:var(--surface-2)}
+  tr:last-child td{border-bottom:0}
+  td.num,th.num{text-align:right; font-variant-numeric:tabular-nums}
+  td.mono{font-family:var(--mono); font-size:12px; color:var(--ink-2)}
+  td.wrap{white-space:normal; color:var(--ink-2); font-size:12px; max-width:420px}
+  .scroll{overflow-x:auto}
+  .st{display:inline-flex; align-items:center; gap:6px; font-size:12px; font-variant-numeric:tabular-nums}
+  .st::before{content:""; width:8px; height:8px; border-radius:50%; background:var(--muted); flex:none}
+  .st.good::before{background:var(--good)} .st.warn::before{background:var(--warn)}
+  .st.serious::before{background:var(--serious)} .st.crit::before{background:var(--crit)}
+  .st.blue::before{background:var(--blue)}
+  .bar{display:flex; height:12px; border-radius:6px; overflow:hidden; background:var(--surface-2); gap:2px; margin-top:4px}
+  .bar>span{height:100%}
+  .prog{height:10px; border-radius:5px; background:var(--surface-2); overflow:hidden; margin-top:6px}
+  .prog>span{display:block; height:100%; background:var(--blue)}
+  .legend{display:flex; flex-wrap:wrap; gap:4px 16px; margin-top:9px}
+  .two{display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; align-items:start}
+  .err{color:var(--crit); font-size:12px; padding:8px 10px}
+  .empty{color:var(--muted); font-size:12px; padding:10px}
+  .pill{font-family:var(--mono); font-size:11px; color:var(--ink-2); background:var(--surface-2); border:1px solid var(--ring); border-radius:5px; padding:1px 6px}
+  .ips{display:flex; flex-wrap:wrap; gap:6px; margin-top:6px}
+  footer{color:var(--muted); font-size:11px; margin-top:28px; text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot" id="live"></span>Drover — live</h1>
+  <div class="meta" id="meta">connecting…</div>
+</header>
+<main id="app"><div class="empty">loading…</div></main>
+<footer id="foot"></footer>
+
+<script>
+const $=(s,r=document)=>r.querySelector(s);
+const el=(t,c,txt)=>{const e=document.createElement(t); if(c)e.className=c; if(txt!=null)e.textContent=txt; return e;};
+const esc=s=>(s==null?'':String(s));
+function dur(sec){ if(sec==null)return '—'; sec=Math.max(0,sec|0);
+  if(sec<60)return sec+'s'; if(sec<3600)return (sec/60|0)+'m'; if(sec<86400)return (sec/3600|0)+'h'+Math.round(sec%3600/60)+'m'; return (sec/86400|0)+'d'+Math.round(sec%86400/3600)+'h'; }
+function money(n){ return '$'+Number(n||0).toFixed(2); }
+
+// status -> class + label
+function podStatus(p){
+  const ph=(p.phase||'').toLowerCase();
+  if(p.reason==='OOMKilled') return ['crit','OOMKilled'];
+  if(ph==='failed') return ['crit', p.reason||'Failed'];
+  if(ph==='running') return p.ready?['good','Running']:['warn','NotReady'];
+  if(ph==='succeeded') return ['good','Completed'];
+  if(ph==='pending') return ['warn','Pending'];
+  return ['', esc(p.phase)];
+}
+function jobStatus(j){
+  if(j.status==='Running') return ['good','Running'];
+  if(j.status==='Complete') return ['good','Complete'];
+  if(j.status==='Failed') return ['crit','Failed'];
+  return ['', esc(j.status)];
+}
+const OUT_STATUS={submitted:['good','submitted'], blocked:['warn','blocked'], error:['crit','error'],
+  noform:['', 'no form'], unsure:['serious','unsure']};
+const OUT_COLOR={submitted:'var(--good)', blocked:'var(--warn)', error:'var(--crit)', noform:'var(--muted)', unsure:'var(--serious)'};
+
+function stat(node, cls, label){ const s=el('span','st '+(cls||''), label); node.appendChild(s); return s; }
+function card(k,v,sub){ const c=el('div','card'); c.appendChild(el('div','k',k)); const vv=el('div','v'); vv.innerHTML=v; c.appendChild(vv); if(sub)c.appendChild(el('div','sub',sub)); return c; }
+function panel(){ const p=el('div','panel'); return p; }
+function tableInto(parent, cols, rows, builder){
+  const wrap=el('div','scroll'); const t=el('table'); const thead=el('thead'); const htr=el('tr');
+  cols.forEach(c=>{const th=el('th',c.num?'num':null,c.label); htr.appendChild(th);}); thead.appendChild(htr); t.appendChild(thead);
+  const tb=el('tbody'); rows.forEach(r=>tb.appendChild(builder(r))); t.appendChild(tb); wrap.appendChild(t); parent.appendChild(wrap); return t;
+}
+
+function render(s){
+  const app=$('#app'); app.innerHTML='';
+  const k=s.k8s||{}, cap=s.captcha||{}, out=s.outreach||{}, sg=s.signups||{}, lg=s.logins||{};
+  const pods=k.pods||[], jobs=k.jobs||[];
+  const running=pods.filter(p=>(p.phase||'').toLowerCase()==='running').length;
+  const problems=pods.filter(p=>p.reason==='OOMKilled'||(p.phase||'').toLowerCase()==='failed').length;
+  const activeJobs=jobs.filter(j=>j.status==='Running');
+  const inUse=(lg.profiles||[]).filter(p=>p.in_use).length;
+  const sgPct=sg.total?Math.round(100*sg.done/sg.total):0;
+
+  // ── KPI row ──
+  const cards=el('div','cards');
+  cards.appendChild(card('Pods running', running+'<small> / '+pods.length+'</small>', problems?(problems+' in trouble'):'all healthy'));
+  cards.appendChild(card('Active jobs', String(activeJobs.length), activeJobs.map(j=>j.name.replace('drover-','')).join(', ')||'none running'));
+  cards.appendChild(card('Signups done', sg.done+'<small> / '+sg.total+'</small>', sgPct+'% of lane'));
+  cards.appendChild(card('Contact-forms submitted', String((out.by_status||{}).submitted||0), (out.queue!=null?out.queue+' queued · ':'')+out.results_total+' attempted'));
+  cards.appendChild(card('2captcha today', money(cap.today_cost), cap.today_calls+' calls · '+money(cap.cost)+' all-time'));
+  cards.appendChild(card('Warm logins', (lg.profiles||[]).length+'', inUse?(inUse+' in use now'):'none active'));
+  app.appendChild(cards);
+
+  // ── Jobs ──
+  app.appendChild(el('h2',null,'Kubernetes jobs'));
+  if(k.error){ const p=panel(); p.appendChild(el('div','err','k8s: '+k.error)); app.appendChild(p); }
+  else{
+    const p=panel();
+    tableInto(p, [{label:'Job'},{label:'Status'},{label:'Active',num:1},{label:'Succeeded',num:1},{label:'Failed',num:1},{label:'Completions',num:1},{label:'Age',num:1}], jobs, j=>{
+      const tr=el('tr'); tr.appendChild(el('td',null,j.name));
+      const td=el('td'); const [c,l]=jobStatus(j); stat(td,c,l); tr.appendChild(td);
+      tr.appendChild(el('td','num',String(j.active))); tr.appendChild(el('td','num',String(j.succeeded)));
+      const tf=el('td','num',String(j.failed)); if(j.failed)tf.style.color='var(--crit)'; tr.appendChild(tf);
+      tr.appendChild(el('td','num',j.completions!=null?String(j.completions):'—'));
+      tr.appendChild(el('td','num',dur(j.age))); return tr;
+    });
+    if(!jobs.length)p.appendChild(el('div','empty','no jobs'));
+    app.appendChild(p);
+  }
+
+  // ── Pods ──
+  app.appendChild(el('h2',null,'Pods · IP · node'));
+  const pp=panel();
+  const psorted=pods.slice().sort((a,b)=>{
+    const rank=x=>x.reason==='OOMKilled'||(x.phase||'').toLowerCase()==='failed'?0:((x.phase||'').toLowerCase()==='running'?1:2);
+    return rank(a)-rank(b) || (a.name>b.name?1:-1);
+  });
+  tableInto(pp, [{label:'Pod'},{label:'Job / shard'},{label:'Status'},{label:'IP'},{label:'Node'},{label:'Restarts',num:1},{label:'Age',num:1}], psorted, p=>{
+    const tr=el('tr'); tr.appendChild(el('td',null,p.name));
+    tr.appendChild(el('td',null, (p.job?p.job.replace('drover-',''):'—')+(p.shard!=null?(' #'+p.shard):'')));
+    const td=el('td'); const [c,l]=podStatus(p); stat(td,c,l); tr.appendChild(td);
+    tr.appendChild(el('td','mono',esc(p.podIP)));
+    tr.appendChild(el('td','mono',esc(p.node)));
+    const tr2=el('td','num',String(p.restarts||0)); if(p.restarts)tr2.style.color='var(--warn)'; tr.appendChild(tr2);
+    tr.appendChild(el('td','num',dur(p.age))); return tr;
+  });
+  if(!pods.length)pp.appendChild(el('div','empty', k.error?('k8s: '+k.error):'no pods'));
+  app.appendChild(pp);
+
+  // ── two-up: VPN/exits + sessions ──
+  const two=el('div','two');
+  // VPN & exits
+  const vp=el('div'); vp.appendChild(el('h2',null,'VPN · egress'));
+  const vpp=panel(); const vbody=el('div'); vbody.style.padding='12px 14px';
+  const mode=el('div','st '+(k.vpn_secret?'warn':'good'), k.vpn_secret?'VPN exit secret set (fresh-exit run)':'house IP (no proxy secret set)');
+  vbody.appendChild(mode);
+  vbody.appendChild(el('div','sub','Exit IPs seen in recent contact-form results (count):'));
+  const ips=el('div','ips'); (out.exit_ips||[]).forEach(([ip,n])=>{ const s=el('span','pill', ip+' ×'+n); ips.appendChild(s); });
+  if(!(out.exit_ips||[]).length)ips.appendChild(el('span','empty','none recorded'));
+  vbody.appendChild(ips); vpp.appendChild(vbody); vp.appendChild(vpp); two.appendChild(vp);
+  // Sessions
+  const sp=el('div'); sp.appendChild(el('h2',null,'Session pods (warm hop-in)'));
+  const spp=panel();
+  tableInto(spp, [{label:'Pod'},{label:'Status'},{label:'IP'},{label:'Node'},{label:'Age',num:1}], (k.sessions||[]), p=>{
+    const tr=el('tr'); tr.appendChild(el('td',null,p.name)); const td=el('td'); const [c,l]=podStatus(p); stat(td,c,l); tr.appendChild(td);
+    tr.appendChild(el('td','mono',esc(p.podIP))); tr.appendChild(el('td','mono',esc(p.node))); tr.appendChild(el('td','num',dur(p.age))); return tr; });
+  if(!(k.sessions||[]).length)spp.appendChild(el('div','empty','no session pods'));
+  sp.appendChild(spp); two.appendChild(sp);
+  app.appendChild(two);
+
+  // ── Warm logins ──
+  app.appendChild(el('h2',null,'Warmed login profiles'));
+  const lp=panel();
+  if(lg.error)lp.appendChild(el('div','err','profiles: '+lg.error));
+  tableInto(lp, [{label:'Profile'},{label:'State'},{label:'Last active',num:1},{label:'Cookies'}], (lg.profiles||[]), p=>{
+    const tr=el('tr'); tr.appendChild(el('td',null,p.name));
+    const td=el('td'); if(p.in_use)stat(td,'good','in use'); else stat(td,'', 'idle'); tr.appendChild(td);
+    tr.appendChild(el('td','num',dur(p.last_active)+' ago'));
+    const tc=el('td'); stat(tc, p.has_cookies?'blue':'warn', p.has_cookies?'present':'none'); tr.appendChild(tc); return tr;
+  });
+  if(!(lg.profiles||[]).length && !lg.error)lp.appendChild(el('div','empty','no profiles'));
+  app.appendChild(lp);
+
+  // ── two-up: outreach results + 2captcha ──
+  const two2=el('div','two');
+  // Outreach
+  const op=el('div'); op.appendChild(el('h2',null,'Outreach — contact-form lane'));
+  const opp=panel(); const ob=el('div'); ob.style.padding='12px 14px';
+  if(out.error)ob.appendChild(el('div','err',out.error));
+  const total=out.results_total||0; const bs=out.by_status||{};
+  ob.appendChild(el('div','sub', (out.queue!=null?out.queue+' still queued · ':'')+total+' attempted'));
+  const bar=el('div','bar'); const order=['submitted','blocked','error','unsure','noform'];
+  order.forEach(st=>{ const n=bs[st]||0; if(!n)return; const s=el('span'); s.style.flex=n; s.style.background=OUT_COLOR[st]||'var(--muted)'; s.title=st+': '+n; bar.appendChild(s); });
+  ob.appendChild(bar);
+  const leg=el('div','legend'); order.forEach(st=>{ if(!(bs[st])&&st!=='submitted')return; const m=OUT_STATUS[st]||['',st]; stat(leg,m[0], m[1]+' '+(bs[st]||0)); }); ob.appendChild(leg);
+  opp.appendChild(ob);
+  tableInto(opp, [{label:'Status'},{label:'Address'},{label:'Note'}], (out.recent||[]).slice(0,12), r=>{
+    const tr=el('tr'); const td=el('td'); const m=OUT_STATUS[r.status]||['',r.status]; stat(td,m[0],m[1]); tr.appendChild(td);
+    tr.appendChild(el('td','mono',esc(r.address))); tr.appendChild(el('td','wrap',esc(r.note))); return tr; });
+  op.appendChild(opp); two2.appendChild(op);
+  // 2captcha
+  const cp=el('div'); cp.appendChild(el('h2',null,'2captcha — solve calls'));
+  const cpp=panel(); const cb=el('div'); cb.style.padding='12px 14px';
+  if(cap.error)cb.appendChild(el('div','err',cap.error));
+  cb.appendChild(el('div','sub', cap.today_calls+' today ('+money(cap.today_cost)+') · '+cap.calls+' all-time ('+money(cap.cost)+')'));
+  cpp.appendChild(cb);
+  tableInto(cpp, [{label:'Time'},{label:'Target'},{label:'Type'},{label:'Cost',num:1}], (cap.recent||[]).slice(0,12), r=>{
+    const tr=el('tr'); tr.appendChild(el('td','mono',(r.ts||'').replace('T',' ').slice(5,19)));
+    tr.appendChild(el('td','mono',esc(r.host))); tr.appendChild(el('td',null,esc(r.type).replace('TaskProxyless','').replace('Recaptcha','reCAPTCHA ')));
+    tr.appendChild(el('td','num','$'+esc(r.cost))); return tr; });
+  cp.appendChild(cpp); two2.appendChild(cp);
+  app.appendChild(two2);
+}
+
+let lastOk=0;
+async function tick(){
+  try{
+    const r=await fetch('api/state',{cache:'no-store'});
+    const s=await r.json();
+    render(s);
+    const m=s.meta||{}; const age=m.age!=null?m.age:0; lastOk=Date.now();
+    const stale=age>(m.refresh||10)*3;
+    $('#live').style.background= m.ok ? 'var(--good)' : 'var(--crit)';
+    $('#meta').innerHTML = (stale?'<span class="stale">stale · </span>':'')+'updated '+dur(age)+' ago · '+ (m.duration_ms!=null?('collect '+m.duration_ms+'ms · '):'') +'ns '+esc(m.ns||'drover');
+    $('#foot').textContent='drover health · auto-refresh '+(m.refresh||10)+'s · reads kubectl + the outreach ledgers directly, nothing cached by an LLM';
+  }catch(e){
+    $('#live').style.background='var(--crit)';
+    $('#meta').innerHTML='<span class="stale">backend unreachable</span> · '+dur((Date.now()-lastOk)/1000)+' since last ok';
+  }
+}
+tick(); setInterval(tick, 5000);
+</script>
+</body>
+</html>

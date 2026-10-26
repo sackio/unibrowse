@@ -1,0 +1,33 @@
+# Always-on drover health dashboard as a systemd --user unit.
+#
+# ⛔ Installing this is a host change -- enable it only with the operator's ok.
+# Until then the collector runs detached under a session and stops on an office
+# reboot. Run it on office, which has kubectl, the barn kubeconfig on NFS, and
+# the outreach ledgers on NFS -- the same host as the dispatcher.
+#
+#   install (office, as ben):
+#     mkdir -p ~/.config/systemd/user
+#     ln -sf /mnt/nas/data/code/drover/drover/dashboard/drover-dashboard.service \
+#            ~/.config/systemd/user/drover-dashboard.service
+#     systemctl --user daemon-reload
+#     systemctl --user enable --now drover-dashboard
+#     loginctl enable-linger ben     # so it survives logout
+#
+#   view:   https://atc.sack.io/f/<artifact-id>/index.html  (ATC proxy -> office:8792)
+#   logs:   journalctl --user -u drover-dashboard -f
+#   stop:   systemctl --user stop drover-dashboard
+
+[Unit]
+Description=Drover health dashboard (collector + static server, LAN :8792, fronted via ATC)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=DROVER_DASH_PORT=8792
+Environment=DROVER_DASH_REFRESH=10
+ExecStart=/usr/bin/python3 /mnt/nas/data/code/drover/drover/dashboard/server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
