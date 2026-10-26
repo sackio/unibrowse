@@ -278,6 +278,38 @@ CONTACT_LINK = r"""(() => {
 })()"""
 
 
+# ⛔ The v1 source's SUBMIT_RECT (cfg["SUBMIT_RECT"]) searches the WHOLE document
+# for a send/submit/contact button, with a bare `cands[0]` fallback. On a town
+# page that grabs a header "Contact" nav button or a "Submit Search" box -- a
+# wrong-button click that reads as a FALSE "submitted" (delta.utah.gov clicked
+# Submit Search) or an off-form "unreachable" (camden.delaware.gov aimed at a
+# top-right header button). Measured 2026-10-26. Scope to the FORM that holds the
+# marked email field; fall back to a text-matched document search (never a bare
+# first button) only when the fields are not wrapped in a <form>. Drover-local
+# override; the v1 engine has the same bug -- told `business` to adopt it.
+SUBMIT_CONTACT = r"""(() => {
+  const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const SUB = "button[type=submit],input[type=submit],input[type=image],button:not([type]),button[type=button],[role=button],a[class*=button i],a[class*=btn i]";
+  const re = /send|submit|sign ?up|subscribe|join|contact/i;
+  const em = document.querySelector("[data-ub-f='email']");
+  const form = em && em.closest('form');
+  let pick = null;
+  if (form) {
+    const inForm = [...form.querySelectorAll(SUB)].filter(vis);
+    pick = inForm.find(e => re.test((e.innerText || e.value || '') + ' ' + (e.name || '') + ' ' + (e.id || ''))) || inForm[0];
+  }
+  if (!pick) {   // no <form> wrapper (or an empty one): text-matched doc search, never a bare first button
+    pick = [...document.querySelectorAll(SUB)].filter(vis)
+      .find(e => re.test((e.innerText || e.value || '') + ' ' + (e.name || '') + ' ' + (e.id || '')));
+  }
+  if (!pick) return JSON.stringify({ok: false});
+  pick.setAttribute('data-ub-f', 'submit');
+  const r = pick.getBoundingClientRect();
+  return JSON.stringify({ok: true, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2),
+    w: Math.round(r.width), label: (pick.innerText || pick.value || '').trim().slice(0, 30)});
+})()"""
+
+
 def job_contact(b, row, cfg, w, dry=False, shot=None):
     """One outreach row: open a town's contact form, fill it by hand, press any
     captcha checkbox, submit, and read the verdict. Field choice, message and
@@ -511,7 +543,7 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
     before = b.eval(cfg["BODY"]) or ""
     url0 = b.eval("location.href")
     # Signup discovery already marked the button inside the signup form itself.
-    sub = {"ok": True, "label": found.get("label", "")} if signup else json.loads(b.eval(cfg["SUBMIT_RECT"]) or "{}")
+    sub = {"ok": True, "label": found.get("label", "")} if signup else json.loads(b.eval(SUBMIT_CONTACT) or "{}")
     if not sub.get("ok"):
         return done("blocked", f"{kind}: no submit control found")
     try:
