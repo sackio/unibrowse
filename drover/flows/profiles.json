@@ -6,6 +6,7 @@
   "github":   {"kind": "standing", "site": "GitHub",            "url": "https://github.com/settings/profile",     "expect": "sackio|Ben Sack",                    "egress": "house"},
   "google":   {"kind": "standing", "site": "Google",            "url": "https://myaccount.google.com/",           "expect": "ben@sack.io|Ben Sack",               "egress": "house"},
   "bing":     {"kind": "standing", "site": "Bing / Microsoft",  "url": "https://account.microsoft.com/",          "expect": "Microsoft account",                  "egress": "house"},
+  "walmart":  {"kind": "standing", "site": "Walmart",           "url": "https://www.walmart.com/",                "expect": "Hi,\\s+Laura|Reorder My Items|Reedy Meadow", "egress": "house"},
   "agents2":           {"kind": "service", "site": "Claude Console (platform.claude.com)", "egress": "house"},
   "claudeai-agents2":  {"kind": "service", "site": "claude.ai",                            "egress": "house"}
 }
