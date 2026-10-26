@@ -265,6 +265,19 @@ def click_field(b, hands, w, sel):
             raise
 
 
+# The site's own Contact page, from a link on the landing page: a same-site
+# href whose path or text says contact, preferring the shortest path.
+CONTACT_LINK = r"""(() => {
+  const here = location.hostname.replace(/^www\./, '');
+  const c = [...document.querySelectorAll('a[href]')].filter(a => {
+    try { const u = new URL(a.href); return u.hostname.replace(/^www\./, '') === here &&
+      /contact|get-in-touch/i.test(u.pathname + ' ' + a.textContent) && !/career|job/i.test(u.pathname); }
+    catch (e) { return false; } }).map(a => a.href.split('#')[0]);
+  c.sort((x, y) => x.length - y.length);
+  return c[0] && c[0] !== location.href.split('#')[0] ? c[0] : null;
+})()"""
+
+
 def job_contact(b, row, cfg, w, dry=False, shot=None):
     """One outreach row: open a town's contact form, fill it by hand, press any
     captcha checkbox, submit, and read the verdict. Field choice, message and
@@ -305,12 +318,36 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
         if found.get("ok"):
             break
         time.sleep(2)
+    if not found.get("ok") and not signup:
+        # Rows often carry only a homepage: follow the site's own Contact link
+        # once and look again (r8 2026-10-26: 5/7 homepages ended `noform`).
+        try:
+            href = b.eval(CONTACT_LINK)
+        except Exception:
+            href = None
+        if href:
+            try:
+                b.navigate(href, settle=2.0)
+                for _ in range(10):
+                    try:
+                        found = json.loads(b.eval(cfg["DISCOVER_CONTACT"]) or "{}")
+                    except Exception as e:
+                        found = {"ok": False, "why": f"discover failed: {e}"}
+                    if found.get("ok"):
+                        break
+                    time.sleep(2)
+            except Exception as e:
+                found = {"ok": False, "why": f"contact link {href}: {e}"}
     if not found.get("ok"):
         return done("noform", found.get("why", "no form"))
     town = row.get("town") or row["address"].split("@")[0]
+    # A row may carry its own subject and message (per-recipient text, e.g. the
+    # ca-up lane); "\n" in the TSV cell is a newline.
     values = {"email": row["address"], "first": row["first"], "last": row["last"],
-              "full": (row["first"] + " " + row["last"]).strip(), "subject": cfg["SUBJECT"],
-              "message": cfg["MSG_TMPL"].replace("{address}", row["address"]).replace("{town}", town)}
+              "full": (row["first"] + " " + row["last"]).strip(),
+              "subject": (row.get("subject") or cfg["SUBJECT"]).replace("\\n", "\n"),
+              "message": (row.get("message") or cfg["MSG_TMPL"].replace("{address}", row["address"])
+                          .replace("{town}", town)).replace("\\n", "\n")}
     hands = w.Hands(b)
     try:
         hands.calibrate()
@@ -348,7 +385,10 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
                     break
                 time.sleep(0.15)
             if got != values[k]:
-                return done("error", f"field {k} reads back {str(got)[:60]!r}")
+                g, v = str(got), values[k]
+                at = next((i for i in range(min(len(g), len(v))) if g[i] != v[i]), min(len(g), len(v)))
+                return done("error", f"field {k} reads back {len(g)}/{len(v)} chars, differs at {at}: "
+                                     f"got {g[max(0, at - 20):at + 20]!r} want {v[max(0, at - 20):at + 20]!r}")
             time.sleep(random.uniform(0.3, 1.0))
         for i in range(len(found.get("boxes") or [])):
             hands.click(f"[data-ub-f='box{i}']")
