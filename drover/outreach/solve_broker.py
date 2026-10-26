@@ -25,8 +25,13 @@ LEDGER = pathlib.Path(os.environ.get("SPEND_LEDGER", "/mnt/nas/data/code/busines
 BUDGET = float(os.environ["SOLVE_BUDGET"])           # required: no default cap on someone else's money
 WORST = 0.005                                         # reserve per solve in flight (v2 measured $0.00299)
 TASKS = {"recaptcha-v2": "RecaptchaV2TaskProxyless", "recaptcha-invisible": "RecaptchaV2TaskProxyless",
-         "recaptcha-v3": "RecaptchaV3TaskProxyless", "turnstile": "TurnstileTaskProxyless"}
-FIELDS = {"turnstile": "cf-turnstile-response"}
+         "recaptcha-v3": "RecaptchaV3TaskProxyless", "turnstile": "TurnstileTaskProxyless",
+         "hcaptcha": "HCaptchaTaskProxyless"}
+# hcaptcha: the 2captcha API doc Ben sent (docs/2captcha-api-v2-full.md) carries no
+# hCaptcha spec, so it was omitted rather than guessed. HCaptchaTaskProxyless is
+# confirmed by a live solve in captcha-spend.tsv ($0.00299, measured) and takes the
+# same {websiteURL, websiteKey} shape as the others; its token lands in h-captcha-response.
+FIELDS = {"turnstile": "cf-turnstile-response", "hcaptcha": "h-captcha-response"}
 KEY = next(l.split("=", 1)[1].strip() for l in CAPTCHA_ENV.read_text().splitlines() if l.startswith("CAPTCHA_API_KEY="))
 TOKEN = pathlib.Path(os.environ["BROKER_TOKEN_FILE"]).read_text().strip()
 lock, inflight = threading.Lock(), [0]

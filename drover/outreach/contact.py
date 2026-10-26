@@ -33,13 +33,15 @@ def paid_solve(b, url, kind, cfg):
         return False, "no sitekey on the page"
     if kind == "turnstile":
         task = "turnstile"
+    elif kind == "hcaptcha":
+        task = "hcaptcha"
     elif b.eval("!!document.querySelector(\"iframe[src*='recaptcha/api2/anchor'][src*='size=invisible'],[data-size=invisible]\")"):
         task = "recaptcha-invisible"
     elif b.eval("!!document.querySelector(\"iframe[src*='recaptcha'][src*='anchor']\")"):
         task = "recaptcha-v2"
     else:
         return False, "no reCAPTCHA widget to solve (v3/score) — not bought"
-    field = "cf-turnstile-response" if task == "turnstile" else "g-recaptcha-response"
+    field = {"turnstile": "cf-turnstile-response", "hcaptcha": "h-captcha-response"}.get(task, "g-recaptcha-response")
     # ⛔ Check the field exists BEFORE buying (the lane paid for turnstile tokens
     # with nowhere to write them, 2026-10-23).
     if not json.loads(b.eval(cfg["FIELD_PRESENT"].replace("__FIELD__", field)) or "{}").get("n"):
@@ -330,7 +332,7 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
             # Score-only reCAPTCHA (v3): no widget, nothing to press or buy;
             # the page mints its own token on submit. Signups never buy one.
             kind += "+v3"
-        if not token and not dry and os.environ.get("DROVER_SOLVER_URL") and kind in (("recaptcha",) if signup else ("recaptcha", "turnstile", "captcha")):   # signups: reCAPTCHA only (Ben, a3s)
+        if not token and not dry and os.environ.get("DROVER_SOLVER_URL") and kind in (("recaptcha", "hcaptcha") if signup else ("recaptcha", "hcaptcha", "turnstile", "captcha")):   # +hcaptcha on signups (Ben, ask a5d 2026-10-26; was reCAPTCHA-only a3s)
             token, why = paid_solve(b, row["url"], kind, cfg)
             if token is None:
                 after = ""
