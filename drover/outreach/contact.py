@@ -376,18 +376,36 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
                     raise
                 time.sleep(random.uniform(0.4, 0.9))
                 click_field(b, hands, w, sel)
+            # Type, then verify by reading the field back. xdotool returns when it
+            # has SENT keystrokes, not when the page processed them, and a late
+            # re-render (React/Wix/Gravity Forms) can drop the tail or take focus
+            # away entirely (measured: "Our " for "Our Store", "" for a full name).
+            # So CONVERGE instead of erroring on the first miss: when the field is
+            # a prefix of the target, type only the missing suffix (covers the
+            # empty case too); otherwise clear and retype. Re-focus each round,
+            # because a dropped tail usually means focus was lost mid-type.
+            got = ""
             hands.type(values[k])
-            # The last keystroke can still be in flight when typing returns
-            # (measured: "Stor" for "Store"). Give the page a moment to catch up.
-            for _ in range(10):
-                got = b.eval(f"(e => e && e.value)(document.querySelector({json.dumps(sel)}))")
+            for _ in range(4):
+                for _ in range(10):                 # let in-flight keystrokes land
+                    got = b.eval(f"(e => e && e.value)(document.querySelector({json.dumps(sel)}))") or ""
+                    if got == values[k]:
+                        break
+                    time.sleep(0.15)
                 if got == values[k]:
                     break
-                time.sleep(0.15)
+                if not b.eval(f"(t => !!t && (document.activeElement === t || t.contains(document.activeElement)))"
+                              f"(document.querySelector({json.dumps(sel)}))"):
+                    click_field(b, hands, w, sel)   # focus was lost; take it back
+                if values[k].startswith(got):
+                    hands.type(values[k][len(got):])            # finish the tail (empty got => whole value)
+                else:
+                    w.xdo("key", "ctrl+a"); w.xdo("key", "Delete")   # wrong/extra chars: clear, retype
+                    hands.type(values[k])
             if got != values[k]:
                 g, v = str(got), values[k]
                 at = next((i for i in range(min(len(g), len(v))) if g[i] != v[i]), min(len(g), len(v)))
-                return done("error", f"field {k} reads back {len(g)}/{len(v)} chars, differs at {at}: "
+                return done("error", f"field {k} reads back {len(g)}/{len(v)} chars after 4 tries, differs at {at}: "
                                      f"got {g[max(0, at - 20):at + 20]!r} want {v[max(0, at - 20):at + 20]!r}")
             time.sleep(random.uniform(0.3, 1.0))
         for i in range(len(found.get("boxes") or [])):
@@ -449,11 +467,17 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
                 if navd and not failed:
                     return done("submitted", f"{kind}+paid|callback|navigated")
                 return done("unsure", f"{kind}: {why}")
-            if not token and why.startswith("no reCAPTCHA widget to solve"):
+            if not token and (why.startswith("no reCAPTCHA widget to solve")
+                              or why == "no sitekey on the page"):
                 # Score-only reCAPTCHA (v3): nothing to press or buy; the page
                 # mints its own token when the form submits. Send it by hand and
                 # let the page's reply score the row (live 2026-10-25: 17 of 32
-                # rows were refused here without a press).
+                # rows were refused here without a press). "no sitekey on the
+                # page" is the SAME case: v3's api.js sets CAPTCHA_PRESENT but
+                # renders no widget and leaves data-sitekey empty, so there is
+                # nothing to solve -- blocking here was calling a captcha
+                # "present" when none was there to clear (Ben, #unibrowse
+                # 2026-10-26; measured on atkinsar.gov, alton.nh.gov).
                 kind += "+v3"
             elif not token:
                 return done("blocked", f"{kind}: {why} — did not submit")
