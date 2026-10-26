@@ -334,6 +334,31 @@ CHECKBOX_TARGET = r"""(sel => {
 })"""
 
 
+# WPForms "math captcha": a REQUIRED text field whose arithmetic question
+# ("6 + 14 =") is rendered client-side into sibling spans (.n1/.cal/.n2) -- a sum
+# in the DOM, not a real captcha. Drover left it empty and the form answered "This
+# field is required" (live fix4 2026-10-26: villageofphilo.com and others). Read
+# the operands, mark the input, and return the computed answer so the normal
+# converge-readback fill path types it. Covers +, - and x; null when absent.
+MATHCAPTCHA = r"""(() => {
+  const inp = document.querySelector("input[data-rule-wpf-captcha='math']");
+  if (!inp) return null;
+  const q = document.getElementById(inp.id + "-question")
+         || (inp.closest(".wpforms-field") || document).querySelector(".wpforms-captcha-equation");
+  if (!q) return null;
+  const num = c => { const e = q.querySelector("." + c); return e ? parseInt(e.textContent.trim(), 10) : NaN; };
+  const n1 = num("n1"), n2 = num("n2");
+  if (!Number.isFinite(n1) || !Number.isFinite(n2)) return null;
+  const op = (q.querySelector(".cal") ? q.querySelector(".cal").textContent : "+").trim();
+  let ans;
+  if (/[x×*]/i.test(op)) ans = n1 * n2;
+  else if (/[-−]/.test(op)) ans = n1 - n2;
+  else ans = n1 + n2;
+  inp.setAttribute("data-ub-f", "mathcaptcha");
+  return String(ans);
+})()"""
+
+
 def job_contact(b, row, cfg, w, dry=False, shot=None):
     """One outreach row: open a town's contact form, fill it by hand, press any
     captcha checkbox, submit, and read the verdict. Field choice, message and
@@ -404,6 +429,16 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
               "subject": (row.get("subject") or cfg["SUBJECT"]).replace("\\n", "\n"),
               "message": (row.get("message") or cfg["MSG_TMPL"].replace("{address}", row["address"])
                           .replace("{town}", town)).replace("\\n", "\n")}
+    # WPForms math captcha (see MATHCAPTCHA): a required arithmetic field drover
+    # otherwise leaves empty -> "This field is required". Contact lane only.
+    if not signup:
+        try:
+            math_ans = b.eval(MATHCAPTCHA)
+        except Exception:
+            math_ans = None
+        if math_ans:
+            values["mathcaptcha"] = math_ans
+            found.setdefault("fields", {})["mathcaptcha"] = True
     hands = w.Hands(b)
     try:
         hands.calibrate()
@@ -415,7 +450,7 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
                 break
             hands.click("[data-ub-cc]")
             time.sleep(random.uniform(0.6, 1.2))
-        for k in ("first", "last", "full", "email") if signup else ("first", "last", "full", "email", "subject", "message"):
+        for k in ("first", "last", "full", "email") if signup else ("first", "last", "full", "email", "subject", "message", "mathcaptcha"):
             if k != "email" and k != "message" and not found["fields"].get(k):
                 continue
             sel = f"[data-ub-f='{k}']"
