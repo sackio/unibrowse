@@ -356,6 +356,10 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
     except RuntimeError as e:
         return done("blocked", f"form field unreachable — {e}")
     kind = "none"
+    url_form = b.eval("location.href")  # baseline: a nav away from here after a
+    # bought token means the form submitted. paid_solve's write can hang BECAUSE
+    # the widget callback submitted and then navigated, which was logged `unsure`
+    # and deflated the pass rate (Ben, #unibrowse 2026-10-26).
     if b.eval(CAPTCHA_PRESENT):
         kind = "captcha"
         for name, sel, fx, fy, field in WIDGETS:
@@ -389,13 +393,21 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
         if not token and not dry and os.environ.get("DROVER_SOLVER_URL") and kind in (("recaptcha", "hcaptcha") if signup else ("recaptcha", "hcaptcha", "turnstile", "captcha")):   # +hcaptcha on signups (Ben, ask a5d 2026-10-26; was reCAPTCHA-only a3s)
             token, why = paid_solve(b, row["url"], kind, cfg)
             if token is None:
-                after = ""
+                after, navd = "", False
                 try:
                     after = b.eval(cfg["BODY"]) or ""
+                    navd = bool(url_form) and (b.eval("location.href") or url_form) != url_form
                 except Exception:
                     pass
-                if re.search(cfg["OK_CONTACT"], after, re.I) and not re.search(cfg["FAIL_TEXT"], after, re.I):
+                failed = bool(re.search(cfg["FAIL_TEXT"], after, re.I))
+                if not failed and re.search(cfg["OK_CONTACT"], after, re.I):
                     return done("submitted", f"{kind}+paid|callback|ok-text")
+                # A bought token whose write hung AND the page then left the form
+                # submitted it -- the callback sent and navigated, which is WHY the
+                # write never answered. Count it instead of burying it as `unsure`;
+                # that miscount was deflating the pass rate (Ben, #unibrowse 10-26).
+                if navd and not failed:
+                    return done("submitted", f"{kind}+paid|callback|navigated")
                 return done("unsure", f"{kind}: {why}")
             if not token and why.startswith("no reCAPTCHA widget to solve"):
                 # Score-only reCAPTCHA (v3): nothing to press or buy; the page
