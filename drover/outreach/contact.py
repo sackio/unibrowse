@@ -323,7 +323,7 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
             # Score-only reCAPTCHA (v3): no widget, nothing to press or buy;
             # the page mints its own token on submit. Signups never buy one.
             kind += "+v3"
-        if not token and not dry and os.environ.get("DROVER_SOLVER_URL") and kind in ("recaptcha", "turnstile", "captcha"):
+        if not token and not dry and os.environ.get("DROVER_SOLVER_URL") and kind in (("recaptcha",) if signup else ("recaptcha", "turnstile", "captcha")):   # signups: reCAPTCHA only (Ben, a3s)
             token, why = paid_solve(b, row["url"], kind, cfg)
             if token is None:
                 after = ""
