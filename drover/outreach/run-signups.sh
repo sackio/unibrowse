@@ -23,7 +23,22 @@ W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 python3 - "$O/drover-signups.tsv" > "$W/queue.tsv" <<'EOF'
 import csv, sys
 rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
-rows.sort(key=lambda r: r["brand"] != "jf")
+# Round-robin across brands so no brand starves. The old jf-first-then-file-order
+# sort serialised the queue -- jf drained first, then ots, pb, re, ink in file
+# order -- so `re` sat at 0 done and ots/pb/ink showed 0 rate for hours while jf
+# ran (business, 2026-10-26; Ben #business 10:27 "every pipeline actively worked
+# and fed at the right rate"). Interleave one row per brand per round, each
+# brand keeping its own order; jf still leads each round, so its head start is
+# kept without blocking the rest.
+from collections import OrderedDict, deque
+groups = OrderedDict([("jf", deque())])   # jf leads each round; others follow in file order
+for r in rows:
+    groups.setdefault(r["brand"], deque()).append(r)
+rows = []
+while any(groups.values()):
+    for q in groups.values():
+        if q:
+            rows.append(q.popleft())
 print("url\taddress\tfirst\tlast\tkey\ttown")
 for r in rows:
     first, _, last = r["persona"].partition(" ")
