@@ -62,6 +62,8 @@ def pick(a):
     if a.keys:
         want = set(open(a.keys[1:]).read().split() if a.keys.startswith("@") else a.keys.split(","))
         rows = [r for r in read_tsv(a.queue) if r["key"] in want]   # explicit keys: the caller's call
+    seen = set()  # the queue carries exact-duplicate rows; run() sends every row it
+    rows = [r for r in rows if not (r["key"] in seen or seen.add(r["key"]))]  # is handed, so one key twice = two sends. Dedupe by key, keep order.
     rows = rows[: a.limit] if a.limit else rows
     w = csv.DictWriter(sys.stdout, COLS, delimiter="\t", extrasaction="ignore", lineterminator="\n")
     w.writeheader()

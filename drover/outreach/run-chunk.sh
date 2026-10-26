@@ -18,7 +18,12 @@ python3 "$HERE/lane.py" pick --queue "$Q" --results "$R" --limit "$N" ${RETRY:+-
 [ "$(wc -l < "$W/rows.tsv")" -le 1 ] && { echo "nothing to run"; exit 0; }
 python3 "$HERE/extract_config.py" > "$W/config.json" || exit 1
 LID=
-if [ -n "${NORD:-}" ]; then
+if [ -n "${PROXY_URL:-}" ]; then
+  # PROXY_URL=<full proxy url>: use this exit verbatim, no VPN lease. For a
+  # residential exit (IPRoyal SOCKS5) whose creds already carry targeting flags.
+  # ⛔ Pass socks5:// so contact.py routes the 2Captcha solve through it too.
+  printf '%s\n' "$PROXY_URL" > "$W/url"
+elif [ -n "${NORD:-}" ]; then
   # NORD=<host>: a Nord SOCKS5 server (e.g. new-york.us.socks.nordhold.net), the
   # one kind of exit 2Captcha can reach too, so the token is solved from the
   # browser's own exit (Ben, ask unibrowse/a4s). Service creds from the vpn .env.
