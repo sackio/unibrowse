@@ -51,12 +51,15 @@ spec:
           volumeMounts:
             - {name: lane, mountPath: /lane}
             - {name: shm, mountPath: /dev/shm}
-          # ⛔ 4Gi, not 2Gi: a branded Chrome plus the 512Mi memory-backed
-          # /dev/shm above (which counts against THIS container's memory cgroup)
-          # exceeded a 2Gi limit and OOMKilled whole shards -- measured on the
-          # live drover-signups run 2026-10-26 (shards 0,1 OOMKilled at 2Gi).
-          # 4Gi is the sizing the browser-running panel-variants job already
-          # uses; request==limit per the cluster seat's idle-batch convention.
+          # Memory sizing is the scheduling lever: batch-cpu is persistently full
+          # (cluster seat, 2026-10-26: ~448Gi requested of ~448, won't evict other
+          # tenants), and drover is idle-batch/preemptionPolicy=Never, so a smaller
+          # pod fits the slivers a 4Gi one can't -- more shards run in parallel.
+          # 2Gi OOMKilled (branded Chrome + the 512Mi memory-backed /dev/shm, which
+          # counts against this cgroup); 4Gi was comfortable. True peak ~2.4Gi, so
+          # 3Gi = peak+~20% per the cluster seat's guidance. request==limit per the
+          # idle-batch convention. ⚠️ Don't go below the measured peak or the node
+          # pays (OOMKill). Re-measure cgroup memory.peak before lowering further.
           resources:
-            requests: {cpu: "1", memory: 4Gi}
-            limits: {cpu: "1", memory: 4Gi}
+            requests: {cpu: "1", memory: 3Gi}
+            limits: {cpu: "1", memory: 3Gi}
