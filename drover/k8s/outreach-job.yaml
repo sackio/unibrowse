@@ -27,6 +27,12 @@ spec:
     spec:
       restartPolicy: Never
       priorityClassName: idle-batch
+      # Headless Chrome is CPU work, never GPU. Pin to the batch-cpu tier so a
+      # 24-shard signups run cannot land on gpu1-4 and starve qf-lab-mono GPU
+      # jobs of their nodes' CPU/mem (cluster seat, 2026-10-26). ~48 batch-cpu
+      # workers exist; the yaml is re-read at each chunk launch, so the next
+      # chunk picks this up. Applies to both lanes (contact-forms + signups).
+      nodeSelector: {workload-tier: batch-cpu}
       securityContext:
         seccompProfile: {type: Unconfined}
       volumes:
