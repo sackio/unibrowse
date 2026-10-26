@@ -1,0 +1,32 @@
+# Always-on drover dispatcher (drover-as-a-service) as a systemd --user unit.
+#
+# ⛔ Installing this is a host change -- enable it only with the operator's ok.
+# Until then the dispatcher runs under a session (setsid) and stops when that
+# session ends. One instance fleet-wide (the flock in dispatcher.py enforces
+# it); run it on office, which has docker, the barn kubeconfig on NFS, and ssh
+# to the VPN host.
+#
+#   install (office, as ben):
+#     mkdir -p ~/.config/systemd/user
+#     ln -sf /mnt/nas/data/code/drover/drover/dispatch/drover-dispatcher.service \
+#            ~/.config/systemd/user/drover-dispatcher.service
+#     systemctl --user daemon-reload
+#     systemctl --user enable --now drover-dispatcher
+#     loginctl enable-linger ben     # so it survives logout
+#
+#   logs:   journalctl --user -u drover-dispatcher -f
+#   stop:   systemctl --user stop drover-dispatcher
+
+[Unit]
+Description=Drover dispatcher (ATC-addressable `drover`, launches k8s drover jobs)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=DROVER_DISPATCH_LAN_IP=192.168.1.199
+ExecStart=/usr/bin/python3 /mnt/nas/data/code/drover/drover/dispatch/dispatcher.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
