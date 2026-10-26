@@ -45,7 +45,21 @@ DISPLAY = os.environ.get("DROVER_DISPLAY", ":99")
 # EGL: software, no GPU, and rebrowser reads it all green where SwiftShader is
 # 🟡 headless/WebGL; on the 80-site panel it scored 53/80 vs SwiftShader 50/80,
 # within noise (k8s/panel-variants-job.yaml, 2026-10-24).
-EXTRA = os.environ.get("DROVER_CHROME_ARGS", "--use-gl=angle --use-angle=gl-egl --ignore-gpu-blocklist").split()
+# ⛔ --disable-gpu-compositing IS WHAT MAKES INPUT WORK AFTER A NAVIGATION, and
+# it is not optional. Under Xvfb the GPU compositor's surface for a view built
+# on a cross-process navigation never goes input-active, so Chrome silently
+# drops every XTEST mouse move and keystroke handed to it -- the page sees no
+# pointer and no keys, while xdotool reports success. Measured 2026-10-25: a
+# first/local data: page took full input; Wikipedia and Amazon after a nav took
+# none, across windowfocus, a focus cycle, an openbox WM (_NET_ACTIVE_WINDOW
+# set), setFocusEmulationEnabled, site-isolation off and occlusion off -- only
+# a SOFTWARE compositor fixed it. It disables the GPU for the COMPOSITOR only;
+# WebGL/canvas stay on the same ANGLE/llvmpipe path, so the fingerprint above
+# (the 53/80 llvmpipe reading) is unchanged. Confirmed: click/type via XTEST,
+# real keydowns reach the page, on a navigated site.
+EXTRA = os.environ.get(
+    "DROVER_CHROME_ARGS",
+    "--use-gl=angle --use-angle=gl-egl --ignore-gpu-blocklist --disable-gpu-compositing").split()
 CFG = hm.MotionConfig()
 
 
@@ -61,6 +75,36 @@ def start_display():
             return xvfb
         time.sleep(0.1)
     raise SystemExit("Xvfb did not come up on " + DISPLAY)
+
+
+def start_wm():
+    """Start a minimal window manager, if one is installed.
+
+    ⛔ WHY THIS IS NOT OPTIONAL FOR INPUT. Headful Chrome on X11 activates its
+    render widget from the platform's window activation, and with no window
+    manager nothing ever sends it. X input focus lands on the right window and
+    the pointer sits over it, but a cross-process navigation (any real site,
+    e.g. amazon.com from the startup page) makes a fresh, UNACTIVATED widget,
+    so Chrome drops every XTEST mouse move and keystroke handed to it --
+    document.hasFocus() can even be forced true with setFocusEmulationEnabled
+    and the field STILL stays empty, because the drop is at the aura view, not
+    the renderer. Measured on Amazon /ap/signin 2026-10-25: getwindowfocus ==
+    the content window, pointer over it, hf true, 20 keystrokes -> length 0. A
+    WM sends the activation and the input lands. A trivial data: page escapes
+    this only by never leaving the activated startup process.
+
+    No-op (and the old behaviour) when no WM binary is present, so an image
+    without one is unchanged. Off with DROVER_WM=0."""
+    if os.environ.get("DROVER_WM", "1") == "0":
+        return None
+    for wm in ("openbox", "fluxbox", "blackbox", "jwm", "twm"):
+        if shutil.which(wm):
+            p = subprocess.Popen([wm], env={**os.environ, "DISPLAY": DISPLAY},
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            time.sleep(0.6)
+            return p
+    return None
 
 
 def start_audio():
@@ -859,6 +903,115 @@ class Hands:
             else:
                 xdo("type", "--clearmodifiers", "--delay", "0", "--", op["char"])
 
+    def ensure_focus(self, tries=8):
+        """Give the Chrome window X INPUT FOCUS so XTEST keystrokes reach it.
+
+        ⛔ THE PERVASIVE INPUT BUG. Under Xvfb with no window manager, X focus
+        is not granted to a window on its own, and a NAVIGATION leaves the new
+        document without it: document.hasFocus() reads false and every
+        synthesized keystroke is delivered to the root window and dropped,
+        while the page's mousemove listener never fires so calibrate() also
+        fails with "page saw no pointer movement". Measured on Amazon
+        /ap/signin 2026-10-25: hasFocus false, zero iframes, field auto-focused,
+        20 keystrokes -> value length 0; a trivial page in the SAME container
+        typed fine, because its first click happened to re-focus the window.
+        The single windowfocus + warp run_session does at startup is spent on
+        about:blank and does not survive the nav to the page a flow drives.
+
+        windowfocus is XSetInputFocus -- the X-level focus a WM would grant,
+        and the only one that routes KEY events, which follow input focus, not
+        the pointer. Page.bringToFront is Chrome's own focus; a real pointer
+        motion generates the crossing some builds additionally want. Do all
+        three, verify from the page, and retry: cheap when focus is already
+        held (one eval returns at once), decisive when it is not."""
+        # ⭐ The renderer-level fix for the real cause. Measured 2026-10-25 on
+        # Amazon /ap/signin: X input focus WAS on the right Chrome window
+        # (getwindowfocus == the 1919x1079 content window) and the pointer WAS
+        # over it, yet document.hasFocus() stayed false and no mousemove or
+        # keystroke reached the page. A cross-process navigation makes a fresh
+        # RenderWidget that, with no window manager to activate it, starts
+        # blurred -- so Chrome drops the input it is handed. setFocusEmulationEnabled
+        # tells the renderer to consider itself focused regardless of the
+        # missing activation; it persists for the session, so one call suffices.
+        try:
+            self.b.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
+        except Exception:
+            pass
+        sw, sh = (int(v) for v in SCREEN.split("x")[:2])
+        for _ in range(tries):
+            try:
+                if self.b.eval("document.hasFocus()"):
+                    return True
+            except RuntimeError:
+                pass
+            # ⛔ A FOCUS *TRANSITION*, NOT A STATIC RE-FOCUS. A cross-process
+            # navigation builds a new RenderWidgetHostView, and on X11/Ozone with
+            # no WM it only takes focus on a FocusIn event -- which XSetInputFocus
+            # to the already-focused window never emits. So focus a DIFFERENT
+            # Chrome window first (Chrome keeps a tiny aux window beside the
+            # content one), then the content window, forcing the FocusOut/FocusIn
+            # the new view needs. This is why a same-process data: page typed and
+            # a navigated-to site did not, with focus and a WM both already right.
+            wins = self._chrome_windows()
+            if wins:
+                content = wins[-1][0]
+                aux = next((w for w, area in wins if w != content), None)
+                try:
+                    if aux:
+                        xdo("windowfocus", "--sync", aux)
+                        time.sleep(0.05)
+                    xdo("windowfocus", "--sync", content)
+                except RuntimeError:
+                    pass
+            try:
+                self.b.send("Page.bringToFront")
+            except Exception:
+                pass
+            try:
+                xdo("mousemove", "1", "1", "sleep", "0.03",
+                    "mousemove", str(sw // 2 + random.randint(-60, 60)),
+                    str(sh // 2 + random.randint(-60, 60)))
+            except RuntimeError:
+                pass
+            time.sleep(0.2)
+        try:
+            return bool(self.b.eval("document.hasFocus()"))
+        except RuntimeError:
+            return False
+
+    def _chrome_windows(self):
+        """Our Chrome's X windows as (id, area), smallest first -- the content
+        window is the largest (last). For the focus cycle in ensure_focus."""
+        out = []
+        try:
+            wins = xdo("search", "--class", "google-chrome").split()
+        except RuntimeError:
+            wins = []
+        for w in wins:
+            try:
+                g = xdo("getwindowgeometry", "--shell", w)
+                d = dict(l.split("=", 1) for l in g.splitlines() if "=" in l)
+                out.append((w, int(d.get("WIDTH", 0)) * int(d.get("HEIGHT", 0))))
+            except (RuntimeError, ValueError):
+                pass
+        out.sort(key=lambda t: t[1])
+        return out
+
+    KEYMAP = {
+        "Enter":     ("Enter", "Enter", 13, "\r", "Return"),
+        "Tab":       ("Tab", "Tab", 9, None, "Tab"),
+        "Space":     (" ", "Space", 32, " ", "space"),
+        "Escape":    ("Escape", "Escape", 27, None, "Escape"),
+        "Backspace": ("Backspace", "Backspace", 8, None, "BackSpace"),
+        "ArrowDown": ("ArrowDown", "ArrowDown", 40, None, "Down"),
+    }
+
+    def press(self, name):
+        """Press a named key over XTEST -- Enter to submit, Space to toggle a
+        focused checkbox, Tab to move on. isTrusted hardware key, like type()."""
+        sym = self.KEYMAP.get(name, (name,))[-1]
+        xdo("key", "--clearmodifiers", sym)
+
 
 # ------------------------------------------------------------------- jobs ---
 def job_probe(b, url, out):
@@ -1091,14 +1244,14 @@ def job_session(b, url, steps, out, shot):
             if do == "nav":
                 b.navigate(st["url"])
                 note(i, st, "ok", {"url": st["url"]})
+            elif do == "reload":
+                b.navigate(b.eval("location.href"), settle=float(st.get("settle", 2.0)))
+                note(i, st, "ok")
             elif do == "click":
                 loc, m = target(st)
                 if st.get("text") and m is None:
                     note(i, st, "no-match", {"text": st.get("text")})
                     break
-                if not calibrated[0]:
-                    h.calibrate()
-                    calibrated[0] = True
                 # ⛔ Hands.click RETURNS NONE ON SUCCESS -- it has no return
                 # statement -- and RAISES on a genuine miss. Testing its return
                 # value therefore labels every successful click a failure. I
@@ -1106,6 +1259,10 @@ def job_session(b, url, steps, out, shot):
                 # "unreachable" on three landed clicks as a bug in Hands, and
                 # warned the outreach lane about a false negative that does not
                 # exist. The absence of an exception IS the success signal.
+                if not calibrated[0]:
+                    h.ensure_focus()
+                    h.calibrate()
+                    calibrated[0] = True
                 h.click(loc)
                 note(i, st, "ok", {"matched": m} if m else None)
             elif do == "type":
@@ -1123,6 +1280,8 @@ def job_session(b, url, steps, out, shot):
                     text = reads[st["from"]]
                 else:
                     text = st["text"]
+                # Focus the window so the XTEST keystrokes land, then type.
+                h.ensure_focus()
                 h.type(text, sensitive=secret)
                 note(i, st, "ok", {"chars": len(text), "value": "***" if secret else text})
             elif do == "read":
@@ -1136,6 +1295,25 @@ def job_session(b, url, steps, out, shot):
                 reads[st.get("as", "read%d" % i)] = v
                 note(i, st, "ok" if v is not None else "missing",
                      {"chars": len(v) if v else 0})
+            elif do == "press":
+                # Press a named key, optionally after focusing a selector.
+                # Submit and checkbox toggle WITHOUT a mouse: the CDP mouse path
+                # does not actuate controls in this container (measured
+                # 2026-10-25: hit-testable #signInSubmit / #auth-remember-me did
+                # not fire on a CDP click), while a key event on the focused
+                # control does. `ensure_focus` first so the key is not dropped.
+                h.ensure_focus()
+                if st.get("sel") or st.get("text"):
+                    loc, m = target(st)
+                    if st.get("text") and m is None:
+                        note(i, st, "no-match", {"text": st.get("text")})
+                        break
+                    if not b.eval("(()=>{const e=%s;if(!e)return false;e.focus();"
+                                  "return document.activeElement===e})()" % el(loc)):
+                        note(i, st, "not-focused", {"key": st.get("key", "Enter")})
+                        break
+                h.press(st.get("key", "Enter"))
+                note(i, st, "ok", {"key": st.get("key", "Enter")})
             elif do == "expect":
                 # Asserts the page is where the previous step should have put
                 # it. `value` checks a field actually holds what we typed --
@@ -1281,6 +1459,7 @@ def job_session(b, url, steps, out, shot):
                 if st.get("text") and m is None:
                     note(i, st, "no-match", {"text": st.get("text")})
                     break
+                h.ensure_focus()
                 ok = b.eval("(()=>{const e=%s;if(!e)return false;"
                             "e.focus();return document.activeElement===e})()"
                             % el(loc))
@@ -1606,6 +1785,7 @@ def main():
     ap.add_argument("--interact", action="store_true")
     a = ap.parse_args()
     xvfb = start_display()
+    wm = start_wm()
     audio = start_audio()
     ident = identity() if os.environ.get("DROVER_IDENTITY", "1") != "0" else None
     extra = []

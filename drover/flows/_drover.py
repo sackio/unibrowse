@@ -260,7 +260,8 @@ def run_session(profile, steps, timeout=420, share=None, out=None, background=Fa
         # Egress: the worker reads DROVER_PROXY (and _BYPASS) to route Chrome
         # through a VPN exit. `-e NAME` with no =value takes it from the host
         # env, so the proxy URL (which carries a password) never hits argv.
-        for v in ("DROVER_PROXY", "DROVER_PROXY_BYPASS"):
+        for v in ("DROVER_PROXY", "DROVER_PROXY_BYPASS",
+                  "DROVER_CHROME_ARGS", "DROVER_WM", "DROVER_SCREEN"):
             if os.environ.get(v):
                 cmd += ["-e", v]
         worker = pathlib.Path(__file__).resolve().parent.parent / "worker" / "drover_worker.py"
