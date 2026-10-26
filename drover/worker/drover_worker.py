@@ -655,6 +655,31 @@ class Hands:
     def __init__(self, b):
         self.b = b
         self.dx = self.dy = 0
+        self._scroll_tamed = False
+
+    def _tame_scroll(self):
+        # ⛔ `scroll-behavior: smooth` makes the page KEEP GLIDING after the last
+        # wheel notch (measured on Elementor town forms, 2026-10-26:
+        # documentElement scrollBehavior=smooth). click()'s sighting-wait polls
+        # up to 1.6s for the page to report the pointer; during that wait the
+        # field drifts out from under a pointer parked on target, so
+        # elementFromPoint(aim) lands on a neighbour and the click reads "pointer
+        # would not land" though the page saw the pointer exactly on target
+        # (aim 1101,799 / page saw 1101,799 / hit-test missed). A hand needs no
+        # smooth scroll; force instant so a settled box stays settled. Persists
+        # on the page DOM until the next full navigation, so once per instance.
+        if self._scroll_tamed:
+            return
+        try:
+            self.b.eval("(() => { const s = document.createElement('style');"
+                        " s.textContent = '*{scroll-behavior:auto !important}';"
+                        " (document.head || document.documentElement).appendChild(s);"
+                        " document.documentElement.style.scrollBehavior = 'auto';"
+                        " if (document.body) document.body.style.scrollBehavior = 'auto';"
+                        " return 1; })()")
+            self._scroll_tamed = True
+        except RuntimeError:
+            pass
 
     LISTEN = ("(() => { if (!window.__dmOn) { window.__dmOn = 1; window.__dm = null;"
               " addEventListener('mousemove', e => { window.__dm = [e.clientX, e.clientY, e.isTrusted]; }, true); }"
@@ -753,6 +778,7 @@ class Hands:
         ⛔ Never scrollIntoView(), which is a scripted jump no hand makes.
         Re-measures after every gesture, because a notch's size in px varies
         by page and the plan mixes wheel, arrow keys and over-scroll."""
+        self._tame_scroll()
         last = None
         for _ in range(tries):
             left, top, w, h, dpr, vh = self.rect(selector)
