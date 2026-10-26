@@ -27,6 +27,8 @@ rows.sort(key=lambda r: r["brand"] != "jf")
 print("url\taddress\tfirst\tlast\tkey\ttown")
 for r in rows:
     first, _, last = r["persona"].partition(" ")
+    if r["persona"].startswith("Our Town Store "):   # ots rows: brand + town, not a person
+        first, last = "Our Town Store", r["persona"][15:]
     print("\t".join([f"https://{r['domain']}/", r["address"], first, last, f"{r['brand']}|{r['domain']}|{r['address']}", ""]))
 EOF
 python3 "$HERE/lane.py" pick --queue "$W/queue.tsv" --results "$L" --limit "$N" > "$W/rows.tsv" || exit 1
