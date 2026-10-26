@@ -166,9 +166,16 @@ DISCOVER_SIGNUP = r"""(() => {
       .sort((a, b) => /subscribe|sign ?up|join|submit|go|send|→|›|»/i.test(b.innerText || b.value || b.getAttribute('aria-label') || '') -
                       /subscribe|sign ?up|join|submit|go|send|→|›|»/i.test(a.innerText || a.value || a.getAttribute('aria-label') || ''))[0];
     if (!btn) continue;
-    cands.push({em, sc, btn, news: NEWS.test(blob), extra: others.length});
+    // A newsletter popup is the best target there is, and while it is up it
+    // locks the page's scroll and covers the footer form (live chunk 1,
+    // 2026-10-25: 32 rows "could not scroll", 14 "pointer would not land").
+    const r = em.getBoundingClientRect();
+    let pop = false;
+    for (let p = em; p && p !== document.body; p = p.parentElement)
+      if (getComputedStyle(p).position === 'fixed') { pop = r.top >= 0 && r.bottom <= innerHeight; break; }
+    cands.push({em, sc, btn, news: NEWS.test(blob), extra: others.length, pop});
   }
-  const pick = cands.find(c => c.news) || cands.find(c => c.extra === 0);
+  const pick = cands.find(c => c.pop && (c.news || c.extra === 0)) || cands.find(c => c.news) || cands.find(c => c.extra === 0);
   if (!pick) return JSON.stringify({ok: false, why: cands.length ? 'only non-newsletter email forms' : 'no-signup-form'});
   const {em, sc, btn} = pick;
   mark(em, 'email'); mark(btn, 'submit');
