@@ -37,10 +37,10 @@ spec:
         seccompProfile: {type: Unconfined}
       volumes:
         - {name: lane, configMap: {name: drover-outreach}}
-        - {name: shm, emptyDir: {medium: Memory, sizeLimit: 512Mi}}
+        - {name: shm, emptyDir: {medium: Memory, sizeLimit: 128Mi}}
       containers:
         - name: worker
-          image: 192.168.1.168:32000/drover/worker:2026-10-26nav
+          image: 192.168.1.168:32000/drover/worker:2026-10-26mem
           # drover-solver: DROVER_SOLVER_URL + DROVER_SOLVER_TOKEN for the host's solve broker
           # (outreach/solve_broker.py). Absent, a captcha the hand cannot clear ends the row blocked.
           envFrom: [{secretRef: {name: drover-proxy}}, {secretRef: {name: drover-solver, optional: true}}]
@@ -53,13 +53,15 @@ spec:
             - {name: shm, mountPath: /dev/shm}
           # Memory sizing is the scheduling lever: batch-cpu is persistently full
           # (cluster seat, 2026-10-26: ~448Gi requested of ~448, won't evict other
-          # tenants), and drover is idle-batch/preemptionPolicy=Never, so a smaller
-          # pod fits the slivers a 4Gi one can't -- more shards run in parallel.
-          # 2Gi OOMKilled (branded Chrome + the 512Mi memory-backed /dev/shm, which
-          # counts against this cgroup); 4Gi was comfortable. True peak ~2.4Gi, so
-          # 3Gi = peak+~20% per the cluster seat's guidance. request==limit per the
-          # idle-batch convention. ⚠️ Don't go below the measured peak or the node
-          # pays (OOMKill). Re-measure cgroup memory.peak before lowering further.
+          # tenants), drover is idle-batch/preemptionPolicy=Never, so a smaller pod
+          # fits the slivers a 4Gi one can't -- more shards run in parallel.
+          # History: 2Gi OOMKilled when Chrome's shared memory lived in the 512Mi
+          # memory-backed /dev/shm (counted against this cgroup); a live signup
+          # shard measured ~1040MiB typical. The worker now runs Chrome with
+          # --disable-dev-shm-usage, so that shared memory is on disk-backed /tmp
+          # and off the cgroup -- the worst-case spike that forced 3Gi is gone.
+          # 2Gi = measured peak + margin. request==limit per the idle-batch
+          # convention. ⚠️ Re-measure cgroup memory before lowering further.
           resources:
-            requests: {cpu: "1", memory: 3Gi}
-            limits: {cpu: "1", memory: 3Gi}
+            requests: {cpu: "1", memory: 2Gi}
+            limits: {cpu: "1", memory: 2Gi}

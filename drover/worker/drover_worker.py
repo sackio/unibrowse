@@ -362,6 +362,11 @@ class Browser:
         args = [CHROME, f"--user-data-dir={self.profile}", "--remote-debugging-pipe",
                 "--no-first-run", "--no-default-browser-check", "--password-store=basic",
                 "--disable-features=Translate",
+                # Put Chrome's shared memory on disk-backed /tmp, not the
+                # memory-backed /dev/shm emptyDir (which counts against this pod's
+                # memory cgroup). Lets the request drop to ~2Gi so more shards fit
+                # the batch-cpu slivers (cluster seat, 2026-10-26). Measured safe.
+                "--disable-dev-shm-usage",
                 # ⭐ Without this a debugging-pipe browser reports
                 # navigator.webdriver === true (measured, first bench run
                 # 2026-10-24). It switches the automation feature off rather
