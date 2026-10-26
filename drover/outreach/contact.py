@@ -310,6 +310,30 @@ SUBMIT_CONTACT = r"""(() => {
 })()"""
 
 
+# A consent checkbox is often a visually-hidden real <input> -- 1x1px, or
+# pointer-events:none, or display:none -- with a real clickable LABEL beside it
+# (Wix, live ashdownheritage.com 2026-10-26: a 1x1 pointer-events:none box with
+# an 898x24 label). reach() cannot land a pointer on the raw input, which read
+# as "could not scroll [data-ub-f='box{i}'] into view" and blocked the row (32
+# rows). When the input itself is unclickable, mark its label and click that --
+# a label click toggles the checkbox (verified on that page). The input stays
+# the target when it is itself clickable, so normal checkboxes are untouched.
+CHECKBOX_TARGET = r"""(sel => {
+  const cb = document.querySelector(sel);
+  if (!cb) return sel;
+  const r = cb.getBoundingClientRect(), cs = getComputedStyle(cb);
+  const ok = cs.pointerEvents !== 'none' && cs.display !== 'none' &&
+    cs.visibility !== 'hidden' && r.width >= 6 && r.height >= 6;
+  if (ok) return sel;
+  const lbl = cb.closest('label') ||
+    (cb.id && document.querySelector('label[for="' + CSS.escape(cb.id) + '"]'));
+  if (!lbl) return sel;
+  const i = (sel.match(/box(\d+)/) || [, ''])[1];
+  lbl.setAttribute('data-ub-f', 'box' + i + 'l');
+  return "[data-ub-f='box" + i + "l']";
+})"""
+
+
 def job_contact(b, row, cfg, w, dry=False, shot=None):
     """One outreach row: open a town's contact form, fill it by hand, press any
     captcha checkbox, submit, and read the verdict. Field choice, message and
@@ -441,7 +465,9 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
                                      f"got {g[max(0, at - 20):at + 20]!r} want {v[max(0, at - 20):at + 20]!r}")
             time.sleep(random.uniform(0.3, 1.0))
         for i in range(len(found.get("boxes") or [])):
-            hands.click(f"[data-ub-f='box{i}']")
+            sel = f"[data-ub-f='box{i}']"
+            tgt = b.eval(CHECKBOX_TARGET + "(" + json.dumps(sel) + ")") or sel
+            hands.click(tgt)
             time.sleep(random.uniform(0.2, 0.6))
     except RuntimeError as e:
         return done("blocked", f"form field unreachable — {e}")
