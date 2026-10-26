@@ -17,7 +17,7 @@ cannot overshoot. The ledger line format is the engine's own.
 token keeps the rest of the LAN from spending it.
 The task shapes mirror service_solve() in bin/captcha_solve.py.
 """
-import argparse, json, os, pathlib, threading, time, urllib.request
+import argparse, json, os, pathlib, threading, time, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CAPTCHA_ENV = pathlib.Path("/mnt/nas/data/code/scripts/2captcha/.env")
@@ -45,9 +45,26 @@ def spent():
 
 
 def api(path, payload):
+    # ⛔ 2Captcha returns transient 5xx (520 from its Cloudflare edge, 500) that
+    # are not the task's verdict: on 2026-10-25 seven live rows ended `blocked`
+    # on "HTTP Error 520/500" that a retry would have cleared. Retry a 5xx or a
+    # transport error with backoff; a 4xx is a real client error, raised at once.
+    # getTaskResult is a pure read; createTask on a 5xx did not create a task
+    # (so a retry is not a double-charge), and the spend cap guards the rest.
     req = urllib.request.Request(f"https://api.2captcha.com/{path}", data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
-    return json.loads(urllib.request.urlopen(req, timeout=60).read().decode())
+    last = None
+    for attempt in range(4):
+        try:
+            return json.loads(urllib.request.urlopen(req, timeout=60).read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                raise
+            last = e
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            last = e
+        time.sleep(1 << attempt)                      # 1, 2, 4, 8 s
+    raise last
 
 
 def solve(c):

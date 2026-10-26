@@ -784,7 +784,31 @@ class Hands:
             want = (top + h / 2 - vh / 2) / 100.0
             self.scroll(-max(1, round(abs(want))) if want > 0 else max(1, round(abs(want))))
             time.sleep(random.uniform(0.15, 0.5))
+        # Human wheel scrolling could not move it: it is in a sub-scroller the
+        # page wheel does not drive, or off a page the wheel will not budge
+        # (live 2026-10-25: 18 reCAPTCHA anchor iframes lost to "could not
+        # scroll into view"). A scripted scroll of the element's own scrollable
+        # ancestors is less human than a wheel, but a widget we cannot reach is
+        # a row lost outright -- and this runs only after the wheel has failed.
+        forced = self._force_into_view(selector)
+        if forced:
+            return forced
         raise RuntimeError("could not scroll %s into view" % locname(selector))
+
+    def _force_into_view(self, selector):
+        """Last resort for reach(): scrollIntoView the element (which also
+        scrolls every scrollable ancestor, unlike a page wheel), then accept
+        it if it is now on screen. Returns a rect or None."""
+        self.b.eval("(() => { const e = " + el(selector) + ";"
+                    " if (e) e.scrollIntoView({block:'center', inline:'center'}); })()")
+        time.sleep(0.4)
+        try:
+            left, top, w, h, dpr, vh = self.rect(selector)
+        except RuntimeError:
+            return None
+        if top >= 0 and top + h <= vh and w >= 10 and h >= 10:
+            return left, top, w, h, dpr
+        return None
 
     def scroll(self, notches):
         """humanmotion's scroll plan: wheel bursts, arrow keys, pauses to read,

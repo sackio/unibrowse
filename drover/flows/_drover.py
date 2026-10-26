@@ -17,7 +17,7 @@ import json, os, pathlib, re, shutil, subprocess, sys, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _lock  # the per-profile Chrome lock: no two containers on one profile at once
 
-IMAGE = os.environ.get("DROVER_IMAGE", "192.168.1.168:32000/drover/worker:2026-10-26in")
+IMAGE = os.environ.get("DROVER_IMAGE", "192.168.1.168:32000/drover/worker:2026-10-26re")
 # ⬆ 2026-10-26in carries the --disable-gpu-compositing input fix baked into the
 # worker (drover: trusted input dropped after a navigation). Mirror to the k8s
 # registry 192.168.1.207:5050 and bump session-pod / outreach tags there too.

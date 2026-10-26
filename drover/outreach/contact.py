@@ -308,8 +308,15 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
             kind = name
             try:
                 left, top, bw, bh, dpr = hands.reach(sel)
-            except RuntimeError as e:
-                return done("blocked", f"{name}: widget unreachable — {e}")
+            except RuntimeError:
+                # The checkbox could not be brought into view even with reach()'s
+                # scripted fallback: on an INVISIBLE reCAPTCHA the anchor iframe
+                # is present but has no clickable box (trentontn.net, live
+                # 2026-10-25). Don't give up -- break to the paid_solve path,
+                # which detects invisible/v2 and buys the right token (and
+                # refuses a v3/no-widget cleanly). Strictly better than ending
+                # the row here: a reachable box was already reached above.
+                break
             hands.move_screen(round(hands.dx + (left + bw * fx) * dpr), round(hands.dy + (top + bh * fy) * dpr), width=24 * dpr)
             pre, dwell = w.hm.press_timing(w.CFG)
             w.xdo("sleep", f"{pre:.3f}", "mousedown", "1", "sleep", f"{dwell:.3f}", "mouseup", "1")
