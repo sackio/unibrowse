@@ -45,6 +45,12 @@ spec:
           volumeMounts:
             - {name: lane, mountPath: /lane}
             - {name: shm, mountPath: /dev/shm}
+          # ⛔ 4Gi, not 2Gi: a branded Chrome plus the 512Mi memory-backed
+          # /dev/shm above (which counts against THIS container's memory cgroup)
+          # exceeded a 2Gi limit and OOMKilled whole shards -- measured on the
+          # live drover-signups run 2026-10-26 (shards 0,1 OOMKilled at 2Gi).
+          # 4Gi is the sizing the browser-running panel-variants job already
+          # uses; request==limit per the cluster seat's idle-batch convention.
           resources:
-            requests: {cpu: "1", memory: 2Gi}
-            limits: {cpu: "1", memory: 2Gi}
+            requests: {cpu: "1", memory: 4Gi}
+            limits: {cpu: "1", memory: 4Gi}
