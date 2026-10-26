@@ -893,6 +893,20 @@ class Hands:
         pre, dwell = hm.press_timing(CFG)
         xdo("sleep", f"{pre:.3f}", "mousedown", "1", "sleep", f"{dwell:.3f}", "mouseup", "1")
 
+    def click_point(self, cx, cy):
+        """Click a CLIENT (CSS px) point, not an element centre. For a target
+        inside a cross-origin out-of-process iframe (a Turnstile checkbox),
+        which querySelector in the top document cannot reach but a real XTEST
+        OS click can -- it hit-tests to the frame the way a real cursor does,
+        where a CDP mouse event into an OOPIF hangs un-acked (alpaca measured
+        4/6, 2026-10-19). Requires the offset already calibrated."""
+        dpr = self.b.eval("devicePixelRatio") or 1
+        self.move_screen(round(self.dx + cx * dpr) - random.randint(20, 45),
+                         round(self.dy + cy * dpr) - random.randint(10, 28))
+        self.move_screen(round(self.dx + cx * dpr), round(self.dy + cy * dpr))
+        pre, dwell = hm.press_timing(CFG)
+        xdo("sleep", f"{pre:.3f}", "mousedown", "1", "sleep", f"{dwell:.3f}", "mouseup", "1")
+
     def type(self, text, sensitive=False):
         """Keystroke program from humanmotion: typos with corrections unless
         `sensitive` (passwords, cards, amounts: memo 0e09d689)."""
@@ -1265,6 +1279,51 @@ def job_session(b, url, steps, out, shot):
                     calibrated[0] = True
                 h.click(loc)
                 note(i, st, "ok", {"matched": m} if m else None)
+            elif do == "clickxy":
+                # Click a point relative to an anchor element -- for a target in
+                # a cross-origin iframe (a Turnstile checkbox) that querySelector
+                # cannot reach. `sel` is the anchor (the iframe), `ox` the x
+                # offset from its left edge in CSS px, `oyf` the y as a fraction
+                # of its height. A real XTEST OS click lands in the OOPIF.
+                if not calibrated[0]:
+                    h.ensure_focus()
+                    h.calibrate()
+                    calibrated[0] = True
+                # Anchor rect: a selector's rect, or a `rectjs` expression that
+                # returns [left,top,w,h,dpr] -- for a widget that querySelector
+                # cannot name directly (e.g. iframe-or-container fallback).
+                if st.get("rectjs"):
+                    box = h.b.eval(st["rectjs"])
+                    if not box:
+                        note(i, st, "no-element", {"rectjs": True})
+                        break
+                else:
+                    box = h.rect(st["sel"])          # [left, top, w, h, dpr, innerHeight]
+                px = box[0] + float(st.get("ox", box[2] / 2))
+                py = box[1] + box[3] * float(st.get("oyf", 0.5))
+                h.click_point(px, py)
+                note(i, st, "ok", {"xy": [round(px), round(py)]})
+            elif do == "scroll":
+                # Human-shaped XTEST scroll: wheel bursts + arrow keys, pauses,
+                # overshoot-and-back. Positive `notches` scrolls up, negative
+                # down. The wheel acts on what is under the pointer, so calibrate
+                # first (scroll parks the pointer over the page).
+                if not calibrated[0]:
+                    h.ensure_focus()
+                    h.calibrate()
+                    calibrated[0] = True
+                n = int(st.get("notches", -3))
+                h.scroll(n)
+                note(i, st, "ok", {"notches": n})
+            elif do == "drag":
+                # Press on one element, carry, release on another -- XTEST drag.
+                # `from`/`to` are locators (a CSS string or a {sel,text} dict).
+                if not calibrated[0]:
+                    h.ensure_focus()
+                    h.calibrate()
+                    calibrated[0] = True
+                h.drag(st["from"], st["to"])
+                note(i, st, "ok", {"from": st["from"], "to": st["to"]})
             elif do == "type":
                 # ⛔ A credential passed on the command line is world-readable
                 # through `ps` for every user on the box, which is why
