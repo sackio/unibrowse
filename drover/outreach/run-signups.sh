@@ -39,8 +39,9 @@ $K delete configmap drover-signups --ignore-not-found >/dev/null
 $K delete secret drover-proxy-signups --ignore-not-found >/dev/null
 $K create configmap drover-signups --from-file=rows.tsv="$W/rows.tsv" --from-file=contact-config.json="$W/config.json" >/dev/null
 $K create secret generic drover-proxy-signups --from-literal=DROVER_PROXY= >/dev/null   # empty: the house IP
-# outreach-job.yaml, renamed. The solve broker buys reCAPTCHA tokens only, inside
-# the lane's one $5 ledger (Ben, ask a3s, 2026-10-25 20:26); hCaptcha gets the click.
+# outreach-job.yaml, renamed. The solve broker buys reCAPTCHA + hCaptcha tokens
+# (Ben, ask a5d 2026-10-26; was reCAPTCHA-only a3s), inside the lane's one ledger,
+# cap $20 (a5d). A widget the paid solver cannot handle still ends the row blocked.
 sed -e "s#name: drover-outreach#name: drover-signups#g; s#name: drover-proxy}#name: drover-proxy-signups}#" \
     -e "s#completions: 4#completions: $SHARDS#; s#parallelism: 4#parallelism: $SHARDS#; s#maxFailedIndexes: 4#maxFailedIndexes: $SHARDS#" \
     -e "s#DROVER_SHARDS, value: \"4\"#DROVER_SHARDS, value: \"$SHARDS\"#; s#DRY, value: \"\"#DRY, value: \"${DRY:-}\"#" \

@@ -770,7 +770,14 @@ class Hands:
                 # Covered: bring it to the upper middle, clear of bottom bars.
                 want = (top + h / 2 - vh * 0.4) / 100.0
                 if abs(want) < 0.5:
-                    raise RuntimeError(f"{locname(selector)} is covered by another element")
+                    # Name the coverer so the note says WHAT is on top (cookie bar,
+                    # chat widget, sticky header): the data a dismissal rule needs.
+                    who = self.b.eval(
+                        f"(() => {{ const t = {el(selector)}; if (!t) return '?'; const r = t.getBoundingClientRect();"
+                        f" const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (!e) return 'nothing';"
+                        f" const c = (typeof e.className === 'string' && e.className.trim()) ? '.' + e.className.trim().split(/\\s+/).join('.') : '';"
+                        f" return (e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + c).slice(0, 80) + ' pos=' + getComputedStyle(e).position; }})()") or '?'
+                    raise RuntimeError(f"{locname(selector)} is covered by {who}")
                 self.scroll(-max(1, round(abs(want))) if want > 0 else max(1, round(abs(want))))
                 time.sleep(random.uniform(0.15, 0.5))
                 continue
