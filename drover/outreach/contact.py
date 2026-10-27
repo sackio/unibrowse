@@ -544,21 +544,30 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
         if not token and not dry and os.environ.get("DROVER_SOLVER_URL") and kind in (("recaptcha", "hcaptcha") if signup else ("recaptcha", "hcaptcha", "turnstile", "captcha")):   # +hcaptcha on signups (Ben, ask a5d 2026-10-26; was reCAPTCHA-only a3s)
             token, why = paid_solve(b, row["url"], kind, cfg)
             if token is None:
-                after, navd = "", False
-                try:
-                    after = b.eval(cfg["BODY"]) or ""
-                    navd = bool(url_form) and (b.eval("location.href") or url_form) != url_form
-                except Exception:
-                    pass
-                failed = bool(re.search(cfg["FAIL_TEXT"], after, re.I))
-                if not failed and re.search(cfg["OK_CONTACT"], after, re.I):
-                    return done("submitted", f"{kind}+paid|callback|ok-text")
-                # A bought token whose write hung AND the page then left the form
-                # submitted it -- the callback sent and navigated, which is WHY the
-                # write never answered. Count it instead of burying it as `unsure`;
-                # that miscount was deflating the pass rate (Ben, #unibrowse 10-26).
-                if navd and not failed:
-                    return done("submitted", f"{kind}+paid|callback|navigated")
+                # The bought token's write hung because the callback submits
+                # ASYNCHRONOUSLY (INJECT fires it on setTimeout), so the nav/alert
+                # outlives the eval -- which is WHY the write never answered. Poll
+                # for the late outcome instead of reading once: a callback that
+                # navigated or confirmed is a real send and should count, not fall
+                # to `unsure` (miscount that deflated the pass rate, Ben #unibrowse
+                # 10-26). ⛔ No positive signal ⇒ stays `unsure` (may have sent),
+                # NEVER `blocked` -- a re-run of a sent row is a second message.
+                deadline = time.time() + 10
+                while True:
+                    after, navd = "", False
+                    try:
+                        after = b.eval(cfg["BODY"]) or ""
+                        navd = bool(url_form) and (b.eval("location.href") or url_form) != url_form
+                    except Exception:
+                        pass
+                    failed = bool(re.search(cfg["FAIL_TEXT"], after, re.I))
+                    if not failed and re.search(cfg["OK_CONTACT"], after, re.I):
+                        return done("submitted", f"{kind}+paid|callback|ok-text")
+                    if navd and not failed:
+                        return done("submitted", f"{kind}+paid|callback|navigated")
+                    if time.time() >= deadline:
+                        break
+                    time.sleep(1.5)
                 return done("unsure", f"{kind}: {why}")
             if not token and (why.startswith("no reCAPTCHA widget to solve")
                               or why == "no sitekey on the page"):
@@ -616,40 +625,53 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
     # of a row that did send is a second message to a stranger. The marker on
     # stderr tells lane.py the same if this process dies past this point.
     print("PRESSED", file=sys.stderr, flush=True)
-    try:
-        time.sleep(5)
+    # Poll up to ~12s for a definitive signal rather than one flat 5s read: an
+    # AJAX form confirms, clears or navigates on its own clock, so a single early
+    # read missed the late ones -- the "no confirmation" bucket that deflated the
+    # pass rate (~85 rows, Ben #unibrowse 2026-10-26). ⛔ Only a POSITIVE signal
+    # settles it `submitted`; a still-populated field under an unchanged body
+    # stays `blocked`, so a genuine non-submit is never inflated into a false pass.
+    s = sub.get("label", "")
+    # cfg["BODY"] is document.body.innerText and carries NO input VALUES, so a form
+    # that submits over AJAX and then clears or replaces its fields leaves
+    # after == before though it sent. Ask the form itself (gone, or no longer our
+    # text ⇒ sent; still our text ⇒ the press did nothing). Reclassifies only a
+    # terminal row (no "|"-less note ⇒ never swept, never re-sent), so a wrong call
+    # cannot cost a second message to a town.
+    efield = ("(s => { const e = document.querySelector(s);"
+              " return e ? ('v:' + (e.value || '')) : 'gone'; })("
+              + json.dumps("[data-ub-f='email']") + ")")
+    deadline, read_ok, after, url1 = time.time() + 12, False, before, url0
+    while True:
+        time.sleep(1.5)
         try:
             after, url1 = b.eval(cfg["BODY"]) or "", b.eval("location.href")
+            read_ok = True
         except Exception:
-            time.sleep(3)
-            after, url1 = b.eval(cfg["BODY"]) or "", b.eval("location.href")
-    except Exception as e:
-        return done("unsure", f"{kind}: submit pressed, page unreadable after — {e}")
-    s = sub.get("label", "")
-    bad = fail_rx.search(after)
-    if bad and not fail_rx.search(before):              # only a NEW refusal counts
-        return done("blocked", f"{kind}|{s}|rejected: {bad.group(0)!r}")
-    if ok_rx.search(after) and not ok_rx.search(before):
-        return done("submitted", f"{kind}|{s}|ok-text")
-    if url1 != url0 or after != before:
+            if time.time() < deadline:
+                continue                                # mid-navigation: re-read
+            break                                       # never readable in-window
+        bad = fail_rx.search(after)
+        if bad and not fail_rx.search(before):          # only a NEW refusal counts
+            return done("blocked", f"{kind}|{s}|rejected: {bad.group(0)!r}")
+        if ok_rx.search(after) and not ok_rx.search(before):
+            return done("submitted", f"{kind}|{s}|ok-text")
+        if url1 != url0:                                # a real navigation
+            return done("submitted", f"{kind}|{s}|navigated")
+        try:
+            st = b.eval(efield) or ""
+        except Exception:
+            st = "v:" + values["email"]
+        if st == "gone":
+            return done("submitted", f"{kind}|{s}|form-gone")
+        if not st.startswith("v:" + values["email"]):
+            return done("submitted", f"{kind}|{s}|fields-cleared")
+        if time.time() >= deadline:
+            break
+    if not read_ok:
+        return done("unsure", f"{kind}: submit pressed, page unreadable after")
+    # Weakest signal, and only after the full settle window so a transient mid-poll
+    # redraw cannot trip it: innerText changed with no confirmation phrase or nav.
+    if after != before:
         return done("submitted", f"{kind}|{s}|page-changed")
-    # cfg["BODY"] is document.body.innerText, which carries NO input VALUES, so a
-    # form that submits over AJAX and then clears or replaces its fields leaves
-    # after == before even though it sent -- the "no confirmation" bucket that
-    # deflated the pass rate (85 rows, Ben #unibrowse 2026-10-26). Ask the form
-    # itself, the signal the v1 engine's own notes name (f=0 ⇒ gone ⇒ submitted):
-    # the field we filled is gone, or no longer holds what we typed ⇒ it sent.
-    # Still holding our text ⇒ the press did nothing, genuinely blocked. This only
-    # reclassifies a terminal row (no "|"-less note ⇒ never swept, never re-sent),
-    # so a wrong call cannot cost a second message to a town.
-    try:
-        st = b.eval("(s => { const e = document.querySelector(s);"
-                    " return e ? ('v:' + (e.value || '')) : 'gone'; })("
-                    + json.dumps("[data-ub-f='email']") + ")") or ""
-    except Exception:
-        st = "v:" + values["email"]
-    if st == "gone":
-        return done("submitted", f"{kind}|{s}|form-gone")
-    if not st.startswith("v:" + values["email"]):
-        return done("submitted", f"{kind}|{s}|fields-cleared")
     return done("blocked", f"{kind}|{s}|no confirmation")
