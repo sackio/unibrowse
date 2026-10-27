@@ -976,6 +976,15 @@ class Hands:
             time.sleep(op["delay"])
             if op["op"] == "backspace":
                 xdo("key", "--clearmodifiers", "BackSpace")
+            elif ord(op["char"][0]) > 127:
+                # ⛔ xdotool cannot type a character the US keymap lacks: it
+                # remaps a spare keycode, sends, and reverts before Chrome has
+                # read the new mapping, so the key is dropped while xdotool
+                # reports success. Measured 2026-10-27, r8 Inkling: "·" was
+                # missing from the field on 4 of 4 forms. A real user gets
+                # such a character from an OS input method too, so commit it
+                # as text.
+                self.b.send("Input.insertText", {"text": op["char"]})
             else:
                 xdo("type", "--clearmodifiers", "--delay", "0", "--", op["char"])
 
