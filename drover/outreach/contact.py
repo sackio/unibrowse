@@ -619,7 +619,25 @@ def job_contact(b, row, cfg, w, dry=False, shot=None):
     try:
         hands.click("[data-ub-f='submit']")
     except RuntimeError as e:
-        return done("blocked", f"{kind}: submit control unreachable — {e}")
+        # A cookie bar or a bottom-anchored chat widget (Intercom/Drift/Tawk)
+        # can sit over a footer submit button, exactly as a newsletter popup
+        # covers a footer field (memo eaf5c323). The field path above dismisses
+        # that and retries; the submit path did not, so every such row logged
+        # `blocked: submit control unreachable` (live 2026-10-26). ⛔ a4o-safe:
+        # a "covered by"/"pointer would not land" error means the pointer never
+        # landed, so the button was NOT pressed -- dismiss the coverer and retry
+        # once sends nothing new. Any OTHER RuntimeError is a real block.
+        sub_sel = "[data-ub-f='submit']"
+        if "covered by" not in str(e) and "pointer would not land" not in str(e):
+            return done("blocked", f"{kind}: submit control unreachable — {e}")
+        hid = b.eval(DISMISS_OVERLAY + f"({json.dumps(sub_sel)})")
+        if not hid:
+            return done("blocked", f"{kind}: submit control unreachable — {e}")
+        time.sleep(random.uniform(0.4, 0.9))
+        try:
+            hands.click(sub_sel)
+        except RuntimeError as e2:
+            return done("blocked", f"{kind}: submit unreachable after dismissing {hid} — {e2}")
     # ⛔ From here the town may have the message. Anything that goes wrong is
     # `unsure`, never `error`: the lane sweeps `error` rows again, and a re-run
     # of a row that did send is a second message to a stranger. The marker on
