@@ -1563,6 +1563,45 @@ def job_session(b, url, steps, out, shot):
                 if not note(i, st, "ok" if found else "timeout",
                             {"waitedSec": round(found_at - t0, 1), "stillSec": still}):
                     break
+            elif do == "waiturl":
+                # ⛔ WAIT ON THE URL, NOT A FIXED SLEEP OR AN UNMEASURED DOM.
+                # The one place this is the only honest signal: an OAuth
+                # Authorize click lands on a callback ~90s later (the SKILL
+                # measured the console callback at ~90s), over a network-bound
+                # redirect whose timing a fixed `wait` cannot match, onto a page
+                # whose DOM this flow has never seen -- so there is no element to
+                # `waitfor`. location.href reaching the callback IS the landing,
+                # and its query carries the code. Poll it to a deadline.
+                pat, sub = st.get("match"), st.get("contains")
+                rx = re.compile(pat) if pat else None
+                t0 = time.time()
+                dl = t0 + float(st.get("seconds", 120))
+                href = None
+                while time.time() < dl:
+                    cur = b.eval("location.href")
+                    if cur and (rx.search(cur) if rx else (sub in cur if sub else True)):
+                        href = cur
+                        break
+                    time.sleep(float(st.get("poll", 2)))
+                if href is None:
+                    last = b.eval("location.href") or ""
+                    note(i, st, "timeout", {"waitedSec": round(time.time() - t0, 1),
+                                            "last": last.split("?", 1)[0][:120]})
+                    break
+                # ⛔ THE HREF CAN CARRY A SINGLE-USE CREDENTIAL (an OAuth code in
+                # a query param), so it goes straight to a 600 file like `cookie`
+                # and `code` -- never into the logged `reads` or the step row,
+                # which record only the path it reached, never the query.
+                if st.get("write"):
+                    dest = pathlib.Path(st["write"])
+                    dest.touch(mode=0o600, exist_ok=True)
+                    os.chmod(dest, 0o600)
+                    dest.write_text(href)
+                else:
+                    reads[st.get("as", "url%d" % i)] = href
+                note(i, st, "ok", {"waitedSec": round(time.time() - t0, 1),
+                                   "path": href.split("?", 1)[0][:120],
+                                   "wrote": st.get("write")})
             elif do == "focus":
                 # ⭐ A LOGIN FORM DOES NOT NEED A POINTER. `click` aims XTEST at
                 # a screen coordinate and refuses when calibration says the
