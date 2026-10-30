@@ -1773,6 +1773,38 @@ def job_session(b, url, steps, out, shot):
                 b.send("Storage.setCookies", {"cookies": params})
                 note(i, st, "ok", {"set": len(params),
                                    "names": sorted({c["name"] for c in cks})})
+            elif do == "setstorage":
+                # ⛔ VALUES NEVER THROUGH THE LOG, same rule as setcookies. The
+                # localStorage/sessionStorage entries come from a 600 file
+                # (`from`) the orchestrator writes and deletes; only the KEY
+                # names are reported.
+                # ⭐ WHY A STEP, and why it is NOT the banned `eval`. A modern
+                # SPA login (Microsoft/MSAL, Google, many OAuth SPAs) keeps its
+                # real auth tokens in Web Storage, which Storage.setCookies
+                # cannot carry -- which is why a cookie-only transplant of the
+                # Azure portal came up signed-out. This is SESSION RESTORE, not
+                # scripted input: it emits no click, no keystroke, no isTrusted
+                # event -- the exact parallel of setcookies, and categorically
+                # unlike the `eval` step the stealth rule forbids.
+                # ⚠️ Web Storage is PER-ORIGIN, so the flow must already be ON
+                # the target origin (nav first); a reload after lets the app's
+                # JS read the seeded tokens at startup.
+                src = pathlib.Path(st["from"])
+                data = json.loads(src.read_text())
+                stores = data if isinstance(data, list) else [data]
+                total, names = 0, []
+                for s in stores:
+                    local = s.get("local") or {}
+                    session = s.get("session") or {}
+                    obj = json.dumps({"local": local, "session": session})
+                    js = ("(function(){try{var o=" + obj + ";"
+                          "for(var k in o.local){localStorage.setItem(k,o.local[k]);}"
+                          "for(var k2 in o.session){sessionStorage.setItem(k2,o.session[k2]);}"
+                          "return 'ok';}catch(e){return 'err:'+String(e);}})()")
+                    b.eval(js)
+                    total += len(local) + len(session)
+                    names += list(local.keys()) + list(session.keys())
+                note(i, st, "ok", {"keys": total, "names": sorted(set(names))[:40]})
             elif do == "wait":
                 time.sleep(float(st.get("seconds", 1)))
                 note(i, st, "ok")
