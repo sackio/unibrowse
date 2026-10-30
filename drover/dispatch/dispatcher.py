@@ -37,7 +37,7 @@ The lane dedupes (lane.py never picks a key already in its results, and a pod
 is never retried), so a duplicate dispatch cannot re-send -- but `dry:true` is
 there for a test, and the daemon logs every job it ran with who asked.
 """
-import json, os, subprocess, sys, threading, time, urllib.error, urllib.request
+import json, os, subprocess, sys, threading, time, urllib.error, urllib.request, uuid
 from concurrent.futures import ThreadPoolExecutor
 
 ATC = os.environ.get("ATC_URL", "http://192.168.1.168:3030")
@@ -110,7 +110,14 @@ def launch_session(env_profile, fresh, vpn, jid, sender):
     endpoint. A warm (profile) session keeps the house IP and an NFS profile;
     a fresh one is ephemeral with a rotating exit."""
     import tempfile, re
-    name = "drover-session-%s" % jid.split("-")[-1]
+    # ⛔ UNIQUE per session. The old form `jid.split("-")[-1]` on jid "job-N-session"
+    # was ALWAYS "session", so every session job collided on one pod name
+    # (drover-session-session): only one session could exist fleet-wide, each new
+    # request re-applied/reset the same pod, and _pfwds[name] overwrote the prior
+    # entry so its port-forward was orphaned and un-releasable (16 leaked, found by
+    # `apis` 2026-10-30). A random suffix makes the pod, the _pfwds key and the
+    # release handle unique. Fixed by `unibrowse` 2026-10-30.
+    name = "drover-session-%s" % uuid.uuid4().hex[:10]
     # Optional VPN secret for this pod (fresh exits only; a warm login stays house-IP).
     if vpn:
         try:
@@ -144,6 +151,14 @@ def launch_session(env_profile, fresh, vpn, jid, sender):
     pf = subprocess.Popen(["kubectl", "--kubeconfig=" + KUBECONFIG, "-n", NS, "port-forward",
                            "--address", "0.0.0.0", "pod/" + name, "%d:8790" % port],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Defensive: if a name ever recurs, tear down the prior port-forward before we
+    # drop its handle, so we can never orphan one the way the collision bug did.
+    old = _pfwds.get(name)
+    if old:
+        try:
+            old[0].terminate()
+        except Exception:
+            pass
     _pfwds[name] = (pf, port)
     reply(sender, "%s ready: drive it at http://%s:%d (worker serve protocol); "
                   "release with {\"job\":\"release\",\"pod\":\"%s\"}" % (jid, LAN_IP, port, name), jid)
@@ -152,7 +167,14 @@ def launch_session(env_profile, fresh, vpn, jid, sender):
 def release_session(pod, jid, sender):
     pf = _pfwds.pop(pod, None)
     if pf:
-        pf[0].terminate()
+        try:
+            pf[0].terminate()
+            pf[0].wait(timeout=5)
+        except Exception:
+            try:
+                pf[0].kill()
+            except Exception:
+                pass
     r = kube("delete", "pod", pod, "--ignore-not-found")
     reply(sender, "%s released %s (rc=%d)" % (jid, pod, r.returncode), jid)
 
