@@ -30,15 +30,19 @@ rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
 # and fed at the right rate"). Interleave one row per brand per round, each
 # brand keeping its own order; jf still leads each round, so its head start is
 # kept without blocking the rest.
-from collections import OrderedDict, deque
-groups = OrderedDict([("jf", deque())])   # jf leads each round; others follow in file order
-for r in rows:
-    groups.setdefault(r["brand"], deque()).append(r)
-rows = []
-while any(groups.values()):
-    for q in groups.values():
-        if q:
-            rows.append(q.popleft())
+# ⛔ STARVATION FIX (unibrowse, 2026-10-30). The jf-leads round-robin interleaved
+# by FILE POSITION, and lane.py pick downstream takes the first N rows that are
+# still PICKABLE (un-attempted). Fresh jf/ink rows keep arriving at the front, so
+# every 120-row chunk was consumed by them, while the static un-attempted
+# ots/pb/re rows (measured 2026-10-30: 4,404 / 1,474 / 466) sat at deep interleave
+# positions the pick never reached -- ots/pb froze at 08:41 and re at 20:12 the day
+# before, while jf/ink ran. A uniform shuffle spreads every brand's pickable rows
+# evenly, so first-N-pickable is proportional to each brand's remaining work and no
+# brand can be starved by another's fresh arrivals. (Replaces the round-robin, which
+# itself replaced a jf-first sort; both tried to de-serialise, a shuffle does it
+# without a position bias.)
+import random
+random.shuffle(rows)
 print("url\taddress\tfirst\tlast\tkey\ttown")
 for r in rows:
     first, _, last = r["persona"].partition(" ")
