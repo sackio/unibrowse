@@ -1966,8 +1966,15 @@ def job_serve(b, port, outdir):
                     r, code = {"error": f"{type(e).__name__}: {e}"[:300]}, 500
             self._send(code, json.dumps(r).encode())
 
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
-    print(json.dumps({"serving": port, "exitIp": (b.ident or {}).get("ip")}), flush=True)
+    # Bind host defaults to loopback (the k8s path reaches it via `kubectl
+    # port-forward`, which connects to the pod's 127.0.0.1). Set DROVER_SERVE_HOST=
+    # 0.0.0.0 when the serve port is published off-pod directly — e.g. a plain
+    # `docker -p` mapping, which forwards to the container's eth0, NOT its loopback,
+    # so a 127.0.0.1 bind refuses every connection. Backward-compatible: unset ==
+    # old behaviour. (unibrowse 2026-10-30, for apis's durable election-night session.)
+    bind_host = os.environ.get("DROVER_SERVE_HOST") or "127.0.0.1"
+    srv = http.server.ThreadingHTTPServer((bind_host, port), H)
+    print(json.dumps({"serving": port, "bind": bind_host, "exitIp": (b.ident or {}).get("ip")}), flush=True)
     srv.serve_forever()
 
 
