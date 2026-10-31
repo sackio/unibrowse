@@ -23,11 +23,11 @@ import _drover
 import _lock
 
 
-def _post(text, url="http://192.168.1.168:3030/messages"):
+def _post(text, to="slack:U0NGEHS2J", url="http://192.168.1.168:3030/messages"):
     import urllib.request
     try:
         urllib.request.urlopen(urllib.request.Request(
-            url, data=json.dumps({"to": "slack:U0NGEHS2J", "content": text}).encode(),
+            url, data=json.dumps({"to": to, "content": text}).encode(),
             headers={"Content-Type": "application/json"}), timeout=15)
     except Exception:
         pass
@@ -39,7 +39,13 @@ def main():
     ap.add_argument("--url", required=True)
     ap.add_argument("--expect", required=True, help="regex that is present only when logged in")
     ap.add_argument("--label", default="site")
-    ap.add_argument("--alert", action="store_true", help="DM Ben when logged out")
+    ap.add_argument("--alert", action="store_true", help="DM when logged out")
+    ap.add_argument("--alert-to", default="slack:U0NGEHS2J",
+                    help="ATC address for the logout alert (default: Ben). Service "
+                    "profiles (claudeai-*) point this at the owning agent seat.")
+    ap.add_argument("--remedy", default="re-transplant from the MacBook "
+                    "(drover/flows/transplant.py).",
+                    help="the fix instruction included in the logout alert")
     args = ap.parse_args()
 
     prof = os.path.expanduser(args.profile)
@@ -72,8 +78,8 @@ def main():
         sys.exit(0)
     print("%s WARM: LOGGED OUT (title=%r)" % (args.label, st.get("title")), file=sys.stderr)
     if args.alert:
-        _post("⚠️ %s drover session is LOGGED OUT — re-transplant from the MacBook "
-              "(drover/flows/transplant.py)." % args.label)
+        _post("⚠️ %s drover session is LOGGED OUT — %s" % (args.label, args.remedy),
+              to=args.alert_to)
     sys.exit(3)
 
 
