@@ -18,7 +18,7 @@ disjoint, a pod is never retried (a retry would re-send its rows), and harvest
 appends only keys the file does not hold yet. The results file has one writer:
 harvest, on the host.
 """
-import argparse, csv, json, os, subprocess, sys, time
+import argparse, csv, datetime, json, os, subprocess, sys, time, zoneinfo
 
 COLS = ["url", "address", "first", "last", "key", "town"]
 
@@ -71,11 +71,26 @@ def pick(a):
     print(f"picked {len(rows)} row(s)", file=sys.stderr)
 
 
+WINDOWS = ((datetime.time(8, 30), datetime.time(11, 30)), (datetime.time(13, 0), datetime.time(15, 30)))
+
+
+def window_open(tz):
+    """Send window in the recipient's zone, Mon-Fri 08:30-11:30 and 13:00-15:30 (Ben, #business 2026-10-31 18:11;
+    same windows as business/outreach/bin/sendwin.py, which stamps the row's `tz` on the host)."""
+    t = datetime.datetime.now(zoneinfo.ZoneInfo(tz))
+    return t.weekday() < 5 and any(lo <= t.time() < hi for lo, hi in WINDOWS)
+
+
 def run(a):
     rows = read_tsv(a.rows)
     i, n = int(os.environ.get("JOB_COMPLETION_INDEX", "0")), int(os.environ.get("DROVER_SHARDS", "1"))
     for r in rows[i::n]:
-        cmd = ["python3", a.worker, "contact", "--row", json.dumps(r), "--config", a.config]
+        # A row with a `tz` column is sent only inside its window; a closed one prints no ROW, so it stays
+        # undone for a later run. Rows without `tz` are not gated (lanes that predate it).
+        if r.get("tz") and not window_open(r["tz"]):
+            print(f"WINDOW closed {r['tz']} {r['key']}", file=sys.stderr, flush=True)
+            continue
+        cmd =["python3", a.worker, "contact", "--row", json.dumps(r), "--config", a.config]
         if a.dry:
             cmd.append("--dry")
         t0 = time.time()
