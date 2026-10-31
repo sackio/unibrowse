@@ -22,7 +22,7 @@
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 LOG=${LOG:-/tmp/drover-outreach-all.log}
-SIG_N=${SIG_N:-480};  SIG_SHARDS=${SIG_SHARDS:-24}
+SIG_N=${SIG_N:-320};  SIG_SHARDS=${SIG_SHARDS:-16}
 CON_N=${CON_N:-48};   CON_SHARDS=${CON_SHARDS:-8}
 ts(){ date '+%Y-%m-%d %H:%M:%S'; }
 

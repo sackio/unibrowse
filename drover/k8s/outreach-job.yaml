@@ -24,6 +24,8 @@ spec:
   maxFailedIndexes: 4
   ttlSecondsAfterFinished: 86400
   template:
+    metadata:
+      labels: {outreach-pod: drover}   # spread key: groups both lanes' pods per host (cluster, 2026-10-31)
     spec:
       restartPolicy: Never
       priorityClassName: idle-batch
@@ -33,6 +35,15 @@ spec:
       # workers exist; the yaml is re-read at each chunk launch, so the next
       # chunk picks this up. Applies to both lanes (contact-forms + signups).
       nodeSelector: {workload-tier: batch-cpu}
+      # Spread outreach pods across hosts so a 16-shard run can't stack on one
+      # worker (cluster seat 2026-10-31: 3 stacked on worker18). Soft
+      # (ScheduleAnyway) so a full batch-cpu tier never leaves a shard Pending.
+      topologySpreadConstraints:
+        - maxSkew: 2
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {outreach-pod: drover}
       securityContext:
         seccompProfile: {type: Unconfined}
       volumes:
