@@ -284,6 +284,8 @@ class Pipe:
     def __init__(self, wfd, rfd):
         self.w, self.r = os.fdopen(wfd, "wb", buffering=0), os.fdopen(rfd, "rb", buffering=0)
         self.n, self.pending, self.lock = 0, {}, threading.Lock()
+        self.wlock = threading.Lock()   # serialise writes: call() and fire() share one pipe
+        self.on_event = None            # optional handler for CDP events (messages with no id)
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self):
@@ -298,10 +300,18 @@ class Pipe:
             while b"\0" in buf:
                 raw, buf = buf.split(b"\0", 1)
                 msg = json.loads(raw)
-                slot = self.pending.get(msg.get("id"))
-                if slot is not None:
-                    slot.msg = msg
-                    slot.set()
+                mid = msg.get("id")
+                if mid is not None:
+                    slot = self.pending.get(mid)
+                    if slot is not None:              # a reply we are waiting for
+                        slot.msg = msg
+                        slot.set()
+                    # else: reply to a fire() we deliberately did not await -- drop
+                elif self.on_event is not None:       # a CDP event (no id)
+                    try:
+                        self.on_event(msg)
+                    except Exception:
+                        pass
 
     def call(self, method, params=None, session=None, timeout=30):
         with self.lock:
@@ -313,7 +323,8 @@ class Pipe:
         m = {"id": mid, "method": method, "params": params or {}}
         if session:
             m["sessionId"] = session
-        self.w.write(json.dumps(m).encode() + b"\0")
+        with self.wlock:
+            self.w.write(json.dumps(m).encode() + b"\0")
         # ⚠️ A timeout here does NOT mean the call never ran (memo 6aaf3b89).
         # Callers must not retry a side-effecting call on timeout alone.
         if not ev.wait(timeout):
@@ -325,6 +336,20 @@ class Pipe:
         if "error" in ev.msg:
             raise RuntimeError(f"{method}: {ev.msg['error']}")
         return ev.msg.get("result", {})
+
+    def fire(self, method, params=None, session=None):
+        """Send a command and do NOT await the reply. For the read thread, which
+        must never block waiting for a reply on the pipe it is itself draining
+        (that would deadlock). The reply comes back with an id no one is waiting
+        on and is dropped in _read."""
+        with self.lock:
+            self.n += 1
+            mid = self.n
+        m = {"id": mid, "method": method, "params": params or {}}
+        if session:
+            m["sessionId"] = session
+        with self.wlock:
+            self.w.write(json.dumps(m).encode() + b"\0")
 
 
 class Browser:
@@ -389,6 +414,21 @@ class Browser:
         os.close(w2)
         self.cdp = Pipe(w1, r2)
         self.session = self._attach()
+        # ⛔ A blocking JS dialog (alert/confirm/beforeunload) FREEZES the renderer,
+        # so every Runtime.evaluate in that page hangs the full 30s and returns
+        # nothing -- the "write hung" class, 910 paid-but-unconfirmed captcha rows
+        # measured 2026-10-31. The INJECT's own input/change dispatch can trip a
+        # site onchange/submit handler that opens one mid-evaluate, and the lane's
+        # one-shot accept ran BEFORE the evaluate, never during it. Accept every
+        # dialog as it opens, reactively, from the read thread, so the evaluate
+        # unblocks and returns a real answer (submitted/not) instead of a timeout.
+        # accept=True == a person clicking OK: it clears alert()/confirm() and lets
+        # a submit's beforeunload proceed. (unibrowse, 2026-10-31.)
+        self.cdp.on_event = self._on_cdp_event
+        try:
+            self.send("Page.enable")
+        except RuntimeError:
+            pass
         self.world = None
         self.raise_window()
         if self.ident:
@@ -449,6 +489,14 @@ class Browser:
 
     def send(self, method, params=None, timeout=30):
         return self.cdp.call(method, params, session=self.session, timeout=timeout)
+
+    def _on_cdp_event(self, msg):
+        """Runs on the pipe read thread (see Pipe.on_event). Keep it to
+        fire-and-forget writes only -- it must never call self.send(), which
+        would wait for a reply on the very pipe this thread drains."""
+        if msg.get("method") == "Page.javascriptDialogOpening":
+            self.cdp.fire("Page.handleJavaScriptDialog", {"accept": True, "promptText": ""},
+                          session=msg.get("sessionId") or self.session)
 
     def navigate(self, url, settle=2.0, timeout=45):
         self.send("Page.navigate", {"url": url}, timeout=timeout)
