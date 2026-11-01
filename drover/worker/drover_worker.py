@@ -498,8 +498,46 @@ class Browser:
             self.cdp.fire("Page.handleJavaScriptDialog", {"accept": True, "promptText": ""},
                           session=msg.get("sessionId") or self.session)
 
-    def navigate(self, url, settle=2.0, timeout=45):
-        self.send("Page.navigate", {"url": url}, timeout=timeout)
+    @staticmethod
+    def _same_site(a, b):
+        """Same registrable site (eTLD+1 approximated by the last two labels)?
+        Cheap and good enough to decide whether a nav is a within-site
+        link-follow (carry a referrer) or a fresh destination (bare)."""
+        try:
+            from urllib.parse import urlparse
+            ha, hb = urlparse(a).hostname or "", urlparse(b).hostname or ""
+            return bool(ha) and ha.split(".")[-2:] == hb.split(".")[-2:]
+        except Exception:
+            return False
+
+    def navigate(self, url, settle=2.0, timeout=45, referrer=None, transition=None):
+        # ⭐ HUMAN-MODE NAVIGATION (Ben, #unibrowse 2026-10-31: "navigating to
+        # Links properly", enforced "on pretty much every site automatically").
+        # A person reaches a deeper page of a site by FOLLOWING A LINK, so the
+        # request carries a same-origin Referer and Chrome marks it a link
+        # navigation. A cold Page.navigate carries neither, and that bare shape
+        # is one of the tells bot-walls score against. So: when we are ALREADY
+        # on the same site and nobody overrode it, default to a link-follow from
+        # wherever we are. The FIRST load of a host stays bare -- a human types
+        # the domain, and that top-level load is normal and expected.
+        # ⚠️ MEASURED LIMIT, this session: this realism is necessary but NOT
+        # sufficient against Akamai Bot Manager (Lowe's deep pages stayed Access
+        # Denied from a datacenter egress even with referrer+link transition AND
+        # a validated _abck). Akamai also weighs IP reputation and a fully
+        # warmed sensor; crawl-in realism helps the broad case, not that one.
+        if referrer is None and transition is None:
+            last = getattr(self, "_last_url", None)
+            if last and self._same_site(last, url):
+                referrer, transition = last, "link"
+        if referrer and not transition:
+            transition = "link"
+        params = {"url": url}
+        if referrer:
+            params["referrer"] = referrer
+        if transition:
+            params["transitionType"] = transition
+        self.send("Page.navigate", params, timeout=timeout)
+        self._last_url = url
         self.world = None                              # a navigation destroys the isolated world
         end = time.time() + timeout
         while time.time() < end:
@@ -1375,8 +1413,22 @@ def job_session(b, url, steps, out, shot):
         do = st.get("do")
         try:
             if do == "nav":
-                b.navigate(st["url"])
-                note(i, st, "ok", {"url": st["url"]})
+                # `referrer` makes an in-site nav look like a followed link
+                # (same-origin Referer + Sec-Fetch-Site: same-origin); the
+                # literal "current" uses wherever the browser is right now, so a
+                # flow need not know its own URL at author time. `transition`
+                # sets Page.navigate's transitionType ("link" for a followed
+                # link). Omit both for the first/typed load of a host.
+                ref = st.get("referrer")
+                if ref == "current":
+                    try:
+                        ref = b.eval("location.href")
+                    except RuntimeError:
+                        ref = None
+                b.navigate(st["url"], referrer=ref, transition=st.get("transition"))
+                note(i, st, "ok", {"url": st["url"],
+                                   "ref": (ref.split("?", 1)[0][:60] if ref else None),
+                                   "transition": st.get("transition")})
             elif do == "reload":
                 b.navigate(b.eval("location.href"), settle=float(st.get("settle", 2.0)))
                 note(i, st, "ok")
