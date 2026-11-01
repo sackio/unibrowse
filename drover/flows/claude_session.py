@@ -118,7 +118,7 @@ def login_dry():
         {"do": "nav", "url": LOGIN},
         {"do": "waitfor", "sel": "input[type=email]", "seconds": 120, "still": True},
         {"do": "click", "sel": "input[type=email]"},
-        {"do": "type", "env": "DROVER_LOGIN_EMAIL"},
+        {"do": "type", "env": "DROVER_LOGIN_EMAIL", "sel": "input[type=email]"},
         {"do": "expect", "sel": "input[type=email]", "env_value": "DROVER_LOGIN_EMAIL"},
         {"do": "expect", "sel": "button", "text": "continue with email"},
         {"do": "eval", "as": "controls", "js":

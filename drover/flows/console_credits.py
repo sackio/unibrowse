@@ -177,7 +177,7 @@ LOGIN_DRY = [
     # page shifted it ~44px after it appeared, and the click landed below it.
     {"do": "waitfor", "sel": "input[type=email]", "seconds": 90, "still": True},
     {"do": "click", "sel": "input[type=email]"},
-    {"do": "type", "env": "DROVER_LOGIN_EMAIL"},
+    {"do": "type", "env": "DROVER_LOGIN_EMAIL", "sel": "input[type=email]"},
     # The check v1 never made: that the address actually landed in the field.
     # Its probe read "agents2@sac" -- 11 of 15 characters -- because it sampled
     # straight after typing; here the assertion is the step, not a side note.
@@ -228,7 +228,7 @@ def login_steps():
         {"do": "nav", "url": "https://platform.claude.com/login"},
         {"do": "waitfor", "sel": "input[type=email]", "seconds": 90, "still": True},
         {"do": "click", "sel": "input[type=email]"},
-        {"do": "type", "env": "DROVER_LOGIN_EMAIL"},
+        {"do": "type", "env": "DROVER_LOGIN_EMAIL", "sel": "input[type=email]"},
         {"do": "expect", "sel": "input[type=email]", "env_value": "DROVER_LOGIN_EMAIL"},
         {"do": "expect", "sel": "button", "text": "continue with email"},
         {"do": "click", "sel": "button", "text": "continue with email"},

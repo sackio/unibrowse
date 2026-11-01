@@ -63,11 +63,11 @@ STEPS = [
     # step is `optional` because its absence is not a failure.
     {"do": "click", "sel": "button", "text": "accept", "optional": True},
     {"do": "click", "sel": "input[type=email]"},
-    {"do": "type", "env": "ALPACA_LOGIN_EMAIL"},
+    {"do": "type", "env": "ALPACA_LOGIN_EMAIL", "sel": "input[type=email]"},
     {"do": "expect", "sel": "input[type=email]", "env_value": "ALPACA_LOGIN_EMAIL"},
     {"do": "waitfor", "sel": "input[type=password]", "seconds": 60, "still": True},
     {"do": "click", "sel": "input[type=password]"},
-    {"do": "type", "env": PASSWORD_KEY},
+    {"do": "type", "env": PASSWORD_KEY, "sel": "input[type=password]"},
     # ⛔ `sensitive` masks the readback. The check is worth making -- a silently
     # truncated field is exactly the fault that cost the Console lane three
     # days -- but the row must carry a length, not a password.

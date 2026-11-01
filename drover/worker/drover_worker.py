@@ -1321,7 +1321,7 @@ def job_session(b, url, steps, out, shot):
 
       [{"do": "nav",    "url": "https://platform.claude.com/login"},
        {"do": "click",  "sel": "input[type=email]"},
-       {"do": "type",   "env": "DROVER_LOGIN_EMAIL"},
+       {"do": "type",   "env": "DROVER_LOGIN_EMAIL", "sel": "input[type=email]"},
        {"do": "expect", "sel": "input[type=email]", "value": "a@b.c"},
        {"do": "read",   "sel": "body", "as": "page"}]
 
@@ -1522,31 +1522,43 @@ def job_session(b, url, steps, out, shot):
                     # while the omnibox holds it), and (3) visibly received a
                     # harmless canary keystroke, which is then erased. Any miss
                     # aborts BEFORE a secret character is sent.
-                    if not (st.get("sel") or st.get("text")):
-                        note(i, st, "refused", {"why": "secret type needs sel"})
+                    # A code read mid-run (`from`) may go to a widget that
+                    # filters keys (split OTP boxes), so it gets the focus
+                    # check without the canary and may omit `sel`; an `env`
+                    # value (a password) must name its field and pass both.
+                    canary = bool(st.get("env"))
+                    s0 = None
+                    if st.get("sel") or st.get("text"):
+                        loc, m = target(st)
+                        chk = ("(()=>{const e=%s;if(!e)return null;e.focus();"
+                               "return {a:document.activeElement===e,f:document.hasFocus(),"
+                               "v:(e.value||'').length}})()" % el(loc))
+                    elif canary:
+                        note(i, st, "refused", {"why": "secret env type needs sel"})
                         break
-                    loc, m = target(st)
-                    chk = ("(()=>{const e=%s;if(!e)return null;e.focus();"
-                           "return {a:document.activeElement===e,f:document.hasFocus(),"
-                           "v:(e.value||'').length}})()" % el(loc))
+                    else:
+                        chk = ("(()=>{const e=document.activeElement;"
+                               "return {a:!!e&&(/^(INPUT|TEXTAREA)$/.test(e.tagName)||e.isContentEditable),"
+                               "f:document.hasFocus(),v:e&&e.value?e.value.length:0}})()")
                     s0 = b.eval(chk)
                     if not s0 or not s0.get("a") or not s0.get("f"):
                         note(i, st, "not-focused", {"state": s0})
                         break
-                    xdo("key", "--clearmodifiers", "period")
-                    time.sleep(0.25)
-                    s1 = b.eval(chk)
-                    if not s1 or s1.get("v") != s0["v"] + 1:
-                        note(i, st, "canary-missed", {"before": s0, "after": s1})
-                        break
-                    h.press("Backspace")
-                    time.sleep(0.25)
-                    s2 = b.eval(chk)
-                    if not s2 or s2.get("v") != s0["v"] or not s2.get("f"):
-                        note(i, st, "canary-not-cleared", {"state": s2})
-                        break
+                    if canary:
+                        xdo("key", "--clearmodifiers", "0")
+                        time.sleep(0.25)
+                        s1 = b.eval(chk)
+                        if not s1 or s1.get("v") != s0["v"] + 1:
+                            note(i, st, "canary-missed", {"before": s0, "after": s1})
+                            break
+                        h.press("Backspace")
+                        time.sleep(0.25)
+                        s2 = b.eval(chk)
+                        if not s2 or s2.get("v") != s0["v"] or not s2.get("f"):
+                            note(i, st, "canary-not-cleared", {"state": s2})
+                            break
                 h.type(text, sensitive=secret)
-                if secret:
+                if secret and canary:
                     s3 = b.eval(chk)
                     if not s3 or s3.get("v") != s0["v"] + len(text):
                         note(i, st, "value-mismatch", {"chars": len(text),
