@@ -1512,7 +1512,46 @@ def job_session(b, url, steps, out, shot):
                     text = st["text"]
                 # Focus the window so the XTEST keystrokes land, then type.
                 h.ensure_focus()
+                if secret:
+                    # ⛔ LEAK GUARD (memo 1166f986, 2026-11-01): a bare type sent
+                    # the eBay password to the Chrome OMNIBOX -> Google search.
+                    # XTEST lands wherever OS focus is, and a `focus` step's
+                    # "ok" does not prove it is the field. So a secret is typed
+                    # only into a NAMED field that (1) is document.activeElement,
+                    # (2) in a document that has OS focus (hasFocus() is false
+                    # while the omnibox holds it), and (3) visibly received a
+                    # harmless canary keystroke, which is then erased. Any miss
+                    # aborts BEFORE a secret character is sent.
+                    if not (st.get("sel") or st.get("text")):
+                        note(i, st, "refused", {"why": "secret type needs sel"})
+                        break
+                    loc, m = target(st)
+                    chk = ("(()=>{const e=%s;if(!e)return null;e.focus();"
+                           "return {a:document.activeElement===e,f:document.hasFocus(),"
+                           "v:(e.value||'').length}})()" % el(loc))
+                    s0 = b.eval(chk)
+                    if not s0 or not s0.get("a") or not s0.get("f"):
+                        note(i, st, "not-focused", {"state": s0})
+                        break
+                    xdo("key", "--clearmodifiers", "period")
+                    time.sleep(0.25)
+                    s1 = b.eval(chk)
+                    if not s1 or s1.get("v") != s0["v"] + 1:
+                        note(i, st, "canary-missed", {"before": s0, "after": s1})
+                        break
+                    h.press("Backspace")
+                    time.sleep(0.25)
+                    s2 = b.eval(chk)
+                    if not s2 or s2.get("v") != s0["v"] or not s2.get("f"):
+                        note(i, st, "canary-not-cleared", {"state": s2})
+                        break
                 h.type(text, sensitive=secret)
+                if secret:
+                    s3 = b.eval(chk)
+                    if not s3 or s3.get("v") != s0["v"] + len(text):
+                        note(i, st, "value-mismatch", {"chars": len(text),
+                                                       "fieldLen": (s3 or {}).get("v")})
+                        break
                 note(i, st, "ok", {"chars": len(text), "value": "***" if secret else text})
             elif do == "read":
                 # ⚠️ textContent, never innerText: innerText needs layout and
@@ -1796,6 +1835,25 @@ def job_session(b, url, steps, out, shot):
                 note(i, st, "ok", {"value": (v if isinstance(v, (int, float, bool)) else
                                              str(v)[:300] if v is not None else None),
                                    "wrote": st.get("write")})
+            elif do == "delcookies":
+                # Delete cookies whose domain contains `domain` (and name
+                # matches `match`, if given). ⭐ WHY: HTTP 431 (request header
+                # too large) after a transplant + native re-login stacks two
+                # cookie sets on one site -- measured on eBay 2026-11-01, every
+                # www.ebay.com request 431'd. `dry: true` only reports. Logs
+                # NAMES and value LENGTHS, never values.
+                dom, pat = st["domain"], st.get("match")
+                rx = re.compile(pat) if pat else None
+                hit = [c for c in b.cookies() if dom in (c.get("domain") or "")
+                       and (not rx or rx.search(c.get("name") or ""))]
+                info = sorted(((c.get("domain") or "") + " " + (c.get("name") or "")
+                               + " " + str(len(c.get("value") or "")) for c in hit))
+                if not st.get("dry"):
+                    for c in hit:
+                        b.send("Network.deleteCookies", {"name": c["name"],
+                               "domain": c.get("domain"), "path": c.get("path") or "/"})
+                note(i, st, "ok", {"count": len(hit), "bytes": sum(len(c.get("value") or "") + len(c.get("name") or "") for c in hit),
+                                   "dry": bool(st.get("dry")), "cookies": info[:80]})
             elif do == "cookie":
                 # ⛔ VALUE STRAIGHT TO DISK, NEVER THROUGH THE LOG. The step
                 # row carries the name, whether it was found, and the length.
