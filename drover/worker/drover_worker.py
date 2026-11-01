@@ -1409,7 +1409,13 @@ def job_session(b, url, steps, out, shot):
 
     if url and url != "about:blank":
         b.navigate(url)
-    for i, st in enumerate(steps):
+    # A while over a MUTABLE list, not enumerate: the `inbox` step splices
+    # steps in after itself, mid-run.
+    steps = list(steps)
+    i = -1
+    while i + 1 < len(steps):
+        i += 1
+        st = steps[i]
         do = st.get("do")
         try:
             if do == "nav":
@@ -1785,6 +1791,42 @@ def job_session(b, url, steps, out, shot):
                             % el(loc))
                 if not note(i, st, "ok" if ok else "not-focused"):
                     break
+            elif do == "inbox":
+                # ⭐ AN INTERACTIVE SESSION ON ONE BROWSER. A signup that meets an
+                # image challenge, an SMS step or a page nobody has measured
+                # cannot be written as one step list up front, and splitting it
+                # into separate runs loses the page (the browser exits between
+                # runs). So the browser waits here for the orchestrator to drop
+                # a JSON step list at `path`; the steps run next, followed by
+                # this inbox again. An empty list `[]` ends the session. The
+                # file is consumed on read. Steps arriving here are ordinary
+                # steps -- the same human-mode input and the same read-only
+                # eval -- so this widens nothing but timing.
+                path, dl = st["path"], time.time() + float(st.get("seconds", 900))
+                got = None
+                while time.time() < dl:
+                    try:
+                        t = open(path).read().strip()
+                    except FileNotFoundError:
+                        t = ""
+                    if t:
+                        try:
+                            got = json.loads(t)
+                        except ValueError:
+                            time.sleep(1)   # caught mid-write; read again
+                            continue
+                        os.remove(path)
+                        break
+                    time.sleep(float(st.get("poll", 2)))
+                if got is None:
+                    note(i, st, "timeout", {"path": path})
+                    break
+                if not isinstance(got, list):
+                    note(i, st, "bad-inbox", {"type": type(got).__name__})
+                    break
+                note(i, st, "ok", {"steps": len(got)})
+                if got:
+                    steps[i + 1:i + 1] = got + [dict(st)]
             elif do == "await":
                 # ⛔ WHY THIS EXISTS AND WHY IT IS NOT TWO RUNS. A magic-link
                 # login needs a value that arrives by EMAIL, mid-flow. Splitting
